@@ -1,0 +1,19 @@
+{
+  "example": {
+    "description": "Your Example items: the ones its key can see",
+    "run": ["node_modules/.bin/tsx", "tools/example/server.ts"],
+    "keys": { "EXAMPLE_TOKEN": { "look": "SHIPIFY_EXAMPLE_READ", "act": "SHIPIFY_EXAMPLE_WRITE" } },
+    "look": ["search"],
+    "act": ["update_item"],
+    "check": ["node_modules/.bin/tsx", "tools/example/server.ts", "--check"],
+    "setup": {
+      "needs": [
+        "Two Example keys (example.com → Settings → API keys → New key): one that can only read, and one that can read and change"
+      ],
+      "keys": {
+        "SHIPIFY_EXAMPLE_READ": { "ask": "the read-only key" },
+        "SHIPIFY_EXAMPLE_WRITE": { "ask": "the read-and-change key" }
+      }
+    }
+  }
+}

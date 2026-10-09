@@ -1,0 +1,63 @@
+{
+  "about": "Claude Code's own decisions on each command (ADR 0043's live check), recorded 2026-10-09 with the rules its adapter writes from executors.json's commands: refused means a permission denial in its result event, ran means the command ran (whatever it then answered). tests/plugins/agent.test.ts holds Claude Code to these, and fails when its version or its rules change, until they're recorded again.",
+  "how": "Install the pinned version into a scratch folder (npm install -g --prefix <dir> @anthropic-ai/claude-code@<version>), build the adapter's argv for a run (claude -p --permission-mode acceptEdits, its commands, folders and look tools, --model haiku), and give it a prompt that runs each command below with the Bash tool exactly as written, in a scratch git repo with a remote, a Makefile with a verify target, a README.md and a .ts file. Signed in on a PC: a claude -p inside a run can't sign in.",
+  "version": "2.1.284",
+  "rules": {
+    "allowedTools": ["Bash", "Read", "Glob", "Grep", "WebFetch", "WebSearch"],
+    "disallowedTools": [
+      "Bash(git push:*)",
+      "Bash(git * push)",
+      "Bash(git * push *)",
+      "Bash(git stash:*)",
+      "Bash(git * stash)",
+      "Bash(git * stash *)"
+    ]
+  },
+  "refused": [
+    "git push",
+    "git push origin main",
+    "git -C ../x push",
+    "make test && git push",
+    "echo \"$(git stash)\"",
+    "for r in x; do git push; done",
+    "git stash pop",
+    "(git push)",
+    "{ git push; }",
+    "if true; then git push; fi",
+    "git --no-pager push",
+    "git -c push.default=current push",
+    "A=1 git push",
+    "timeout -s KILL 9 git push",
+    "nice -n 5 git push",
+    "env -i git push",
+    "echo x | xargs git push",
+    "git -C ${PWD} push",
+    "git commit --allow-empty -m \"add push notifications\"",
+    "git log --oneline --grep push"
+  ],
+  "ran": [
+    "make verify",
+    "find . -name '*.ts' | xargs grep -n TODO",
+    "jq .version package.json",
+    "for f in a b; do echo $f; done",
+    "cat /etc/os-release",
+    "ls /opt/shipify/tool",
+    "sed -n 1,20p README.md",
+    "git log --oneline -5",
+    "echo scratch > \"$TMPDIR/msg.txt\"",
+    "git commit --allow-empty -F \"$TMPDIR/msg.txt\"",
+    "grep -rn \"git push\" README.md",
+    "timeout 60 make verify",
+    "find . -name '*.md' -exec grep -l TODO {} +",
+    "/usr/bin/git push",
+    "sh -c \"git push\""
+  ],
+  "read": {
+    "about": "Claude Code's own decisions in the read profile (ADR 0044's live check), recorded 2026-10-09 on the pinned version with the flags its adapter writes for commands.run false, from the run's read/ folder with your files and Shipify's copy as its other folders: the tools it was offered, what it read, and what it was refused (a permission denial in its result event). A command and a web fetch it can't even try: it has no tool for them.",
+    "flags": ["--restricted", "--tools", "Read,Grep,Glob"],
+    "permissionMode": "acceptEdits",
+    "tools": ["Glob", "Grep", "Read", "StructuredOutput"],
+    "read": ["<read>/acme/tool/README.md", "<files>/note.txt"],
+    "refused": ["/etc/hostname", "<run>/config"]
+  }
+}

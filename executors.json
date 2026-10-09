@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "commands": {
+    "description": "What every agent must never run on a box (ADR 0043): any other command runs, because the walls are outside the agent (its own Linux user, read-only keys, every process killed at the end, the box's own push). Each agent's adapter writes this as its own rules, for every part of a command and after git's own options too (git -C x push). The box pushes, so an agent never pushes or stashes. web: it may read the web with its own tools.",
+    "deny": ["git push", "git stash"],
+    "web": true
+  },
+  "gateways": {
+    "openrouter": {
+      "description": "OpenRouter: hundreds of models through one key, some free (models ending :free; 50 requests a day, 1,000 with $10 of credits bought once)",
+      "url": "https://openrouter.ai/api/v1",
+      "protocol": "openai-chat",
+      "key": "OPENROUTER_API_KEY",
+      "how": "openrouter.ai/settings/keys → Create key",
+      "check": "/key",
+      "search": "/models?supported_parameters=tools&limit=20&q={word}"
+    }
+  },
+  "claude": {
+    "description": "Claude Code, headless (ADR 0031): it only thinks. On a box it runs as the slot's own Linux user, in its own clone, with read-only keys; it edits and commits there, reads the web and the tools' look calls, and writes result.json. It never pushes (apply does) and never stashes. Tasks send the prompt on stdin; its adapter adds the model, the effort, the commands every agent must never run, the look tools and its output format. models, efforts and modelPattern say what a `use` line may pick; auto is the default.",
+    "adapter": "claude",
+    "default": true,
+    "login": {
+      "secret": "CLAUDE_CODE_OAUTH_TOKEN",
+      "how": "claude setup-token"
+    },
+    "auto": {
+      "model": "sonnet",
+      "effort": "medium"
+    },
+    "models": ["haiku", "sonnet", "opus", "fable"],
+    "about": {
+      "haiku": "Quick, simple answers",
+      "sonnet": "Most work: changes, questions, daily jobs",
+      "opus": "Hard changes and design",
+      "fable": "The most capable; the heaviest on your plan"
+    },
+    "modelPattern": "^claude-[a-z0-9.-]+(\\[1m\\])?$",
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "noEffort": ["haiku"],
+    "command": [
+      "claude",
+      "-p",
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Bash(make:*)",
+      "Bash(pnpm:*)",
+      "{promptText}"
+    ],
+    "task": ["claude", "-p", "--permission-mode", "acceptEdits"],
+    "install": {
+      "version": "2.1.284",
+      "dir": "claude-code",
+      "bin": "bin/claude",
+      "run": [
+        "npm",
+        "install",
+        "-g",
+        "--silent",
+        "--no-audit",
+        "--no-fund",
+        "--prefix",
+        "{prefix}",
+        "@anthropic-ai/claude-code@2.1.284"
+      ]
+    }
+  },
+  "pi": {
+    "description": "pi, headless (ADR 0038): a small agent core that does the work its own way, held to the same rules as every agent by Shipify's gate. Its models come through a gateway (OpenRouter here), by their ids there: the few below listed first (the free ones first, then cheap ones paid from the gateway's credits), or any other the gateway has (/models <word> and the web chat's chip find them). Its key is the gateway's.",
+    "adapter": "pi",
+    "gateway": "openrouter",
+    "auto": {
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "effort": "high"
+    },
+    "models": [
+      "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "poolside/laguna-s-2.1:free",
+      "z-ai/glm-5.3-flash",
+      "deepseek/deepseek-v4.1-flash",
+      "z-ai/glm-5.3",
+      "moonshotai/kimi-k2.7-code",
+      "moonshotai/kimi-k2.6"
+    ],
+    "modelPattern": "^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*(:[a-z0-9]+)?$",
+    "efforts": ["off", "low", "medium", "high", "max"],
+    "task": ["pi"],
+    "install": {
+      "version": "1.0.2",
+      "bin": "bin/pi",
+      "run": [
+        "npm",
+        "install",
+        "-g",
+        "--silent",
+        "--no-audit",
+        "--no-fund",
+        "--ignore-scripts",
+        "--before=2026-10-05",
+        "--prefix",
+        "{prefix}",
+        "@earendil-works/pi-coding-agent@1.0.2"
+      ]
+    }
+  }
+}

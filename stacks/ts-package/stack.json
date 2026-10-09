@@ -1,0 +1,19 @@
+{
+  "id": "ts-package",
+  "version": "1.0.0",
+  "description": "TypeScript package: released as code (git tag + GitHub Release), no deploy.",
+  "kind": "package",
+  "layers": [
+    "_base",
+    "_ts"
+  ],
+  "vars": {},
+  "owned": [
+    "tsconfig.json",
+    "vitest.config.ts"
+  ],
+  "requires": [
+    "node",
+    "pnpm"
+  ]
+}

@@ -1,0 +1,480 @@
+# This project's pipeline (ADR 0048): the same file in every project Shipify builds, owned by its
+# stack (`ship upgrade` replaces it) and nothing else's. It calls no other repo and hands no secret
+# out: it runs this project's make targets, and reads the rest from shipify.json.
+#   PR          → nothing (the box ran make verify and the version check before opening it), unless
+#                 it has the label preview (apps): its code bundled with no keys, then deployed from
+#                 main's scripts on a fresh runner. Closed unmerged: make unpreview
+#   main        → the one check here (secret scan, setup, audit, verify), then apps: make deploy to
+#                 production (health check, rollback on failure, tag), or to staging (+ e2e) for a
+#                 staging app; packages: tag + GitHub Release. The run marks its commit shipify/main
+#   production  → staging apps: the release PR's merge, the commit that passed staging, deployed
+#   dispatch    → apps: deploy (main again) | rollback [to vX.Y.Z] | pause | resume
+# A push by a bot never goes live: bots open PRs and the owner merges them (ADR 0012). An app that's
+# down (the variable SHIPIFY_DOWN=true, set by `ship down`) gets every check and no deploy.
+# The contract (docs/design.md): make setup · verify, and for apps make deploy; optional, each
+# skipped when the Makefile has none: audit, bundle · preview-from · unpreview, e2e, rollback,
+# pause · resume. Targets get SHIPIFY_* variables, the repo's variables as environment variables,
+# and the secrets shipify.json names as JSON in $SHIPIFY_SECRETS_FILE.
+name: ship
+
+on:
+  pull_request:
+    # closed: a preview the PR asked for is switched off.
+    types: [opened, synchronize, reopened, closed]
+    paths-ignore: ["docs/**", "**/*.md"]
+  push:
+    branches: [main, production]
+    paths-ignore: ["docs/**", "**/*.md"]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "deploy main again, roll production back, or pause/resume it"
+        type: choice
+        options: [deploy, rollback, pause, resume]
+        default: deploy
+      to:
+        description: "rollback only: the release tag to go back to, e.g. v1.2.0 (empty = the previous version)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ship-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash # -e -o pipefail
+
+env:
+  # Checks here run without a browser (ADR 0018): the box ran the browser tests before the PR. make
+  # e2e (staging) still gets its own.
+  SHIPIFY_NO_BROWSER: "1"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+jobs:
+  bundle:
+    # Only a PR that asks for a preview (its label "preview"; a task's "preview" comment adds it).
+    # The PR's own code runs here, with no keys and a read-only token: what it bundles goes to the
+    # preview job, on a fresh runner (ADR 0030 §0). The box checked the code before the PR.
+    if: >-
+      github.event_name == 'pull_request' && github.event.action != 'closed'
+      && contains(github.event.pull_request.labels.*.name, 'preview')
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]' && vars.SHIPIFY_DOWN != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      bundled: ${{ steps.bundle.outputs.bundled }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - &meta
+        name: Project settings (shipify.json)
+        id: meta
+        env:
+          VARS: ${{ toJSON(vars) }}
+        run: |
+          {
+            echo "id=$(jq -r .id shipify.json)"
+            echo "kind=$(jq -r .kind shipify.json)"
+            echo "version=$(jq -r .version shipify.json)"
+            echo "staging=$(jq -r .staging shipify.json)"
+            echo "releases=$(jq -r 'if .releases == false then "false" else "true" end' shipify.json)"
+            echo "health=$(jq -r '.health // ""' shipify.json)"
+            echo "url_production=$(jq -r '.urls.production // ""' shipify.json)"
+            echo "url_staging=$(jq -r '.urls.staging // ""' shipify.json)"
+            echo "down=$(echo "$VARS" | jq -r 'if .SHIPIFY_DOWN == "true" then "true" else "false" end')"
+          } >> "$GITHUB_OUTPUT"
+      - &vars
+        name: Repository variables as environment variables (not secret)
+        env:
+          VARS: ${{ toJSON(vars) }}
+        run: |
+          echo "$VARS" | jq -r 'to_entries[]
+            | select((.key | test("^[A-Z_][A-Z0-9_]*$")) and (.value | test("\n") | not))
+            | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+      - &toolchain
+        name: Toolchain (the project's .github/actions/setup)
+        if: hashFiles('.github/actions/setup/action.yml') != ''
+        uses: ./.github/actions/setup
+      - &setup
+        name: make setup
+        run: make setup
+      - name: Bundle the PR for its preview (make bundle), with no keys
+        id: bundle
+        if: steps.meta.outputs.kind == 'app'
+        run: |
+          if ! make -n bundle >/dev/null 2>&1; then echo "::notice::No preview: this stack makes none."; exit 0; fi
+          SHIPIFY_BUNDLE="$RUNNER_TEMP/bundle" make bundle
+          echo "bundled=1" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.bundle.outputs.bundled == '1'
+        with:
+          name: preview-bundle
+          path: ${{ runner.temp }}/bundle
+          retention-days: 1
+          if-no-files-found: error
+
+  preview:
+    # The PR's preview, on a fresh runner (ADR 0030 §0): main's reviewed scripts and tools upload
+    # the bundle the PR's job made, with the deploy key. Nothing of the PR's runs here, before or
+    # after the key, so a PR can't take it, or replace another Worker with it.
+    needs: bundle
+    if: needs.bundle.outputs.bundled == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          persist-credentials: false
+      - *meta
+      - *vars
+      - *toolchain
+      - *setup
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: preview-bundle
+          path: ${{ runner.temp }}/bundle
+      - name: Preview (main's make preview-from, with the PR's bundle)
+        id: preview
+        env:
+          ALL: ${{ toJSON(secrets) }}
+          SHIPIFY_ENV: preview
+          SHIPIFY_PR: ${{ github.event.pull_request.number }}
+          SHIPIFY_SHA: ${{ github.event.pull_request.head.sha }}
+          SHIPIFY_VERSION: ${{ needs.bundle.outputs.version }}
+        run: |
+          umask 077
+          # An app with runtime keys gets no preview: a preview runs the PR's code, and a Worker's new
+          # version keeps the Worker's secrets (ADR 0031, step 1). Merging shows the change.
+          if [ "$(jq '(.secrets.runtime // []) | length' shipify.json)" != "0" ]; then
+            echo "::notice::No preview: this app has runtime keys, and a preview would run the PR's code with them. Merge it to see the change."
+            exit 0
+          fi
+          # Only the deploy keys main's shipify.json names, for this one step, then gone.
+          keys="$RUNNER_TEMP/preview-keys.json"
+          echo "$ALL" | jq --slurpfile m shipify.json \
+            '($m[0].secrets.deploy // []) as $k
+              | with_entries(select(.key | IN($k[])))' > "$keys"
+          code=0
+          SHIPIFY_SECRETS_FILE="$keys" SHIPIFY_BUILT="$RUNNER_TEMP/bundle" make preview-from | tee "$RUNNER_TEMP/preview.log" || code=$?
+          rm -f "$keys"
+          [ "$code" -eq 0 ] || exit "$code"
+          echo "url=$(sed -n 's/^url=//p' "$RUNNER_TEMP/preview.log" | tail -n 1)" >> "$GITHUB_OUTPUT"
+      - name: Say where it is, on the PR
+        if: steps.preview.outputs.url != ''
+        env:
+          URL: ${{ steps.preview.outputs.url }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          VERSION: ${{ needs.bundle.outputs.version }}
+        run: |
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --edit-last --create-if-none \
+            --body "Preview of v$VERSION ($SHA): $URL"
+
+  unpreview:
+    # A PR that asked for a preview closed without merging: previews off, unless another open PR
+    # still has one. A merge's deploy turns previews off by itself.
+    if: >-
+      github.event_name == 'pull_request' && github.event.action == 'closed'
+      && !github.event.pull_request.merged
+      && contains(github.event.pull_request.labels.*.name, 'preview')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          persist-credentials: false
+      - *meta
+      - *vars
+      - &secrets
+        name: Secrets named in shipify.json, for the deploy targets (values never printed)
+        env:
+          ALL: ${{ toJSON(secrets) }}
+        run: |
+          umask 077
+          echo "$ALL" | jq --slurpfile m shipify.json \
+            '(($m[0].secrets.deploy // []) + ($m[0].secrets.runtime // [])) as $k
+              | with_entries(select(.key | IN($k[])))' > "$RUNNER_TEMP/shipify-secrets.json"
+          echo "SHIPIFY_SECRETS_FILE=$RUNNER_TEMP/shipify-secrets.json" >> "$GITHUB_ENV"
+      - name: Previews off (make unpreview), unless another open PR still asks for one
+        if: steps.meta.outputs.kind == 'app'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! make -n unpreview >/dev/null 2>&1; then echo "No unpreview target."; exit 0; fi
+          left=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --label preview --json number --jq length)
+          if [ "$left" != 0 ]; then echo "$left open PR(s) still have a preview: leaving previews on."; exit 0; fi
+          make unpreview
+
+  main:
+    # A push to main, or Actions → ship → deploy by hand (a push GitHub started no run for).
+    if: >-
+      (github.event_name == 'push' && github.ref_name == 'main')
+      || (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write # tag + GitHub Release, after a successful health check
+      statuses: write # marks the commit shipify/main, and shipify/staging (staging apps)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # tags: the fallback rollback redeploys the previous release
+      - name: Mark the commit shipify/main (what Shipify follows)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: &mark |
+          state=${STATE:-pending}
+          case "$state" in pending) d=Running ;; success) d=Done ;; *) d=Failed ;; esac
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$state" -f context=shipify/main \
+            -f description="$d" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null \
+            || echo "::warning::Couldn't mark $SHA shipify/main."
+      - *meta
+      - &down
+        name: Down (ship down), so checks only
+        if: steps.meta.outputs.down == 'true'
+        env:
+          ID: ${{ steps.meta.outputs.id }}
+        run: |
+          echo "::notice::$ID is down: CI checks it and deploys nothing. Bring it back with pnpm ship up $ID --yes"
+      - &humans
+        name: Only the owner's merges go live (bots open PRs)
+        if: github.event_name == 'push'
+        env:
+          ACTOR: ${{ github.actor }}
+          BEFORE: ${{ github.event.before }}
+          STAGING: ${{ steps.meta.outputs.staging }}
+        run: |
+          case "$ACTOR" in *"[bot]") ;; *) exit 0 ;; esac
+          if [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then echo "The first push of $GITHUB_REF_NAME (publishing)."; exit 0; fi
+          # A staging app's main deploys staging: from a bot, only `ship release`'s version bump
+          # does (ADR 0030 §0). Any other code reaches a deploy only through your merge.
+          # Fails closed: a range it can't read, or shipify.json changed beyond its version, stops it.
+          if [ "$GITHUB_REF_NAME" = main ] && [ "$STAGING" = true ]; then
+            files=$(git diff --name-only "$BEFORE" "$GITHUB_SHA") || { echo "::error::Can't read what $ACTOR pushed to main."; exit 1; }
+            other=$(echo "$files" | grep -vxE 'shipify\.json|CHANGELOG\.md' || true)
+            # shellcheck disable=SC2016 # the ${…} below is JavaScript, not shell
+            same=$(git show "$BEFORE:shipify.json" | node -e '
+              const fs = require("fs");
+              const canon = (v) => Array.isArray(v) ? v.map(canon) : v && typeof v === "object"
+                ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v;
+              const read = (t) => { const o = JSON.parse(t); delete o.version; return JSON.stringify(canon(o)); };
+              process.stdout.write(read(fs.readFileSync(0, "utf8")) === read(fs.readFileSync("shipify.json", "utf8")) ? "yes" : "no");
+            ') || same=no
+            if [ -z "$other" ] && [ "$same" = yes ]; then echo "A release's version bump: main deploys staging; the release PR goes live."; exit 0; fi
+            echo "::error::$ACTOR pushed more than a version bump to main, which deploys staging. Bots open PRs; the owner merges them."
+            exit 1
+          fi
+          echo "::error::$ACTOR pushed to $GITHUB_REF_NAME, which would go live. Bots open PRs; the owner merges them."
+          exit 1
+      - *vars
+      - name: Secret scan (gitleaks)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/gl.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gl.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gl.tgz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" dir . --redact --no-banner --exit-code 1
+      - *toolchain
+      - *setup
+      - name: Dependency audit (make audit)
+        run: if make -n audit >/dev/null 2>&1; then make audit; else echo "No audit target."; fi
+      - name: make verify
+        run: make verify
+      - *secrets
+      - name: Deploy (make deploy)
+        if: steps.meta.outputs.kind == 'app' && steps.meta.outputs.down != 'true'
+        env:
+          SHIPIFY_ENV: ${{ steps.meta.outputs.staging == 'true' && 'staging' || 'production' }}
+          SHIPIFY_SHA: ${{ github.sha }}
+          SHIPIFY_VERSION: ${{ steps.meta.outputs.version }}
+        run: make deploy
+      - name: Health check (the app reports this commit)
+        id: smoke
+        if: steps.meta.outputs.kind == 'app' && steps.meta.outputs.down != 'true'
+        env:
+          URL: ${{ steps.meta.outputs.staging == 'true' && steps.meta.outputs.url_staging || steps.meta.outputs.url_production }}
+          HEALTH: ${{ steps.meta.outputs.health }}
+          EXPECTED: ${{ github.sha }}
+        run: &smoke |
+          if [ -z "$URL" ] || [ -z "$HEALTH" ]; then
+            echo "::notice::shipify.json has no URL or health path, so make deploy succeeding is the check."; exit 0
+          fi
+          for _ in $(seq 1 30); do
+            [ "$(curl -fsS "$URL$HEALTH" | jq -r .commit 2>/dev/null || true)" = "$EXPECTED" ] && exit 0
+            sleep 4
+          done
+          echo "::error::$URL$HEALTH didn't report commit $EXPECTED"; exit 1
+      - name: E2E against staging (make e2e), then mark the commit as passed
+        if: steps.meta.outputs.kind == 'app' && steps.meta.outputs.staging == 'true' && steps.meta.outputs.down != 'true'
+        env:
+          URL: ${{ steps.meta.outputs.url_staging }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ID: ${{ steps.meta.outputs.id }}
+          SHA: ${{ github.sha }}
+        run: |
+          if make -n e2e >/dev/null 2>&1; then SHIPIFY_BASE_URL="$URL" make e2e; fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=success -f context=shipify/staging \
+            -f description="v$VERSION passed staging" \
+            -f target_url="${URL:-$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID}"
+          echo "### Staging passed: v$VERSION. Release it: $ID: release" >> "$GITHUB_STEP_SUMMARY"
+      - name: Tag and publish the release (first time this version ships)
+        if: (steps.meta.outputs.kind == 'package' || steps.meta.outputs.staging != 'true') && steps.meta.outputs.releases != 'false' && steps.meta.outputs.down != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          SHA: ${{ github.sha }}
+        run: &release |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then echo "v$VERSION already released" >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          awk -v v="$VERSION" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {if (f) exit} f' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          [ -s "$RUNNER_TEMP/notes.md" ] || echo "Release v$VERSION" > "$RUNNER_TEMP/notes.md"
+          gh release create "v$VERSION" --target "$SHA" --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          echo "### Released v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+      - &rollback_on_fail
+        name: Roll back after a failed health check
+        if: >-
+          failure() && steps.smoke.outcome == 'failure'
+          && (steps.meta.outputs.staging != 'true' || github.ref_name == 'production')
+        env:
+          SHIPIFY_ENV: production
+        run: |
+          if make -n rollback >/dev/null 2>&1; then make rollback; exit 0; fi
+          # No rollback target: redeploy the last release with the project's own make deploy.
+          # The failed version was never tagged, so the newest tag is the last good release.
+          to=$(git tag -l 'v*' --sort=-v:refname | head -n 1)
+          [ -n "$to" ] || { echo "::error::No earlier release to go back to."; exit 1; }
+          git checkout -q "$to"
+          make setup
+          SHIPIFY_SHA=$(git rev-parse HEAD) SHIPIFY_VERSION="${to#v}" make deploy
+      - name: Mark how it went (shipify/main)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
+        run: *mark
+
+  production:
+    # Staging apps only: the release PR's merge commit. Skips the push that just creates the branch.
+    if: github.event_name == 'push' && github.ref_name == 'production' && !github.event.created
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      statuses: write # reads shipify/staging; marks shipify/production for Shipify's "Live"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - *meta
+      - *down
+      - *humans
+      - *vars
+      - name: This release passed staging
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ "$(git rev-list --parents -n1 HEAD | wc -w)" -eq 3 ] || { echo "::error::Only merge commits from the release PR (use 'Create a merge commit')."; exit 1; }
+          src=$(git rev-parse HEAD^2)
+          [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse "$src^{tree}")" ] || { echo "::error::Differs from $src, the commit that passed staging."; exit 1; }
+          state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$src/status" --jq '[.statuses[] | select(.context=="shipify/staging")][0].state // "missing"')
+          [ "$state" = "success" ] || { echo "::error::$src hasn't passed staging ($state)."; exit 1; }
+          echo "sha=$src" >> "$GITHUB_OUTPUT"
+      - *toolchain
+      - *setup
+      - *secrets
+      - name: Deploy production (make deploy)
+        if: steps.meta.outputs.down != 'true'
+        env:
+          SHIPIFY_ENV: production
+          SHIPIFY_SHA: ${{ steps.release.outputs.sha }}
+          SHIPIFY_VERSION: ${{ steps.meta.outputs.version }}
+        run: make deploy
+      - name: Health check (the app reports this commit)
+        id: smoke
+        if: steps.meta.outputs.down != 'true'
+        env:
+          URL: ${{ steps.meta.outputs.url_production }}
+          HEALTH: ${{ steps.meta.outputs.health }}
+          EXPECTED: ${{ steps.release.outputs.sha }}
+        run: *smoke
+      - name: Tag and publish the release (first time this version ships)
+        if: steps.meta.outputs.down != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: *release
+      - *rollback_on_fail
+      # Shipify follows a release to production by this mark on the release PR's merge commit.
+      - name: Mark how it went (shipify/production)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$STATE" -f context=shipify/production \
+            -f description="production deploy" >/dev/null \
+            || echo "::warning::Couldn't mark $SHA shipify/production."
+
+  ops:
+    # Apps, by hand (Actions → ship, or `ship down`/`ship up`/`ship rollback`): roll production
+    # back, or pause and resume it.
+    if: github.event_name == 'workflow_dispatch' && inputs.action != 'deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - *meta
+      - *vars
+      - name: Check the request
+        env:
+          ACTION: ${{ inputs.action }}
+          TO: ${{ inputs.to }}
+          KIND: ${{ steps.meta.outputs.kind }}
+        run: |
+          [ "$KIND" = app ] || { echo "::error::Only apps can be rolled back, paused or resumed."; exit 1; }
+          case "$ACTION" in rollback|pause|resume) ;; *) echo "::error::action must be deploy, rollback, pause or resume"; exit 1;; esac
+          # An empty "to" is fine (the previous release); printf '%s' "" would give grep no line at all.
+          [[ -z "$TO" || "$TO" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::to must look like v1.2.3"; exit 1; }
+      - *toolchain
+      - *setup
+      - *secrets
+      - name: make rollback, pause or resume
+        env:
+          ACTION: ${{ inputs.action }}
+          SHIPIFY_ENV: production
+          SHIPIFY_TO: ${{ inputs.to }}
+        run: |
+          if make -n "$ACTION" >/dev/null 2>&1; then make "$ACTION"; exit 0; fi
+          [ "$ACTION" = rollback ] || { echo "::error::This project has no make $ACTION target."; exit 1; }
+          # No rollback target: redeploy a release tag with the project's own make deploy.
+          # Without --to, that's the release before the newest one (which production runs).
+          to="${SHIPIFY_TO:-$(git tag -l 'v*' --sort=-v:refname | sed -n 2p)}"
+          [ -n "$to" ] || { echo "::error::No earlier release to go back to."; exit 1; }
+          git checkout -q "$to"
+          make setup
+          SHIPIFY_SHA=$(git rev-parse HEAD) SHIPIFY_VERSION="${to#v}" make deploy

@@ -1,0 +1,8 @@
+{
+  "id": "site",
+  "version": "1.0.0",
+  "description": "A plain static site. Start from one page, or replace site/ with an existing site.",
+  "stacks": [
+    "ts-static"
+  ]
+}

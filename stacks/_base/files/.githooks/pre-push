@@ -1,0 +1,9 @@
+#!/bin/sh
+# Production only changes by merging the release PR on GitHub, never by a direct push.
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ "$remote_ref" = "refs/heads/production" ]; then
+    echo "Blocked: direct pushes to production are not allowed. Merge the release PR on GitHub instead (pnpm ship release)." >&2
+    exit 1
+  fi
+done
+exit 0

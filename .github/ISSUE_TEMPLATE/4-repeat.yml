@@ -1,0 +1,53 @@
+# Something that repeats (ADR 0013, ADR 0031, docs/tasks.md): set up from these answers, with no
+# agent. A check runs a script from checks/ (merged by PR) and says only what changed.
+name: Repeat something
+description: A reminder, a job, or a check, on a schedule. Say “stop repeating” to end it.
+title: "repeat: "
+labels: [repeats]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: The reminder's text, or the job to do.
+      placeholder: Look at the servers. Or, check an app's dependencies and open a PR when there are updates.
+    validations:
+      required: true
+  - type: input
+    id: when
+    attributes:
+      label: When
+      description: "In your time zone: every day at 09:00, every weekday at 08:30, every Monday at 9, on the 1st of every month at 09:00, every hour, every 6 hours, every 2 hours from 9am to 9pm. A job for the agent at most every hour; a reminder every 15 minutes."
+      placeholder: every day at 09:00
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - A reminder (posts the text; no agent)
+        - A job for the agent (quiet when there's nothing to do)
+        - A check (a script from checks/; says only what changed; no agent)
+    validations:
+      required: true
+  - type: input
+    id: check
+    attributes:
+      label: Check
+      description: "For a check: its script's name, checks/<name>.mjs (merged by PR first). Leave empty otherwise."
+      placeholder: price-watch
+  - type: dropdown
+    id: model
+    attributes:
+      label: Model
+      description: "For a job, the model that does it (a reminder needs none); Pi is pi with its Auto (executors.json). To change it later, comment just `use opus` or `use pi z-ai/glm-5.3` (/models finds more)."
+      options:
+        - Auto
+        - Fable
+        - Opus
+        - Opus high
+        - Sonnet
+        - Haiku
+        - Pi
+      default: 0

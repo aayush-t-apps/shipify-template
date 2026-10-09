@@ -1,0 +1,18 @@
+# The pipeline and the stacks' setup action pin actions by SHA, and the CLI has its dependencies:
+# Dependabot brings them up to date once a quarter, each kind in one PR. Security alerts are on.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories: ["/", "/stacks/_ts/files/.github/actions/setup"]
+    schedule:
+      interval: quarterly
+    groups:
+      all:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: quarterly
+    groups:
+      all:
+        patterns: ["*"]

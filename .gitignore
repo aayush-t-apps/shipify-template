@@ -1,0 +1,14 @@
+node_modules/
+coverage/
+.tmp/
+*.log
+.env
+.env.*
+.dev.vars
+credentials.env
+
+# Per machine: `ship sync` and `ship reconcile` rebuild it (GitHub is the source of truth).
+registry/projects.json
+
+# Agents' own worktrees (Claude Code): never part of the repo.
+.claude/worktrees/

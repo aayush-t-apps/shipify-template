@@ -1,0 +1,38 @@
+{
+  "name": "{{APP_ID}}",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "{{APP_DESCRIPTION}}",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "wrangler dev --port 8787 --var APP_ENV:local",
+    "build": "node -e \"console.log('static site: site/ is served as-is')\"",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json",
+    "test": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "verify": "pnpm verify:unit && pnpm test:e2e",
+    "verify:unit": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm run --if-present check:app && pnpm build",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"
+  },
+  "dependencies": {
+    "hono": "4.13.9"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@biomejs/biome": "2.5.14",
+    "@cloudflare/workers-types": "5.20260925.2",
+    "@playwright/test": "1.63.0",
+    "@types/node": "26.6.3",
+    "@vitest/coverage-v8": "5.0.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.2",
+    "wrangler": "4.141.0"
+  }
+}

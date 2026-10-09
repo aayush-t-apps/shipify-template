@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "claude": {
+    "description": "Claude Code, headless (ADR 0031): it only thinks. On a box it runs as the slot's own Linux user, in its own clone, with read-only keys; it edits and commits there, reads the web and the tools' look calls, and writes result.json. It never pushes (apply does) and never stashes. Tasks send the prompt on stdin; its adapter adds the model, the effort, the look tools and its output format. models, efforts and modelPattern say what a `use` line may pick; auto is the default.",
+    "adapter": "claude",
+    "default": true,
+    "login": {
+      "secret": "CLAUDE_CODE_OAUTH_TOKEN",
+      "how": "claude setup-token"
+    },
+    "auto": {
+      "model": "sonnet",
+      "effort": "medium"
+    },
+    "models": ["haiku", "sonnet", "opus", "fable"],
+    "modelPattern": "^claude-[a-z0-9.-]+(\\[1m\\])?$",
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "noEffort": ["haiku"],
+    "command": [
+      "claude",
+      "-p",
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Bash(make:*)",
+      "Bash(pnpm:*)",
+      "{promptText}"
+    ],
+    "task": [
+      "claude",
+      "-p",
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Bash(make:*)",
+      "Bash(pnpm:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git -C:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(cat:*)",
+      "Bash(wc:*)",
+      "Bash(node:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git restore:*)",
+      "Bash(python3:*)",
+      "Bash(curl:*)",
+      "Bash(getent:*)",
+      "Bash(ping -c:*)",
+      "Bash(ss:*)",
+      "Bash(ip route:*)",
+      "Bash(ip addr:*)",
+      "Bash(lsblk:*)",
+      "Bash(hostname:*)",
+      "Bash(uname:*)",
+      "Bash(uptime:*)",
+      "Bash(free:*)",
+      "Bash(df:*)",
+      "Bash(du:*)",
+      "Bash(ps:*)",
+      "Bash(nproc:*)",
+      "Bash(lscpu:*)",
+      "Bash(ip neigh:*)",
+      "Bash(tracepath:*)",
+      "Bash(apt list:*)",
+      "Bash(systemctl status:*)",
+      "Bash(systemctl is-active:*)",
+      "Bash(systemctl list-units:*)",
+      "Bash(systemctl list-timers:*)",
+      "Bash(timedatectl status:*)",
+      "WebFetch",
+      "WebSearch",
+      "--disallowedTools",
+      "Bash(git push:*)",
+      "Bash(git * push)",
+      "Bash(git * push *)",
+      "Bash(git stash:*)",
+      "Bash(git * stash *)"
+    ]
+  },
+  "codex": {
+    "description": "An example second agent with no adapter (ADR 0031: agents stay a plug-in kind): its model and effort through its flags.",
+    "command": ["codex", "exec", "--sandbox", "workspace-write", "{promptText}"],
+    "task": [
+      "codex",
+      "exec",
+      "--sandbox",
+      "workspace-write",
+      "-c",
+      "sandbox_workspace_write.network_access=true",
+      "--skip-git-repo-check",
+      "-"
+    ],
+    "efforts": ["minimal", "low", "medium", "high"],
+    "modelPattern": "^(gpt-?[0-9]|o[0-9])[a-z0-9.-]*$",
+    "flags": {
+      "model": ["-m", "{model}"],
+      "effort": ["-c", "model_reasoning_effort={effort}"]
+    }
+  },
+  "opencode": {
+    "description": "An example third agent with no adapter: its model through its flags.",
+    "command": ["opencode", "run", "{promptText}"],
+    "task": ["opencode", "run", "{promptText}"],
+    "modelPattern": "^[a-z0-9-]+/[a-z0-9._-]+$",
+    "flags": {
+      "model": ["-m", "{model}"]
+    }
+  }
+}

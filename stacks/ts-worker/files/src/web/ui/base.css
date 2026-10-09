@@ -1,0 +1,119 @@
+@import "./tokens.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: var(--text-md) / 1.5 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.2;
+  text-wrap: balance;
+  margin: 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    /* biome-ignore lint/complexity/noImportantStyles: reduced motion must beat component styles */
+    transition: none !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced motion must beat component styles */
+    animation: none !important;
+  }
+}
+
+.shell {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.shell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(var(--space) * 3);
+  padding: calc(var(--space) * 3) calc(var(--space) * 4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+.shell-title {
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+.shell-main {
+  flex: 1;
+  width: 100%;
+  max-width: var(--content-width);
+  margin: 0 auto;
+  padding: calc(var(--space) * 4);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 4);
+}
+
+.btn {
+  font: 600 var(--text-sm) var(--font-sans);
+  padding: calc(var(--space) * 2) calc(var(--space) * 3);
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+.btn:hover {
+  border-color: var(--color-text);
+}
+.btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-text);
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: calc(var(--space) * 4);
+}
+
+.alert {
+  border-radius: var(--radius);
+  padding: calc(var(--space) * 3);
+  border: 1px solid currentColor;
+}
+.alert-error {
+  color: var(--color-danger);
+}
+.alert-info {
+  color: var(--color-accent);
+}
+
+.empty {
+  text-align: center;
+  color: var(--color-muted);
+  padding: calc(var(--space) * 10) calc(var(--space) * 4);
+}
+
+.muted {
+  color: var(--color-muted);
+}

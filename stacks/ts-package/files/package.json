@@ -1,0 +1,30 @@
+{
+  "name": "{{APP_ID}}",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "{{APP_DESCRIPTION}}",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --coverage",
+    "build": "tsc -p tsconfig.json --outDir dist",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm run --if-present check:app && pnpm build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@types/node": "26.6.3",
+    "@vitest/coverage-v8": "5.0.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.2"
+  }
+}

@@ -1,0 +1,72 @@
+# Updates as a PR (ADR 0047, docs/releases.md): weekly, or when you run it (Actions → update), the
+# template's newest release, offered as one PR on this copy, "Shipify 0.x.y", with the notes of each
+# version since yours. Shipify's own files only: your plans, recipes and checks, and the apps your
+# forms list, stay as they are. It never merges: you do, and ci.yml takes it from there. A copy
+# that's the template's source (where releases are made) is up to date, and nothing is opened.
+name: update
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+env:
+  # Your settings (ADR 0047): SHIPIFY_TEMPLATE among them, when GitHub doesn't say the template.
+  SHIPIFY_VARS: ${{ toJSON(vars) }}
+
+jobs:
+  update:
+    # A copy with its bot: the template itself has none, so nothing runs there.
+    if: vars.SHIPIFY_BOT_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: The bot's token for this copy (the update's branch, its PR, its workflow files)
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: The bot's read-only token, for a template on this copy's own account
+        id: read
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.bot.outputs.token }}
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Git as the bot (the update's commit)
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          BOT: ${{ vars.SHIPIFY_BOT_SLUG }}
+        run: |
+          gh auth setup-git
+          id=$(gh api "users/${BOT}%5Bbot%5D" --jq .id)
+          git config user.name "${BOT}[bot]"
+          git config user.email "${id}+${BOT}[bot]@users.noreply.github.com"
+      - name: The template's newest release, as a PR
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          # A private template on another account: its own read-only key (pnpm ship setup).
+          SHIPIFY_TEMPLATE_TOKEN: ${{ secrets.SHIPIFY_TEMPLATE_TOKEN || steps.read.outputs.token }}
+        run: pnpm ship update --yes

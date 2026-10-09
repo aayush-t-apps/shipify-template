@@ -1,0 +1,239 @@
+# CI for Shipify itself, once per change, after it merges (ADR 0018). A PR ship pr opened ran the
+# full pnpm verify before it (its description carries <!-- shipify-checked -->), so after its merge
+# CI runs the fast checks: format, lint, types and every test but the end-to-end ones (pnpm
+# verify:fast, about a minute). Anything else runs the full pnpm verify: a PR without the mark
+# (Dependabot's, an edit on GitHub, ship pr --no-verify), a push with no PR, a new version and a
+# run by hand. The golden tests run when the stacks, presets or the rendering code changed (each
+# project's pipeline is its stack's own ship.yml, ADR 0048). The edge (ADR 0031: the door and the
+# watch, a Worker on Cloudflare) is deployed after the checks when its code, the contracts it shares
+# or intents.json changed, and on a run by hand (`ship door setup` starts one).
+name: ci
+
+on:
+  push:
+    branches: [main]
+    # Docs alone need no check: of the docs, the tests read only docs/tasks.md. (A run by hand checks
+    # everything.)
+    paths: ["**", "!docs/**", "docs/tasks.md", "!*.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time on main: two releases at once could move v1 back to the older commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    # The full check takes about 10 minutes on GitHub's 2 CPUs; the fast one about a minute.
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: read # the merged PR's description: was it checked in full before it?
+    outputs:
+      golden: ${{ steps.changed.outputs.golden }}
+      release: ${{ steps.changed.outputs.release }}
+      edge: ${{ steps.changed.outputs.edge }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # ship upgrade reads older stack versions from history
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Dependency audit (high and critical)
+        run: pnpm audit --prod --audit-level high
+      - name: What this change needs (the full check, the golden tests, a release)
+        id: changed
+        env:
+          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          # What decides a new project's files: the stacks (each project's pipeline too), the presets and the code that
+          # renders them. Everything else is covered by pnpm verify. (A run by hand checks them all.)
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ] \
+            || ! git cat-file -e "$BEFORE" 2>/dev/null \
+            || git diff --name-only "$BEFORE" HEAD | grep -qE '^(stacks|presets)/|^cli/lib/(generate|render|catalog)\.ts$|^cli/commands/project\.ts$'; then
+            echo "golden=true" >> "$GITHUB_OUTPUT"
+          fi
+          # The edge: its own code, the contracts it bundles, and the words it reads.
+          if [ "$EVENT" = workflow_dispatch ] || [ -z "$BEFORE" ] \
+            || [ "$BEFORE" = 0000000000000000000000000000000000000000 ] \
+            || ! git cat-file -e "$BEFORE" 2>/dev/null \
+            || git diff --name-only "$BEFORE" HEAD | grep -qE '^(edge/|cli/contracts/|intents\.json$)'; then
+            echo "edge=true" >> "$GITHUB_OUTPUT"
+          fi
+          # A release is the push that sets a new version (ADR 0047), or a version not released here
+          # yet: an older tag of the same name, from a copy's past, doesn't stop it.
+          VERSION=$(jq -r .version package.json)
+          WAS=""
+          if [ -n "$BEFORE" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
+            WAS=$(git show "$BEFORE:package.json" | jq -r .version)
+          fi
+          if [ "$WAS" != "$VERSION" ] || ! gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "full=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$EVENT" = workflow_dispatch ]; then echo "full=true" >> "$GITHUB_OUTPUT"; fi
+          # The fast checks only after a PR whose full checks passed before it (ship pr's mark).
+          BODY=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].body // ""' 2>/dev/null || true)
+          case "$BODY" in
+            *"<!-- shipify-checked -->"*) ;;
+            *) echo "full=true" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: Verify (fast after a checked PR; else in full)
+        run: pnpm ${{ steps.changed.outputs.full == 'true' && 'verify' || 'verify:fast' }}
+        env:
+          # GitHub's private-repo machines have 2 CPUs; vitest's default (CPUs - 1) runs one file at
+          # a time.
+          VITEST_MAX_WORKERS: "2"
+          GIT_AUTHOR_NAME: ci
+          GIT_AUTHOR_EMAIL: ci@example.com
+          GIT_COMMITTER_NAME: ci
+          GIT_COMMITTER_EMAIL: ci@example.com
+      - name: Lint the workflows, and every project's pipeline (actionlint)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/al.tgz" https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/al.tgz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/*.yml stacks/_base/files/.github/workflows/ship.yml
+
+  golden:
+    # Every stack × preset × staging combination, when what makes a project changed (about 1 min).
+    # verify decides, so this job starts (and bills a minute) only when it has work.
+    needs: verify
+    if: needs.verify.outputs.golden == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: |
+          pnpm install --frozen-lockfile
+          pnpm test:golden
+        env:
+          # No browser on GitHub (ADR 0018): the golden tests ran in full, browser included, before
+          # the PR. Here they render, check and test every combination without one.
+          SHIPIFY_NO_BROWSER: "1"
+          GIT_AUTHOR_NAME: ci
+          GIT_AUTHOR_EMAIL: ci@example.com
+          GIT_COMMITTER_NAME: ci
+          GIT_COMMITTER_EMAIL: ci@example.com
+
+  release:
+    # A new version on main: tag vX.Y.Z (immutable) and publish the release. After the golden tests
+    # when they ran. Projects take nothing from it: each carries its own pipeline (ADR 0048).
+    needs: [verify, golden]
+    if: >-
+      always() && needs.verify.result == 'success' && needs.verify.outputs.release == 'true'
+      && (needs.golden.result == 'success' || needs.golden.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(jq -r .version package.json)
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            # Tags never move: this copy's own past has one of that name. The template's is the release.
+            echo "v$VERSION is released here already (an older tag of that name stays as it is)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            awk -v v="$VERSION" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {if (f) exit} f' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+            gh release create "v$VERSION" --target "$GITHUB_SHA" --title "Shipify v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+            echo "### Released v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  edge:
+    # The edge (ADR 0031): shipify's door and watch, the Worker `shipify`: workers.dev, and your domain if any.
+    # After the checks, when verify says it changed (or by hand). The deploy token is on the two
+    # wrangler steps alone. The Worker's secrets (the door App's key, Telegram's) were set from the
+    # PC and stay as they are: a deploy never sends them. Its plain values come from shipify's
+    # variables. A deploy whose /health doesn't say its commit within 2 minutes is rolled back.
+    needs: verify
+    # Only once the door is set up (ADR 0047): a copy without one, a fresh one too, skips it and
+    # stays green. `ship door setup` sets SHIPIFY_DOOR_URL before it starts this workflow.
+    if: needs.verify.outputs.edge == 'true' && vars.SHIPIFY_DOOR_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: edge
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Deploy the edge
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_DEPLOY_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          APPS_DOMAIN: ${{ vars.APPS_DOMAIN }}
+          DOOR_URL: ${{ vars.SHIPIFY_DOOR_URL }}
+          DOOR_APP_ID: ${{ vars.SHIPIFY_DOOR_APP_ID }}
+          DOOR_SLUG: ${{ vars.SHIPIFY_DOOR_SLUG }}
+          DOOR_INSTALLATION: ${{ vars.SHIPIFY_DOOR_INSTALLATION }}
+          REPO_ID: ${{ vars.SHIPIFY_REPO_ID }}
+          OWNER_ID: ${{ vars.SHIPIFY_OWNER_ID }}
+          TIME_ZONE: ${{ vars.SHIPIFY_TIME_ZONE }}
+        run: |
+          VERSION=$(jq -r .version package.json)
+          # Your domain when you have one (APPS_DOMAIN); its workers.dev address always (ADR 0047).
+          DOMAIN=()
+          if [ -n "$APPS_DOMAIN" ]; then DOMAIN=(--domain "shipify.$APPS_DOMAIN"); fi
+          pnpm exec wrangler deploy --config edge/wrangler.jsonc "${DOMAIN[@]}" \
+            --var "GIT_SHA:$GITHUB_SHA" \
+            --var "GITHUB_REPO:$GITHUB_REPOSITORY" \
+            --var "SHIPIFY_DOOR_URL:$DOOR_URL" \
+            --var "SHIPIFY_DOOR_APP_ID:$DOOR_APP_ID" \
+            --var "SHIPIFY_DOOR_SLUG:$DOOR_SLUG" \
+            --var "SHIPIFY_DOOR_INSTALLATION:$DOOR_INSTALLATION" \
+            --var "SHIPIFY_REPO_ID:$REPO_ID" \
+            --var "SHIPIFY_OWNER_ID:$OWNER_ID" \
+            --var "SHIPIFY_TIME_ZONE:$TIME_ZONE" \
+            --message "edge v$VERSION $GITHUB_SHA"
+      - name: Wait for /health to say this commit (2 minutes)
+        env:
+          # The edge's own address, as the door's setup set it: your domain, or workers.dev.
+          DOOR_URL: ${{ vars.SHIPIFY_DOOR_URL }}
+        run: |
+          for _ in $(seq 1 24); do
+            if curl -fsS --max-time 5 "$DOOR_URL/health" \
+              | jq -e --arg sha "$GITHUB_SHA" '.commit == $sha' >/dev/null 2>&1; then
+              echo "### The edge is live at $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::$DOOR_URL/health didn't say $GITHUB_SHA within 2 minutes."
+          exit 1
+      - name: Roll back
+        if: failure() && steps.deploy.outcome == 'success'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_DEPLOY_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          pnpm exec wrangler rollback --config edge/wrangler.jsonc --yes \
+            --message "rollback: $GITHUB_SHA didn't answer /health"
+          echo "### The edge was rolled back: $GITHUB_SHA didn't answer /health" >> "$GITHUB_STEP_SUMMARY"

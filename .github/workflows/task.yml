@@ -1,0 +1,428 @@
+# Tasks (ADR 0031, docs/tasks.md): an issue here is a task, and every message lives on it. Your
+# comments on GitHub, and the door App's comments for you from a chat, start a run of it on a box.
+#   run      task → plan → think → decide → (write tokens minted only now) → apply, in one job on a
+#            box; each phase mints its own read-only token right before it (an App's lasts an hour)
+#            from the App on its repo's account (ADR 0045): the bot on this one, the repos App on
+#            another of your accounts (SHIPIFY_ACCOUNTS), which the task step names before plan
+#   github   on GitHub's machines, with no agent: only what the task's status already has pending
+#            (a merged plan's repo and keys, an operation, PRs to close)
+# Who starts a run: you (SHIPIFY_OWNER), or the door App (SHIPIFY_DOOR_SLUG) for your chat words;
+# never the watch (ADR 0042). A dispatch comes from main only and carries just a task number and
+# which job. A push of merged plans starts their tasks' github jobs. The status issue and notebook
+# pages start nothing. A box is a clean machine: no repo secret is written on it, the agent runs as
+# the slot's own Linux user (box setup 5), and write tokens exist only after the agent has finished.
+name: task
+run-name: "${{ github.event_name == 'push' && 'plans merged' || format('task #{0}', github.event.issue.number || inputs.issue) }}"
+
+on:
+  issues:
+    types: [opened, reopened, closed, edited]
+  issue_comment:
+    types: [created]
+  push:
+    branches: [main]
+    paths: ["plans/*.plan.md"]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "The task's number"
+        required: true
+      job:
+        description: "run (a box) or github (GitHub's machines, what's pending)"
+        required: false
+        default: run
+
+permissions:
+  contents: read
+  issues: write
+  actions: write # a run starts its github job, or a follow-up run
+  pull-requests: read
+  id-token: write # a run proves itself to the door with GitHub's own token (OIDC)
+
+# One run per task at a time, and one waiting (ADR 0040): a newer run takes the waiting one's
+# place. Every run reads all your unread words, and what a dispatch brings is kept on the task (the
+# next run, or the next due run, does it), so nothing waits in a queue of runs.
+concurrency:
+  group: ${{ format('task-{0}', github.event.issue.number || inputs.issue || github.event_name) }}
+  cancel-in-progress: false
+
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+  SHIPIFY_OWNER: ${{ vars.SHIPIFY_OWNER }}
+  SHIPIFY_DOOR_SLUG: ${{ vars.SHIPIFY_DOOR_SLUG }}
+  SHIPIFY_DOOR_URL: ${{ vars.SHIPIFY_DOOR_URL }}
+  SHIPIFY_SEND: ${{ vars.SHIPIFY_SEND }}
+  SHIPIFY_PEOPLE: ${{ vars.SHIPIFY_PEOPLE }}
+  APPS_DOMAIN: ${{ vars.APPS_DOMAIN }}
+  # Your copy's settings, all of its variables (ADR 0047): its time zone, and what its stacks deploy
+  # with. The agent's own step never has them: it starts with an environment of its own.
+  SHIPIFY_VARS: ${{ toJSON(vars) }}
+  # The agent a task runs when nothing chooses one (the repo variable SHIPIFY_AGENT): every step
+  # reads it, so plan's `use` lines and think pick the same agent.
+  SHIPIFY_EXECUTOR: ${{ vars.SHIPIFY_AGENT }}
+  # Your other accounts (ADR 0045), and the Apps' names: their commits, and the fixes said.
+  SHIPIFY_ACCOUNTS: ${{ vars.SHIPIFY_ACCOUNTS }}
+  SHIPIFY_BOT_SLUG: ${{ vars.SHIPIFY_BOT_SLUG }}
+  SHIPIFY_REPOS_SLUG: ${{ vars.SHIPIFY_REPOS_SLUG }}
+
+jobs:
+  github:
+    # What needs keys a box must never hold, with no agent: only what the task's status has pending.
+    if: >-
+      vars.SHIPIFY_OWNER != '' && vars.SHIPIFY_BOT_CLIENT_ID != ''
+      && github.event_name == 'workflow_dispatch' && inputs.job == 'github'
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: The bot's token (one hour; the app's full access, and no agent here)
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          check-latest: true
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: The task (read once; its account)
+        id: task
+        env:
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue }}
+        run: pnpm ship run task "$ISSUE"
+      # On another of your accounts (ADR 0045), the job only closes the task's PRs there. Not
+      # minted (the App gone from there): the job says which PRs to close by hand.
+      - name: A token for the task's other account (the repos App; its PRs' repos only; one hour)
+        id: account
+        if: steps.task.outputs.account != '' && steps.task.outputs.pr_repos != '' && vars.SHIPIFY_REPOS_CLIENT_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_REPOS_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_REPOS_KEY }}
+          owner: ${{ steps.task.outputs.account }}
+          repositories: ${{ steps.task.outputs.pr_repos }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-metadata: read
+      - name: A new project's keys, from this repo's secrets (on GitHub's runner, never printed)
+        env:
+          ALL: ${{ toJSON(secrets) }}
+        run: |
+          umask 077
+          # shellcheck disable=SC2016 # the ${…} below is JavaScript, not shell
+          # Never a tool's keys (tools.json), an App's (the bot's, the repos App's), or an agent's
+          # login or gateway key (executors.json): a new project gets its deploy keys only.
+          node -e '
+            const all = JSON.parse(process.env.ALL);
+            const tools = Object.entries(require("./tools.json")).filter(([name]) => name !== "version").flatMap(([, t]) => Object.values(t.keys ?? {}).flatMap((k) => [k.look, k.act])).filter(Boolean);
+            const ex = require("./executors.json");
+            const agents = [...Object.values(ex.gateways ?? {}).map((g) => g.key), ...Object.values(ex).map((e) => e && e.login && e.login.secret)].filter(Boolean);
+            const skip = new Set(["github_token", "SHIPIFY_BOT_KEY", "SHIPIFY_REPOS_KEY", ...agents, ...tools]);
+            const lines = Object.entries(all).filter(([k, v]) => !skip.has(k) && !String(v).includes("\n")).map(([k, v]) => `${k}=${v}`);
+            if (lines.length) require("fs").writeFileSync(process.argv[1], lines.join("\n") + "\n");
+          ' "$RUNNER_TEMP/credentials.env"
+          if [ -f "$RUNNER_TEMP/credentials.env" ]; then echo "SHIPIFY_CREDENTIALS=$RUNNER_TEMP/credentials.env" >> "$GITHUB_ENV"; fi
+      - name: Git as the bot (a release commits its version bump)
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          BOT: ${{ vars.SHIPIFY_BOT_SLUG }}
+        run: |
+          gh auth setup-git
+          id=$(gh api "users/${BOT}%5Bbot%5D" --jq .id)
+          {
+            echo "GIT_AUTHOR_NAME=${BOT}[bot]"
+            echo "GIT_AUTHOR_EMAIL=${id}+${BOT}[bot]@users.noreply.github.com"
+            echo "GIT_COMMITTER_NAME=${BOT}[bot]"
+            echo "GIT_COMMITTER_EMAIL=${id}+${BOT}[bot]@users.noreply.github.com"
+          } >> "$GITHUB_ENV"
+      - name: Run what's pending
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          SHIPIFY_ACCOUNT_TOKEN: ${{ steps.account.outputs.token }}
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue }}
+        run: pnpm ship run github "$ISSUE"
+
+  run:
+    # Your events only (or the door App's for you); never a PR, the status issue or a notebook page;
+    # a dispatch only from main; never a setting (a `use` alone from a chat, or a close or reopen the
+    # door did, which the next run reads); never the door's own close or reopen: a close follows the
+    # `close` it just wrote (that comment's run does its work), and a reopen needs no run.
+    if: >-
+      vars.SHIPIFY_OWNER != ''
+      && !github.event.issue.pull_request
+      && !contains(github.event.comment.body, '"setting":true')
+      && !((github.event.action == 'closed' || github.event.action == 'reopened')
+           && vars.SHIPIFY_DOOR_SLUG != ''
+           && github.event.sender.login == format('{0}[bot]', vars.SHIPIFY_DOOR_SLUG))
+      && !contains(github.event.issue.labels.*.name, 'shipify-status')
+      && !contains(github.event.issue.labels.*.name, 'notebook')
+      && (github.event_name != 'workflow_dispatch' || (inputs.job != 'github' && github.ref == 'refs/heads/main'))
+      && (github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+          || github.event.sender.login == vars.SHIPIFY_OWNER
+          || (vars.SHIPIFY_DOOR_SLUG != '' && github.event.sender.login == format('{0}[bot]', vars.SHIPIFY_DOOR_SLUG)))
+    runs-on: [self-hosted, shipify-box, sandbox]
+    # The sum of its clocks (tests/workflows.test.ts): think's steps (THINK_MINUTES, 192), plan's
+    # follow of a merge's deploy (30), and about 15 for setup, decide and apply. A run never
+    # outgrows its own job, so whatever stops its agent, its work is kept (ADR 0035).
+    timeout-minutes: 240
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      EVENT: ${{ github.event_name }}
+      ACTION: ${{ github.event.action }}
+      JOB: ${{ inputs.job }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Main as it is: nothing a run does reads Shipify's history (ADR 0048: upgrades replace).
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: pnpm
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          corepack enable --install-directory "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          corepack install -g "$(node -p 'require("./package.json").packageManager')"
+      # A box needs only Shipify's own packages to run (no dev tools, no wrangler).
+      - run: pnpm install --frozen-lockfile --prod
+
+      - name: Merged plans start their tasks' repos and builds
+        if: github.event_name == 'push'
+        env:
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: pnpm ship task plans "$BEFORE" "$AFTER"
+
+      # The run's one read of its task (ADR 0045): saved for plan, with the account it works on, so
+      # plan's tokens are minted for that account. Read with the run's own token, as plan read it.
+      - name: The task (read once, for plan; its account)
+        id: task
+        if: github.event_name != 'push'
+        env:
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
+        run: pnpm ship run task "$ISSUE"
+
+      - name: A read-only token for plan (every project; one hour)
+        id: read
+        if: github.event_name != 'push' && vars.SHIPIFY_BOT_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+          permission-metadata: read
+          permission-pull-requests: read
+          permission-issues: read
+          permission-statuses: read
+          permission-actions: read
+
+      # Not installed there, or GitHub refused it: plan says so, with the fix, and nothing more runs.
+      - name: A read-only token for plan on the task's other account (the repos App; one hour)
+        id: read_account
+        if: steps.task.outputs.account != '' && vars.SHIPIFY_REPOS_CLIENT_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_REPOS_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_REPOS_KEY }}
+          owner: ${{ steps.task.outputs.account }}
+          permission-contents: read
+          permission-metadata: read
+          permission-pull-requests: read
+          permission-issues: read
+          permission-statuses: read
+          permission-actions: read
+
+      - name: Plan (decide from the task's read; no agent)
+        id: plan
+        if: github.event_name != 'push'
+        env:
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
+          SHIPIFY_READ_TOKEN: ${{ steps.read.outputs.token }}
+          SHIPIFY_ACCOUNT_TOKEN: ${{ steps.read_account.outputs.token }}
+          GH_TOKEN: ${{ steps.read.outputs.token }}
+        run: pnpm ship run plan "$ISSUE"
+
+      # A work run's agent reads its project and Shipify (plan's `repos`); a talk run's, every project
+      # (empty `repos`). Minted now, so its hour starts with the agent. A run on another of your
+      # accounts gets Shipify's alone here, for its task's record; its repo's key is the next one's.
+      - name: The agent's read-only token (a work run's project and Shipify; one hour)
+        id: agent_token
+        if: steps.plan.outputs.do == 'think' && vars.SHIPIFY_BOT_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.plan.outputs.repos }}
+          permission-contents: read
+          permission-metadata: read
+          permission-pull-requests: read
+          permission-issues: read
+          permission-statuses: read
+          permission-actions: read
+          # A PR's checks, as `gh pr checks` reads them, when you ask why they failed.
+          permission-checks: read
+
+      - name: The agent's read-only token on its other account (its repos there; one hour)
+        id: agent_account_token
+        if: steps.plan.outputs.do == 'think' && steps.plan.outputs.account_repos != '' && vars.SHIPIFY_REPOS_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_REPOS_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_REPOS_KEY }}
+          owner: ${{ steps.plan.outputs.account }}
+          repositories: ${{ steps.plan.outputs.account_repos }}
+          permission-contents: read
+          permission-metadata: read
+          permission-pull-requests: read
+          permission-issues: read
+          permission-statuses: read
+          permission-actions: read
+          # The repo's CI, as `gh pr checks` reads it, for `fix the checks`.
+          permission-checks: read
+
+      - name: The agent's CLI (pinned in executors.json, installed once in the box's shared tools)
+        if: steps.plan.outputs.agent != ''
+        run: pnpm ship run agent "$ISSUE"
+
+      - name: A read-only copy of Shipify for the agent (one per commit, in the box's shared tools)
+        if: steps.plan.outputs.do == 'think'
+        run: |
+          # In the runner's own tool cache (box setup 5: /opt/shipify/tool), which the agents can read.
+          base="$RUNNER_TOOL_CACHE/shipify-app"
+          dir="$base/$GITHUB_SHA"
+          if [ ! -f "$dir/.ready" ]; then
+            umask 022
+            rm -rf "$dir.part" && mkdir -p "$dir.part"
+            # A clone of this checkout (no credentials: the checkout keeps none), the agent's own.
+            git clone -q --no-hardlinks --no-checkout . "$dir.part"
+            git -C "$dir.part" checkout -q --detach "$GITHUB_SHA"
+            (cd "$dir.part" && pnpm install --prod --frozen-lockfile --ignore-scripts --silent)
+            mv "$dir.part" "$dir" 2>/dev/null || rm -rf "$dir.part"
+            touch "$dir/.ready"
+            # Keep the three newest copies, and any younger than the job's limit (240 minutes): a run
+            # in flight keeps its own however many merges land meanwhile.
+            find "$base" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn \
+              | awk -v now="$(date +%s)" 'NR > 3 && now - $1 > 14400 { print $2 }' | xargs -r rm -rf
+          fi
+          # Its CLI starts as `node <copy>/cli/ship.mjs` (think.ts).
+          echo "SHIPIFY_COPY=$dir" >> "$GITHUB_ENV"
+
+      - name: Think (the agent, as the slot's own user; read-only keys only)
+        id: think
+        if: steps.plan.outputs.do == 'think'
+        env:
+          # Read-only, even for the record: this step writes nothing on GitHub.
+          SHIPIFY_ISSUES_TOKEN: ${{ steps.agent_token.outputs.token }}
+          SHIPIFY_READ_TOKEN: ${{ steps.agent_token.outputs.token }}
+          GH_TOKEN: ${{ steps.agent_token.outputs.token }}
+          # The agent's login (its own, or its gateway's key: plan names the one secret), handed to
+          # the agent's own user by the sandbox, never on a command line.
+          SHIPIFY_AGENT_LOGIN: ${{ secrets[steps.plan.outputs.login] }}
+          SHIPIFY_AGENT_READ_TOKEN: ${{ steps.agent_token.outputs.token }}
+          # A run on another of your accounts (ADR 0045): its repo's key, the repos App's.
+          SHIPIFY_ACCOUNT_READ_TOKEN: ${{ steps.agent_account_token.outputs.token }}
+          # Each tool's read-only key (tools.json's look secrets); a write key never reaches this step.
+          SHIPIFY_NOTION_READ: ${{ secrets.SHIPIFY_NOTION_READ }}
+        run: pnpm ship run think "$ISSUE"
+
+      # Decide and apply read with a token of their own: a long think outlives plan's hour.
+      - name: A read-only token for decide and apply (every project; one hour)
+        id: apply_token
+        if: (steps.plan.outputs.do == 'box' || steps.plan.outputs.do == 'think') && vars.SHIPIFY_BOT_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+          permission-metadata: read
+          permission-pull-requests: read
+          permission-issues: read
+          permission-statuses: read
+          permission-actions: read
+
+      - name: Decide (the agent's proposals into writes; what to mint)
+        id: decide
+        if: steps.plan.outputs.do == 'box' || steps.plan.outputs.do == 'think'
+        env:
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
+          SHIPIFY_READ_TOKEN: ${{ steps.apply_token.outputs.token }}
+          GH_TOKEN: ${{ steps.apply_token.outputs.token }}
+        run: pnpm ship run decide "$ISSUE"
+
+      # Write tokens, minted only now that the agent has finished: one repo, exactly the one decide
+      # named, from the App on its account (ADR 0045), and shipify's contents for files the run made.
+      - name: A write token for the one repo this run changes
+        id: write
+        if: steps.decide.outputs.repo != '' && steps.decide.outputs.account == '' && vars.SHIPIFY_BOT_CLIENT_ID != ''
+        # Only to keep a question's commits (ADR 0041): without it, apply logs the push it couldn't
+        # make and still posts the question, as before such commits were kept.
+        continue-on-error: ${{ steps.decide.outputs.keep == 'quiet' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.decide.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-metadata: read
+          permission-workflows: ${{ steps.decide.outputs.workflows == 'write' && 'write' || '' }}
+      # The repos App never asks for workflows: GitHub refuses its push of a workflow file too.
+      - name: A write token for the one repo this run changes, on its other account (the repos App)
+        id: write_account
+        if: steps.decide.outputs.repo != '' && steps.decide.outputs.account != '' && vars.SHIPIFY_REPOS_CLIENT_ID != ''
+        continue-on-error: ${{ steps.decide.outputs.keep == 'quiet' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_REPOS_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_REPOS_KEY }}
+          owner: ${{ steps.decide.outputs.account }}
+          repositories: ${{ steps.decide.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-metadata: read
+      - name: A token for shipify's files branch
+        id: files
+        if: steps.decide.outputs.files == 'yes' && vars.SHIPIFY_BOT_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-metadata: read
+
+      - name: Apply (every write, each safe to repeat; the status last; the door told)
+        if: steps.decide.outcome == 'success'
+        env:
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
+          SHIPIFY_READ_TOKEN: ${{ steps.apply_token.outputs.token }}
+          GH_TOKEN: ${{ steps.apply_token.outputs.token }}
+          SHIPIFY_WRITE_TOKEN: ${{ steps.write.outputs.token || steps.write_account.outputs.token }}
+          SHIPIFY_FILES_TOKEN: ${{ steps.files.outputs.token }}
+          # A tool's write key only for the calls decide found approved (your yes, or pre-approved).
+          SHIPIFY_NOTION_WRITE: ${{ steps.decide.outputs.act == 'notion' && secrets.SHIPIFY_NOTION_WRITE || '' }}
+        run: pnpm ship run apply "$ISSUE"
+
+      - name: If the run broke before it answered, say so on the task
+        if: (failure() || cancelled()) && github.event_name != 'push'
+        env:
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
+        run: pnpm ship run failed "$ISSUE" || true
