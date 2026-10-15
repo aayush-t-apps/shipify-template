@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "notion": {
+    "description": "Your Notion pages and databases: the ones connected to the Shipify integrations",
+    "run": ["node_modules/.bin/tsx", "tools/notion/server.ts"],
+    "keys": {
+      "NOTION_TOKEN": {
+        "look": "SHIPIFY_NOTION_READ",
+        "act": "SHIPIFY_NOTION_WRITE"
+      }
+    },
+    "look": ["search", "read_page", "read_database", "query_database"],
+    "act": ["update_page", "create_page"],
+    "args": {
+      "update_page": {
+        "target": "page",
+        "warn": { "content": "replaces the page's whole body" }
+      },
+      "create_page": { "target": "parent" }
+    },
+    "check": ["node_modules/.bin/tsx", "tools/notion/server.ts", "--check"],
+    "setup": {
+      "needs": [
+        "Two Notion integrations (notion.so/profile/integrations → New integration): one that can only read content, and one that can read, update and insert. Then share the pages Shipify may use with both (… → Connections)."
+      ],
+      "keys": {
+        "SHIPIFY_NOTION_READ": {
+          "ask": "the read-only integration's secret"
+        },
+        "SHIPIFY_NOTION_WRITE": {
+          "ask": "the read-and-write integration's secret"
+        }
+      }
+    }
+  },
+  "telegram": {
+    "description": "Telegram: ask, remember, approve a list with a tap and get your links from your phone, through the edge (ADR 0031, ADR 0049)",
+    "in": {
+      "door": "telegram"
+    },
+    "check": ["node_modules/.bin/tsx", "tools/telegram/setup.ts", "--check"],
+    "setup": {
+      "needs": [
+        "The edge's door App, set up (pnpm ship door setup --yes), and Cloudflare's deploy token in your credentials file",
+        "A Telegram bot: in Telegram, open @BotFather, send /newbot, choose a name, and copy the token it gives you"
+      ],
+      "keys": {
+        "TELEGRAM_TOKEN": {
+          "ask": "the bot's token from @BotFather",
+          "to": "edge"
+        }
+      },
+      "steps": [
+        {
+          "say": "Check the token with Telegram",
+          "run": ["node_modules/.bin/tsx", "tools/telegram/setup.ts", "token"]
+        },
+        {
+          "say": "Give the edge Telegram's secret",
+          "run": ["node_modules/.bin/tsx", "tools/telegram/setup.ts", "edge"]
+        },
+        {
+          "say": "Point the bot at the edge, one update at a time: messages and taps",
+          "run": ["node_modules/.bin/tsx", "tools/telegram/setup.ts", "webhook"]
+        },
+        {
+          "say": "Set the bot's menu of four, its description and its photo",
+          "run": ["node_modules/.bin/tsx", "tools/telegram/setup.ts", "menu"]
+        },
+        {
+          "say": "Link you: open the link it shows, press Start, paste the id the bot sends",
+          "run": ["node_modules/.bin/tsx", "tools/telegram/setup.ts", "link"]
+        },
+        {
+          "say": "Send a test message to your phone",
+          "run": ["node_modules/.bin/tsx", "tools/telegram/setup.ts", "test"]
+        }
+      ],
+      "remove": ["node_modules/.bin/tsx", "tools/telegram/setup.ts", "--remove"]
+    }
+  },
+  "webchat": {
+    "description": "The web chat at shipify.<domain>/admin/chat: every task, threads, files, repeats, the notebook and the setup, from your phone or PC, through the door, with notifications when a reply comes (ADR 0036, ADR 0050)",
+    "in": {
+      "door": "web"
+    },
+    "check": ["node_modules/.bin/tsx", "tools/web/setup.ts", "--check"],
+    "setup": {
+      "needs": [
+        "The status page, set up first (pnpm ship door page --yes), and Cloudflare's deploy token in your credentials file"
+      ],
+      "steps": [
+        {
+          "say": "Check the status page is set up",
+          "run": ["node_modules/.bin/tsx", "tools/web/setup.ts", "page"]
+        },
+        {
+          "say": "Check the sign-in covers the chat (Access path admin/*)",
+          "run": ["node_modules/.bin/tsx", "tools/web/setup.ts", "signin"]
+        },
+        {
+          "say": "Let your words in from the chat",
+          "run": ["node_modules/.bin/tsx", "tools/web/setup.ts", "you"]
+        },
+        {
+          "say": "Check file storage",
+          "run": ["node_modules/.bin/tsx", "tools/web/setup.ts", "files"]
+        },
+        {
+          "say": "Turn on notifications",
+          "run": ["node_modules/.bin/tsx", "tools/web/setup.ts", "notify"]
+        },
+        {
+          "say": "Open the chat",
+          "run": ["node_modules/.bin/tsx", "tools/web/setup.ts", "open"]
+        }
+      ],
+      "remove": ["node_modules/.bin/tsx", "tools/web/setup.ts", "--remove"]
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "name": "shipify",
+  "version": "0.1.6",
+  "private": true,
+  "type": "module",
+  "description": "Shipify: plan, build, ship and maintain projects (apps and packages) with one contract, from a PC agent to GitHub and the host.",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "ship": "tsx cli/cli.ts",
+    "build:cli": "node scripts/build-cli.mjs",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p edge",
+    "test": "vitest run",
+    "test:golden": "GOLDEN=1 vitest run tests/golden.test.ts",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "verify:fast": "pnpm format:check && pnpm lint && pnpm typecheck && vitest run --exclude 'tests/task*.test.ts' --exclude tests/cli.test.ts --exclude tests/door-cli.test.ts"
+  },
+  "dependencies": {
+    "esbuild": "0.28.2",
+    "tsx": "4.23.15",
+    "yaml": "2.9.1",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@cloudflare/workers-types": "5.20260928.1",
+    "@types/node": "26.6.3",
+    "typescript": "7.0.2",
+    "vitest": "5.0.2",
+    "wrangler": "4.142.0"
+  },
+  "shipify": {
+    "template": "aayush-t-apps/shipify-template"
+  }
+}

@@ -1,0 +1,30 @@
+# Operating an app: it runs on GitHub's runners, with no agent (a box hands it over). A release
+# opens its PR for you.
+name: Release or take down
+description: Release to production, take an app down or bring it back, or roll back.
+body:
+  - type: dropdown
+    id: project
+    attributes:
+      label: Project
+      options:
+        # Projects: `ship forms` keeps this list current (publishing a project updates it).
+        - (none yet)
+    validations:
+      required: true
+  - type: dropdown
+    id: action
+    attributes:
+      label: Action
+      options:
+        - Release to production
+        - Take it down
+        - Bring it back
+        - Roll back production
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Roll back only, like v1.0.3. Empty means the release before the current one.

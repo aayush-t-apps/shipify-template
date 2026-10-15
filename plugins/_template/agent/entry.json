@@ -1,0 +1,22 @@
+{
+  "example": {
+    "description": "Example Agent, headless: what it may do on a box, in a line",
+    "adapter": "example",
+    "auto": {
+      "model": "example-fast",
+      "effort": "medium"
+    },
+    "models": ["example-fast", "example-smart"],
+    "efforts": ["low", "medium", "high"],
+    "login": {
+      "secret": "EXAMPLE_AGENT_TOKEN",
+      "how": "example login --token"
+    },
+    "install": {
+      "version": "1.0.0",
+      "run": ["npm", "install", "-g", "--silent", "--prefix", "{prefix}", "example-agent@1.0.0"],
+      "bin": "bin/example"
+    },
+    "task": ["example", "run", "-"]
+  }
+}

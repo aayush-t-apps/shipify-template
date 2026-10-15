@@ -1,0 +1,186 @@
+{
+  "version": 1,
+  "commands": {
+    "description": "What every agent must never run on a box (ADR 0043): any other command runs, because the walls are outside the agent (its own Linux user, read-only keys, every process killed at the end, the box's own push). Each agent's adapter writes this as its own rules, for every part of a command and after git's own options too (git -C x push). The box pushes, so an agent never pushes or stashes. web: it may read the web with its own tools.",
+    "deny": ["git push", "git stash"],
+    "web": true
+  },
+  "gateways": {
+    "openrouter": {
+      "description": "OpenRouter: hundreds of models through one key, some free (models ending :free; 50 requests a day, 1,000 with $10 of credits bought once)",
+      "name": "OpenRouter",
+      "word": "openrouter",
+      "url": "https://openrouter.ai/api/v1",
+      "protocol": "openai-chat",
+      "key": "OPENROUTER_API_KEY",
+      "how": "openrouter.ai/settings/keys → Create key",
+      "check": "/key",
+      "search": "/models?supported_parameters=tools&limit=20&q={word}",
+      "auto": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "effort": "high"
+      },
+      "models": [
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "poolside/laguna-s-2.1:free",
+        "z-ai/glm-5.3-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "z-ai/glm-5.3",
+        "moonshotai/kimi-k2.7-code",
+        "moonshotai/kimi-k2.6"
+      ],
+      "list": {
+        "name": "name",
+        "price": ["pricing.prompt", "pricing.completion"],
+        "context": "context_length",
+        "output": "top_provider.max_completion_tokens",
+        "can": {
+          "tools": ["supported_parameters", "tools"],
+          "reasoning": ["supported_parameters", "reasoning"],
+          "images": ["architecture.input_modalities", "image"]
+        },
+        "efforts": "reasoning.supported_efforts",
+        "off": "reasoning.mandatory"
+      }
+    },
+    "vercel-ai-gateway": {
+      "description": "Vercel AI Gateway: hundreds of models through one key, paid from your Vercel credits",
+      "name": "Vercel",
+      "word": "vercel",
+      "url": "https://ai-gateway.vercel.sh/v1",
+      "protocol": "openai-chat",
+      "key": "AI_GATEWAY_API_KEY",
+      "how": "vercel.com → AI Gateway → API Keys → Create key",
+      "check": "/credits",
+      "auto": {
+        "model": "zai/glm-5.3-flash",
+        "effort": "high"
+      },
+      "models": [
+        "zai/glm-5.3-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "zai/glm-5.3",
+        "moonshotai/kimi-k2.7-code",
+        "moonshotai/kimi-k2.6"
+      ],
+      "list": {
+        "path": "/models",
+        "model": "/models/{id}",
+        "only": [["type", "language"], ["tags", "tool-use"], ["zdr", ["all", "some"]]],
+        "name": "name",
+        "price": ["pricing.input", "pricing.output"],
+        "context": "context_window",
+        "output": "max_tokens",
+        "can": {
+          "tools": ["tags", "tool-use"],
+          "reasoning": ["tags", "reasoning"],
+          "images": ["tags", "vision"]
+        },
+        "efforts": "reasoning_options.values"
+      }
+    }
+  },
+  "claude": {
+    "description": "Claude Code, headless (ADR 0031): it only thinks. On a box it runs as the slot's own Linux user, in its own clone, with read-only keys; it edits and commits there, reads the web and the tools' look calls, and writes result.json. It never pushes (apply does) and never stashes. Tasks send the prompt on stdin; its adapter adds the model, the effort, the commands every agent must never run, the look tools and its output format. models, efforts and modelPattern say what a `use` line may pick; auto is the default.",
+    "adapter": "claude",
+    "default": true,
+    "login": {
+      "secret": "CLAUDE_CODE_OAUTH_TOKEN",
+      "how": "claude setup-token"
+    },
+    "auto": {
+      "model": "sonnet",
+      "effort": "medium"
+    },
+    "models": ["haiku", "sonnet", "opus", "fable"],
+    "about": {
+      "haiku": "Quick, simple answers",
+      "sonnet": "Most work: changes, questions, daily jobs",
+      "opus": "Hard changes and design",
+      "fable": "The most capable; the heaviest on your plan"
+    },
+    "modelPattern": "^claude-[a-z0-9.-]+(\\[1m\\])?$",
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "command": [
+      "claude",
+      "-p",
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Bash(make:*)",
+      "Bash(pnpm:*)",
+      "{promptText}"
+    ],
+    "task": ["claude", "-p", "--permission-mode", "acceptEdits"],
+    "install": {
+      "version": "2.1.284",
+      "dir": "claude-code",
+      "bin": "bin/claude",
+      "run": [
+        "npm",
+        "install",
+        "-g",
+        "--silent",
+        "--no-audit",
+        "--no-fund",
+        "--prefix",
+        "{prefix}",
+        "@anthropic-ai/claude-code@2.1.284"
+      ]
+    },
+    "modelEfforts": {
+      "haiku": []
+    }
+  },
+  "pi": {
+    "description": "pi, headless (ADR 0038): a small agent core that does the work its own way, held to the same rules as every agent by Shipify's gate. Its models come through a gateway (executors.json's `gateways`: its first is `pi`, each other one `pi-<its word>`), by their ids there, the few the gateway lists first, or any other it has (/models <word> and the web chat's chip find them). Its key is the gateway's.",
+    "adapter": "pi",
+    "gateways": ["openrouter", "vercel-ai-gateway"],
+    "modelPattern": "^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*(:[a-z0-9]+)?$",
+    "efforts": ["off", "low", "medium", "high", "max"],
+    "task": ["pi"],
+    "install": {
+      "version": "1.0.2",
+      "bin": "bin/pi",
+      "run": [
+        "npm",
+        "install",
+        "-g",
+        "--silent",
+        "--no-audit",
+        "--no-fund",
+        "--ignore-scripts",
+        "--before=2026-10-05",
+        "--prefix",
+        "{prefix}",
+        "@earendil-works/pi-coding-agent@1.0.2"
+      ]
+    }
+  },
+  "opencode": {
+    "description": "OpenCode, headless (ADR 0038): an open agent with its own tools (files, commands, the web, to-dos, helpers), held to the same rules as every agent by Shipify's gate, which it loads as a plugin. Its models come through a gateway (its first is `opencode`, each other one `opencode-<its word>`), by their ids there, as pi's. Its key is the gateway's.",
+    "name": "OpenCode",
+    "adapter": "opencode",
+    "gateways": ["openrouter", "vercel-ai-gateway"],
+    "modelPattern": "^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*(:[a-z0-9]+)?$",
+    "efforts": ["off", "low", "medium", "high", "max"],
+    "task": ["opencode", "run"],
+    "install": {
+      "version": "1.18.34",
+      "bin": "lib/node_modules/opencode-ai/node_modules/opencode-linux-{arch}/bin/opencode",
+      "run": [
+        "npm",
+        "install",
+        "-g",
+        "--silent",
+        "--no-audit",
+        "--no-fund",
+        "--ignore-scripts",
+        "--before=2026-10-01",
+        "--prefix",
+        "{prefix}",
+        "opencode-ai@1.18.34"
+      ]
+    }
+  }
+}

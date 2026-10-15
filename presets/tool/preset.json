@@ -1,0 +1,8 @@
+{
+  "id": "tool",
+  "version": "1.0.0",
+  "description": "Single-purpose tool: input on one side, live result on the other. Stacks on phones.",
+  "stacks": [
+    "ts-worker"
+  ]
+}

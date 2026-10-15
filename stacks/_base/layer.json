@@ -1,0 +1,3 @@
+{
+  "owned": [".github/workflows/ship.yml", ".githooks/**", "CLAUDE.md"]
+}

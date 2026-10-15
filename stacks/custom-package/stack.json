@@ -1,0 +1,10 @@
+{
+  "id": "custom-package",
+  "version": "1.0.1",
+  "description": "Any language: the contract only, released as code. The project implements the make targets.",
+  "kind": "package",
+  "layers": [
+    "_base"
+  ],
+  "contractOnly": true
+}

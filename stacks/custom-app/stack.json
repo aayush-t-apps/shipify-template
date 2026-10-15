@@ -1,0 +1,15 @@
+{
+  "id": "custom-app",
+  "version": "1.0.1",
+  "description": "Any language and host: the contract only. The project implements the make targets, including deploy.",
+  "kind": "app",
+  "layers": [
+    "_base"
+  ],
+  "contractOnly": true,
+  "plan": {
+    "require": [
+      "## Hosting"
+    ]
+  }
+}

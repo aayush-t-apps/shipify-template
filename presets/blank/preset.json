@@ -1,0 +1,8 @@
+{
+  "id": "blank",
+  "version": "1.0.0",
+  "description": "App shell with one page. Start here when nothing else fits.",
+  "stacks": [
+    "ts-worker"
+  ]
+}

@@ -1,0 +1,65 @@
+/*
+ * Design tokens. Components use these variables only, never raw colors.
+ * Change an app's look here (or in DESIGN.md's palette) instead of inside components.
+ */
+:root {
+  --color-bg: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-sunken: #eceff3;
+  --color-text: #17202a;
+  --color-muted: #5a6776;
+  --color-border: #d9dfe6;
+  --color-accent: #2f5bd0;
+  --color-accent-text: #ffffff;
+  --color-ok: #1d7a52;
+  --color-warn: #946010;
+  --color-danger: #b53a26;
+  --color-focus: #2f5bd0;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.75rem;
+
+  /* density: change --space to 3px for compact, 5px for roomy */
+  --space: 4px;
+  --radius: 6px;
+  --content-width: 72rem;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: #0f151c;
+    --color-surface: #161f29;
+    --color-sunken: #1c2733;
+    --color-text: #e3eaf1;
+    --color-muted: #97a6b6;
+    --color-border: #2a3644;
+    --color-accent: #86a6ff;
+    --color-accent-text: #0f151c;
+    --color-ok: #5fcb97;
+    --color-warn: #e2b064;
+    --color-danger: #f08c78;
+    --color-focus: #86a6ff;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #0f151c;
+  --color-surface: #161f29;
+  --color-sunken: #1c2733;
+  --color-text: #e3eaf1;
+  --color-muted: #97a6b6;
+  --color-border: #2a3644;
+  --color-accent: #86a6ff;
+  --color-accent-text: #0f151c;
+  --color-ok: #5fcb97;
+  --color-warn: #e2b064;
+  --color-danger: #f08c78;
+  --color-focus: #86a6ff;
+  color-scheme: dark;
+}

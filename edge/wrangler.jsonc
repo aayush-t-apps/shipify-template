@@ -1,0 +1,38 @@
+// The edge (ADR 0031): Shipify's door and watch, one Worker on Cloudflare's free plan. ci.yml's
+// `edge` job deploys it after its checks, at its free workers.dev address and, when you have a
+// domain, shipify.<APPS_DOMAIN> (a custom domain: --domain), with GIT_SHA and the plain values from shipify's
+// variables (--var). Its secrets (SHIPIFY_DOOR_APP_KEY, TELEGRAM_TOKEN, TELEGRAM_SECRET,
+// WEB_PUSH_KEY) are set from your PC with `wrangler secret put` by `ship door setup`, `ship add
+// telegram` and `ship add webchat`; a deploy never sends or deletes them.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "shipify",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  // Lets it reach your apps' /health at their own addresses, on this account too.
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  // Its free workers.dev address, so no domain is needed (ADR 0047); your own domain beside it when
+  // you have one. Every route checks its caller itself, and /admin wants Access's token there too.
+  // No previews: nothing here runs a PR's code.
+  "workers_dev": true,
+  "preview_urls": false,
+  // Its own log lines only (cli/contracts/log.ts): Cloudflare's per-request lines keep whole URLs.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  // The watch (src/watch.ts): one tick every 5 minutes.
+  "triggers": { "crons": ["*/5 * * * *"] },
+  // The web chat (ADR 0036): its page's files, served only after the Worker checks the status
+  // page's sign-in (run_worker_first), and its file store, which the deploy creates (no id here).
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "kv_namespaces": [{ "binding": "FILES" }],
+  "vars": { "GIT_SHA": "dev" }
+}

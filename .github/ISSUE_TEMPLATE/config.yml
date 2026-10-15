@@ -1,0 +1,13 @@
+# Two forms (ADR 0031): Repeat something, and Operate (release, take down, bring back, roll back).
+# Everything else is a blank issue, the GitHub app's way in too: its title says what it is, and
+# plain words work (docs/tasks.md, "Writing a task"). Written once in intents.json: a test holds
+# this list to it.
+#   ask: … / question: … / do: … / look at <repo> … / anything else   an answer, or the change it finds, shown first
+#   <project or repo>: …   a change to an app or one of your repos (its own way), or `shipify: …` to Shipify itself
+#   <account>/<repo>: …   a change to a repo on another of your accounts (ADR 0045), its own way
+#   new: …             a new project, as a plan first
+#   remember: …        a note for the notebook (`remember People: …` for another page)
+#   forget: …          that note taken off again
+#   repeat: …          a reminder, a job or a check, on a schedule
+#   <app>: release     release it to production (or use the Operate form)
+blank_issues_enabled: true

@@ -1,0 +1,54 @@
+// Cloudflare Worker config. Production is the top level; staging (if enabled) is env.staging.
+// Files in {{ASSETS_DIR}} are served for free; Worker code runs only for run_worker_first paths.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "{{SERVICE_NAME}}",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  // Previews are made only when a PR asks (its label "preview"): the pipeline turns them on for it.
+  // Deploys keep them off, and closing the PR turns them off again.
+  // #if STAGING
+  // They live on the staging Worker only, so PR code never touches production.
+  // #endif
+  // #if !STAGING
+  // No staging: PR previews are versions of this Worker, so an app that keeps data gets none.
+  // #endif
+  "preview_urls": false,
+  "assets": {
+    "directory": "{{ASSETS_DIR}}",
+    "binding": "ASSETS",
+    "not_found_handling": "{{NOT_FOUND_HANDLING}}",
+    "run_worker_first": ["/health", "/.well-known/shipify.json", "/api/*"]
+  },
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // #if OPTION_KV
+  // Storage (AGENTS.md, "Storage"): no ids here. Each deploy finds it by name, or makes it.
+  "kv_namespaces": [{ "binding": "KV" }],
+  // #endif
+  // #if OPTION_D1
+  "d1_databases": [{ "binding": "DB", "database_name": "{{SERVICE_NAME}}-db" }],
+  // #endif
+  // #if STAGING
+  "vars": { "APP_ID": "{{APP_ID}}", "APP_ENV": "production", "GIT_SHA": "dev" },
+  "env": {
+    "staging": {
+      "name": "{{SERVICE_NAME_STAGING}}",
+      "workers_dev": true,
+      "preview_urls": false,
+      // #endif
+      // #if OPTION_KV_STAGING
+      "kv_namespaces": [{ "binding": "KV" }],
+      // #endif
+      // #if OPTION_D1_STAGING
+      "d1_databases": [{ "binding": "DB", "database_name": "{{SERVICE_NAME_STAGING}}-db" }],
+      // #endif
+      // #if STAGING
+      "vars": { "APP_ID": "{{APP_ID}}", "APP_ENV": "staging", "GIT_SHA": "dev" }
+    }
+  }
+  // #endif
+  // #if !STAGING
+  "vars": { "APP_ID": "{{APP_ID}}", "APP_ENV": "production", "GIT_SHA": "dev" }
+  // #endif
+}

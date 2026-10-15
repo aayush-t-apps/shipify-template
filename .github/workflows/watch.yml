@@ -1,0 +1,139 @@
+# The watch's runs (ADR 0019, ADR 0031, docs/watch.md). The watch, the edge's check every 5 minutes,
+# rings them by adding a label to the status task as the door App: it has no Actions write. A
+# clean-up is started by the due run. You can press any of them by hand (Actions → watch).
+#   due        what's due: each due task's own run started (a repeat, a quiet close, a deploy),
+#              recipes and their tasks kept in step, each box's weekly clean-up,
+#              this box's health, "Coming up", and the apps catalogue the edge reads. A merge that
+#              touches recipes/ starts one too (ADR 0032)
+#   cleanup    one box's weekly clean-up, on that box: closed tasks' folders and agents' runs,
+#              doctor, cache prune, Node 22 fixes
+#   alert      what the watch saw change, on the status task, as a reply the door copies to your
+#              channels: on a box, or on GitHub's machines when no box is online
+# Labels: watch:due, watch:alert, watch:alert-github. Each run takes its own label off.
+name: watch
+run-name: "${{ (github.event_name == 'push' || github.event.label.name == 'watch:due' || inputs.run == 'due') && 'due' || (github.event.label.name == 'watch:alert' || github.event.label.name == 'watch:alert-github' || inputs.run == 'alert') && 'alert' || format('cleanup {0}', inputs.box) }}"
+
+on:
+  issues:
+    types: [labeled]
+  # A recipe merged, changed or removed: its task is kept in step at once.
+  push:
+    branches: [main]
+    paths: ["recipes/**"]
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "due · cleanup · alert"
+        type: choice
+        options: [due, cleanup, alert]
+        default: due
+      box:
+        description: "cleanup: which box (its name: the label box-<name> its slots share)"
+        required: false
+        default: ""
+      findings:
+        description: 'alert: what changed, as JSON (from the door App''s comment when empty)'
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write # the status task, and its labels
+  actions: write # a due run starts due tasks' runs (task.yml) and each box's clean-up
+  pull-requests: read
+  id-token: write # an alert proves itself to the door (OIDC)
+
+concurrency:
+  group: watch-${{ github.event.label.name || inputs.run || 'watch:due' }}-${{ inputs.box }}
+  cancel-in-progress: false
+
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+  SHIPIFY_OWNER: ${{ vars.SHIPIFY_OWNER }}
+  SHIPIFY_DOOR_SLUG: ${{ vars.SHIPIFY_DOOR_SLUG }}
+  SHIPIFY_DOOR_URL: ${{ vars.SHIPIFY_DOOR_URL }}
+  SHIPIFY_SEND: ${{ vars.SHIPIFY_SEND }}
+  SHIPIFY_PEOPLE: ${{ vars.SHIPIFY_PEOPLE }}
+  # Your copy's settings, all of its variables (ADR 0047): repeats' times, "Coming up".
+  SHIPIFY_VARS: ${{ toJSON(vars) }}
+
+jobs:
+  watch:
+    # A label only when it's a doorbell on the status task, rung by the door App (or you); a
+    # dispatch only from main; a push only your merge to main that touched recipes/.
+    if: >-
+      vars.SHIPIFY_OWNER != ''
+      && ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+           && (inputs.run != 'cleanup' || inputs.box != ''))
+          || (github.event_name == 'push' && github.ref == 'refs/heads/main'
+              && github.event.sender.login == vars.SHIPIFY_OWNER)
+          || (github.event_name == 'issues' && startsWith(github.event.label.name, 'watch:')
+              && contains(github.event.issue.labels.*.name, 'shipify-status')
+              && (github.event.sender.login == vars.SHIPIFY_OWNER
+                  || github.event.sender.login == format('{0}[bot]', vars.SHIPIFY_DOOR_SLUG))))
+    runs-on: ${{ inputs.run == 'cleanup' && fromJSON(format('["self-hosted","box-{0}"]', inputs.box)) || github.event.label.name == 'watch:alert-github' && 'ubuntu-latest' || fromJSON('["self-hosted","shipify-box"]') }}
+    timeout-minutes: 20
+    env:
+      RUN: ${{ (github.event_name == 'push' || github.event.label.name == 'watch:due' || inputs.run == 'due') && 'due' || (github.event.label.name == 'watch:alert' || github.event.label.name == 'watch:alert-github' || inputs.run == 'alert') && 'alert' || 'cleanup' }}
+      LABEL: ${{ github.event.label.name }}
+      STATUS: ${{ github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          check-latest: ${{ inputs.run == 'cleanup' }}
+      - name: pnpm
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          corepack enable --install-directory "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # Said when it fails: the watch rings a label left on with no run again (docs/watch.md).
+      - name: Its doorbell off
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api -X DELETE "repos/$REPO/issues/$STATUS/labels/$(printf %s "$LABEL" | jq -sRr @uri)" >/dev/null \
+            || echo "::warning::$LABEL is still on the status task: the watch rings it again"
+      # A due run reads projects' commits and checks (deploys, previews): the bot's read-only token.
+      - name: The bot's read-only token (one hour)
+        id: bot
+        if: env.RUN == 'due' && vars.SHIPIFY_BOT_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-statuses: read
+          permission-actions: read
+          permission-contents: read
+          permission-metadata: read
+      - name: Run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHIPIFY_READ_TOKEN: ${{ steps.bot.outputs.token }}
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
+          BOX: ${{ inputs.box }}
+          FINDINGS: ${{ inputs.findings }}
+        run: |
+          pnpm install --frozen-lockfile --prod --silent
+          case "$RUN" in
+            due) pnpm ship watch due ;;
+            cleanup)
+              pnpm ship watch cleanup "$BOX"
+              # The store is the machine's, shared by its slots (ADR 0020): prune it only while no
+              # other slot runs a job.
+              # The agents' installers' download cache too (the installs themselves are kept).
+              if [ "$(pgrep -u "$(id -u)" -fc 'bin/Runner.Worker' || true)" -le 1 ]; then
+                pnpm store prune
+                npm cache clean --force
+              else
+                echo "pnpm store prune: skipped, another slot is busy (next week's clean-up tries again)"
+              fi ;;
+            alert)
+              if [ -n "$FINDINGS" ]; then pnpm ship watch alert "$FINDINGS"; else pnpm ship watch alert; fi ;;
+          esac

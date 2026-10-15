@@ -1,0 +1,10 @@
+# No routine version-update PRs: a project's dependencies move with its stack (`ship upgrade`), and
+# GitHub's security alerts (on for every repo) say when one is vulnerable. Dependabot still opens a
+# PR for a vulnerability if its security updates are turned on in the repo's settings.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: quarterly
+    open-pull-requests-limit: 0

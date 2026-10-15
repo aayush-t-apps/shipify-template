@@ -1,0 +1,5 @@
+# Boxes are self-hosted runners labelled shipify-box, and each has its own label, box-<name>, so a
+# run can go to that box: its weekly clean-up (ADR 0019). A box whose sandbox checks out is also
+# labelled sandbox: its agents run as their own users, and only it takes task runs (ADR 0031).
+self-hosted-runner:
+  labels: [shipify-box, sandbox, "box-*"]

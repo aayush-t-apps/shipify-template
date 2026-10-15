@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<base href="/admin/chat/">
+<title>Shipify</title>
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121a24" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.json" crossorigin="use-credentials">
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="app.css">
+<link rel="modulepreload" href="compose.js">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div id="load"></div>
+<div id="bar" role="status" aria-live="polite"></div>
+<div id="app">
+<aside id="side">
+<header class="top"><h1><img class="logo" src="icon.svg" alt="">Shipify</h1><a id="new" class="primary new" href="#/new" title="New chat">New chat</a></header>
+<div class="search"><input id="q" type="search" aria-label="Search tasks" placeholder="Search, or #12"></div>
+<div id="list"></div>
+</aside>
+<main id="main"></main>
+<nav id="pages" class="pages" aria-label="Pages"></nav>
+</div>
+<dialog id="view"></dialog>
+</body>
+</html>

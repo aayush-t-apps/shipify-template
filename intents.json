@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "intents": {
+    "question": {
+      "says": "Anything you want to know or have done. `look at <repo>` reads any repo first.",
+      "words": ["ask: …", "question: …", "do: …", "look at <repo> …", "anything else"],
+      "chat": "ask",
+      "starts": "task"
+    },
+    "change": {
+      "says": "A fix or feature in an app, Shipify, or a repo on any of your accounts. Merging its PR ships it.",
+      "words": ["<project or repo>: …", "<account>/<repo>: …"],
+      "chat": "change",
+      "starts": "task"
+    },
+    "new": {
+      "says": "An idea for a new app, site or package. You get a plan to approve.",
+      "words": ["new: …"],
+      "chat": "new",
+      "starts": "task"
+    },
+    "remember": {
+      "says": "A note Shipify keeps in mind for every task, or forgets. Saved at once, with no AI.",
+      "words": ["remember: …", "remember <topic>: …", "forget: …"],
+      "chat": "remember",
+      "starts": "remember"
+    },
+    "repeat": {
+      "says": "A reminder, a job, or a check, on a schedule. Say “stop repeating” to end it.",
+      "words": ["repeat: …"],
+      "chat": "repeat",
+      "form": "4-repeat",
+      "starts": "repeat"
+    },
+    "operate": {
+      "says": "Release to production, take an app down or bring it back, or roll back.",
+      "words": ["<app>: release"],
+      "form": "7-operate",
+      "starts": "operate"
+    }
+  },
+  "help": {
+    "short": "Ask, build and change your apps from here. Tap Yes to approve a list; merges stay on GitHub.",
+    "guide": [
+      "Send me anything (or /ask …): a question, an app idea, a change to an app. Each message starts a task, answered here.",
+      "To carry a task on, reply to any of its messages, or start with its number: #12 and your words. #12 alone brings it back.",
+      "/use picks your model: new tasks start with it. For one task only: #12 use opus, or #12 /use for buttons.",
+      "/tasks lists your tasks, /help shows everything, with examples. Tap Yes under a list to approve it; merges stay on GitHub."
+    ],
+    "examples": [
+      ["#12 what changed?", "carries task 12 on"],
+      ["#12 use opus high", "task 12 uses Opus at High from your next message; nothing runs"],
+      ["#12 /use", "task 12's model, as buttons"],
+      ["#12 use glm-5.3-flash", "with your words on the lines below: task 12 switches, then asks"],
+      ["use sonnet", "with your words below, sent fresh: a new task on Sonnet; your model stays"],
+      ["look at acme/tool what does it do?", "reads that repo, read-only, and answers"],
+      [
+        "notes-app: fix the typo",
+        "a change to another of your repos, its own way: a PR, nothing of Shipify's added"
+      ],
+      [
+        "acme/api: rate-limit /login",
+        "a change to a repo on another of your accounts (pnpm ship bot repos acme): a PR its own way, against its default branch"
+      ]
+    ]
+  }
+}

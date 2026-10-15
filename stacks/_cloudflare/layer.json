@@ -1,0 +1,20 @@
+{
+  "owned": [
+    "Makefile",
+    "scripts/shipify/cloudflare.mjs",
+    "playwright.config.ts",
+    "vitest.config.ts",
+    "tsconfig.worker.json",
+    "src/worker/index.ts",
+    "src/shared/**",
+    "tests/unit/platform.test.ts",
+    "tests/unit/logger.test.ts",
+    "tests/e2e/smoke.spec.ts",
+    "tests/e2e/quality.spec.ts",
+    "tests/unit/support/**"
+  ],
+  "options": {
+    "kv": "A KV namespace, binding KV: key-value data with quick reads. Free: 100,000 reads and 1,000 writes a day, 1 GB.",
+    "d1": "A D1 database, binding DB: SQL tables from migrations/, applied before each deploy. Free: 10 databases per account (production and staging count apart), 500 MB each, 100,000 rows written a day."
+  }
+}

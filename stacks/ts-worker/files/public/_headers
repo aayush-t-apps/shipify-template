@@ -1,0 +1,4 @@
+# Stack default (ADR 0023): search engines skip this app, as they do on workers.dev. Delete this
+# file to let them index it.
+/*
+  X-Robots-Tag: noindex

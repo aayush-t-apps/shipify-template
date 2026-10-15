@@ -1,0 +1,60 @@
+{
+  "id": "ts-static",
+  "version": "1.0.4",
+  "description": "Static site served as-is from site/ (no build step), with a tiny Worker for /health, on Cloudflare. Ideal for ported sites.",
+  "kind": "app",
+  "layers": [
+    "_base",
+    "_ts",
+    "_cloudflare"
+  ],
+  "vars": {
+    "ASSETS_DIR": "./site",
+    "NOT_FOUND_HANDLING": "single-page-application",
+    "JS_BUDGET_KB": "80"
+  },
+  "owned": [
+    "tsconfig.json"
+  ],
+  "requires": [
+    "node",
+    "pnpm"
+  ],
+  "deploy": {
+    "secrets": {
+      "CLOUDFLARE_API_TOKEN": "CF_DEPLOY_TOKEN"
+    },
+    "vars": [
+      "CLOUDFLARE_ACCOUNT_ID",
+      "CF_WORKERS_SUBDOMAIN"
+    ],
+    "optionalVars": [
+      "APPS_DOMAIN"
+    ],
+    "urls": {
+      "production": [
+        "https://{{SERVICE_NAME}}.{{APPS_DOMAIN}}",
+        "https://{{SERVICE_NAME}}.{{CF_WORKERS_SUBDOMAIN}}.workers.dev"
+      ],
+      "staging": [
+        "https://{{SERVICE_NAME_STAGING}}.{{APPS_DOMAIN}}",
+        "https://{{SERVICE_NAME_STAGING}}.{{CF_WORKERS_SUBDOMAIN}}.workers.dev"
+      ]
+    },
+    "health": "/health"
+  },
+  "import": {
+    "into": "site",
+    "skip": [
+      ".wrangler",
+      "node_modules"
+    ]
+  },
+  "doctor": [
+    {
+      "name": "browser libraries for local e2e tests",
+      "run": "ldconfig -p 2>/dev/null | grep -q libnss3.so && ldconfig -p | grep -q libnspr4.so && ldconfig -p | grep -q libasound.so.2",
+      "fix": "sudo npx -y playwright@1.64.0 install-deps chromium"
+    }
+  ]
+}

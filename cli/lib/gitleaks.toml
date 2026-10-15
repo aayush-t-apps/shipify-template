@@ -1,0 +1,11 @@
+# Shipify's secret scan (cli/lib/secret-scan.ts): gitleaks' own rules, plus GitHub's stateless
+# installation tokens (ghs_<app id>_<JWT>, rolled out from 2026-04-27, about 520 characters).
+# gitleaks' github-app-token rule (ghs_ and 36 letters or digits) misses that shape.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "github-token-stateless"
+description = "A GitHub token in its stateless shape: gh?_<app id>_<JWT>"
+regex = '''\bgh[pousr]_[0-9]{1,20}_[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'''
+keywords = ["ghs_", "ghu_", "ghp_", "gho_", "ghr_"]

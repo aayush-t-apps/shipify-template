@@ -1,0 +1,12 @@
+{
+  "owned": [
+    ".github/actions/**",
+    ".github/dependabot.yml",
+    ".nvmrc",
+    ".gitignore",
+    "biome.json",
+    "pnpm-workspace.yaml",
+    "Makefile",
+    "scripts/shipify/version.mjs"
+  ]
+}
