@@ -7,6 +7,21 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-15
+
+### Added
+
+- **A box in Docker** (ADR 0056): any machine that runs Docker becomes a box. Run
+  `docker compose run --rm box register` once (a code you approve on your phone), then
+  `docker compose up -d`. Each release publishes `ghcr.io/<owner>/shipify-box` for x64 and arm64,
+  built from `setup.sh`, so a container is the same box as a Pi, with the same sandbox checked
+  inside it. It's never privileged and never has the Docker socket. Updates come by
+  `docker compose pull`, and the registration stays in the volume.
+- **A shorter README** that reads in a few minutes: what Shipify is, how it works, what you can
+  ask, how to start, and the three ways to get a box.
+- **An MIT licence** (`LICENSE`): anyone may use, change and share Shipify, keeping the notice;
+  it comes as is, with no warranty, and its authors aren't liable for what others do with it.
+
 ## [0.1.6] - 2026-10-15
 
 ### Added

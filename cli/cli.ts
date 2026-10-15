@@ -116,6 +116,7 @@ const HELP = `ship: plan, build, ship and maintain Shipify projects (apps and pa
                                             (Ubuntu Server 24.04 LTS or newer; a new box has a slot per 2 GB)
                                             (--slots: tasks at once, 1-4)
                                             (--manage: Tailscale + Cockpit, to manage it from a browser)
+                                            (--container: in the box's Docker image, which docker run … register runs)
   box list | box remove <name> [--yes]      the boxes, online or not
   box status | start | stop | restart [<name>|--name ..] [--yes]   this machine's box (start, stop: sudo)
   box logs [<name>] [-f] | box peek [-f]    its log, and what the agent is doing now (-f, --follow: keep reading)
@@ -191,6 +192,7 @@ async function main(argv: string[]): Promise<Result> {
       preview: { type: "boolean", default: false },
       follow: { type: "boolean", short: "f", default: false },
       manage: { type: "boolean", default: false },
+      container: { type: "boolean", default: false },
       replace: { type: "boolean", default: false },
       slots: { type: "string" },
       code: { type: "string" },
@@ -310,6 +312,7 @@ async function main(argv: string[]): Promise<Result> {
           manage: values.manage,
           replace: values.replace,
           slots: values.slots,
+          container: values.container,
           yes: values.yes,
         });
       if (a1 === "list") return boxList();

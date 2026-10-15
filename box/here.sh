@@ -16,6 +16,8 @@
 #
 #   bash here.sh [--remove] [--token] [--copy <owner/repo>] [--name <name>] [--slots <1-4>]
 #   curl … | bash -s -- --remove      (options after `bash -s --` when piped)
+# In the box's Docker image (ADR 0056), `docker run -it … register` runs it with --container: as the
+# container's root, with the image's own gh and Node, and `box add --container`.
 #
 # The whole file is read before anything runs (main is called on its last line), so a download cut
 # short runs nothing. Every answer is read from the terminal, so it works when piped.
@@ -70,7 +72,7 @@ cleanup() {
 }
 
 usage() {
-  sed -n '2,21p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+  sed -n '2,23p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
   printf 'bash here.sh [--remove] [--token] [--copy <owner/repo>] [--name <name>] [--slots <1-4>]\n'
 }
 
@@ -96,9 +98,10 @@ preflight() {
     aarch64) ARCH=arm64 ;;
     *) die "this machine is $(uname -m): a box needs x64 or arm64 (64-bit)." ;;
   esac
-  { : </dev/tty; } 2>/dev/null || die "it needs a terminal: you approve it on your phone and answer its questions." \
-    "Run it in an SSH session or a cloud console, not a start-up script."
-  if [ "$(id -u)" -eq 0 ]; then
+  local where="Run it in an SSH session or a cloud console, not a start-up script."
+  [ "$CONTAINER" = 1 ] && where="Run it with a terminal: docker run -it … register (or docker compose run --rm box register)."
+  { : </dev/tty; } 2>/dev/null || die "it needs a terminal: you approve it on your phone and answer its questions." "$where"
+  if [ "$(id -u)" -eq 0 ] && [ "$CONTAINER" != 1 ]; then
     die "you're root: run it as a user who can sudo, as on every box." \
       "Log in as the machine's default user (often ubuntu), or make one:" \
       "adduser you && usermod -aG sudo you, then log in as them and run this again."
@@ -120,13 +123,20 @@ preflight() {
     die "it can't reach GitHub (api.github.com)." \
       "A box only connects out: check the machine's network, and HTTPS_PROXY if it uses a proxy."
   note "$pretty, $ARCH, $((kb / 1048576)) GB of memory, $((free / 1048576)) GB free: fine"
-  say "sudo, once (a box is set up with it)"
-  sudo -v || die "sudo refused: run it as a user who can sudo."
+  if [ "$(id -u)" -ne 0 ]; then
+    say "sudo, once (a box is set up with it)"
+    sudo -v || die "sudo refused: run it as a user who can sudo."
+  fi
 }
 
 # ---------------------------------------------------------------- tools, in the folder
 
 tools() {
+  if [ "$CONTAINER" = 1 ]; then
+    # The image has them (box/setup.sh), at its release's versions.
+    note "the image's gh $(gh --version | head -n 1 | cut -d' ' -f3), Node $(node --version)"
+    return
+  fi
   say "gh, Node 22 and pnpm, in a folder deleted at the end"
   mkdir -p "$WORK/bin" "$WORK/node"
   # gh: GitHub's release, its checksum checked.
@@ -216,10 +226,15 @@ copy() {
 ship() { (cd "$WORK/shipify" && pnpm --silent ship "$@"); }
 
 add() {
-  [ -n "$NAME" ] || NAME=$(ask "This box's name" "$(hostname -s)")
+  # A container's hostname is a random id: it asks with a plainer name.
+  local default
+  default=$(hostname -s)
+  [ "$CONTAINER" = 1 ] && default=docker
+  [ -n "$NAME" ] || NAME=$(ask "This box's name" "$default")
   [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die "\"$NAME\" isn't a box name: small letters, digits and -."
   local args=(box add --name "$NAME")
   [ -n "$SLOTS" ] && args+=(--slots "$SLOTS")
+  [ "$CONTAINER" = 1 ] && args+=(--container)
   say "The plan"
   ship "${args[@]}" || true
   case "$(ask "Make this machine the box $NAME? yes or no" no)" in
@@ -227,12 +242,20 @@ add() {
     *) die "nothing changed: you said no." ;;
   esac
   ship "${args[@]}" --yes </dev/tty || die "box add stopped (above): it names the fix. Running this again carries on."
+  if [ "$CONTAINER" = 1 ]; then
+    say "Registered: $NAME. Start it, and it runs after every reboot:"
+    note "docker compose up -d   (or: docker run -d --name shipify-box --restart unless-stopped -v shipify-box:/home/shipify <image>)"
+    return
+  fi
   say "Live: $NAME takes the next task. /ping in your chat shows it."
   note "To take it away: the same command with \`| bash -s -- --remove\` (or from your PC: pnpm ship box remove $NAME --yes)"
 }
 
 remove() {
-  [ -n "$NAME" ] || NAME=$(ask "The box to remove" "$(hostname -s)")
+  local default
+  default=$(hostname -s)
+  [ "$CONTAINER" = 1 ] && default=docker
+  [ -n "$NAME" ] || NAME=$(ask "The box to remove" "$default")
   case "$(ask "Remove the box $NAME (its slots on GitHub, its services here)? yes or no" no)" in
     y | yes) ;;
     *) die "nothing changed: you said no." ;;
@@ -242,11 +265,12 @@ remove() {
 }
 
 main() {
-  REMOVE=0 TOKEN=0 COPY="" NAME="" SLOTS="" ARCH="" LOGIN=""
+  REMOVE=0 TOKEN=0 CONTAINER=0 COPY="" NAME="" SLOTS="" ARCH="" LOGIN=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --remove) REMOVE=1 ;;
       --token) TOKEN=1 ;;
+      --container) CONTAINER=1 ;;
       --copy) COPY=${2:-} && shift ;;
       --name) NAME=${2:-} && shift ;;
       --slots)

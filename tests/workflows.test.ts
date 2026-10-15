@@ -440,6 +440,18 @@ describe("ci.yml's release (ADR 0047, ADR 0055)", () => {
     expect(run).toContain("sha256sum box/here.sh");
     expect(run).toContain("releases/latest/download/here.sh | bash");
   });
+  it("builds the box's image only after a release, only where the repo is public (ADR 0056)", () => {
+    const jobs = wf("ci.yml").jobs as Record<
+      string,
+      Job & { needs?: unknown; permissions?: unknown }
+    >;
+    expect(jobs.image?.if).toContain("needs.release.result == 'success'");
+    expect(jobs.image?.if).toContain("!github.event.repository.private");
+    expect(jobs.image?.permissions).toEqual({ contents: "read", packages: "write" });
+    expect(jobs["image-tags"]?.needs).toBe("image");
+    // No secret but the run's own token: the image holds no key.
+    expect(JSON.stringify(jobs.image)).not.toContain("secrets.");
+  });
   it("never runs on a pull request: a public template's runs are its owner's pushes alone", () => {
     const on = wf("ci.yml").on as Record<string, unknown>;
     expect(Object.keys(on).sort()).toEqual(["push", "workflow_dispatch"]);

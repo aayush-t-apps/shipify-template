@@ -74,6 +74,11 @@ template. Your copy's variable `SHIPIFY_TEMPLATE` then names it.
    - **Security:** secret scanning and push protection on.
 3. **A licence** of your choice: without one, people may read it but not reuse it.
 
+**The box's image** (ADR 0056): after each release on a public template, its CI builds
+`ghcr.io/<owner>/shipify-box` on GitHub's x64 and arm64 machines, and tags `:<version>` and
+`:latest`. A private copy's CI never builds it. The first time, check that the package is public:
+the template → Packages → `shipify-box` → Package settings → Visibility.
+
 Then anyone, you included, makes a box with one command from the release (box-setup.md), and a
 copy updates with no key (`SHIPIFY_TEMPLATE_TOKEN` is only for a private template).
 

@@ -53,6 +53,37 @@ bash here.sh
 login), and your copy private: a box never serves a public repo. `box add` and `ship doctor`
 refuse one. From a PC, `pnpm ship box add` below does the same.
 
+## With Docker
+
+Any machine that runs Docker: a Linux server, a NAS, a Raspberry Pi, a VPS, or a Mac or Windows PC
+with Docker Desktop. Each release publishes the box as an image, `ghcr.io/<owner>/shipify-box`,
+for x64 and arm64. It's built from `setup.sh`, so a container is the same box as a Pi.
+
+```sh
+# with compose.yml (from the template):
+docker compose run --rm box register   # once: approve the code on your phone, name it
+docker compose up -d                   # then: it runs, and starts again after every reboot
+
+# or with docker alone:
+docker run -it --rm -v shipify-box:/home/shipify ghcr.io/<owner>/shipify-box register
+docker run -d --name shipify-box --restart unless-stopped --stop-timeout 300 \
+  -v shipify-box:/home/shipify ghcr.io/<owner>/shipify-box
+```
+
+- **`register`** runs `here.sh` in the container, then your copy's own `box add --container`:
+  - it registers the slots and checks the sandbox;
+  - it fits the slots to the container's memory limit (`--memory`), or takes `--slots`;
+  - it keeps no login.
+- **The volume** keeps only the runners' registration. Everything else is the image's.
+- **A new release:** `docker compose pull && docker compose up -d`. The registration stays.
+- **To stop it:** `docker compose down`, or `docker stop -t 300 shipify-box`. Each runner gets 5
+  minutes to cancel its job, as on a box.
+- **To remove it:** `docker compose run --rm box remove`, then `docker volume rm` its volume.
+- **Never `--privileged`, never the Docker socket:** either would give a task the host.
+- **On Docker Desktop (Mac, Windows):** it works when Docker's own kernel allows the sandbox. If
+  it doesn't, `register` says so and the box takes no tasks.
+- **One volume, one container:** a second container on the same volume refuses to start.
+
 ## Which box
 
 | | This PC | A Raspberry Pi 4 | A VPS |

@@ -1,0 +1,6 @@
+# The box's image (box/Dockerfile) takes only these: nothing else of the repo goes in it.
+*
+!box/setup.sh
+!box/here.sh
+!box/container.sh
+!box/prep.tsv

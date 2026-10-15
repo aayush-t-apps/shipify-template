@@ -22,6 +22,11 @@
 # SHIPIFY_HERE=1 (`box add` with no target: the PC you run it from) SSH stays as it is. With
 # SHIPIFY_MANAGE=1 in the settings file (`box add --manage`): Tailscale, Cockpit reachable only
 # through it, and a firewall that lets in only Tailscale and SSH from this machine's own network.
+# In Docker (ADR 0056): SHIPIFY_IMAGE=1 builds the image (box/Dockerfile): the installs alone, with
+# no settings file, then stops. SHIPIFY_CONTAINER=1 (`box add --container`, at `register`) skips
+# the installs the image has, SSH, the OS's updates (a new image is the update) and the services
+# (box/container.sh runs the slots), and does the rest: the users, the sudo rule, the runners and
+# the sandbox check.
 set -euo pipefail
 
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
@@ -31,14 +36,19 @@ SETUP_VERSION=5
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
-ENV_FILE=${1:?the runner settings file}
+IMAGE=${SHIPIFY_IMAGE:-}
+ENV_FILE=${1:-}
 PREP=${2:-}
 UNIT_FILE=${3:-}
-set -a
-# shellcheck disable=SC1090
-. "$ENV_FILE"
-set +a
-rm -f "$ENV_FILE"
+if [ -z "$IMAGE" ]; then
+  [ -n "$ENV_FILE" ] || { echo "Usage: setup.sh <settings> [<prep>] [<unit>] (pnpm ship box add runs it)."; exit 1; }
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+  rm -f "$ENV_FILE"
+fi
+CONTAINER=${SHIPIFY_CONTAINER:-}
 command -v apt-get >/dev/null || { echo "This needs Debian or Ubuntu (apt)."; exit 1; }
 case "$(uname -m)" in
   x86_64) ARCH=x64 ;;
@@ -54,9 +64,12 @@ export DEBIAN_FRONTEND=noninteractive
 # While the daily updates hold apt's lock, wait for them (up to 5 minutes) instead of failing.
 apt_get() { apt-get -o DPkg::Lock::Timeout=300 "$@"; }
 
+if [ -z "$CONTAINER" ]; then
 say "System packages"
 apt_get update -q
 apt_get install -y -q git make curl ca-certificates tar xz-utils build-essential jq unattended-upgrades tmux sudo procps
+# The image's init: it runs the slots and passes docker stop on to them (box/container.sh).
+[ -z "$IMAGE" ] || apt_get install -y -q tini
 if ! command -v gh >/dev/null; then
   install -d -m 755 /etc/apt/keyrings
   curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
@@ -82,7 +95,9 @@ if [ "$(node --version 2>/dev/null || true)" != "$want" ]; then
 fi
 corepack enable --install-directory /usr/local/bin
 node --version
+fi
 
+if [ -z "$IMAGE$CONTAINER" ]; then
 say "Automatic security updates"
 cat > /etc/apt/apt.conf.d/20auto-upgrades <<'CONF'
 APT::Periodic::Update-Package-Lists "1";
@@ -113,7 +128,9 @@ else
   echo "  some didn't install now (see /var/log/shipify-box-updates.log); the daily run tries again"
 fi
 [ ! -f /var/run/reboot-required ] || echo "  they need a restart: it happens at 04:30 by itself, or run: sudo reboot"
+fi
 
+if [ -z "$CONTAINER" ]; then
 say "What the stacks need"
 if [ -n "$PREP" ] && [ -f "$PREP" ]; then
   while IFS=$'\t' read -r name check fix; do
@@ -129,6 +146,7 @@ if [ -n "$PREP" ] && [ -f "$PREP" ]; then
   done < "$PREP"
   rm -f "$PREP"
 fi
+fi
 
 # SSH by key only: no passwords, no root. Only when the account running this (`box add` connects
 # with a key) has one, so nobody is locked out, and checked before it's used; if the check fails,
@@ -137,7 +155,9 @@ say "SSH: keys only"
 SSHD_DROPIN=/etc/ssh/sshd_config.d/10-shipify.conf
 SSHD=$(command -v sshd || echo /usr/sbin/sshd)
 keys="/home/${SUDO_USER:-}/.ssh/authorized_keys"
-if [ "${SHIPIFY_HERE:-}" = 1 ]; then
+if [ -n "$IMAGE$CONTAINER" ]; then
+  echo "  skipped: a container has no SSH of its own"
+elif [ "${SHIPIFY_HERE:-}" = 1 ]; then
   echo "  skipped: this is the PC you set it up from, so its SSH stays as it is"
 elif [ -z "${SUDO_USER:-}" ] || [ ! -s "$keys" ]; then
   echo "  skipped: no SSH key for ${SUDO_USER:-this account} yet (ship box add sets one up first)"
@@ -253,6 +273,21 @@ fetch_runner() {
   TARBALL="$WORK/$file"
 }
 
+# The image (ADR 0056) stops here: the runner's libraries in, its program not (registering
+# downloads it, as on any box, so the image stays small). The rest is each box's own.
+if [ -n "$IMAGE" ]; then
+  say "The runner's libraries"
+  fetch_runner
+  mkdir "$WORK/runner"
+  tar -xzf "$TARBALL" -C "$WORK/runner"
+  "$WORK/runner/bin/installdependencies.sh" >"$WORK/runner-deps.log" 2>&1 || { tail -n 30 "$WORK/runner-deps.log"; exit 1; }
+  rm -rf "$TARBALL" "$WORK/runner"
+  apt-get clean
+  rm -rf /var/lib/apt/lists/* /root/.npm /root/.cache
+  say "The image is ready: register it with docker run … register (docs/box-setup.md)"
+  exit 0
+fi
+
 # register <folder> <name> <labels> <token>: unpack the runner there and register it, once.
 DEPS_DONE=""
 register() {
@@ -319,9 +354,11 @@ for home in "$RUNNER_HOME"/slot-*; do
   [ "$k" -gt "$RUNNER_SLOTS" ] || continue
   unit="shipify-box-$(slot_name "$k").service"
   say "The slot $(slot_name "$k") goes"
-  systemctl disable --now -q "$unit" 2>/dev/null || true
-  rm -f "/etc/systemd/system/$unit"
-  systemctl daemon-reload
+  if [ -z "$CONTAINER" ]; then
+    systemctl disable --now -q "$unit" 2>/dev/null || true
+    rm -f "/etc/systemd/system/$unit"
+    systemctl daemon-reload
+  fi
   rm -rf "$home"
 done
 
@@ -338,6 +375,10 @@ install_unit() {
   systemctl --no-pager status "$unit" | head -n 5 || true
 }
 
+if [ -n "$CONTAINER" ]; then
+  say "The slots: the container runs them (box/container.sh), restarting each that stops"
+  rm -f "$UNIT_FILE"
+else
 say "The slots as services (they start on boot, and restart on failure)"
 [ -f "$UNIT_FILE" ] || { echo "No service file: run this through pnpm ship box add."; exit 1; }
 # Setup 5: what the runners write is theirs alone (UMask=0077), so no agent can read it.
@@ -351,6 +392,7 @@ for k in $(seq 1 "$RUNNER_SLOTS"); do
   install_unit "$WORK/shipify-box-$name.service" "shipify-box-$name.service" "$restart"
 done
 rm -f "$UNIT_FILE"
+fi
 
 # Tailscale, then Cockpit on 127.0.0.1 only, shared with your own devices by `tailscale serve`.
 # The box already works at this point; a problem here stops only this part.

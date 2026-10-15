@@ -166,6 +166,66 @@ jobs:
             echo "### Released v$VERSION" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  image:
+    # The box's Docker image (ADR 0056): each release, built on GitHub's own x64 and arm64 machines,
+    # pushed per architecture, then one tag for both (image-tags). Only where the repo is public:
+    # the template, where Actions are free; a private copy's CI never builds it.
+    needs: release
+    if: needs.release.result == 'success' && !github.event.repository.private
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            on: ubuntu-24.04
+          - arch: arm64
+            on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.on }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Build and push this architecture's image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          corepack enable --install-directory "$RUNNER_TEMP/bin" && export PATH="$RUNNER_TEMP/bin:$PATH"
+          pnpm install --frozen-lockfile --prod --silent
+          pnpm exec tsx scripts/box-prep.ts > box/prep.tsv
+          VERSION=$(jq -r .version package.json)
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/shipify-box"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -f box/Dockerfile --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.version=$VERSION" -t "$IMAGE:$VERSION-$ARCH" .
+          docker push "$IMAGE:$VERSION-$ARCH"
+          echo "### $IMAGE:$VERSION-$ARCH ($(docker image inspect "$IMAGE:$VERSION-$ARCH" --format '{{.Size}}' | numfmt --to=si))" >> "$GITHUB_STEP_SUMMARY"
+
+  image-tags:
+    # One tag for both architectures: :<version> and :latest (docker pulls the machine's own).
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Tag the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(gh api "repos/$GITHUB_REPOSITORY/contents/package.json?ref=$GITHUB_SHA" --jq .content | base64 -d | jq -r .version)
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/shipify-box"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx imagetools create -t "$IMAGE:$VERSION" -t "$IMAGE:latest" "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+          echo "### $IMAGE:$VERSION and :latest (amd64, arm64)" >> "$GITHUB_STEP_SUMMARY"
+
   edge:
     # The edge (ADR 0031): shipify's door and watch, the Worker `shipify`: workers.dev, and your domain if any.
     # After the checks, when verify says it changed (or by hand). The deploy token is on the two

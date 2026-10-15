@@ -202,6 +202,14 @@ esac`),
     return { sb, log: () => (existsSync(log) ? readFileSync(log, "utf8") : ""), got };
   };
 
+  it("--container is the container's own setup: never with a target, never outside a container", () => {
+    const { sb, log } = machine(0);
+    const r = ship(sb, "box", "add", "pi@host", "--container", "--yes");
+    expect(r.status).toBe("blocked");
+    expect(r.summary).toContain("docker run … register runs it");
+    expect(log()).not.toContain("registration-token");
+  });
+
   it("never makes a box for a public repo: it stops before anything reaches the machine", () => {
     const { sb, log } = machine(0, pi, true, "true false");
     const r = ship(sb, "box", "add", "homepi", "--yes");

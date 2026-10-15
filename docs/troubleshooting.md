@@ -93,6 +93,9 @@ chat, the file store and the notifications' key ([channels.md](channels.md#the-w
 | `here.sh` says "Stopped: …" | the line after it names the cause: the OS, root, memory, disk, GitHub out of reach, no terminal, the code declined or expired | do what it says, then run it again: it changed nothing, or carries on ([box-setup.md](box-setup.md#anywhere-with-one-command)) |
 | `here.sh`'s link gives 404 | the template is private, or has no release with `here.sh` yet | make it public and release ([releases.md](releases.md#a-release)); meanwhile, from a PC, `pnpm ship box add <user@host>` |
 | "… is public: a box serves only a private copy" | your copy's visibility | make it private (Settings → General → Danger Zone): only the template is public |
+| a Docker box says "This box isn't registered yet" | it waits for `register` | `docker compose run --rm box register` (or `docker run -it … register`), then start it again ([box-setup.md](box-setup.md#with-docker)) |
+| `register` says the sandbox isn't right, in Docker Desktop | Docker's own kernel (`ptrace_scope`) | use a Linux host (a VM, a NAS, a Pi): the box takes no tasks without the sandbox |
+| "Another container runs this box" | two containers on one volume | stop the other one; one volume is one box |
 | a release says "Not published: …" | the file and what's in it: one of your words, a tailnet's name, or a key | add the word to `SHIPIFY_PRIVATE_WORDS`, or fix the file in a PR, then release again |
 | doctor says the sandbox isn't right | the wall it names | `box add` again; it sets up and checks the sandbox |
 | "runner too old" | GitHub stops sending jobs 30 days after a newer runner | re-add the box: `pnpm ship box add <box> --manage --yes` |

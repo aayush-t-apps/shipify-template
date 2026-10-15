@@ -1,7 +1,8 @@
 {
   "name": "shipify",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Shipify: plan, build, ship and maintain projects (apps and packages) with one contract, from a PC agent to GitHub and the host.",
   "packageManager": "pnpm@12.6.0",

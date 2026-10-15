@@ -326,6 +326,10 @@ then each copy.
   - Issues are off, and interactions are limited to collaborators.
 - **Your copy stays private:** `box add` and `ship doctor` refuse a public one. On a public repo
   anyone's issue could reach a box.
+- **A box in Docker** (ADR 0056): the image holds no key and no one's data, built from
+  `setup.sh` by the template's release. It never runs privileged, nor with the Docker socket, and
+  its sandbox is checked inside it at `register`. The volume keeps only the runners'
+  registration, as a box's `/home/shipify` does.
 - **The one command** (`here.sh`, box-setup.md) installs nothing it hasn't checked: gh's and
   Node's downloads against their checksums. Your approval is a GitHub code you enter on your
   phone. The login lives in a folder it deletes on every exit, and it prints where to revoke it.

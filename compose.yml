@@ -1,0 +1,18 @@
+# A Shipify box in Docker (ADR 0056, docs/box-setup.md): any machine that runs Docker.
+#   docker compose run --rm box register   once: a code you approve on your phone, then its name
+#   docker compose up -d                   then: it runs, and starts again after every reboot
+#   docker compose pull && docker compose up -d     a new release; the registration stays
+#   docker compose run --rm box remove     takes the box away
+# Never privileged, never the Docker socket: either would give a task the host.
+services:
+  box:
+    image: ${SHIPIFY_BOX_IMAGE:-ghcr.io/aayush-t-apps/shipify-box:latest}
+    hostname: docker
+    restart: unless-stopped
+    # As a box's service: each runner gets 5 minutes to cancel its job and stop.
+    stop_grace_period: 5m
+    volumes:
+      - box:/home/shipify
+
+volumes:
+  box:

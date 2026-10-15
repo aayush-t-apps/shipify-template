@@ -292,6 +292,17 @@ function labelSandbox(repo: string, name: string): number {
   return have;
 }
 
+/**
+ * What each stack needs on a box: its doctor checks, one per line (name, check, the fix run as root
+ * when it fails), as setup.sh reads them. A box's setup and the Docker image (ADR 0056) take the same.
+ */
+export function stackPrep(): string {
+  const checks = new Map(listStacks().flatMap((s) => s.doctor.map((d) => [d.name, d] as const)));
+  return [...checks.values()]
+    .map((d) => `${d.name}\t${d.run}\t${(d.fix ?? "").replace(/^sudo /, "")}`)
+    .join("\n");
+}
+
 // ---------------------------------------------------------------- the machine: over SSH, or this PC
 
 /**
@@ -373,8 +384,21 @@ export function sshAdvice(
 
 export function boxAdd(
   target: string | undefined,
-  opts: { name?: string; manage?: boolean; replace?: boolean; slots?: string; yes: boolean },
+  opts: {
+    name?: string;
+    manage?: boolean;
+    replace?: boolean;
+    slots?: string;
+    /** In Docker (ADR 0056): this container, from its image; `docker run … register` runs it. */
+    container?: boolean;
+    yes: boolean;
+  },
 ): Result {
+  if (opts.container && (target !== undefined || opts.manage))
+    throw new ShipError(
+      "--container is the container's own setup: docker run … register runs it (docs/box-setup.md).",
+      "blocked",
+    );
   if (target === undefined && opts.manage)
     throw new ShipError(
       "--manage is for a machine you reach over SSH (Tailscale, Cockpit and a firewall): this PC's box needs none of them.",
@@ -388,15 +412,20 @@ export function boxAdd(
   if (target !== undefined && !has("ssh"))
     throw new ShipError("Needs ssh on this machine.", "blocked");
   const m = target === undefined ? thisPc() : overSsh(target);
+  if (opts.container && m.sh("test -f /.dockerenv || test -f /run/.containerenv").code !== 0)
+    throw new ShipError(
+      "--container runs inside the box's container: docker run … register (docs/box-setup.md).",
+      "blocked",
+    );
   // Its slots are system services: on WSL, systemd is off until you turn it on.
-  if (m.here && m.sh("test -d /run/systemd/system").code !== 0)
+  if (m.here && !opts.container && m.sh("test -d /run/systemd/system").code !== 0)
     throw new ShipError(
       "systemd isn't running on this PC: on WSL, add [boot] systemd=true to /etc/wsl.conf, run wsl --shutdown in Windows, open Ubuntu again, then run this again.",
       "blocked",
     );
   const repo = platformRepo();
   const probe = m.sh(
-    "uname -m; . /etc/os-release; echo $ID $VERSION_ID; hostname -s; awk '/^MemTotal:/{print $2}' /proc/meminfo",
+    "uname -m; . /etc/os-release; echo $ID $VERSION_ID; hostname -s; awk '/^MemTotal:/{print $2}' /proc/meminfo; cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max",
   );
   if (probe.code !== 0)
     throw new ShipError(
@@ -405,7 +434,7 @@ export function boxAdd(
         : `Couldn't read this PC: ${probe.stderr.trim()}`,
       "blocked",
     );
-  const [machine, os, hostName, mem] = probe.stdout.trim().split("\n");
+  const [machine, os, hostName, mem, limit] = probe.stdout.trim().split("\n");
   // The machine's own name (Tailscale uses it too), not an IP address typed as the target.
   const host = target?.split("@").pop() ?? "";
   const name = safeName(opts.name ?? hostName ?? host.split(".")[0] ?? host);
@@ -423,7 +452,9 @@ export function boxAdd(
   const have = slotsOf(all, name);
   // What --slots says, else what the box has, else what its memory fits.
   const asked = parseSlots(opts.slots);
-  const memKiB = Number(mem);
+  // A container sees the host's memory: its own limit (docker run --memory), when it has one.
+  const capKiB = Math.floor(Number(limit) / 1024);
+  const memKiB = capKiB > 0 ? Math.min(Number(mem), capKiB) : Number(mem);
   const fits = memKiB > 0 ? slotsFor(memKiB) : DEFAULT_SLOTS;
   const slots = asked ?? (have.length || fits);
   const why =
@@ -434,7 +465,11 @@ export function boxAdd(
   // One name, one machine: a second machine with the same hostname would silently take over the
   // first one's runners. Running box add again on the same machine is fine (it has the service).
   if (!opts.replace && have.length) {
-    const same = m.sh(`systemctl cat shipify-box-${name} >/dev/null 2>&1 && echo same`);
+    const same = m.sh(
+      opts.container
+        ? "test -f /home/shipify/runner/.runner && echo same"
+        : `systemctl cat shipify-box-${name} >/dev/null 2>&1 && echo same`,
+    );
     if (same.stdout.trim() !== "same")
       throw new ShipError(
         `Another machine is already the box "${name}". Give this one another name with --name, or take that one's place with --replace.`,
@@ -445,6 +480,11 @@ export function boxAdd(
     .map((k) => `shipify-agent-${k}`)
     .join(", ");
   const planned = [
+    ...(opts.container
+      ? [
+          "in this container (ADR 0056): the image has git, gh, Node and what the stacks need; the slots run as the container's own processes, not services (box/container.sh), and its registration is kept in the volume",
+        ]
+      : []),
     m.here
       ? `run box/setup.sh on this PC, from a folder of its own (made by mktemp -d), with sudo (${os ?? "?"}, ${machine})`
       : `copy box/setup.sh to ${m.label} (into a folder of its own, made by mktemp -d) and run it with sudo (${os ?? "?"}, ${machine})`,
@@ -492,11 +532,7 @@ export function boxAdd(
       `${busy.map((r) => r.name).join(", ")} is running a task: run this again when it's done (pnpm ship box list).`,
       "blocked",
     );
-  // Each stack's doctor checks, and the fixes the box runs as root when one fails.
-  const checks = new Map(listStacks().flatMap((s) => s.doctor.map((d) => [d.name, d] as const)));
-  const prep = [...checks.values()]
-    .map((d) => `${d.name}\t${d.run}\t${(d.fix ?? "").replace(/^sudo /, "")}`)
-    .join("\n");
+  const prep = stackPrep();
   // A folder of its own there (mktemp -d: 0700, a name nobody could have made first), so no other
   // user on the machine, an agent's included, can read or swap the setup's files.
   const made = m.sh("mktemp -d");
@@ -519,6 +555,7 @@ export function boxAdd(
       .join(" ")}"`,
     ...(opts.manage ? ["SHIPIFY_MANAGE=1"] : []),
     ...(m.here ? ["SHIPIFY_HERE=1"] : []),
+    ...(opts.container ? ["SHIPIFY_CONTAINER=1"] : []),
   ].join("\n");
   // One definition for every slot: setup.sh fills in each slot's name and folder.
   const unit = boxUnit({ name: "@SLOT_NAME@", dir: "@SLOT_DIR@" });
@@ -547,6 +584,17 @@ export function boxAdd(
   dropSlots(repo, name, slots);
   // Its sandbox checked out (setup.sh's last step): task runs can go to its slots.
   const labelled = labelSandbox(repo, name);
+  // In a container, its slots start with the container's own run, not now.
+  if (opts.container)
+    return ok(
+      "box add",
+      `this container is the box "${name}", ${slots} slot(s) registered, ${labelled} with the sandbox label`,
+      {
+        nextSteps: [
+          "start it: docker run -d --name shipify-box --restart unless-stopped -v shipify-box:/home/shipify <image> (or docker compose up -d)",
+        ],
+      },
+    );
   // A slot's runner takes a few seconds to reach GitHub after its service starts: wait for them.
   let online = 0;
   for (let tries = 0; tries < 6; tries++) {
