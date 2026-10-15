@@ -447,6 +447,9 @@ describe("ci.yml's release (ADR 0047, ADR 0055)", () => {
     >;
     expect(jobs.image?.if).toContain("needs.release.result == 'success'");
     expect(jobs.image?.if).toContain("!github.event.repository.private");
+    // A skipped job before it (golden) skips it unless it says always(), as the release does.
+    expect(jobs.image?.if).toMatch(/^always\(\) && /);
+    expect(jobs["image-tags"]?.if).toBe("always() && needs.image.result == 'success'");
     expect(jobs.image?.permissions).toEqual({ contents: "read", packages: "write" });
     expect(jobs["image-tags"]?.needs).toBe("image");
     // No secret but the run's own token: the image holds no key.

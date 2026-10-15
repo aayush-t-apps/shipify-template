@@ -7,6 +7,14 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-10-15
+
+### Fixed
+
+- **The box's image is built after every release:** its job was skipped when the golden tests
+  were (no stack changed), as GitHub skips what follows a skipped job. A run by hand on the
+  template now builds it again too.
+
 ## [0.1.7] - 2026-10-15
 
 ### Added

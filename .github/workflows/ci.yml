@@ -169,9 +169,12 @@ jobs:
   image:
     # The box's Docker image (ADR 0056): each release, built on GitHub's own x64 and arm64 machines,
     # pushed per architecture, then one tag for both (image-tags). Only where the repo is public:
-    # the template, where Actions are free; a private copy's CI never builds it.
-    needs: release
-    if: needs.release.result == 'success' && !github.event.repository.private
+    # the template, where Actions are free; a private copy's CI never builds it. A run by hand there
+    # builds it again for its version. always(): a skipped job before it (golden) would skip it too.
+    needs: [verify, release]
+    if: >-
+      always() && !github.event.repository.private && needs.verify.result == 'success'
+      && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
     strategy:
       matrix:
         include:
@@ -210,6 +213,7 @@ jobs:
   image-tags:
     # One tag for both architectures: :<version> and :latest (docker pulls the machine's own).
     needs: image
+    if: always() && needs.image.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
