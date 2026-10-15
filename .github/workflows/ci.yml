@@ -199,6 +199,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ARCH: ${{ matrix.arch }}
         run: |
+          mkdir -p "$RUNNER_TEMP/bin"
           corepack enable --install-directory "$RUNNER_TEMP/bin" && export PATH="$RUNNER_TEMP/bin:$PATH"
           pnpm install --frozen-lockfile --prod --silent
           pnpm exec tsx scripts/box-prep.ts > box/prep.tsv

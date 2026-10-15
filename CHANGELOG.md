@@ -7,6 +7,13 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-15
+
+### Fixed
+
+- **The box's image builds:** its step made pnpm's folder before using it, as watch.yml does; the
+  0.1.8 build stopped there.
+
 ## [0.1.8] - 2026-10-15
 
 ### Fixed
