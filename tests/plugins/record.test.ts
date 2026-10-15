@@ -301,6 +301,71 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
     expect(record.issueState(12)).toBe("open");
   });
 
+  it("reads a task's comments and the task again only when they changed (ADR 0057)", () => {
+    const { record } = make();
+    const since = "2026-01-01T00:00:00Z";
+    const first = record.commentsIfChanged(12, since);
+    expect(first.comments).toEqual([]);
+    expect(first.tag).toEqual(expect.any(String));
+    // Nothing changed: no comments, the same tag, and nothing to pay.
+    expect(record.commentsIfChanged(12, since, first.tag)).toEqual({ tag: first.tag });
+    record.comment(12, "and the disk?");
+    const next = record.commentsIfChanged(12, since, first.tag);
+    expect(next.comments?.map((c) => c.body)).toEqual(["and the disk?"]);
+    expect(next.tag).not.toBe(first.tag);
+    const issue = record.issueIfChanged(12);
+    expect(issue.issue?.state).toBe("open");
+    expect(record.issueIfChanged(12, issue.tag)).toEqual({ tag: issue.tag });
+    record.updateIssue(12, { state: "closed", state_reason: "completed" });
+    expect(record.issueIfChanged(12, issue.tag).issue?.state).toBe("closed");
+  });
+
+  it("says whether a job waits for a machine with a label, never counting a run with no job (ADR 0057)", () => {
+    const { queue } = make();
+    expect(queue.waitingFor("shipify-box").waiting).toBe(false);
+    fake.set((f) => {
+      Object.assign(f, {
+        queued: [
+          { id: 7, jobs: [] },
+          { id: 8, jobs: [{ status: "queued", labels: ["ubuntu-latest"] }] },
+        ],
+      });
+    });
+    const none = queue.waitingFor("shipify-box");
+    expect(none.waiting).toBe(false);
+    fake.set((f) => {
+      Object.assign(f, {
+        queued: [
+          {
+            id: 9,
+            jobs: [
+              {
+                status: "queued",
+                labels: ["self-hosted", "shipify-box"],
+                created_at: "2026-10-15T12:00:05Z",
+              },
+            ],
+          },
+          {
+            id: 10,
+            jobs: [
+              {
+                status: "queued",
+                labels: ["self-hosted", "shipify-box"],
+                created_at: "2026-10-15T12:00:01Z",
+              },
+            ],
+          },
+        ],
+      });
+    });
+    // Waiting, and since when the longest-waiting job was queued: which stay gives way first.
+    expect(queue.waitingFor("shipify-box", none.tag)).toMatchObject({
+      waiting: true,
+      since: "2026-10-15T12:00:01Z",
+    });
+  });
+
   it("opens an issue, and pins it without failing when it can't", () => {
     const { record } = make();
     const made = record.createIssue({

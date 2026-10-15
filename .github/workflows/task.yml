@@ -170,15 +170,17 @@ jobs:
           || contains(github.event.issue.labels.*.name, 'waiting'))
       && !contains(github.event.issue.labels.*.name, 'shipify-status')
       && !contains(github.event.issue.labels.*.name, 'notebook')
+      && !contains(github.event.issue.labels.*.name, 'staying')
       && (github.event_name != 'workflow_dispatch' || (inputs.job != 'github' && github.ref == 'refs/heads/main'))
       && (github.event_name == 'workflow_dispatch' || github.event_name == 'push'
           || github.event.sender.login == vars.SHIPIFY_OWNER
           || (vars.SHIPIFY_DOOR_SLUG != '' && github.event.sender.login == format('{0}[bot]', vars.SHIPIFY_DOOR_SLUG)))
     runs-on: [self-hosted, shipify-box, sandbox]
     # The sum of its clocks (tests/workflows.test.ts): think's steps (THINK_MINUTES, 192), plan's
-    # follow of a merge's deploy (30), and about 15 for setup, decide and apply. A run never
-    # outgrows its own job, so whatever stops its agent, its work is kept (ADR 0035).
-    timeout-minutes: 240
+    # follow of a merge's deploy (30), about 15 for setup, decide and apply, and a stay's last turn
+    # (STAY_LAST_MINUTES, 55; ADR 0057). A run never outgrows its own job, so whatever stops its
+    # agent, its work is kept (ADR 0035).
+    timeout-minutes: 300
     env:
       ISSUE: ${{ github.event.issue.number || inputs.issue }}
       EVENT: ${{ github.event_name }}
@@ -188,15 +190,36 @@ jobs:
       # the CLI now runs from the copy below, whose parent is the box's shared tools (ADR 0051).
       SHIPIFY_PROJECTS_DIR: ${{ github.workspace }}/../projects
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # Main as it is: a run reads no history (ADR 0048: upgrades replace), but a push's plans
-          # step compares the push's two ends, so a push fetches it ('0' quoted: a bare 0 is false).
-          fetch-depth: ${{ github.event_name == 'push' && '0' || '1' }}
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
+      # Shipify's files, only when this box needs them (ADR 0057): to build this commit's copy, which
+      # it has nearly always, and a push's two ends, which its plans step compares. No checkout or
+      # setup-node: the runner downloaded both on every job. Node is the box's own (box setup's, which
+      # its agents use too). The workspace holds only this fetch, never an earlier job's files.
+      - name: Shipify at this commit, only if this box has no copy of it
+        env:
+          FETCH_TOKEN: ${{ github.token }}
+          PUSH: ${{ github.event_name == 'push' && 'yes' || '' }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          node --version | grep -q '^v22\.' || {
+            echo "::error::this box's Node is $(node --version 2>&1), not 22: run its box setup again (docs/box-setup.md)"
+            exit 1
+          }
+          want=""
+          [ -f "$RUNNER_TOOL_CACHE/shipify-app/$GITHUB_SHA/.built" ] || want="$GITHUB_SHA"
+          [ -n "$PUSH" ] && want="$GITHUB_SHA"
+          [ -n "$PUSH" ] && [ -n "$BEFORE" ] && ! printf %s "$BEFORE" | grep -qE '^0+$' && want="$want $BEFORE"
+          if [ -n "$want" ]; then
+            git init -q .
+            # The key in git's environment, never on a command line or in a file (cli/lib/clones.ts).
+            export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 -w0)"
+            export GIT_CONFIG_VALUE_0
+            # shellcheck disable=SC2086 # one or two commits, each a plain SHA
+            git fetch -q --no-tags --depth 1 "https://github.com/$GITHUB_REPOSITORY" $want
+            git checkout -q --detach "$GITHUB_SHA"
+          fi
 
       # The CLI every step starts, built once per commit (ADR 0051 B1): one file, its packages inside,
       # next to a read-only clone of Shipify that the agents read too. A copy already built is only
@@ -219,16 +242,17 @@ jobs:
             part="$dir.part.$GITHUB_RUN_ID.$$"
             # A build that fails leaves nothing behind.
             trap 'rm -rf "$part"' EXIT
-            # A clone of this checkout (no credentials: the checkout keeps none), the agent's own.
+            # A clone of the fetch above (no credentials: its key was only in that step's environment),
+            # the agent's own.
             git clone -q --no-hardlinks --no-checkout . "$part"
             git -C "$part" checkout -q --detach "$GITHUB_SHA"
             node scripts/build-cli.mjs --out "$part/cli/dist/ship.mjs"
             touch "$part/.built"
             mv -T "$part" "$dir" 2>/dev/null || rm -rf "$part"
-            # Keep the three newest copies, and any used within the job's limit (240 minutes): a run in
+            # Keep the three newest copies, and any used within the job's limit (300 minutes): a run in
             # flight keeps its own however many merges land meanwhile.
             find "$base" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn \
-              | awk -v now="$(date +%s)" 'NR > 3 && now - $1 > 14400 { print $2 }' | xargs -r rm -rf || true
+              | awk -v now="$(date +%s)" 'NR > 3 && now - $1 > 18000 { print $2 }' | xargs -r rm -rf || true
           fi
           if [ ! -f "$dir/.built" ]; then
             echo "::error::$dir is there but not built (made by hand, or by an older Shipify): remove it on the box, then run this again"
@@ -382,6 +406,8 @@ jobs:
           SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
           SHIPIFY_READ_TOKEN: ${{ steps.apply_token.outputs.token }}
           GH_TOKEN: ${{ steps.apply_token.outputs.token }}
+          # How long a run stays after its answer (ADR 0057): minutes, 5 when unset, 0 for never.
+          SHIPIFY_STAY: ${{ vars.SHIPIFY_STAY }}
         run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run decide "$ISSUE"
 
       # Write tokens, minted only now that the agent has finished: one repo, exactly the one decide
@@ -439,6 +465,65 @@ jobs:
           # A tool's write key only for the calls decide found approved (your yes, or pre-approved).
           SHIPIFY_NOTION_WRITE: ${{ steps.decide.outputs.act == 'notion' && secrets.SHIPIFY_NOTION_WRITE || '' }}
         run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run apply "$ISSUE"
+
+      # A run that stays (ADR 0057): after its answer, for SHIPIFY_STAY quiet minutes (5), it answers
+      # your plain words itself, in the same agent session, while `staying` makes task.yml start no
+      # run for them; anything else it hands to a normal run. Its own read-only tokens, minted now,
+      # cover what its run's did: every project, as a talk run's agent token does.
+      - name: A read-only token for the stay (every project; one hour)
+        id: stay_token
+        if: steps.decide.outputs.stay == 'yes' && vars.SHIPIFY_BOT_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+          permission-metadata: read
+          permission-pull-requests: read
+          permission-issues: read
+          permission-statuses: read
+          permission-actions: read
+          permission-checks: read
+      - name: A read-only token for the stay on its other account (the repos App; one hour)
+        id: stay_account_token
+        if: steps.decide.outputs.stay == 'yes' && steps.plan.outputs.account_repos != '' && vars.SHIPIFY_REPOS_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_REPOS_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_REPOS_KEY }}
+          owner: ${{ steps.plan.outputs.account }}
+          repositories: ${{ steps.plan.outputs.account_repos }}
+          permission-contents: read
+          permission-metadata: read
+          permission-pull-requests: read
+          permission-issues: read
+          permission-statuses: read
+          permission-actions: read
+          permission-checks: read
+      - name: Stay (your next words, answered in the same session; no write key)
+        id: stay
+        if: steps.decide.outputs.stay == 'yes'
+        env:
+          # The record's token for its answers (as apply's), read-only keys for the rest: the agent,
+          # as its own user, holds neither (security.md).
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
+          SHIPIFY_READ_TOKEN: ${{ steps.stay_token.outputs.token }}
+          GH_TOKEN: ${{ steps.stay_token.outputs.token }}
+          SHIPIFY_ACCOUNT_TOKEN: ${{ steps.stay_account_token.outputs.token }}
+          SHIPIFY_AGENT_LOGIN: ${{ secrets[steps.plan.outputs.login] }}
+          SHIPIFY_AGENT_READ_TOKEN: ${{ steps.stay_token.outputs.token }}
+          SHIPIFY_ACCOUNT_READ_TOKEN: ${{ steps.stay_account_token.outputs.token }}
+          SHIPIFY_NOTION_READ: ${{ secrets.SHIPIFY_NOTION_READ }}
+          SHIPIFY_STAY: ${{ vars.SHIPIFY_STAY }}
+        run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run stay "$ISSUE"
+      # However the job ends (a crash, a cancel, its clock): your next words are never skipped.
+      - name: Its stay's label off, however the job ends
+        if: always() && steps.decide.outputs.stay == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: gh api -X DELETE "repos/$REPO/issues/$ISSUE/labels/staying" >/dev/null 2>&1 || true
 
       - name: If the run broke before it answered, say so on the task
         if: (failure() || cancelled()) && github.event_name != 'push'

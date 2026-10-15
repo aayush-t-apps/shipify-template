@@ -43,6 +43,26 @@ export function gh(args: string[], opts: GhOpts = {}): string {
   return r.stdout;
 }
 
+/**
+ * A GET only when its answer changed since `tag` (GitHub's ETag): unchanged is `{ tag }`, a 304,
+ * which costs the rate limit nothing (GitHub's REST guide; checked live for ADR 0057).
+ */
+export function ghIfChanged<T>(
+  path: string,
+  tag: string | undefined,
+  opts: GhOpts = {},
+): { tag?: string; body?: T } {
+  const r = ghRun(["api", "-i", ...(tag ? ["-H", `If-None-Match: ${tag}`] : []), path], opts);
+  const cut = r.stdout.search(/\r?\n\r?\n/);
+  const head = cut < 0 ? r.stdout : r.stdout.slice(0, cut);
+  const status = /^HTTP\/[\d.]+ (\d{3})/.exec(head)?.[1];
+  if (status === "304") return { ...(tag ? { tag } : {}) };
+  if (r.code !== 0 || status !== "200")
+    throw new ShipError(`gh api ${path} failed: ${(r.stderr || head).trim().split("\n")[0]}`);
+  const etag = /^etag:\s*(.+?)\s*$/im.exec(head)?.[1];
+  return { ...(etag ? { tag: etag } : {}), body: JSON.parse(r.stdout.slice(cut).trim()) as T };
+}
+
 export function ghJson<T>(args: string[], opts: GhOpts = {}): T {
   const out = gh(args, opts).trim();
   return (out ? JSON.parse(out) : null) as T;
@@ -234,6 +254,7 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
       const params = [
         `state=${q.state ?? "open"}`,
         ...(q.labels?.length ? [`labels=${q.labels.map(encodeURIComponent).join(",")}`] : []),
+        ...(q.since ? [`since=${encodeURIComponent(q.since)}`] : []),
       ];
       if (q.newest)
         return ghJson<RecordIssue[]>(
@@ -248,6 +269,18 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
     createIssue: (i) => api<RecordIssue>("POST", issues, i),
     updateIssue(n, patch: IssuePatch) {
       api("PATCH", `${issues}/${n}`, patch);
+    },
+    commentsIfChanged(n, since, tag) {
+      const r = ghIfChanged<RecordComment[]>(
+        `${issues}/${n}/comments?per_page=100&since=${encodeURIComponent(since)}`,
+        tag,
+        call(),
+      );
+      return { ...(r.tag ? { tag: r.tag } : {}), ...(r.body ? { comments: r.body } : {}) };
+    },
+    issueIfChanged(n, tag) {
+      const r = ghIfChanged<RecordIssue>(`${issues}/${n}`, tag, call());
+      return { ...(r.tag ? { tag: r.tag } : {}), ...(r.body ? { issue: r.body } : {}) };
     },
     issueState(n) {
       const r = ghRun(["api", `${issues}/${n}`], call());
@@ -449,6 +482,31 @@ export function githubQueue(opts: RecordOpts = {}): Queue {
         ["api", `repos/${repo}/actions/workflows/${workflow}/runs?per_page=${count}`],
         call(),
       ).workflow_runs,
+    waitingFor(label, tag) {
+      const r = ghIfChanged<{ workflow_runs: { id: number }[] }>(
+        `repos/${repo}/actions/runs?status=queued&per_page=20`,
+        tag,
+        call(),
+      );
+      // Unchanged since the last look: no job came to wait meanwhile.
+      if (!r.body) return { ...(r.tag ? { tag: r.tag } : {}), waiting: false };
+      const queued = r.body.workflow_runs
+        .flatMap(
+          (run) =>
+            ghJson<{ jobs: { status: string; labels: string[]; created_at?: string }[] }>(
+              ["api", `repos/${repo}/actions/runs/${run.id}/jobs?filter=latest`],
+              call(),
+            ).jobs,
+        )
+        .filter((j) => j.status === "queued" && j.labels.includes(label))
+        .map((j) => j.created_at ?? "")
+        .sort();
+      return {
+        ...(r.tag ? { tag: r.tag } : {}),
+        waiting: queued.length > 0,
+        ...(queued[0] ? { since: queued[0] } : {}),
+      };
+    },
   };
 }
 

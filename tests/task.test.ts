@@ -18,7 +18,7 @@ import {
 } from "../cli/commands/bot.ts";
 import { boxOf, boxUnit, slotName, slotOf, sshAdvice } from "../cli/commands/box.ts";
 import { errandSeen } from "../cli/commands/task/deploys.ts";
-import { digestDue, digestNext, digestText } from "../cli/commands/task/digest.ts";
+import { countSkills, digestDue, digestNext, digestText } from "../cli/commands/task/digest.ts";
 import {
   freeFile,
   saveAttachments,
@@ -1718,5 +1718,41 @@ describe("the weekly digest (ADR 0053)", () => {
     expect(busy).not.toContain("all clear");
     expect(busy).toContain("#12 Bigger margins");
     expect(busy).toContain("`links: upgrade`");
+  });
+
+  it("counts the week's skills from run rows, and names those none loaded", () => {
+    const at = new Date("2026-10-19T03:30:00Z");
+    const rows = [
+      {
+        at: "2026-10-18T08:00:00Z",
+        model: "sonnet",
+        skills: ["test-driven-development", "notion"],
+      },
+      { at: "2026-10-17T08:00:00Z", model: "sonnet", skills: ["test-driven-development"] },
+      { at: "2026-10-16T08:00:00Z", model: "sonnet" },
+      // A run with no agent, and one from before the week: neither counts.
+      { at: "2026-10-16T09:00:00Z" },
+      { at: "2026-10-01T08:00:00Z", model: "sonnet", skills: ["frontend-design"] },
+    ];
+    const main = ["frontend-design", "notion", "test-driven-development", "writing-skills"];
+    const week = countSkills(rows, main, at);
+    expect(week).toEqual({
+      runs: 3,
+      loaded: 2,
+      loads: { "test-driven-development": 2, notion: 1 },
+      idle: ["frontend-design", "writing-skills"],
+    });
+    const base = { boxes: [{ name: "homepi", online: true }], upcoming: { count: 0 }, keys: [] };
+    const text = digestText({ ...base, apps: [], waiting: [], skills: week }, (iso) => iso);
+    expect(text).toContain(
+      "- **Skills:** test-driven-development ×2, notion ×1; in 2 of 3 agent runs; none loaded frontend-design, writing-skills",
+    );
+    // An idle skill is worth a look, not a fault: the week is still all clear.
+    expect(text).toMatch(/^\*\*This week: all clear\*\*/);
+    // No agent runs this week: no skills line.
+    const none = countSkills([], main, at);
+    expect(digestText({ ...base, apps: [], waiting: [], skills: none }, (i) => i)).not.toContain(
+      "Skills",
+    );
   });
 });

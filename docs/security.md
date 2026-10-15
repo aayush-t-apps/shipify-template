@@ -23,7 +23,7 @@ Names only: no value appears in any doc, file or log. How to make and replace ea
 | `shipify-pc` | `gh` and `ship` on the PC: fine-grained, the org only | the PC's `gh` login | the date you give it (`ship doctor` warns) |
 | `SHIPIFY_BOT_KEY` | mint the bot's one-hour tokens | shipify secret; a run's mint steps and the `github` job, never the agent's step | doesn't expire |
 | `SHIPIFY_REPOS_KEY` | mint the repos App's one-hour tokens, on the accounts that installed it (ADR 0045) | shipify secret; its mint steps in a run and the `github` job, never the agent's step; the one step that reads every secret (a new project's keys) skips it by name, as the bot's | doesn't expire |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code's login | shipify secret; the think step only when the run's agent is Claude Code, handed to the agent on a pipe it reads once, never in its environment | a year |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code's login | shipify secret; the think step (and a stay's, ADR 0057) only when the run's agent is Claude Code, handed to the agent on a pipe it reads once, never in its environment | a year |
 | `AI_GATEWAY_API_KEY` | pi's and OpenCode's models, through Vercel's AI Gateway (a gateway; the `-vercel` agents): it can spend your Vercel credits | shipify secret; the think step only when the run's agent is one of those, handed to the agent on a pipe it reads once, never in its environment; the PC's credentials file | until you delete it in Vercel. Set a spend limit there |
 | `OPENROUTER_API_KEY` | pi's models, through OpenRouter (a gateway): it can spend your credits there | shipify secret; the think step only when the run's agent is pi, handed to the agent on a pipe it reads once, never in its environment; the PC's credentials file | until you delete it on OpenRouter. Set a spend limit there |
 | `SHIPIFY_NOTION_READ` | read the Notion pages you connect | shipify secret; the think step (a look key) | no expiry |
@@ -221,6 +221,12 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
   doesn't fix it, so no form writes wherever a capped string points.
 - **`tests/workflows.test.ts`** holds `task.yml` to this: no write token, record token, act key or
   channel key in the think step, and write tokens only after it.
+- **A run that stays** (ADR 0057) holds no write key either: its own read-only tokens, the agent's
+  login and the tools' look keys, and the record's token (`GITHUB_TOKEN`) for its answers, as apply
+  does. That's the one step where the record's token and the agent's login are in the same
+  runner process while its agent runs: behind the same wall as think's keys (the agent is its own
+  user, with `env -i`, and can't read the runner's environment or memory). Anything that needs a
+  write token, an act key or a files token goes to a normal run, which mints it after its agent.
 
 ## Apply never runs the agent's code
 

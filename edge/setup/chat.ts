@@ -17,9 +17,7 @@ import { edgeOrigin } from "./worker.ts";
 type Wait = { wait?: (ms: number) => Promise<unknown>; maxMs?: number };
 
 /** You, as Telegram posts you to the door (its secret, your id), or why this PC can't. */
-function asYou():
-  | { post: (text: string, updateId: number) => Promise<Said> }
-  | { skipped: string } {
+function asYou(): You | { skipped: string } {
   const values = loadCredentials().values;
   const [secret, id] = [credential(values, "TELEGRAM_SECRET"), credential(values, "TELEGRAM_ID")];
   const origin = edgeOrigin(sourceControl().repoState(platformRepo()).variables);
@@ -74,11 +72,80 @@ async function finished(task: number, opts: Wait) {
         display_title: string;
       }[];
     }>(["api", `repos/${repo}/actions/workflows/task.yml/runs?per_page=20`]).workflow_runs;
-    run = list.find((r) => r.display_title === `task #${task}` && r.status === "completed");
+    // The run that ran: one held back behind it in the task's group (your words while it stayed)
+    // ends cancelled or skipped, having done nothing (ADR 0057).
+    run = list.find(
+      (r) =>
+        r.display_title === `task #${task}` &&
+        r.status === "completed" &&
+        r.conclusion !== "cancelled" &&
+        r.conclusion !== "skipped",
+    );
   }
   return run
     ? { run, log: ghRun(["run", "view", String(run.id), "-R", repo, "--log"]).stdout }
     : undefined;
+}
+
+/**
+ * Whether a task's run stays after its answer (ADR 0057): its Stay step under way. "done" when the
+ * run ended without one, "no run" when none showed in time.
+ */
+async function staying(task: number, opts: Wait): Promise<"staying" | "done" | "no run"> {
+  const repo = platformRepo();
+  const wait = opts.wait ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const started = Date.now();
+  while (Date.now() - started < (opts.maxMs ?? 6 * 60_000)) {
+    await wait(10_000);
+    const r = ghJson<{ workflow_runs: { id: number; status: string; display_title: string }[] }>([
+      "api",
+      `repos/${repo}/actions/workflows/task.yml/runs?per_page=20`,
+    ]).workflow_runs.find((x) => x.display_title === `task #${task}`);
+    if (!r) continue;
+    if (r.status === "completed") return "done";
+    const steps = ghJson<{ jobs: { name: string; steps?: { name: string; status: string }[] }[] }>([
+      "api",
+      `repos/${repo}/actions/runs/${r.id}/jobs`,
+    ]).jobs.flatMap((j) => (j.name === "run" ? (j.steps ?? []) : []));
+    if (steps.some((st) => st.name.startsWith("Stay (") && st.status === "in_progress"))
+      return "staying";
+  }
+  return "no run";
+}
+
+type You = { post: (text: string, updateId: number) => Promise<Said> };
+
+/**
+ * A run that stays (ADR 0057), live: once its Stay step is under way, your next words on its task,
+ * then, 20 s later, your close, which it reads only after the turn it's on. Whether it stayed.
+ */
+async function nextWords(
+  me: You,
+  task: number,
+  words: string,
+  updateId: number,
+  opts: Wait,
+): Promise<boolean> {
+  if ((await staying(task, opts)) !== "staying") return false;
+  await me.post(`#${task} ${words}`, updateId + 1);
+  await (opts.wait ?? ((ms: number) => new Promise((r) => setTimeout(r, ms))))(20_000);
+  await me.post(`#${task} close`, updateId + 2);
+  return true;
+}
+
+/** From a finished run's log: its stay answered your next words, and the door sent both replies. */
+function stayed(log: string, who: string): Check {
+  const line = /run stay: task #\d+: stayed, (\d+) answers?; left: ([^\n[]+)/.exec(log);
+  const told = log.split("\n").filter((l) => l.includes('"door.out.sent"')).length;
+  const ok = Number(line?.[1] ?? 0) >= 1 && told >= 2;
+  return {
+    name: `${who} stayed: your next words were answered in the same run`,
+    ok,
+    detail: line
+      ? `${line[1]} answer(s) in the stay; left: ${line[2]?.trim()}; ${told} replies sent`
+      : "the run's log has no stay line",
+    ...(ok ? {} : { fix: "the run's Stay step says why; SHIPIFY_STAY 0 turns staying off" }),
+  };
 }
 
 /**
@@ -145,6 +212,9 @@ async function endToEnd(opts: Wait): Promise<Check[]> {
     ok: again.task === first.task,
     detail: again.said,
   });
+  // A run that stays after its answer (ADR 0057): your next words, answered by it in seconds, in
+  // the same session; then your close ends it. Its log says both.
+  const stays = await nextWords(me, first.task, "And now in two words?", updateId, opts);
   // Its run, followed to its end: its log says whether the door took the reply.
   const done = await finished(first.task, opts);
   if (!done) {
@@ -175,6 +245,7 @@ async function endToEnd(opts: Wait): Promise<Check[]> {
     ok: Boolean(sent) && !/"sent":0\b/.test(sent ?? ""),
     detail: sent ? "the door sent it (see your phone)" : "the run's log has no door.out.sent line",
   });
+  if (stays) checks.push(stayed(log, "it"));
   return checks;
 }
 
@@ -187,9 +258,10 @@ export async function agentLive(agent: string, opts: Wait = {}): Promise<Check[]
   const me = asYou();
   if ("skipped" in me)
     return [{ name: `${agent} answers a question`, ok: true, blocking: false, detail: me.skipped }];
+  const updateId = Date.now();
   const sent = await me.post(
     `ask: selftest: what is 2 + 2? Answer with the number alone.\nuse ${agent}`,
-    Date.now(),
+    updateId,
   );
   const checks: Check[] = [
     {
@@ -199,6 +271,8 @@ export async function agentLive(agent: string, opts: Wait = {}): Promise<Check[]
     },
   ];
   if (!sent.task) return checks;
+  // Its run stays after the answer (ADR 0057): the next question in the same session, then a close.
+  const stays = await nextWords(me, sent.task, "And 3 + 3? The number alone.", updateId, opts);
   const done = await finished(sent.task, opts);
   if (!done)
     return [
@@ -232,6 +306,7 @@ export async function agentLive(agent: string, opts: Wait = {}): Promise<Check[]
       ? {}
       : { fix: `its reply on the task says why (a key: pnpm ship add <its gateway> --yes)` }),
   });
+  if (stays) checks.push(stayed(log, agent));
   return checks;
 }
 

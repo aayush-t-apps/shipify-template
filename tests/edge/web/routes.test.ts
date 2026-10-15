@@ -561,6 +561,29 @@ describe("what the page reads", () => {
     expect(by).toEqual({ plain: undefined, labelled: ["bug", "deploying", "failed"] });
   });
 
+  it("the list: a run that stays waits for you, so its row isn't Working, and says `staying` (ADR 0057)", async () => {
+    const t = setUp();
+    const i = t.f.issue({
+      title: "disk",
+      user: { login: "owner" },
+      labels: ["answered", "staying"],
+    });
+    const j = t.f.issue({ title: "cpu", user: { login: "owner" }, labels: ["answered"] });
+    const going = (n: number, id: number) => ({
+      id,
+      status: "in_progress",
+      conclusion: null,
+      display_title: `task #${n}`,
+      created_at: new Date(t.f.w.at).toISOString(),
+    });
+    t.f.w.runs["task.yml"] = [going(i.number, 90), going(j.number, 91)];
+    const list = await (await t.call("/admin/chat/api/list")).json();
+    const row = (title: string) => list.tasks.find((x: { title: string }) => x.title === title);
+    expect(row("cpu").state).toBe("working");
+    expect(row("disk").state).not.toBe("working");
+    expect(row("disk").labels).toEqual(["staying"]);
+  });
+
   it("a thread: hidden lines never reach the page, a reply's bits are read, its HTML is cleaned", async () => {
     const t = setUp();
     await t.post("/admin/chat/api/send", {

@@ -10,6 +10,7 @@ to place each part quickly, not as a promise that it behaves the same in every d
 |---|---|---|
 | **task** | a session: one conversation | one issue on shipify: a conversation and everything it leads to (a PR, a repeat, a deploy) |
 | **run** | a process | one job on one task, on a box: task (its one read, and its account), plan, think (only if needed), decide, apply |
+| **stay** · **staying** | HTTP keep-alive | after a run answers your words, it stays up to `SHIPIFY_STAY` quiet minutes (5) and answers your next plain words itself, in the same agent session, so they're answered in seconds (ADR 0057). The label `staying` is on the task meanwhile, and no other run starts for its events. Anything else (a fixed word, another repo or agent, a change) goes to a normal run, and it gives way when another run needs its slot |
 | **reply** | a program's output | the one way out: a comment by a run on a task, which the door copies to the chats it names. Its kind is answer, needs-you, live, alert or failed |
 | **status comment** | a process's status line | a run's one comment on a task, kept up to date: its state, the last run, the runs table |
 | **run details** | `time` and a resource summary | what a run did, at the end of its reply: agent, model, time, tokens, tools |
@@ -50,7 +51,7 @@ to place each part quickly, not as a promise that it behaves the same in every d
 | **door App** | a service account | the GitHub App the door writes as, installed on shipify only (`ship door setup`) |
 | **the watch** | cron plus a supervisor | the edge's check every 5 minutes: what's due, deploys, stopped tasks, notices of replies that didn't reach you, its guard (boxes, apps, channels, key dates), alerts. It rings the status task's runs by adding labels, and never starts a task's run (ADR 0042) |
 | **due run** · **clean-up** · **alert** | a cron job · a weekly tidy · a syslog alert | `watch.yml`'s runs: what's due now (and recipes kept in step) · one box's weekly tidy · what changed, as a reply on the status task |
-| **digest** | a weekly report | the due run's one message a week to your default chats (`SHIPIFY_DIGEST`, every Monday at 9:00 by default): boxes, apps, what waits on you, what's behind or due; "all clear" when nothing is (ADR 0053) |
+| **digest** | a weekly report | the due run's one message a week to your default chats (`SHIPIFY_DIGEST`, every Monday at 9:00 by default): boxes, apps, what waits on you, what's behind or due, the skills runs loaded; "all clear" when nothing is (ADR 0053) |
 | **status task** | `/proc` and the system log | the platform's own task, labelled `shipify-status`: its record of boxes, apps, coming up, recipes and recent events |
 | **status page** | a dashboard such as `htop` | `<the edge>/admin/status`: a read-only view of the status task and its links, behind Cloudflare Access |
 | **channel** | a terminal: where you type | a way you and Shipify talk: GitHub (always), Telegram and the web chat. What you can do is the same on every channel, and where you type decides the task (a comment, a reply, the open thread); only merges and the words that act on code stay on GitHub |
@@ -85,6 +86,7 @@ Words used only inside the code (decide, writes, apply, journal, cursor, snapsho
 | **repos App** | a guest service account | the second, small, public GitHub App another account installs, so Shipify reads its repos and opens PRs there, and nothing more (`ship bot repos`, ADR 0045) |
 | **account** · **your accounts** | a user or group · trusted domains | a GitHub org or user. Yours are Shipify's own and the ones you add (`SHIPIFY_ACCOUNTS`, `ship bot repos <account>`); any other account's repos are only read. A task works on one account, its repo's (ADR 0045) |
 | **skill** · **playbook** | a man page · a runbook | how to do a kind of work well (`skills/`) · the steps for one job (`playbooks/`). A way of working you teach Shipify becomes a skill by PR, not a note |
+| **scenarios** | a skill's tests | a skill's `scenarios.md`: asks that should load it, near misses that shouldn't, and cases (what went wrong without it, what it does instead). Each lesson adds a case (`skills/writing-skills`) |
 
 ## Projects
 

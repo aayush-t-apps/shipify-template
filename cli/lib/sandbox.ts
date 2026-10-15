@@ -552,6 +552,25 @@ export function prepareRun(slot: number, runId: string, io: SandboxIo = REAL_IO)
   return run;
 }
 
+/**
+ * The run's folder as an earlier step of this job made it (ADR 0057: a run that stays resumes its
+ * agent's session there): nothing removed, nothing made. Its folder must be there.
+ */
+export function reopenRun(slot: number, runId: string, io: SandboxIo = REAL_IO): AgentRun {
+  const run = runPaths(slot, runId, io.root);
+  const r = asAgentNow(
+    slot,
+    ["/bin/sh", "-c", 'test -d "$1/config"', "reopen", run.dir],
+    {
+      cwd: slotRoot(slot, io.root),
+    },
+    io,
+  );
+  if (r.code !== 0)
+    throw new ShipError(`${run.user}'s run folder for this run isn't there to carry on in.`);
+  return run;
+}
+
 /** A path inside a run's folder, from a relative one: never absolute, never `..`. */
 function inside(run: AgentRun, rel: string): string {
   const n = normalize(rel);

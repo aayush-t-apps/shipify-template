@@ -257,6 +257,22 @@ describe("stopped", () => {
     expect(t.labels).toEqual([]);
   });
 
+  it("takes a dead stay's label off as it says Stopped, so your `continue` starts a run (ADR 0057)", async () => {
+    const f = world(k);
+    status(f);
+    const t = f.issue({ created_at: new Date(f.w.at - 2 * HOUR).toISOString() });
+    t.labels.push("staying");
+    f.comment(
+      t.number,
+      statusLine({ cursor: { id: 1, at: new Date(f.w.at - HOUR).toISOString() } }),
+      RUN,
+    );
+    f.comment(t.number, "and the swap?", { login: "owner" });
+    f.later(11 * MIN);
+    await run(f);
+    expect(t.labels).toEqual(["stuck"]);
+  });
+
   it("says Stopped, once, when your words wait 10 minutes with no run: it never starts one (ADR 0042)", async () => {
     const f = world(k);
     const s = status(f);

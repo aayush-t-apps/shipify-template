@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { queue, rec, timeZone, thisRun } from "../commands/task/context.ts";
+import { queue, rec, thisRun, timeZone } from "../commands/task/context.ts";
 import { publishedDeploy } from "../commands/task/deploys.ts";
 import { publishMade } from "../commands/task/files.ts";
 import { Status, type StatusIssue } from "../commands/task/issue.ts";
@@ -23,14 +23,14 @@ import {
   replyLine,
   type ToolResult,
 } from "../contracts/index.ts";
-import { modelLabel } from "../lib/agents.ts";
-import { gh, ghRun, RECORD_WRITER } from "../lib/github.ts";
-import type { RecordWrite } from "../lib/plugins/record.ts";
 import { accountOf } from "../lib/accounts.ts";
+import { modelLabel } from "../lib/agents.ts";
+import { cloneArgs, gitEnv, githubUrl } from "../lib/clones.ts";
+import { gh, ghRun, RECORD_WRITER } from "../lib/github.ts";
 import { madeWith, taskLine } from "../lib/links.ts";
+import type { RecordWrite } from "../lib/plugins/record.ts";
 import { repoFor } from "../lib/projects-on-github.ts";
 import { type RunDetails, recordRun, renderRunDetails } from "../lib/runs.ts";
-import { cloneArgs, gitEnv, githubUrl } from "../lib/clones.ts";
 import { secretFindings } from "../lib/secret-scan.ts";
 import { dropRepeat, tryStatusIssue, upsertRepeat } from "../lib/status-issue.ts";
 import { findStatus, inertImages, MAX_REPLY, safeMarkdown, type TaskState } from "../lib/task.ts";
@@ -93,7 +93,17 @@ export async function apply(
   const replies: number[] = [];
   const asked = askedFrom(s);
   const links: Link[] = [];
-  const files: string[] = [];
+  /**
+   * The door told of a reply as soon as it's written (ADR 0057), before the status is saved, so a
+   * status GitHub refuses never keeps a written reply from your chat; one it wasn't told of gets the
+   * watch's notice.
+   */
+  const tellDoor = async (id: number, made: string[]) =>
+    env.tellDoor?.(s.n, id, made).catch((e) => {
+      process.stderr.write(
+        `${JSON.stringify({ level: "warn", event: "door.out.failed", task: s.n, comment: id, what: maskSecrets(errorLine(e)) })}\n`,
+      );
+    });
   /** A write GitHub (or anything) refused, as its problem; in the run's log too, so its cause shows
    * on GitHub's run page, not only in a reply. */
   const failed = (write: string, e: unknown) => {
@@ -290,7 +300,6 @@ export async function apply(
             out.length && env.tokens.files
               ? withToken(env.tokens.files, () => publishMade(s.n, out))
               : "";
-          files.push(...out);
           const allLinks = [...(r.links ?? []), ...links];
           const to = replyTo({
             kind: r.kind,
@@ -335,6 +344,8 @@ export async function apply(
           written.add(key);
           replies.push(id);
           st.reply = id;
+          // Told at once (ADR 0057): the writes after it never hold your reply back.
+          await tellDoor(id, out);
           // The list this reply asks a yes for: only a yes after it counts.
           if (st.pending.list && !st.pending.list.post) st.pending.list.post = id;
           break;
@@ -384,6 +395,7 @@ export async function apply(
         );
         replies.push(id);
         told = true;
+        await tellDoor(id, []);
       } catch (e) {
         problems.push(failed("reply", e));
       }
@@ -397,14 +409,6 @@ export async function apply(
   // Only the current cursor's journal is kept.
   st.journal = (st.journal ?? []).filter((j) => !j.done || j.at === s.now);
   st.cursor = cursorOf(s, st);
-  // The door is told of each reply written, before the status is saved, so a status GitHub refuses
-  // never keeps a written reply from your chat; one it wasn't told of gets the watch's notice.
-  for (const id of replies)
-    await env.tellDoor?.(s.n, id, files).catch((e) => {
-      process.stderr.write(
-        `${JSON.stringify({ level: "warn", event: "door.out.failed", task: s.n, comment: id, what: maskSecrets(errorLine(e)) })}\n`,
-      );
-    });
   // The status last, after everything else has settled (ADR 0051 B3).
   await status.save(st.phase, { summary: summaryOf(writes) });
   return { replies, problems, told };

@@ -6,6 +6,12 @@
  * marks it and alerts once; nothing starts it but your `continue`, whose run takes it off.
  */
 export const STUCK_LABEL = "stuck";
+/**
+ * On a task while its run stays after an answer (ADR 0057): task.yml starts no run for its events,
+ * since the staying run answers them. Off when it leaves, however its job ends, as the door closes
+ * the task, and as the watch marks it Stopped.
+ */
+export const STAYING_LABEL = "staying";
 /** On a task while its merged PR's deploy is followed by the due run. */
 export const DEPLOYING_LABEL = "deploying";
 /** On a task waiting for you (a question, a list for your yes, a PR to merge): the status page lists them. */
@@ -44,6 +50,8 @@ export const EVENTS = [
   "page.refused",
   "run.plan.decided",
   "run.plan.nothing",
+  "run.stay.handover",
+  "run.stay.left",
   "run.plan.reopen",
   "run.think.started",
   "run.think.ended",

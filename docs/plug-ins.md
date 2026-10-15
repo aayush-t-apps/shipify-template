@@ -89,7 +89,9 @@ imports the list, never an adapter.
   (`AgentRun.skills`), and the agent lists them itself, each with when it applies. Its adapter adds
   the flag that loads a folder of skills (pi's `--skill`), or, for an agent that reads skills only
   from its own settings, says where the run links them, as the agent (`skillsLink`: Claude Code's
-  `config/skills`). The conformance test checks it.
+  `config/skills`). The conformance test checks it, and that its report names the skills its agent
+  loaded (`AgentReport.skills`): its own skill tool's, or a read of a `SKILL.md` (the contract's
+  `skillRead`).
 - **Folders it mustn't write:** an agent that writes in its own settings when it can names them
   (`readOnly`: OpenCode's config folder, where it would install a package from npm on every
   start), and the run makes them again, empty and read-only, as the agent, before every ask.

@@ -67,6 +67,7 @@ start:
 | `security-and-hardening` | input, auth, secrets, anything exposed |
 | `notion` | a task that reads or changes the owner's Notion (`tools/notion`) |
 | `plug-ins` | adding or changing any plug-in, through its contract and conformance test |
+| `writing-skills` | adding a skill, putting a lesson into one, or changing one (`scenarios.md`) |
 
 ## Changing Shipify itself
 

@@ -186,6 +186,8 @@ export interface ThinkMeta {
   firstPush?: boolean;
   /** Its handoff for the next run (out/handoff.md, ADR 0041), however the run ended. */
   handoff?: string;
+  /** The agent's session, for a stay's next turn to carry on in (ADR 0057). */
+  session?: string;
 }
 
 /** One change a run makes, as data; apply makes it, each safe to repeat. */

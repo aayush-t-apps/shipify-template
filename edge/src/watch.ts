@@ -27,6 +27,7 @@ import {
   readFrom,
   readReply,
   readTaskSeen,
+  STAYING_LABEL,
   STUCK_LABEL,
   TASK_MARK,
   useTimeZone,
@@ -466,6 +467,12 @@ async function stopped(t: Tick) {
     await t.gh.json("POST", `repos/${t.gh.repo}/issues/${issue.number}/labels`, {
       labels: [STUCK_LABEL],
     });
+    // A stay whose box died left its label (ADR 0057): off, or task.yml would skip your `continue`.
+    if (issue.labels.some((l) => l.name === STAYING_LABEL))
+      await t.gh.call(
+        "DELETE",
+        `repos/${t.gh.repo}/issues/${issue.number}/labels/${STAYING_LABEL}`,
+      );
     t.once.push(note);
     t.log.warn("watch.stopped", { task: issue.number, why: note.problem.code });
   }

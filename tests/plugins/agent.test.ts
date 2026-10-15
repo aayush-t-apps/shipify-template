@@ -95,6 +95,43 @@ const ERRORED: Record<string, { lines: unknown[]; error: string }> = {
 };
 
 /**
+ * Each adapter's agent loading skills its own way: Claude Code's Skill tool or a Read,
+ * pi's read of a SKILL.md, OpenCode's skill tool or a read, as its gate says them. Each loads
+ * test-driven-development twice and reads one file that isn't a skill.
+ */
+const SKILL = "/opt/shipify/skills";
+const SKILL_LOADS: Record<string, unknown[]> = {
+  claude: [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", name: "Skill", input: { skill: "test-driven-development" } },
+          { type: "tool_use", name: "Read", input: { file_path: `${SKILL}/notion/SKILL.md` } },
+          { type: "tool_use", name: "Read", input: { file_path: "/work/src/skills.ts" } },
+          { type: "tool_use", name: "Skill", input: { skill: "test-driven-development" } },
+        ],
+      },
+    },
+  ],
+  pi: [
+    { type: "tool_execution_start", toolName: "read", args: { path: `${SKILL}/notion/SKILL.md` } },
+    { type: "tool_execution_start", toolName: "read", args: { path: "/work/src/skills.ts" } },
+    ...[1, 2].map(() => ({
+      type: "tool_execution_start",
+      toolName: "read",
+      args: { path: `${SKILL}/test-driven-development/SKILL.md` },
+    })),
+  ],
+  opencode: [
+    { type: "shipify", call: "skill", skill: "test-driven-development" },
+    { type: "shipify", call: "read", path: `${SKILL}/notion/SKILL.md` },
+    { type: "shipify", call: "read", path: "/work/src/skills.ts" },
+    { type: "shipify", call: "skill", skill: "test-driven-development" },
+  ],
+};
+
+/**
  * The same decisions for every agent (ADR 0043): the refused commands in any form an agent writes
  * them, and anything else, pipes, loops and reads outside its folders included.
  */
@@ -535,6 +572,19 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
     expect(report.version ?? pinned(name)).toBeTruthy();
     expect(report.model).toBeTruthy();
     expect(report.tokens?.output).toBeGreaterThan(0);
+  });
+
+  it("reports the skills its agent loaded, each once", () => {
+    const loads = SKILL_LOADS[name];
+    expect(loads, `add how ${name}'s agent loads a skill to SKILL_LOADS`).toBeTruthy();
+    const reader = adapter.reader();
+    for (const line of loads ?? []) reader.line(JSON.stringify(line));
+    expect(reader.report().skills).toEqual(["notion", "test-driven-development"]);
+    // A run that loaded none says none.
+    const quiet = adapter.reader();
+    for (const line of readFileSync(join(ROOT, RECORDED[name] as string), "utf8").split("\n"))
+      if (line) quiet.line(line);
+    expect(quiet.report().skills).toBeUndefined();
   });
 
   it("reports its model's last error in the model's own words (#233)", () => {

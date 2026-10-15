@@ -15,12 +15,12 @@ import {
   modelFacts,
   modelLookup,
 } from "../contracts/index.ts";
+import { accountOf } from "../lib/accounts.ts";
+import { adapterOf, heldTo, loginOf, modelLabel, readExecutors } from "../lib/agents.ts";
 import { ADD_ALL_BUT_CHECKOUTS } from "../lib/checkouts.ts";
 import { cloneArgs, gitConfig, githubUrl, keyFor } from "../lib/clones.ts";
-import { adapterOf, heldTo, loginOf, modelLabel, readExecutors } from "../lib/agents.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
 import { copyValues } from "../lib/generate.ts";
-import { accountOf } from "../lib/accounts.ts";
 import { ghRun, platformRepo } from "../lib/github.ts";
 import { notebookSection, pagesFor } from "../lib/notebook.ts";
 import type { Adapter, AgentReport } from "../lib/plugins/agent.ts";
@@ -33,7 +33,7 @@ import { hash8 } from "./keys.ts";
 import { binDir, type Place, placeFor } from "./place.ts";
 import { asksOf, buildPrompt, coverEach } from "./prompt.ts";
 import { type ReadIo, readRepos } from "./reads.ts";
-import { Result, RESULT_VERSION, readResult, saidAs, stopWords } from "./result.ts";
+import { RESULT_VERSION, Result, readResult, saidAs, stopWords } from "./result.ts";
 import type { Said, Snapshot, Stop, Think, ThinkMeta } from "./types.ts";
 
 // Each of think's steps stops at its own clock. Together they're the most a think can take, which
@@ -186,13 +186,20 @@ export interface ThinkIn {
   everyMs?: number;
   /** How the repos it reads are sized and the disk read (tests stand in for GitHub). */
   readIo?: ReadIo;
+  /**
+   * A stay's turn (ADR 0057): the agent's session this run's earlier ask left, carried on in the
+   * run's folder as it is, with only the words it answers now. Nothing is cloned or read again.
+   */
+  resume?: string;
+  /** The agent's minutes, when fewer than its own clock: a stay's turn ends within its token's hour. */
+  minutes?: number;
   /** A gateway's public answer, read with no key: what the run's model takes (none: not read). */
   look?: (url: string) => Promise<string | null>;
 }
 
 export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOut> {
   const timing = new Stopwatch();
-  const place = placeFor(s.run.id.replace(/[^A-Za-z0-9._-]/g, "-"), io.local);
+  const place = placeFor(s.run.id.replace(/[^A-Za-z0-9._-]/g, "-"), io.local, Boolean(io.resume));
   rmSync(io.keep, { recursive: true, force: true });
   mkdirSync(io.keep, { recursive: true });
   // Its own `<ship>` calls name your Shipify repo as the run does, and lay out a project with your
@@ -264,9 +271,11 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     // date with `ship refresh`, as the PC does: main merged, both changelogs kept, change docs
     // renumbered, the version bump redone. Where refresh stops (a real conflict), the clone goes
     // back to the branch as it was, so the agent never starts inside a half-done merge.
-    const cloned = await clone(place, s, t, env);
+    // A stay's turn carries on in what the run's first ask had: its clone and the repos it read.
+    const cloned = io.resume ? { behind: false } : await clone(place, s, t, env);
     // The repos it reads (ADR 0044): cloned now, into read/, before the agent starts.
-    if (t.reads?.length) notes.push(...(await readRepos(place, t.reads, env, io.readIo, key)));
+    if (t.reads?.length && !io.resume)
+      notes.push(...(await readRepos(place, t.reads, env, io.readIo, key)));
     // A repo that keeps its own rules has no `ship refresh` (no version bump of Shipify's to redo):
     // its default branch is merged its own way, by the agent.
     const trunk = t.base ?? "main";
@@ -404,7 +413,11 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
         isNew: t.fresh.includes(c.id) || caughtUp.includes(c.id),
       }));
     // Every ask this run covers, so each catch-up lists them all again, not only the newest.
-    let asks = asksOf({ why: t.why, body: s.issue.body, title: s.issue.title, conversation });
+    // A stay's turn answers only its new words (ADR 0057): what came before was answered.
+    const fresh = [...s.said.filter((c) => t.fresh.includes(c.id)), ...early];
+    let asks = io.resume
+      ? fresh.map((c) => c.text.trim())
+      : asksOf({ why: t.why, body: s.issue.body, title: s.issue.title, conversation });
     const prompt = buildPrompt({
       repo: platformRepo(),
       n: s.n,
@@ -516,7 +529,8 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     let stopBy: Said | undefined;
     // One ask of the agent: the prompt, what you wrote since, or what to fix, in the same session.
     // While it works, the task is read now and then for your `stop`, which stops all of it.
-    const ask = async (args: string[], stdin: string, minutes = AGENT_MINUTES) => {
+    const agentMinutes = Math.min(io.minutes ?? AGENT_MINUTES, AGENT_MINUTES);
+    const ask = async (args: string[], stdin: string, minutes = agentMinutes) => {
       await giveSettings();
       const reader = adapter.reader();
       const started = performance.now();
@@ -564,7 +578,9 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       return { outcome, report };
     };
     const began = performance.now();
-    const { outcome, report } = await ask(argv, prompt);
+    const { outcome, report } = io.resume
+      ? await ask(argvFor(io.resume), nextPrompt(fresh, notes))
+      : await ask(argv, prompt);
     // Its command never started (exec's 126: not the agent's to run; 127: not there): said as that,
     // never as an agent that stopped early.
     if ((outcome.code === 126 || outcome.code === 127) && !place.take("result.json")) {
@@ -617,7 +633,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       const late = tryOr(() => laterWords(later(), after, Boolean(io.fetch)), undefined);
       const plain = late?.plain ?? [];
       waiting = plain.length + (late?.waiting ?? 0);
-      const left = AGENT_MINUTES - (performance.now() - began) / 60_000;
+      const left = agentMinutes - (performance.now() - began) / 60_000;
       if (!plain.length || left < CATCH_UP_MINUTES) break;
       // Their files first: a read run's folders, made with its arguments, take them in too.
       const fetched = await filesOf(plain);
@@ -645,6 +661,10 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       asks = [...asks, ...plain.map((c) => c.text.trim())];
       waiting = late?.waiting ?? 0;
     }
+    if (io.resume && !stopBy && !("error" in result))
+      checkNotes.push(
+        "The run stayed after its last answer (ADR 0057): this one came from the same session, with no new run.",
+      );
     if (caughtUp.length && !stopBy && !("error" in result))
       checkNotes.push(
         `It took in ${caughtUp.length === 1 ? "the message" : `${caughtUp.length} messages`} you sent while it worked, before it answered.`,
@@ -766,6 +786,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       ...(commits ? { commits } : {}),
       ...(commits && newRepo ? { firstPush: true } : {}),
       ...(handoff ? { handoff } : {}),
+      ...(session ? { session } : {}),
     };
     keep("meta.json", JSON.stringify(meta));
     return { out: io.keep, meta, details: timing.details(t.why, "thought", checkNotes) };
@@ -966,6 +987,21 @@ export const fixPrompt = (tail: string) =>
     "```",
     "",
     "Fix the cause in your clone: the change, its tests, its version or its docs. Never skip, weaken or delete a check to pass it. Commit, then give your result again as before.",
+  ].join("\n");
+
+/**
+ * What the agent is told in a stay's turn (ADR 0057): the owner's words since its last reply, which
+ * was posted, in the same session. One reply covers each of them.
+ */
+export const nextPrompt = (said: Said[], notes: string[] = []) =>
+  [
+    "The owner read your reply and wrote again. These messages are instructions, as the NEW ones were (oldest first):",
+    "",
+    ...said.map((c) => `- the owner, ${c.at}:\n${c.text.trim().replace(/^/gm, "  ")}`),
+    "",
+    ...(notes.length ? ["Notes from the box:", ...notes.map((n) => `- ${n}`), ""] : []),
+    ...coverEach(said.map((c) => c.text.trim())),
+    "Give your result as before, in the same shape: one reply to what they asked now.",
   ].join("\n");
 
 /** What the agent is told of the words you wrote while it worked, before anything is posted. */

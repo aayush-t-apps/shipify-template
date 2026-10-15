@@ -72,6 +72,8 @@ export interface IssueQuery {
   labels?: string[];
   /** Only the newest this many, by when each was opened (one page: no paging through all). */
   newest?: number;
+  /** Only those updated at or after this time (ISO 8601): the weekly digest's week. */
+  since?: string;
 }
 
 export interface IssuePatch {
@@ -99,6 +101,18 @@ export interface TaskRecord {
   issueState(n: number): "open" | "closed" | "gone" | "unknown";
   /** Every comment, oldest first; with `since`, only those written or edited since then. */
   comments(n: number, since?: string): RecordComment[];
+  /**
+   * As `comments(n, since)`, only when anything changed since the answer `tag` names (ADR 0057: a
+   * run that stays reads its task every few seconds): unchanged is `{ tag }` with no comments, and
+   * costs the record nothing. The first read has no tag.
+   */
+  commentsIfChanged(
+    n: number,
+    since: string,
+    tag?: string,
+  ): { tag?: string; comments?: RecordComment[] };
+  /** As `issue(n)`, only when it changed since `tag`: unchanged is `{ tag }` with no issue. */
+  issueIfChanged(n: number, tag?: string): { tag?: string; issue?: RecordIssue };
   /**
    * The issue's and its comments' rendered HTML: where pasted images and attached files show as
    * links the record signs. With `since`, only the comments written or edited since then (and no
@@ -170,4 +184,11 @@ export interface Queue {
   active(): string[];
   /** A workflow's recent runs, newest first. */
   runs(workflow: string, count?: number): QueueRun[];
+  /**
+   * Whether a job waits for a machine with this label (ADR 0057: a run that stays gives its slot
+   * to it). A run held back behind its task's own run has no job yet, so it never counts. Read only
+   * when the queue changed since `tag`: unchanged, it says nothing new waits. `since`: when the
+   * longest waiting job was queued.
+   */
+  waitingFor(label: string, tag?: string): { tag?: string; waiting: boolean; since?: string };
 }

@@ -315,6 +315,11 @@ describe("agents: Claude Code's adapter", () => {
     expect(mergeReports({}, {}).readOutside).toBeUndefined();
     expect(mergeReports({ readOutside: true }, {}).readOutside).toBe(true);
     expect(mergeReports({}, { readOutside: true }).readOutside).toBe(true);
+    // The skills of every ask, each once.
+    expect(mergeReports({ skills: ["notion"] }, { skills: ["notion", "plug-ins"] }).skills).toEqual(
+      ["notion", "plug-ins"],
+    );
+    expect(mergeReports({}, {}).skills).toBeUndefined();
   });
 });
 
@@ -402,6 +407,12 @@ describe("runs: what each run shows on its task", () => {
     expect(renderRunDetails(details({ denied: ["Bash: ls | wc"] }), "UTC")).toContain(
       "| Refused | Bash: ls \\| wc |",
     );
+    // The skills its agent loaded, and no row when it loaded none.
+    const skilled = details({ skills: ["systematic-debugging", "test-driven-development"] });
+    expect(renderRunDetails(skilled, "UTC")).toContain(
+      "| Skills | systematic-debugging · test-driven-development |",
+    );
+    expect(renderRunDetails(details(), "UTC")).not.toContain("| Skills |");
   });
 
   it("keeps the last 20 runs as rows, the newest in full, and counts them all", () => {
@@ -412,11 +423,15 @@ describe("runs: what each run shows on its task", () => {
     expect(state.ran).toBe(25);
     expect(state.last?.tools).toEqual({ Read: 8, Bash: 12, "notion.search": 2 });
     expect(state.runs?.[0]).toMatchObject({ in: 185_700, out: 6100, secs: 92, why: "comment" });
+    expect(state.runs?.[0]?.skills).toBeUndefined();
     const table = renderRuns(state.runs ?? [], state.ran ?? 0, "UTC");
     expect(table).toContain("<summary>Runs: the last 20 of 25</summary>");
     expect(table).toContain(
       "| comment | homepi | Sonnet 5.5 · medium | 1m 32s | 186k / 6.1k | [needs you](https://github.com/o/shipify/actions/runs/1) |",
     );
+    // A row keeps the skills its run loaded, for the weekly digest.
+    recordRun(state, details({ skills: ["notion"] }));
+    expect(state.runs?.at(-1)?.skills).toEqual(["notion"]);
   });
 });
 

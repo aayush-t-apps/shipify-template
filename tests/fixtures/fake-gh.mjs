@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 // A stand-in for the gh CLI in task tests: one issue in one repo, kept in FAKE_GH_STATE (JSON).
 // It answers only the calls `ship task` makes for a task without a project, and fails the rest.
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
@@ -41,7 +42,22 @@ const stdin = () => {
  * comments) in parts, and process.exit would cut it short.
  */
 const out = (v) => {
-  const buf = Buffer.from(`${typeof v === "string" ? v : JSON.stringify(v)}\n`);
+  let text = typeof v === "string" ? v : JSON.stringify(v);
+  // `gh api -i` (ADR 0057's reads that cost nothing when nothing changed): the status and an ETag,
+  // the answer's hash; a 304 with no answer when it matches the If-None-Match sent.
+  if (process.argv.includes("-i")) {
+    const etag = `"${createHash("sha1").update(text).digest("hex")}"`;
+    const asked = process.argv
+      .map((a, i, all) => (all[i - 1] === "-H" && /^If-None-Match:/i.test(a) ? a : ""))
+      .find(Boolean);
+    if (asked && asked.replace(/^If-None-Match:\s*/i, "") === etag) {
+      writeSync(1, "HTTP/2.0 304 Not Modified\r\n\r\n");
+      save();
+      process.exit(1);
+    }
+    text = `HTTP/2.0 200 OK\r\netag: ${etag}\r\n\r\n${text}`;
+  }
+  const buf = Buffer.from(`${text}\n`);
   for (let at = 0; at < buf.length; ) {
     try {
       at += writeSync(1, buf, at);
@@ -541,6 +557,17 @@ else if (
 else if (method === "GET" && path?.startsWith(`repos/${state.repo}/actions/variables`)) {
   if (state.noVariables) fail("HTTP 403: Resource not accessible by integration");
   out({ total_count: 0, variables: [] });
+}
+// Runs waiting for a machine, when a test says (`queued`: each run's id and its jobs).
+else if (
+  method === "GET" &&
+  state.queued &&
+  path?.startsWith(`repos/${state.repo}/actions/runs?status=queued`)
+)
+  out({ workflow_runs: state.queued.map((r) => ({ id: r.id })) });
+else if (method === "GET" && /\/actions\/runs\/\d+\/jobs/.test(path ?? "")) {
+  const id = Number(/\/runs\/(\d+)\/jobs/.exec(path)[1]);
+  out({ jobs: (state.queued ?? []).find((r) => r.id === id)?.jobs ?? [] });
 }
 // What's running, when a test says (`active`: each run's display title, "task #13" say).
 else if (method === "GET" && state.active && path?.startsWith(`repos/${state.repo}/actions/runs?`))

@@ -46,6 +46,7 @@ import {
   recipesText,
   reposText,
   STATE_LABELS,
+  STAYING_LABEL,
   useCommand,
   withUpcoming,
 } from "../../cli/contracts/index.ts";
@@ -605,7 +606,8 @@ async function write(
   const turn = task !== null && !file ? turnOf(text, task) : undefined;
   if (task !== null && turn) {
     if (open === (turn === "reopen")) return say(ALREADY(task, Boolean(open)), "already");
-    const gone = new Set<string>(STATE_LABELS);
+    // A run that stays (ADR 0057) leaves on its next read of a closed task: its label goes now.
+    const gone = new Set<string>([...STATE_LABELS, STAYING_LABEL]);
     const r = await gh.call("PATCH", `repos/${gh.repo}/issues/${task}`, {
       state: turn === "close" ? "closed" : "open",
       ...(turn === "close"

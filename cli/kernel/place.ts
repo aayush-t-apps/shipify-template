@@ -28,6 +28,7 @@ import {
   onBox,
   prepareRun,
   readOut,
+  reopenRun,
 } from "../lib/sandbox.ts";
 
 export interface RunOpts {
@@ -73,10 +74,15 @@ export interface Place {
   take(name: string, maxBytes?: number): Buffer | undefined;
 }
 
-/** The place for this run: the slot's sandbox on a box, else a folder under `local`. */
-export function placeFor(runId: string, local: string): Place {
+/**
+ * The place for this run: the slot's sandbox on a box, else a folder under `local`. Made fresh, or
+ * with `reopen`, the one an earlier step of this job made, as it left it (ADR 0057: a stay carries
+ * on in the agent's session there).
+ */
+export function placeFor(runId: string, local: string, reopen = false): Place {
   const box = onBox();
-  return box ? boxPlace(prepareRun(box.slot, runId)) : localPlace(local);
+  if (box) return boxPlace(reopen ? reopenRun(box.slot, runId) : prepareRun(box.slot, runId));
+  return localPlace(local, reopen);
 }
 
 /** The folder a command is in, on this process's PATH: for the agent's own command (think). */
@@ -116,8 +122,10 @@ function boxPlace(r: AgentRun): Place {
   };
 }
 
-function localPlace(dir: string): Place {
-  rmSync(dir, { recursive: true, force: true });
+function localPlace(dir: string, reopen = false): Place {
+  if (reopen && !existsSync(join(dir, "config")))
+    throw new ShipError("this run's folder isn't there to carry on in.");
+  if (!reopen) rmSync(dir, { recursive: true, force: true });
   const at = (d: string) => join(dir, d);
   for (const d of ["home", "config", "tmp", "work", "read", "in", "out"])
     mkdirSync(at(d), { recursive: true, mode: 0o700 });

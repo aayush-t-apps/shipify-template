@@ -281,11 +281,11 @@ reaches the runner's keys or changes what the runner runs next.
 
   | Folder | Holds |
   |---|---|
-  | `/opt/shipify/tool` | the runner's tool cache: Node, and each agent at the version `executors.json` pins (`claude-code/<version>` about 233 MB, `pi/<version>` about 166 MB, `opencode/<version>` about 177 MB), installed the first time a run picks it ([agents.md](agents.md#on-a-box)) |
+  | `/opt/shipify/tool` | the runner's tool cache: the watch's Node, and each agent at the version `executors.json` pins (`claude-code/<version>` about 233 MB, `pi/<version>` about 166 MB, `opencode/<version>` about 177 MB), installed the first time a run picks it ([agents.md](agents.md#on-a-box)) |
   | `/opt/shipify/tool/shipify-app/<commit>` | read-only copies of Shipify, one per commit: the CLI built as one file that every step and the agent start, its playbook, skills and checks; no packages (the three newest, and any a run is on; runs that start together on a new commit each build their own, and the first moves it in) |
 
-  What goes in them is installed with `umask 022`, so agents can read it. The agent's commands use
-  the system's Node and pnpm (`/usr/local/bin`, from `box add`). A test browser is each slot's
+  What goes in them is installed with `umask 022`, so agents can read it. A task's run and its agent
+  both use the system's Node and pnpm (`/usr/local/bin`, from `box add`; ADR 0057). A test browser is each slot's
   agent's own, in its slot's cache, downloaded once per slot (ADR 0041).
 - **Each run, a fresh folder,** `/srv/shipify-agent-<k>/run-<id>/`: its own clone of the latest
   code, home and work, gone before the next run ([security.md](security.md#the-agents-sandbox)).
@@ -330,8 +330,8 @@ updates itself.
 
 | Piece | Stays current |
 |---|---|
-| shipify's code | each job checks out its own commit |
-| Node 22 | the weekly clean-up takes the newest 22.x for jobs, and keeps the two newest; `box add` again updates the system's, which the agent uses |
+| shipify's code | a run fetches its commit only when the box has no copy of it (ADR 0057); the watch's jobs check out their own |
+| Node 22 | `box add` again (or a new image) updates the system's, which a task's run and its agent use; the weekly clean-up takes the newest 22.x for the watch's jobs, and keeps the two newest |
 | pnpm, the agents | pinned (`packageManager`; each agent's `install` in `executors.json`); they change only in a PR. The weekly clean-up removes an agent's other versions |
 | packages | one pnpm store per box, pruned weekly |
 | the box itself | `box/setup.sh`: a change bumps `SETUP_VERSION`, and `ship doctor` names a box set up by an older one |

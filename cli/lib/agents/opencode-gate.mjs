@@ -159,6 +159,9 @@ export const ShipifyGate = async () => {
       say({
         call: Object.hasOwn(rules.look, input.tool) ? rules.look[input.tool] : input.tool,
         ...(input.tool === "bash" ? { command: String(args.command ?? "") } : {}),
+        // What it loads, for the run's details: a skill by name, a file read by its path.
+        ...(input.tool === "skill" ? { skill: String(args.name ?? "") } : {}),
+        ...(input.tool === "read" ? { path: String(args.filePath ?? "") } : {}),
         ...(why ? { refused: `${REFUSED}: ${why}` } : {}),
       });
       if (why) throw new Error(`${REFUSED}: ${why}`);

@@ -7,15 +7,16 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { GIVE_UP_MS } from "../cli/kernel/decide.ts";
 import { REPOS_PERMISSIONS } from "../cli/commands/bot.ts";
+import { NEEDS_YOU_LABEL } from "../cli/contracts/labels.ts";
+import { GIVE_UP_MS } from "../cli/kernel/decide.ts";
 import { agentOf, agentRepos } from "../cli/kernel/run.ts";
-import { workflowsMismatch } from "../cli/kernel/workflows.ts";
-import { WAITING_LABEL } from "../cli/lib/repeat.ts";
+import { STAY_LAST_MINUTES } from "../cli/kernel/stay.ts";
 import { THINK_MINUTES } from "../cli/kernel/think.ts";
 import type { Plan, Snapshot } from "../cli/kernel/types.ts";
+import { workflowsMismatch } from "../cli/kernel/workflows.ts";
 import { loginOf, readExecutors } from "../cli/lib/agents.ts";
-import { NEEDS_YOU_LABEL } from "../cli/contracts/labels.ts";
+import { WAITING_LABEL } from "../cli/lib/repeat.ts";
 import { newState, TASK_LABELS, type TaskState } from "../cli/lib/task.ts";
 import { ROOT } from "./helpers.ts";
 
@@ -88,11 +89,90 @@ describe("task.yml (ADR 0031)", () => {
     expect(Object.keys(t.jobs).sort()).toEqual(["github", "run"]);
     expect(run["runs-on"]).toEqual(["self-hosted", "shipify-box", "sandbox"]);
     expect(github["runs-on"]).toBe("ubuntu-latest");
-    // A push's plans step compares its two ends (ship task plans): the push fetches main's history.
-    const checkout = run.steps.find((s) => String(s.uses).startsWith("actions/checkout@"));
-    expect(checkout?.with?.["fetch-depth"]).toBe(
-      "${{ github.event_name == 'push' && '0' || '1' }}",
-    );
+  });
+
+  it("downloads no checkout or setup-node on a box: the box's Node, Shipify fetched only when needed (ADR 0057)", () => {
+    // The runner downloads every action a job names on every job, so the run job names neither.
+    for (const s of run.steps) {
+      expect(String(s.uses ?? "")).not.toMatch(/^actions\/(checkout|setup-node)@/);
+    }
+    const fetch = run.steps[0] as Step;
+    expect(fetch.name).toBe("Shipify at this commit, only if this box has no copy of it");
+    // Its key only in this step, and only in git's environment: never on a command line or a file.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub expression, not a template
+    expect(fetch.env?.FETCH_TOKEN).toBe("${{ github.token }}");
+    expect(fetch.run).toContain("GIT_CONFIG_VALUE_0=");
+    for (const line of (fetch.run ?? "").split("\n").filter((l) => /\bgit\b/.test(l)))
+      expect(line).not.toContain("FETCH_TOKEN");
+    expect(
+      run.steps.slice(1).every((s) => !JSON.stringify(s.env ?? {}).includes("FETCH_TOKEN")),
+    ).toBe(true);
+  });
+
+  it("fetches Shipify only when the box has no copy, a push's two ends too, and empties the workspace (ADR 0057)", () => {
+    const script = (run.steps[0] as Step).run ?? "";
+    const tmp = mkdtempSync(join(tmpdir(), "fetch-"));
+    const origin = join(tmp, "origin");
+    const bin = join(tmp, "bin");
+    mkdirSync(origin);
+    mkdirSync(bin);
+    const git = (...a: string[]) => execFileSync("git", ["-C", origin, ...a], { encoding: "utf8" });
+    const commit = (file: string) => {
+      writeFileSync(join(origin, file), file);
+      git("add", ".");
+      git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", file);
+      return git("rev-parse", "HEAD").trim();
+    };
+    git("init", "-q");
+    git("config", "uploadpack.allowReachableSHA1InWant", "true");
+    const before = commit("a.txt");
+    const after = commit("plans.md");
+    const go = (ws: string, env: Record<string, string>, node = "v22.1.0") => {
+      mkdirSync(ws, { recursive: true });
+      writeFileSync(join(bin, "node"), `#!/bin/sh\necho ${node}\n`, { mode: 0o755 });
+      return spawnSync(
+        "bash",
+        ["-c", script.replace("https://github.com/$GITHUB_REPOSITORY", origin)],
+        {
+          cwd: ws,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            RUNNER_TOOL_CACHE: join(tmp, "tools"),
+            GITHUB_SHA: after,
+            GITHUB_REPOSITORY: "o/r",
+            FETCH_TOKEN: "t0ken",
+            PUSH: "",
+            BEFORE: "",
+            ...env,
+          },
+        },
+      );
+    };
+    // No copy yet: this commit, checked out, and an earlier job's file gone.
+    const ws = join(tmp, "ws");
+    mkdirSync(ws);
+    writeFileSync(join(ws, "stale.txt"), "old");
+    expect(go(ws, {}).status).toBe(0);
+    expect(readdirSync(ws).sort()).toEqual([".git", "a.txt", "plans.md"]);
+    expect(readFileSync(join(ws, ".git", "config"), "utf8")).not.toContain("t0ken");
+    // A copy built: nothing fetched, the workspace left empty.
+    mkdirSync(join(tmp, "tools", "shipify-app", after), { recursive: true });
+    writeFileSync(join(tmp, "tools", "shipify-app", after, ".built"), "");
+    expect(go(ws, {}).status).toBe(0);
+    expect(readdirSync(ws)).toEqual([]);
+    // A push: both ends, so its plans step can compare them, copy or not.
+    const pushed = join(tmp, "push");
+    expect(go(pushed, { PUSH: "yes", BEFORE: before }).status).toBe(0);
+    const diff = execFileSync("git", ["-C", pushed, "diff", "--name-only", before, after], {
+      encoding: "utf8",
+    });
+    expect(diff.trim()).toBe("plans.md");
+    // A box whose Node isn't 22 says so, with its fix.
+    const old = go(join(tmp, "old"), {}, "v20.1.0");
+    expect(old.status).not.toBe(0);
+    expect(old.stdout).toContain("run its box setup again");
   });
 
   it("starts a run only for you or the door App, never for the status issue, a notebook page or a PR", () => {
@@ -194,10 +274,10 @@ describe("task.yml (ADR 0031)", () => {
   it("starts every step of a box's run from the CLI built once per commit, in a copy made first (ADR 0051)", () => {
     const copyAt = run.steps.findIndex((s) => s.run?.includes("scripts/build-cli.mjs"));
     const copy = run.steps[copyAt] as Step;
-    // Made on every run, right after the checkout and Node, before any step needs the CLI.
+    // Made on every run, right after Shipify's fetch, before any step needs the CLI.
     expect(copyAt).toBeGreaterThan(-1);
     expect(copy.if).toBeUndefined();
-    expect(run.steps.slice(0, copyAt).every((s) => !s.run?.includes("ship"))).toBe(true);
+    expect(run.steps.slice(0, copyAt).every((s) => !s.run?.includes(BUILT))).toBe(true);
     expect(copy.run).toContain('"$dir/.built"');
     expect(copy.run).toContain("SHIPIFY_COPY=$dir");
     // No `pnpm ship` on a box, and no step before the copy is named after the CLI.
@@ -274,11 +354,34 @@ describe("task.yml (ADR 0031)", () => {
       );
   });
 
+  it("stays after an answer with no write key, its events skipped, its label off however it ends (ADR 0057)", () => {
+    expect(run.if).toContain("!contains(github.event.issue.labels.*.name, 'staying')");
+    const stayStep = step("stay");
+    expect(stayStep.if).toBe("steps.decide.outputs.stay == 'yes'");
+    expect(stayStep.run).toContain(`${BUILT} run stay`);
+    for (const [k, v] of Object.entries(stayStep.env ?? {})) {
+      expect(k).not.toMatch(/_WRITE$/);
+      expect(String(v)).not.toMatch(/steps\.(write|write_account|files)\./);
+    }
+    // After apply: the answer is out before it stays.
+    const at = (s: Step) => run.steps.indexOf(s);
+    const applied = run.steps.find((s) => s.name?.startsWith("Apply")) as Step;
+    expect(at(stayStep)).toBeGreaterThan(at(applied));
+    const off = run.steps.find((s) => s.name === "Its stay's label off, however the job ends");
+    expect(off?.if).toBe("always() && steps.decide.outputs.stay == 'yes'");
+    expect(off?.run).toContain("/labels/staying");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub expression, not a template
+    expect(step("decide").env?.SHIPIFY_STAY).toBe("${{ vars.SHIPIFY_STAY }}");
+  });
+
   it("gives the job the sum of its clocks, and keeps a run's copy of Shipify at least as long (ADR 0035)", () => {
     const job = run["timeout-minutes"] ?? 0;
-    // think's steps, plan's follow of a deploy, and about 15 for setup, decide and apply.
-    expect(job).toBeGreaterThanOrEqual(THINK_MINUTES + GIVE_UP_MS / 60_000 + 15);
-    const copy = run.steps.find((s) => s.run?.includes("shipify-app"))?.run ?? "";
+    // think's steps, plan's follow of a deploy, about 15 for setup, decide and apply, and a stay's
+    // last turn (ADR 0057).
+    expect(job).toBeGreaterThanOrEqual(
+      THINK_MINUTES + GIVE_UP_MS / 60_000 + 15 + STAY_LAST_MINUTES,
+    );
+    const copy = run.steps.find((s) => s.run?.includes("scripts/build-cli.mjs"))?.run ?? "";
     expect(Number(/now - \$1 > (\d+)/.exec(copy)?.[1])).toBeGreaterThanOrEqual(job * 60);
   });
 
@@ -405,8 +508,14 @@ describe("task.yml (ADR 0031)", () => {
           for (const key of ["SHIPIFY_BOT_KEY", "SHIPIFY_REPOS_KEY"])
             expect(s.run, s.name).toContain(`"${key}"`);
       }
-    // One secret by name, the agent's login, which plan takes from executors.json alone.
-    expect(text.match(/secrets\[[^\]]+\]/g)).toEqual(["secrets[steps.plan.outputs.login]"]);
+    // One secret by name, the agent's login, which plan takes from executors.json alone: to think,
+    // and to a stay's turns, which think again in the same session (ADR 0057).
+    expect(new Set(text.match(/secrets\[[^\]]+\]/g))).toEqual(
+      new Set(["secrets[steps.plan.outputs.login]"]),
+    );
+    expect(
+      run.steps.filter((s) => JSON.stringify(s.env ?? {}).includes("secrets[")).map((s) => s.id),
+    ).toEqual(["think", "stay"]);
     const h = readExecutors(join(ROOT, "executors.json"));
     const logins = new Set(Object.values(h.executors).map((e) => loginOf(e, h.gateways)?.secret));
     for (const [id, e] of Object.entries(h.executors))

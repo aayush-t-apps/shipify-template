@@ -27,15 +27,16 @@ import {
   runApply,
   runDecide,
   runFailed,
-  runPlan,
   runGithub,
+  runPlan,
+  runStay,
   runStep,
   runTask,
   runThinkStep,
 } from "../cli/kernel/run.ts";
-import { setUpcoming, StatusIssueState } from "../cli/lib/status-issue.ts";
-import { findStatus, newState, renderStatus, type TaskState } from "../cli/lib/task.ts";
 import type { Result } from "../cli/lib/output.ts";
+import { StatusIssueState, setUpcoming } from "../cli/lib/status-issue.ts";
+import { findStatus, newState, renderStatus, type TaskState } from "../cli/lib/task.ts";
 import { ROOT, sandbox } from "./helpers.ts";
 
 interface Fake {
@@ -452,6 +453,31 @@ describe("apply when GitHub refuses a write", () => {
     expect(labels()).toContain("failed");
     // Its problem reached no reply: the job fails, so the failure step tells it.
     expect(done.told).toBe(false);
+  });
+
+  it("tells the door of a reply as soon as it's written, before the writes after it (ADR 0057)", async () => {
+    const labels = () => read().issue.labels.map((l) => l.name);
+    Object.assign(process.env, { EVENT: "issues", ACTION: "opened", GITHUB_RUN_ID: "42" });
+    writeFileSync(outputs, "");
+    await runPlan(12);
+    const { s, p } = JSON.parse(
+      readFileSync(join(workspace(), ".tasks", "12", "plan.json"), "utf8"),
+    );
+    const seen: string[][] = [];
+    const done = await apply(
+      s,
+      p.state,
+      [
+        { w: "reply", kind: "answer", state: "Done", text: "About 12 GB free.", step: "think-new" },
+        { w: "labels", add: ["later"] },
+      ],
+      { defaults: [], tokens: {}, tellDoor: async () => void seen.push(labels()) },
+    );
+    expect(done.replies).toHaveLength(1);
+    // Told once, while the label written after the reply wasn't there yet.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toContain("later");
+    expect(labels()).toContain("later");
   });
 
   it("a reply from a run that read outside content posts no image, in any field (ADR 0044)", async () => {
@@ -964,6 +990,109 @@ describe("a run end to end", () => {
     expect(last?.line?.kind).toBe("failed");
     expect(last?.c.body).toContain("The agent couldn't start on this box");
     expect(last?.c.body).toContain("pnpm ship doctor");
+  });
+
+  describe("a run that stays (ADR 0057)", () => {
+    /** Waits for what a running stay does, reading the fake's state as it goes. */
+    const until = async (done: () => boolean) => {
+      // The fake's state is rewritten whole by each gh the stay starts: a read mid-write retries.
+      const now = () => {
+        try {
+          return done();
+        } catch {
+          return false;
+        }
+      };
+      for (let i = 0; i < 300 && !now(); i++) await new Promise((r) => setTimeout(r, 100));
+      expect(now()).toBe(true);
+    };
+    const labels = () => read().issue.labels.map((l) => l.name);
+    const agentOut = () => join(workspace(), ".tasks", "12", "agent", "out");
+    /** Your words while a stay runs: under the fake gh's own lock, so neither loses the other's. */
+    const sayNow = async (body: string) => {
+      for (;;) {
+        try {
+          mkdirSync(`${file}.lock`);
+          break;
+        } catch {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+      }
+      try {
+        say(body);
+      } finally {
+        rmSync(`${file}.lock`, { recursive: true, force: true });
+      }
+    };
+
+    it("answers your next words in the same session, collated, then leaves on your stop", async () => {
+      process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
+      try {
+        const r = await job("issues", "opened");
+        expect(r.do).toBe("think");
+        // The run stays: `staying` is on before the answer reaches your chat.
+        expect(out("stay")).toBe("yes");
+        expect(labels()).toContain("staying");
+        expect(replies()).toHaveLength(1);
+        say("and the swap?");
+        say("and the inodes?");
+        process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "2 GB of swap." });
+        const staying = runStay(12);
+        await until(() => replies().length === 2);
+        await sayNow("stop");
+        const done = await staying;
+        expect(done.summary).toContain("1 answer; left: you said stop");
+        // One reply covers both asks, from the same session carried on, with only the new words.
+        expect(replies().at(-1)?.c.body).toContain("2 GB of swap.");
+        const argv = JSON.parse(readFileSync(join(agentOut(), "next-final-argv.json"), "utf8"));
+        expect(argv).toEqual(expect.arrayContaining(["--resume", "s-1"]));
+        const prompt = readFileSync(join(agentOut(), "next-prompt.md"), "utf8");
+        expect(prompt).toContain("and the swap?");
+        expect(prompt).toContain("and the inodes?");
+        expect(prompt).not.toContain("how much disk is free?");
+        // Its label is off, no run was started for it, and both words were read (👀).
+        expect(labels()).not.toContain("staying");
+        expect(read().calls.some((c) => c.startsWith("workflow run task.yml"))).toBe(false);
+        expect(status().seen).toBeGreaterThanOrEqual(
+          Math.max(
+            ...read()
+              .comments.filter((c) => c.body.startsWith("and the"))
+              .map((c) => c.id),
+          ),
+        );
+      } finally {
+        delete process.env.FAKE_FINAL;
+      }
+    });
+
+    it("hands words a normal run must take to one: its label off, that run started", async () => {
+      process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
+      try {
+        await job("issues", "opened");
+        expect(labels()).toContain("staying");
+        // Another agent: plan answers it itself, so a normal run takes it.
+        say("use pi");
+        const done = await runStay(12);
+        expect(done.summary).toContain("left: words for a normal run");
+        expect(labels()).not.toContain("staying");
+        expect(read().calls).toContain("workflow run task.yml -R o/shipify -f issue=12 -f job=run");
+      } finally {
+        delete process.env.FAKE_FINAL;
+      }
+    });
+
+    it("never stays after work, nor when SHIPIFY_STAY is 0", async () => {
+      process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
+      process.env.SHIPIFY_STAY = "0";
+      try {
+        await job("issues", "opened");
+        expect(out("stay")).toBe("");
+        expect(labels()).not.toContain("staying");
+      } finally {
+        delete process.env.FAKE_FINAL;
+        delete process.env.SHIPIFY_STAY;
+      }
+    });
   });
 
   it("takes the agent's final answer when it couldn't write its result file (structured output)", async () => {

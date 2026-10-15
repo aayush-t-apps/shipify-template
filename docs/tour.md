@@ -124,14 +124,18 @@ sequenceDiagram
    `answer`. Nothing to mint.
 6. **Apply.** `ship run apply` (`apply.ts`) posts the reply. Its first line is a hidden
    `<!-- shipify-reply {…} -->`: its kind, its key (`keys.ts`) and the chats to copy it to
-   (`route.ts`). Run details close it (`cli/lib/runs.ts`). Then the status comment, last. Then
-   `door.ts` calls `POST /door/replied` with the run's OIDC token.
+   (`route.ts`). Run details close it (`cli/lib/runs.ts`). Then `door.ts` calls
+   `POST /door/replied` with the run's OIDC token, as soon as the reply is written; the status
+   comment comes last.
 7. **The door copies it.** It checks the token (shipify's `main`, `task.yml` or `watch.yml`), reads
    the comment, sends it to your chat, and adds 🚀. A reply with no 🚀 after 2 minutes gets one
    short notice from the watch, with its link; nothing is sent twice.
 
-**Carrying on:** reply to the bot's message, or comment on the task. The next run reads only what
-came after the cursor. A message sent while a run is under way waits for the next run in the group.
+**Carrying on:** reply to the bot's message, or comment on the task. A plain answer like this one
+stays (`ship run stay`, `stay.ts`, ADR 0057): for a few quiet minutes the same job reads the task
+every 2 s and answers your next words itself, in the same agent session, while the `staying` label
+keeps `task.yml` from starting another run. After it, the next run reads only what came after the
+cursor.
 
 **Other paths:** `remember: …` writes a note with no agent. A fixed word does its one thing
 (`words.ts`). Calls the agent proposes are listed for your Yes (a chat's tap, or `yes` on GitHub), then made by

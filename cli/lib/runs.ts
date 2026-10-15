@@ -46,6 +46,8 @@ export const RunDetails = z.object({
   models: z.record(z.string(), Tokens).optional(),
   turns: z.number().optional(),
   tools: z.record(z.string(), z.number()).optional(),
+  /** The skills its agent loaded. */
+  skills: z.array(z.string()).optional(),
   denied: z.array(z.string()).optional(),
   cost: z.object({ usd: z.number(), plan: z.boolean() }).optional(),
   limits: z
@@ -75,6 +77,8 @@ export const RunRow = z.object({
   secs: z.number().optional(),
   in: z.number().optional(),
   out: z.number().optional(),
+  /** The skills its agent loaded: what the weekly digest counts. */
+  skills: z.array(z.string()).optional(),
   result: z.string(),
 });
 export type RunRow = z.infer<typeof RunRow>;
@@ -111,6 +115,7 @@ export function recordRun(
       secs: Math.round(d.secs.total),
       in: tokens ? tokens.input + tokens.cacheRead + tokens.cacheWrite : undefined,
       out: tokens?.output,
+      ...(d.skills?.length ? { skills: d.skills } : {}),
       result: d.result,
     },
   ].slice(-KEEP_RUNS);
@@ -235,6 +240,7 @@ export function renderRunDetails(d: RunDetails, timeZone: string, label = "Run d
     ]);
   const tools = Object.entries(d.tools ?? {}).sort((a, b) => b[1] - a[1]);
   rows.push(["Tools", tools.length ? tools.map(([n, c]) => `${n} ×${c}`).join(" · ") : "none"]);
+  if (d.skills?.length) rows.push(["Skills", d.skills.join(" · ")]);
   if (d.denied?.length) rows.push(["Refused", d.denied.join(" · ")]);
   if (d.limits?.length)
     rows.push([

@@ -92,13 +92,16 @@ order.
 | **think** | `ship run think <n>` | the slot's agent user | the agent's login, its own read-only token (a work run's project and Shipify; every project for a talk run; on another account, that account's repos alone), the tools' look keys (on Shipify's own account only) | only when needed. The agent writes `result.json`; in a work run it commits in its clone and runs `make verify`. A check runs its script instead. Whatever stops the agent, its commits are bundled for apply |
 | **decide** | `ship run decide <n>` | the runner | `GITHUB_TOKEN`, a fresh read-only token, shared with apply | turns the result into writes. Outputs what to mint: `repo`, its `account`, `act`, `workflows`, `files` |
 | **mint** | workflow steps | | the bot App's key, or the repos App's | a write token for exactly the one repo decide named, from the App on its account; a token for shipify's files branch; an act key only for approved calls |
-| **apply** | `ship run apply <n>` | the runner | the minted tokens | makes the writes, saves the status comment last, and tells the door of each new reply |
+| **apply** | `ship run apply <n>` | the runner | the minted tokens | makes the writes, tells the door of each reply as it's written, and saves the status comment last |
+| **stay** | `ship run stay <n>` | the runner; the agent as the slot's own user | `GITHUB_TOKEN`, its own read-only token (every project, as a talk run's; the repos App's on another account), the agent's login, the tools' look keys; no write key | only after a plain answer to your words in the talk or read profile (decide's `stay`). For `SHIPIFY_STAY` quiet minutes (5) it reads the task every 2 s (a read that finds nothing costs nothing) and answers your plain words itself: each turn is plan, think in the same session, decide and apply, as a run's are. Words plan would choose differently (a fixed word, another account, repo, agent or model, a change) and a result that needs a token go to a normal run; it gives way when a box job waits. `staying` is on the task meanwhile, and taken off however it ends (ADR 0057) |
 
 If a step breaks before a reply, `ship run failed <n>` says so on the task. Outputs come from fixed
 lists only, never free text.
 
-**How a box starts a step** (ADR 0051). The job's first step makes a read-only copy of Shipify per
-commit, in the box's shared tools, with the CLI built as one file in it (`pnpm build:cli`,
+**How a box starts a step** (ADR 0051, ADR 0057). The job names no `checkout` or `setup-node`,
+which the runner would download on every job: it uses the box's own Node, and its first step fetches
+Shipify's commit with `git` only when the box has no copy of it (or a push's plans need both ends).
+The next makes a read-only copy of Shipify per commit, in the box's shared tools, with the CLI built as one file in it (`pnpm build:cli`,
 `scripts/build-cli.mjs`: esbuild, packages inside). Every step above, and the agent's own `ship`
 commands, start `node "$SHIPIFY_COPY/cli/dist/ship.mjs"`: 0.66 s a start, against `pnpm ship`'s
 2.65 s through tsx. A copy already built is only named. Your PC, CI, the tests and the `github` job
@@ -154,7 +157,8 @@ These words are for the code and this page, not the everyday docs.
 | **apply** | the one place that makes them, in order, each safe to repeat | `cli/kernel/apply.ts` |
 | **journal** | a line in the status comment saved before each outside change (a tool call, a push, a dispatch). One started and not finished is reported, never redone | `cli/kernel/apply.ts` |
 | **cursor** | the newest comment a run has read; what came after is still to answer | the status comment |
-| **place** | where a think runs: the slot's sandbox on a box, or a plain folder off a box (this PC, tests) | `cli/kernel/place.ts`, `cli/lib/sandbox.ts` |
+| **place** | where a think runs: the slot's sandbox on a box, or a plain folder off a box (this PC, tests); made fresh once per job, and reopened as it is for a stay's turns | `cli/kernel/place.ts`, `cli/lib/sandbox.ts` |
+| **stay** | the loop a run that stays runs, its rules (`staysAfter`, `sameTurn`) and its reads (`news`, `task`, `waiting`: the mailbox it reads, the task today) | `cli/kernel/stay.ts` |
 
 **The writes,** and what keeps each safe to repeat:
 

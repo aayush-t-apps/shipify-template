@@ -190,8 +190,9 @@ end your reply with one line: the skill it belongs to, the lesson, and the words
 systematic-debugging skill: <the lesson>`." A lesson is how to work next time, in general words:
 never a log of this task, never "tool X is broken", no task numbers or dates. It goes in the skill
 that fits; a new skill only when none does. A fact or a preference is a note instead. That task is
-a tweak on shipify: the lesson in that `SKILL.md` where it fits, in a line or two, a changelog
-line, `make verify` (its skill check), and the PR (`kind: closes`).
+a tweak on shipify, done the way `skills/writing-skills` says: the lesson in that `SKILL.md` where
+it fits, in a line or two, the lesson as a case in its `scenarios.md` (what went wrong, what to do
+instead), a changelog line, `make verify` (its skill check), and the PR (`kind: closes`).
 
 **Recipes:** a recipe task's prompt carries its body: that's the job. To turn on an example
 ("turn on the daily brief recipe"), copy `recipes/examples/<name>.md` to `recipes/<name>.md` in a

@@ -96,7 +96,11 @@ Found walking [getting-started.md](getting-started.md) from nothing. Each is sma
 
 ## Faster and cheaper runs
 
-1. **One browser in the stacks' `make setup`:** `playwright install --only-shell`, since tests run
+1. **The record over one connection:** each `gh` call costs about 1 s on a Pi (a process and a TLS
+   handshake), and a run or a stay's turn makes about 20 (measured, ADR 0057's As built). One HTTP
+   client with keep-alive for the record's reads and writes would make each about 0.2 s: a run's
+   fixed time and a stay's turn would both drop by about half.
+2. **One browser in the stacks' `make setup`:** `playwright install --only-shell`, since tests run
    headless: about 190 MB less on a box's first setup of a project.
 
 ## Later
@@ -110,7 +114,9 @@ Found walking [getting-started.md](getting-started.md) from nothing. Each is sma
 5. **Iterating on a project's PR** by commenting there.
 6. **Other people on your Shipify,** and **running your own from one command**: each its own ADR.
 7. **A second record** (Forgejo) and **box kinds** (capability labels).
-8. **Small, for when each is next touched:** `ship unregister` doesn't refresh the Operate form's
+8. **The direct layer** (ADR 0057, "Left for later"): chats whose words live off GitHub, in a hub on
+   the edge, as a second mailbox for the same loop a stay runs; its own ADR when a need shows.
+9. **Small, for when each is next touched:** `ship unregister` doesn't refresh the Operate form's
    list (`ship forms` does); two of Claude Code's names live outside its adapter (its plan's limit
    windows in `cli/lib/runs.ts`, and `box/peek.mjs` reading its session files).
 

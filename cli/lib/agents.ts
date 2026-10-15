@@ -21,6 +21,7 @@ import {
   Gateway,
   RESERVED_DIRS,
   SHARED_KEYS,
+  skillsSeen,
   type Tokens,
 } from "./plugins/agent.ts";
 import { loadPluginFile } from "./plugins/tool.ts";
@@ -307,6 +308,7 @@ export function mergeReports(a: AgentReport, b: AgentReport): AgentReport {
     turns:
       a.turns !== undefined || b.turns !== undefined ? (a.turns ?? 0) + (b.turns ?? 0) : undefined,
     tools: Object.keys(tools).length ? tools : undefined,
+    skills: skillsSeen([...(a.skills ?? []), ...(b.skills ?? [])]),
     denied: [...(a.denied ?? []), ...(b.denied ?? [])],
     readOutside: a.readOutside || b.readOutside || undefined,
     cost:

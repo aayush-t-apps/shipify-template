@@ -137,6 +137,7 @@ export class Stopwatch {
       models: r.models,
       turns: r.turns,
       tools: r.tools,
+      skills: r.skills,
       denied: r.denied,
       cost: r.cost,
       limits: r.limits,

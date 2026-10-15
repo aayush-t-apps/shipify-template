@@ -29,6 +29,8 @@ import {
   offered,
   runTools,
   secretFor,
+  skillRead,
+  skillsSeen,
   type Tokens,
 } from "../plugins/agent.ts";
 
@@ -222,6 +224,8 @@ type Msg = {
 function reader(): OutputReader {
   const report: AgentReport = {};
   const tools: Record<string, number> = {};
+  // The skills it read: pi lists them with their paths, and its model reads one's SKILL.md.
+  const skills: string[] = [];
   const models: Record<string, Tokens> = {};
   let usd = 0;
   let last = "";
@@ -290,6 +294,8 @@ function reader(): OutputReader {
         tools[toolName(name)] = (tools[toolName(name)] ?? 0) + 1;
         if (name === "bash" && typeof args.command === "string" && fetchesOutside(args.command))
           report.readOutside = true;
+        const skill = name === "read" && typeof args.path === "string" && skillRead(args.path);
+        if (skill) skills.push(skill);
         return `  → ${toolName(name)}${Object.keys(args).length ? `: ${brief(args)}` : ""}`;
       }
       if (e.type === "tool_execution_end" && e.isError) {
@@ -315,6 +321,7 @@ function reader(): OutputReader {
     report() {
       if (failed && !report.error) report.error = failed;
       if (Object.keys(tools).length) report.tools = tools;
+      report.skills = skillsSeen(skills);
       if (Object.keys(models).length) {
         report.models = models;
         report.tokens = Object.values(models).reduce((a, b) => ({

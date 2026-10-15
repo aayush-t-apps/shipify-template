@@ -200,13 +200,16 @@ describe("writing your words as the door App", () => {
 
   it("closes or reopens a task at once on `close` or `reopen`, writing the word as a setting", async () => {
     const f = world(k);
-    const task = f.issue({ title: "make it faster", labels: ["answered", "needs you", "bug"] });
+    const task = f.issue({
+      title: "make it faster",
+      labels: ["answered", "needs you", "staying", "bug"],
+    });
     f.w.runners = [];
     expect(await said(await post(f, update({ text: `#${task.number} close` })))).toBe(
       `Closed · #${task.number}`,
     );
     expect(task.state).toBe("closed");
-    // The state labels go with the close, in the same write; yours stay.
+    // The state labels go with the close, in the same write, and a stay's (ADR 0057); yours stay.
     expect(task.labels).toEqual(["bug"]);
     expect(await said(await post(f, update({ text: `#${task.number} Reopen it.` })))).toBe(
       `Reopened · #${task.number}`,

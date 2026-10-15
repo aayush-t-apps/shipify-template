@@ -427,6 +427,8 @@ Every reply ends with a folded **Run details** block, read from the agent's own 
   agent reports one;
 - the tools it called, its helpers' too, and any calls it was refused (OpenCode's tokens leave out
   its helpers': its output doesn't carry them);
+- the skills it loaded (**Skills**): Claude Code's and OpenCode's skill tool, or any
+  agent's read of a skill's `SKILL.md` (pi's way); the weekly digest counts them;
 - your plan's 5-hour and weekly use (Claude Code).
 
 On Telegram it's one line ("Sonnet · 48 s · 3 tool calls"; a gateway's model by its name without

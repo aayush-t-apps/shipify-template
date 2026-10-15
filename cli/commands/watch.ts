@@ -9,7 +9,9 @@
 //   alert    what the watch saw change: a box offline, back, new or gone; an app failing or back
 // A box knows none of this: it runs what the queue hands it. The status issue is the record.
 import { spawnSync } from "node:child_process";
+import { readdirSync, statSync } from "node:fs";
 import { hostname } from "node:os";
+import { join } from "node:path";
 import { NEEDS_YOU_LABEL, replyLine } from "../contracts/index.ts";
 import { tellDoor } from "../kernel/door.ts";
 import { hash8 } from "../kernel/keys.ts";
@@ -20,11 +22,12 @@ import { loadExecutors } from "../lib/agents.ts";
 import { boxFacts } from "../lib/box-facts.ts";
 import { findStack } from "../lib/catalog.ts";
 import { defaultChannels } from "../lib/channels.ts";
-import { copySetting } from "../lib/config.ts";
+import { copySetting, PLATFORM_ROOT } from "../lib/config.ts";
 import { platformRepo } from "../lib/github.ts";
 import { readKeyDates } from "../lib/key-dates.ts";
 import { ok, type Result } from "../lib/output.ts";
 import { readPeople } from "../lib/people.ts";
+import type { RunRow } from "../lib/runs.ts";
 import { cleanStaleRuns } from "../lib/sandbox.ts";
 import {
   addEvent,
@@ -38,11 +41,12 @@ import {
   setUpcoming,
   updateStatusIssue,
 } from "../lib/status-issue.ts";
+import { findStatus } from "../lib/task.ts";
 import { newer } from "../lib/versions.ts";
 import { cleanupsUnderWay, pressWatch, watchRuns } from "../lib/watch.ts";
 import { doctor } from "./doctor.ts";
 import { rec, timeZone, tryOr } from "./task/context.ts";
-import { type DigestFacts, digestDue, digestNext, digestText } from "./task/digest.ts";
+import { countSkills, type DigestFacts, digestDue, digestNext, digestText } from "./task/digest.ts";
 import { type Due, keepRecipes } from "./task/due.ts";
 import { nearlyFull, readNotebook } from "./task/notebook.ts";
 import { cleanUpTasks, runUrl, taskDue } from "./task.ts";
@@ -98,6 +102,8 @@ export async function watchDue(): Promise<Result> {
         [] as { n: number; title: string }[],
       )
     : [];
+  // The week's run rows, for the digest's skills: read only when it's said.
+  const rows = sayDigest ? tryOr(() => weekRows(at), undefined) : undefined;
   const posted = updateStatusIssue(
     (s) => {
       s.watch = { ...s.watch, last: at.toISOString(), box, run: runUrl(), digest: digestAt };
@@ -125,7 +131,10 @@ export async function watchDue(): Promise<Result> {
       );
       for (const p of bad) s.alerted.push(`recipe:${p.file}:${p.problem}`);
       const said = bad.map((p) => `- \`${p.file}\` doesn't read: ${p.problem}. Fix it in a PR.`);
-      const digest = sayDigest ? digestText(digestFacts(s, data.apps, waiting, at), whenHere) : "";
+      const skills = rows ? countSkills(rows, skillsOnMain(), at) : undefined;
+      const digest = sayDigest
+        ? digestText({ ...digestFacts(s, data.apps, waiting, at), skills }, whenHere)
+        : "";
       const text = [health, said.length ? `**Recipes**\n\n${said.join("\n")}` : "", digest]
         .filter(Boolean)
         .join("\n\n");
@@ -176,6 +185,28 @@ function digestFacts(
     keys,
   };
 }
+
+/**
+ * The run rows of every task updated this week: each task's own runs, from its status
+ * comment. Pull requests and the status issue have none.
+ */
+function weekRows(at: Date): RunRow[] {
+  const since = new Date(at.getTime() - 7 * DAY).toISOString();
+  return rec()
+    .issues({ state: "all", since })
+    .filter((i) => !i.pull_request)
+    .flatMap((i) => findStatus(rec().comments(i.number)).state.runs ?? []);
+}
+
+/** The skills on main: each folder of skills/ in this copy of Shipify. */
+const skillsOnMain = (): string[] =>
+  tryOr(
+    () =>
+      readdirSync(join(PLATFORM_ROOT, "skills")).filter((d) =>
+        statSync(join(PLATFORM_ROOT, "skills", d)).isDirectory(),
+      ),
+    [] as string[],
+  );
 
 /** A time as your chats read it: the day and the hour, in your copy's time zone. */
 const whenHere = (iso: string) =>

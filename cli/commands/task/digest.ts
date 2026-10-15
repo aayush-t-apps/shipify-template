@@ -35,10 +35,58 @@ export interface DigestFacts {
   upcoming: { count: number; next?: string };
   /** Keys due within 30 days. */
   keys: { name: string; date: string; days: number }[];
+  /** The skills the week's runs loaded, when there were runs to count. */
+  skills?: SkillsWeek;
+}
+
+/** What the week's agent runs loaded, from their tasks' run rows. */
+export interface SkillsWeek {
+  /** Agent runs this week, and how many of them loaded a skill. */
+  runs: number;
+  loaded: number;
+  /** Each skill, and how many runs loaded it. */
+  loads: Record<string, number>;
+  /** The skills on main no run loaded this week: worth a look, never removed by themselves. */
+  idle: string[];
+}
+
+const WEEK = 7 * 24 * 3600_000;
+
+/**
+ * The week before `at`, from task run rows (a row with a model is an agent's run), and the skills on
+ * main none of them loaded.
+ */
+export function countSkills(
+  rows: { at: string; model?: string; skills?: string[] }[],
+  onMain: string[],
+  at: Date,
+): SkillsWeek {
+  const from = at.getTime() - WEEK;
+  const week = rows.filter((r) => r.model && Date.parse(r.at) >= from && Date.parse(r.at) <= +at);
+  const loads: Record<string, number> = {};
+  for (const r of week) for (const s of new Set(r.skills ?? [])) loads[s] = (loads[s] ?? 0) + 1;
+  return {
+    runs: week.length,
+    loaded: week.filter((r) => r.skills?.length).length,
+    loads,
+    idle: onMain.filter((s) => !loads[s]).sort(),
+  };
 }
 
 const list = (xs: string[]) =>
   xs.length > 3 ? `${xs.slice(0, 3).join(", ")} and ${xs.length - 3} more` : xs.join(", ");
+
+/** The skills' line: the most loaded, in how many runs, and the ones none loaded. */
+function skillLines(s?: SkillsWeek): string[] {
+  if (!s?.runs) return [];
+  const top = Object.entries(s.loads)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([name, n]) => `${name} ×${n}`);
+  const runs = `${s.runs} agent run${s.runs === 1 ? "" : "s"}`;
+  const used = top.length ? `${list(top)}; in ${s.loaded} of ${runs}` : `none loaded in ${runs}`;
+  const idle = top.length && s.idle.length ? `; none loaded ${list(s.idle)}` : "";
+  return [`- **Skills:** ${used}${idle}`];
+}
 
 /** The message, short: what runs, what waits on you, what's due, and "all clear" when nothing is. */
 export function digestText(f: DigestFacts, when: (iso: string) => string): string {
@@ -60,6 +108,7 @@ export function digestText(f: DigestFacts, when: (iso: string) => string): strin
     ...(f.keys.length
       ? [`- **Keys due:** ${list(f.keys.map((k) => `${k.name} on ${k.date} (${k.days} days)`))}`]
       : []),
+    ...skillLines(f.skills),
     ...(f.upcoming.count
       ? [
           `- **Coming up:** ${f.upcoming.count} repeat${f.upcoming.count === 1 ? "" : "s"}${f.upcoming.next ? `, the next ${when(f.upcoming.next)}` : ""}`,

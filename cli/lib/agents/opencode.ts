@@ -35,6 +35,8 @@ import {
   offered,
   runTools,
   secretFor,
+  skillRead,
+  skillsSeen,
   type Tokens,
 } from "../plugins/agent.ts";
 
@@ -240,6 +242,8 @@ type Part = {
 function reader(): OutputReader {
   const report: AgentReport = {};
   const tools: Record<string, number> = {};
+  // The skills it loaded, as its gate says them: its skill tool's, or a read's SKILL.md.
+  const skills: string[] = [];
   const models: Record<string, Tokens> = {};
   let model: string | undefined;
   let usd = 0;
@@ -260,6 +264,9 @@ function reader(): OutputReader {
       if (e.call === "webfetch" || e.call === "websearch") report.readOutside = true;
       if (e.call === "bash" && typeof e.command === "string" && fetchesOutside(e.command))
         report.readOutside = true;
+      const skill =
+        typeof e.skill === "string" ? e.skill : typeof e.path === "string" && skillRead(e.path);
+      if (skill) skills.push(skill);
       if (typeof e.refused === "string")
         report.denied = [...(report.denied ?? []), `${name}: ${oneLine(e.refused, 160)}`];
       return undefined;
@@ -328,6 +335,7 @@ function reader(): OutputReader {
     report() {
       if (keyless) report.error = keyless;
       if (Object.keys(tools).length) report.tools = tools;
+      report.skills = skillsSeen(skills);
       if (Object.keys(models).length) {
         report.models = models;
         report.tokens = Object.values(models).reduce((a, b) => ({

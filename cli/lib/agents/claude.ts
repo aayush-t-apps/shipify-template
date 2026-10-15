@@ -18,6 +18,8 @@ import {
   offered,
   runTools,
   secretFor,
+  skillRead,
+  skillsSeen,
   type Tokens,
   type Tools,
 } from "../plugins/agent.ts";
@@ -27,6 +29,14 @@ const WEB_TOOLS = new Set(["WebFetch", "WebSearch"]);
 const fetches = (name: string, input?: Record<string, unknown>) =>
   WEB_TOOLS.has(name) ||
   (name === "Bash" && typeof input?.command === "string" && fetchesOutside(input.command));
+
+/** The skill a call loads: its Skill tool's, or a Read of a skill's SKILL.md. */
+const skillOf = (name: string, input?: Record<string, unknown>) =>
+  name === "Skill" && typeof input?.skill === "string"
+    ? input.skill
+    : name === "Read" && typeof input?.file_path === "string"
+      ? skillRead(input.file_path)
+      : undefined;
 
 /** A tool's call as Claude Code names it: tools.json's notion.search is mcp__notion__search. */
 const callName = (tool: string, call: string) => `mcp__${tool}__${call}`;
@@ -178,6 +188,7 @@ type Event = Record<string, unknown> & { type?: string; subtype?: string };
 function reader(): OutputReader {
   const report: AgentReport = {};
   const tools: Record<string, number> = {};
+  const skills: string[] = [];
   let keySource: string | undefined;
   return {
     line(text) {
@@ -218,6 +229,8 @@ function reader(): OutputReader {
             const name = toolName(c.name);
             tools[name] = (tools[name] ?? 0) + 1;
             if (fetches(c.name, c.input)) report.readOutside = true;
+            const skill = skillOf(c.name, c.input);
+            if (skill) skills.push(skill);
             out.push(`  → ${name}${c.input ? `: ${brief(c.input)}` : ""}`);
           } else if (c.type === "text" && c.text?.trim()) out.push(c.text.trim());
         }
@@ -313,6 +326,7 @@ function reader(): OutputReader {
     },
     report() {
       if (Object.keys(tools).length) report.tools = tools;
+      report.skills = skillsSeen(skills);
       return report;
     },
   };

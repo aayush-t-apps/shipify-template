@@ -26,6 +26,8 @@ const login = loginFd ? readFileSync(Number(loginFd), "utf8").trim() : null;
 // (resumed).
 // Resumed with what you wrote while it worked, it's the catch-up (catchup-prompt.md).
 const catchUp = prompt.startsWith("While you worked");
+// A stay's turn (ADR 0057): your next words, in the same session (next-prompt.md, next-final-argv.json).
+const next = prompt.startsWith("The owner read your reply");
 /** Shipify's skills, where Claude Code reads its own: its settings folder's skills/ (ADR 0038). */
 function skills() {
   const dir = join(process.env.CLAUDE_CONFIG_DIR ?? "/nowhere", "skills");
@@ -181,12 +183,16 @@ const result = /Write `([^`]+result\.json)`/.exec(prompt)?.[1];
 // A read run (ADR 0044) writes no file: its answer is its final message (FAKE_FINAL), and what the
 // test reads is kept in out/, beside its working folder (read/).
 const reading = prompt.includes("this run writes no file");
-if (!result && !reading && !catchUp) {
+if (!result && !reading && !catchUp && !next) {
   process.stderr.write("fake thinker: no result path in the prompt\n");
   process.exit(2);
 }
-const out = result ? dirname(result) : join(process.cwd(), "..", "out");
-writeFileSync(join(out, "prompt.md"), prompt);
+const out = result
+  ? dirname(result)
+  : next
+    ? join(process.env.HOME ?? ".", "..", "out")
+    : join(process.cwd(), "..", "out");
+writeFileSync(join(out, next ? "next-prompt.md" : "prompt.md"), prompt);
 writeFileSync(join(out, "argv.json"), JSON.stringify(process.argv.slice(2)));
 // The keys it was handed (names only), and where it ran: what a read run holds (ADR 0044).
 writeFileSync(
@@ -220,7 +226,7 @@ if (process.env.FAKE_FINAL) {
     );
   const resumed = process.argv.includes("--resume");
   writeFileSync(
-    join(out, `${resumed ? "catchup" : "first"}-final-argv.json`),
+    join(out, `${next ? "next" : resumed ? "catchup" : "first"}-final-argv.json`),
     JSON.stringify(process.argv.slice(2)),
   );
   process.stdout.write(

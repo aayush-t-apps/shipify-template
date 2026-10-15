@@ -272,6 +272,11 @@ export interface AgentReport {
   turns?: number;
   /** Each tool, and how many times it was called: built-in tools by name, tools.json's as tool.call. */
   tools?: Record<string, number>;
+  /**
+   * The skills it loaded, by name, sorted, each once: its own skill tool's, or a read of
+   * a skill's SKILL.md (skillRead), whichever way its agent loads them.
+   */
+  skills?: string[];
   /** Calls its permissions refused. */
   denied?: string[];
   /**
@@ -378,3 +383,17 @@ export interface AgentPaths {
 const FETCHES =
   /:\/\/|(?:^|[;&|(`{\n]|\$\()\s*(?:(?:sudo|env|nohup|time|exec|command|if|then|do|else|!|timeout\s+\S+|\w+=\S*)\s+)*(?:\S*\/)?(?:curl|wget)(?:\s|$)/m;
 export const fetchesOutside = (command: string) => FETCHES.test(command);
+
+/**
+ * The skill a file read loads: a skill is a folder with its SKILL.md (ADR 0038), so a
+ * read of `…/skills/<name>/SKILL.md` is that skill, whichever agent reads it. Every adapter uses it
+ * for `AgentReport.skills`, beside its agent's own skill tool when it has one.
+ */
+export const skillRead = (path: string): string | undefined =>
+  /(?:^|\/)skills\/([a-z0-9]+(?:-[a-z0-9]+)*)\/SKILL\.md$/.exec(path)?.[1];
+
+/** The skills a report gives: the names seen, sorted, each once; none when there are none. */
+export const skillsSeen = (seen: Iterable<string>): string[] | undefined => {
+  const all = [...new Set(seen)].filter(Boolean).sort();
+  return all.length ? all : undefined;
+};

@@ -197,7 +197,8 @@ a time, with **Tasks, Repeats, Notebook, Files and Setup** as tabs at the foot
 (not in a thread). On a PC the same pages sit under the list.
 - **The list:** **Open** by default: the boxes (tap the line for Status & setup), then **For
   review** (shipify's open PRs, each with the task it's for), then what needs you, then what's
-  running (its own row says "Working · 2m", "Queued", or "Waiting for a box" with none online), then
+  running (its own row says "Working · 2m", "Queued", or "Waiting for a box" with none online; a
+  run that stays after its answer shows the `staying` tag, waiting for you, ADR 0057), then
   the 50 open tasks updated last. Open repeats and recipes (they stay open between runs) come last,
   under a **Repeats** heading that opens Repeats, unless one needs you or is running. A row shows
   a mark for its state (amber, teal and beating, red, grey), its title and age, then its state's

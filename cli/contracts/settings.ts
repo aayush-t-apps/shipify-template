@@ -137,6 +137,14 @@ export const CORE_SETTINGS: readonly Setting[] = [
     optional: true,
   },
   {
+    name: "SHIPIFY_STAY",
+    lives: ["variable"],
+    what: "how many quiet minutes a run stays after answering your words, so your next words are answered in the same session (`5`, the default; `0`: never)",
+    setBy: "you",
+    readBy: "a task's run: its decide and stay steps (ADR 0057)",
+    optional: true,
+  },
+  {
     name: "SHIPIFY_GATEWAYS",
     lives: ["variable"],
     what: 'each gateway with a key set, and since when: `{"<gateway>": "YYYY-MM-DD"}`',

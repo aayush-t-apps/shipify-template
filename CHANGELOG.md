@@ -7,6 +7,34 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-15
+
+### Added
+
+- **A run stays after it answers you (ADR 0057).** After a plain answer to your words, the run
+  stays for 5 quiet minutes (`SHIPIFY_STAY`; `0` turns it off), reading the task every 2 seconds,
+  and answers your next plain words itself, in the same agent session: seconds, not a new run.
+  Several messages still get one reply, each ask numbered, for every agent. A fixed word, an edit,
+  another repo, account, agent or model, a change, or an answer that needs a file goes to a normal
+  run. A stay gives way when another run needs its slot, and leaves on `stop` or a close. The label
+  `staying` is on the task meanwhile, and comes off however the run ends. `ship selftest chat`
+  checks it. Nothing to do.
+- **See which skills runs use, and make new ones well.** Each run's details list the skills its
+  agent loaded (**Skills**): Claude Code's and OpenCode's skill tool, or pi reading a skill's
+  `SKILL.md`. The weekly digest adds one line: the week's loads, and the skills no run loaded.
+  Nothing is removed by itself. A new skill, `writing-skills`, says how to make or change one: no
+  line without a failure seen without it. Each of Shipify's own skills carries a `scenarios.md`
+  (asks that should load it, near misses, and the cases it fixes), and a lesson adds a case. The
+  skill check also holds descriptions to 300 characters and skills to 500 lines;
+  `security-and-hardening`'s description is one short line. Nothing to do.
+
+### Changed
+
+- **Runs start sooner (ADR 0057).** A task's run no longer downloads `actions/checkout` and
+  `actions/setup-node` on every job: it uses the box's own Node (the one its agent already used) and
+  fetches Shipify's commit only when the box has no copy of it. The door is told of each reply as
+  it's written, before the run's other writes. Nothing to do.
+
 ## [0.1.9] - 2026-10-15
 
 ### Fixed

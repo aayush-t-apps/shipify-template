@@ -14,6 +14,7 @@ import {
   readReply,
   readTaskSeen,
   replyButtons,
+  STAYING_LABEL,
   STUCK_LABEL,
   TASK_MARK,
   withoutLine,
@@ -128,7 +129,9 @@ function stateOf(i: Issue, running: boolean): State {
   if (i.state === "closed") return "closed";
   const labels = labelsOf(i);
   if (labels.includes(NEEDS_YOU_LABEL)) return "needs-you";
-  if (running) return "working";
+  // A run that stays after its answer (ADR 0057) is going, but waits for you: its row says
+  // `staying` as a tag, and Working only while a turn runs (the thread reads that from its status).
+  if (running && !labels.includes(STAYING_LABEL)) return "working";
   if (labels.includes(STUCK_LABEL)) return "stuck";
   return "open";
 }
