@@ -12,7 +12,9 @@ import {
   type Executor,
   loadExecutors,
   mergeReports,
+  ownReport,
   readExecutors,
+  type SessionUsed,
   type Use,
 } from "../lib/agents.ts";
 import type { RunDetails } from "../lib/runs.ts";
@@ -95,11 +97,20 @@ export class Stopwatch {
   report: AgentReport = {};
   executor: string | undefined;
   choice: Choice | undefined;
-  /** An agent run finished: its time and report add up. */
+  /** `used`: what its session had counted before (a stay's turn, ADR 0057). */
+  constructor(private used?: SessionUsed) {}
+  /** What its session has counted so far, from an agent that counts from the session's start. */
+  get sessionUsed() {
+    return this.used;
+  }
+  /** An agent run finished: its time and report add up, each ask's own counts once. */
   ran(executorId: string, choice: Choice, o: { report: AgentReport; secs: number }) {
     this.firstAgent ??= performance.now() - o.secs * 1000;
     this.agent += o.secs;
-    this.report = mergeReports(this.report, o.report);
+    const own = ownReport(o.report, this.used);
+    if (o.report.sessionTotals && o.report.models)
+      this.used = { models: o.report.models, usd: o.report.cost?.usd };
+    this.report = mergeReports(this.report, own);
     this.executor = executorId;
     this.choice = choice;
   }

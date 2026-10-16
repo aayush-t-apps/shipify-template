@@ -195,7 +195,7 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
   application's path doesn't cover `/admin`, the edge answers 403 itself, so it fails closed:
   change the path to `admin/*`.
 - **The page:** `edge/public/admin/chat/` (plain HTML, CSS and JS, `// @ts-check`, no libraries, no
-  build step, about 120 KB, just under its 41 KB budget compressed, its service worker apart),
+  build step, about 120 KB, just under its 42 KB budget compressed, its service worker apart),
   served as the Worker's static assets with `run_worker_first`, so every file is behind the same
   token check.
 - **Diagrams:** a `mermaid` code block is drawn in `/draw/` (`edge/public/draw/`), a static page

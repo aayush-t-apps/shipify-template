@@ -11,6 +11,7 @@ import {
 import { listCode } from "../cli/kernel/keys.ts";
 import { buildPrompt, type PromptInput } from "../cli/kernel/prompt.ts";
 import { type Result, readResult } from "../cli/kernel/result.ts";
+import { sameTurn } from "../cli/kernel/stay.ts";
 import { toolActs } from "../cli/kernel/snapshot.ts";
 import type { Plan, Said, Snapshot, Think, ThinkMeta, Write } from "../cli/kernel/types.ts";
 import { repeatLine } from "../cli/lib/repeat.ts";
@@ -1682,6 +1683,15 @@ describe("plan: the repos a task reads (ADR 0044)", () => {
   it("keeps reading it on every later run of the task, since its conversation carries it", () => {
     const p = asking("ask: look at acme/tool", "and what about its tests?");
     expect(p.do === "think" && p.think.profile).toBe("read");
+  });
+
+  it("a stay on it answers your next words, and hands words that look at another repo to a run (ADR 0057)", () => {
+    const first = asking("ask: look at acme/tool");
+    expect(sameTurn(first, asking("ask: look at acme/tool", "and what about its tests?"))).toBe(
+      true,
+    );
+    expect(sameTurn(first, asking("ask: look at acme/tool", "now look at acme/x"))).toBe(false);
+    expect(sameTurn(asking("ask: what is this?"), first)).toBe(false);
   });
 
   it("a word after `look at` that names no repo of yours is only a word", () => {

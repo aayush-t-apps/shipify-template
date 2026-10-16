@@ -17,12 +17,10 @@
       "check": "/key",
       "search": "/models?supported_parameters=tools&limit=20&q={word}",
       "auto": {
-        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "model": "z-ai/glm-5.3-flash",
         "effort": "high"
       },
       "models": [
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "poolside/laguna-s-2.1:free",
         "z-ai/glm-5.3-flash",
         "deepseek/deepseek-v4.1-flash",
         "z-ai/glm-5.3",

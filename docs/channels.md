@@ -104,7 +104,7 @@ the models `executors.json` lists, plain names, "free" on free ones, ✓ on the 
 
 > Your model: **Auto** (Sonnet · Medium)
 > **[Claude · Auto ✓]** **[Haiku]** **[Sonnet]** **[Opus]** **[Fable]**
-> **[Pi · Auto]** **[nemotron-3-ultra-550b-a55b · free]** **[laguna-s-2.1 · free]** **[glm-5.3-flash]** **[deepseek-v4.1-flash]** **[glm-5.3]** **[kimi-k2.7-code]** **[kimi-k2.6]**
+> **[Pi · Auto]** **[glm-5.3-flash]** **[deepseek-v4.1-flash]** **[glm-5.3]** **[kimi-k2.7-code]** **[kimi-k2.6]**
 > **[OpenCode · Auto]** and the same models, in its own row
 > **[Pi · Vercel · Auto]** **[glm-5.3-flash]** **[deepseek-v4.1-flash]** **[glm-5.3]** **[kimi-k2.7-code]** **[kimi-k2.6]**, and **[OpenCode · Vercel · Auto]** the same
 > Effort: **[Auto ✓]** **[Low]** **[Medium]** **[High]** **[Extra high]** **[Max]**
@@ -198,14 +198,15 @@ a time, with **Tasks, Repeats, Notebook, Files and Setup** as tabs at the foot
 - **The list:** **Open** by default: the boxes (tap the line for Status & setup), then **For
   review** (shipify's open PRs, each with the task it's for), then what needs you, then what's
   running (its own row says "Working · 2m", "Queued", or "Waiting for a box" with none online; a
-  run that stays after its answer shows the `staying` tag, waiting for you, ADR 0057), then
+  run that stays after its answer says **Staying**, waiting for you, in its row and its thread,
+  ADR 0057), then
   the 50 open tasks updated last. Open repeats and recipes (they stay open between runs) come last,
   under a **Repeats** heading that opens Repeats, unless one needs you or is running. A row shows
-  a mark for its state (amber, teal and beating, red, grey), its title and age, then its state's
-  word when it's not just open (**New**, teal and bold, when a task you've opened changed since
-  you last looked: a reply, mostly; worked out in the page from the list's times, no read of its own) ("Needs you", tinted; "Working · 2m"; "Starting…" once your words
-  are in; "Stopped", when a run ended before it finished: its thread offers **Continue**), its kind (Ask, New app, Shipify, a project's name, Repeat, Recipe; the title
-  loses its `ask:` prefix) and its number: the same state its thread's header shows. It doesn't name
+  its state as a dot (amber: needs you; teal and beating: working or starting; green: staying,
+  ADR 0057; teal: **New**, its title bold, when a task you've opened changed since you last looked;
+  red: stopped, its thread offers **Continue**; grey: open), its word on hover; then its title and
+  age, its kind (Ask, New app, Shipify, a project's name, Repeat, Recipe; the title loses its
+  `ask:` prefix) and its number. Its thread's header says the same state in words. It doesn't name
   the chat a task started in: a task goes on in any of them. **Open · Needs you · Closed** is one
   control with counts: Needs you shows only what waits on you; **Closed** shows the closed ones,
   newest first, to look back through (read when you open it, never polled); Open and Needs you read

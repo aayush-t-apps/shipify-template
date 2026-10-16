@@ -129,7 +129,7 @@ A run reads its task when it starts, and the agent can't take a message mid-step
 
 ### A run that stays
 
-After a run answers your words, it stays (ADR 0057): for `SHIPIFY_STAY` quiet minutes (5 unless
+After a run answers your words, it stays (ADR 0057): for `SHIPIFY_STAY` quiet minutes (10 unless
 you set it; `0` turns it off) it reads the task every 2 seconds and answers your next plain words
 itself, in the same agent session, so they're answered in seconds rather than in a new run.
 
@@ -141,12 +141,14 @@ itself, in the same agent session, so they're answered in seconds rather than in
   another repo, account, agent or model, a change, or an answer that needs a file or a write key.
   The stay takes its label off and starts that run, which reads every word it hasn't answered.
 - **It ends** after its quiet minutes, 45 minutes in all, on your `stop` or a close, or when another
-  task's run waits for its slot. It answers words already waiting first, and stays on different
+  task's run, or its box's weekly clean-up, waits for its slot. It answers words already waiting
+  first, and stays on different
   slots give way one at a time, so one slot frees per run that waits. Words that came as it left go
   to a run of their own: never unanswered.
-- **On the task:** the label `staying` while it does. No run starts for your words meanwhile (each
-  shows as a skipped run in Actions). The web chat's list shows the tag, and the task as waiting for
-  you.
+- **On the task:** the label `staying` while it does. No run starts for your comments meanwhile
+  (each shows as a skipped run in Actions); a close or an edit on GitHub runs after the stay. The web chat says **Staying**, in the list and the thread.
+  A stay whose box died leaves its label: the watch takes it off within 5 minutes of GitHub ending
+  its job, so your next words start a run.
 
 **Where you see it:**
 - **👀** on your comment, and on the task itself for its own words: a run has read it (the web

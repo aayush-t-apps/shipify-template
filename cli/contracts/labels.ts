@@ -60,6 +60,7 @@ export const EVENTS = [
   "run.problem",
   "watch.due",
   "watch.stopped",
+  "watch.stay.cleared",
   "watch.notice",
   "watch.guard",
 ] as const;

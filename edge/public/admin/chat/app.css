@@ -236,7 +236,8 @@ a.chip:hover {
 .working::before {
   animation: beat 1.6s ease-in-out infinite;
 }
-.ok {
+.ok,
+.staying {
   color: var(--ok);
 }
 .stuck,
@@ -666,8 +667,12 @@ main {
 .rows .meta {
   grid-column: 2 / -1;
 }
-.rows .meta .st::before {
-  display: none;
+.rows .meta .st {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 .mark {
   width: 0.5rem;
@@ -679,6 +684,7 @@ main {
 }
 .mark.needs-you,
 .mark.working,
+.mark.staying,
 .mark.stuck {
   background: currentColor;
   opacity: 1;

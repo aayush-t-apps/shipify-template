@@ -539,7 +539,7 @@ describe("who's who, and the answers in words", () => {
     );
     // A gateway's models by their ids there, one a line, as a use line names them.
     expect(all).toContain(
-      "pi, through openrouter. Auto: nvidia/nemotron-3-ultra-550b-a55b:free, high; effort off to max\nnvidia/nemotron-3-ultra-550b-a55b:free\npoolside/laguna-s-2.1:free\nz-ai/glm-5.3-flash\n",
+      "pi, through openrouter. Auto: z-ai/glm-5.3-flash, high; effort off to max\nz-ai/glm-5.3-flash\n",
     );
     expect(all).toContain("\nmoonshotai/kimi-k2.7-code\n");
     expect(all).toContain("Or any model openrouter has: add a word to find them (/models kimi");

@@ -5,6 +5,7 @@ import {
   GIVE_WAY_MS,
   givesWay,
   LOOK_MS,
+  PICK_UP_MS,
   POLL_MS,
   STAY_LAST_MINUTES,
   STAY_MINUTES,
@@ -53,11 +54,13 @@ describe("when a run stays", () => {
     expect(staysAfter(snap({ trigger: { kind: "opened" } }), plan(), answer, meta, 5)).toBe(true);
   });
 
-  it("never stays for work, a check, a dispatch, a closed task, no session, or when it's off", () => {
+  it("never stays for work, a check, a repeat, a closed task, no session, or when it's off", () => {
     expect(staysAfter(snap(), plan({ profile: "work" }), answer, meta, 5)).toBe(false);
     expect(staysAfter(snap(), plan({ check: "disk" }), answer, meta, 5)).toBe(false);
     const due = snap({ trigger: { kind: "dispatch", job: "run" } });
-    expect(staysAfter(due, plan(), answer, meta, 5)).toBe(false);
+    expect(staysAfter(due, plan({ why: "scheduled" }), answer, meta, 5)).toBe(false);
+    // A stay's handover is a dispatch that answers your words: it stays in turn.
+    expect(staysAfter(due, plan(), answer, meta, 5)).toBe(true);
     const closed = snap({ issue: { ...snap().issue, state: "closed" } } as Partial<Snapshot>);
     expect(staysAfter(closed, plan(), answer, meta, 5)).toBe(false);
     expect(staysAfter(snap(), plan(), answer, { ...meta, session: undefined }, 5)).toBe(false);
@@ -77,13 +80,13 @@ describe("when a run stays", () => {
     expect(staysAfter(snap(), plan(), { ...answer, writes: [asks] }, meta, 5)).toBe(false);
   });
 
-  it("reads SHIPIFY_STAY as whole minutes, 5 by default, 0 for off, at most STAY_MINUTES", () => {
-    expect(stayMinutes(undefined)).toBe(5);
-    expect(stayMinutes("")).toBe(5);
+  it("reads SHIPIFY_STAY as whole minutes, 10 by default, 0 for off, at most STAY_MINUTES", () => {
+    expect(stayMinutes(undefined)).toBe(10);
+    expect(stayMinutes("")).toBe(10);
     expect(stayMinutes("0")).toBe(0);
     expect(stayMinutes("10")).toBe(10);
     expect(stayMinutes("600")).toBe(STAY_MINUTES);
-    expect(stayMinutes("soon")).toBe(5);
+    expect(stayMinutes("soon")).toBe(10);
   });
 });
 
@@ -191,18 +194,20 @@ describe("the stay", () => {
     expect(f.calls).toEqual([`turn ${STAY_LAST_MINUTES}`, "leave"]);
   });
 
-  it("gives way one slot at a time: slot k after a job has waited (k - 1) steps", () => {
+  it("gives way one slot at a time: slot k after a job has waited (k - 1) steps, never at once", () => {
     const now = Date.parse("2026-10-15T12:00:00Z");
     const ago = (ms: number) => new Date(now - ms).toISOString();
     expect(givesWay(undefined, now, 1)).toBe(false);
-    expect(givesWay(ago(0), now, 1)).toBe(true);
+    // A job just queued is a free slot's to pick up: no stay leaves for it yet.
+    expect(givesWay(ago(0), now, 1)).toBe(false);
+    expect(givesWay(ago(PICK_UP_MS), now, 1)).toBe(true);
     expect(givesWay(ago(GIVE_WAY_MS - 1), now, 2)).toBe(false);
     expect(givesWay(ago(GIVE_WAY_MS), now, 2)).toBe(true);
     expect(givesWay(ago(GIVE_WAY_MS), now, 3)).toBe(false);
     // Stays that began together after a job queued long ago still go one at a time.
     const long = ago(10 * GIVE_WAY_MS);
-    expect(givesWay(long, now, 1, now)).toBe(true);
-    expect(givesWay(long, now, 2, now)).toBe(false);
+    expect(givesWay(long, now + PICK_UP_MS, 1, now)).toBe(true);
+    expect(givesWay(long, now + PICK_UP_MS, 2, now)).toBe(false);
     expect(givesWay(long, now + GIVE_WAY_MS, 2, now)).toBe(true);
   });
 
@@ -215,9 +220,7 @@ describe("the stay", () => {
     expect(edited.calls).toEqual(["handover"]);
   });
 
-  it("ends on your stop, and leaves after an answer that started more work", async () => {
-    const stopped = fakeStay({ news: [true], turns: ["end"] });
-    expect((await stay(stopped.io, 5)).why).toBe("you said stop");
+  it("leaves after an answer that started more work", async () => {
     const more = fakeStay({ news: [true], turns: ["left"] });
     const done = await stay(more.io, 5);
     expect(done.answered).toBe(1);

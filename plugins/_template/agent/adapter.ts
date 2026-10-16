@@ -21,6 +21,8 @@ function reader(): OutputReader {
       // It read a web page, or ran a command that fetched one: notes and calls then wait for
       // your `yes` (AgentReport.readOutside).
       if (e.type === "fetch") report.readOutside = true;
+      // This ask's own counts. An agent that reports its session's from the start (Claude Code on a
+      // resumed session) sets AgentReport.sessionTotals, and the core counts only what's new.
       if (e.type === "usage")
         report.tokens = {
           input: Number(e.input ?? 0),

@@ -35,7 +35,7 @@ import { accountOf } from "../lib/accounts.ts";
 import { installAgent } from "../lib/agent-install.ts";
 import { defaultAgent as defaultAgentOf, loginOf } from "../lib/agents.ts";
 import { callsSoFar } from "../lib/exec.ts";
-import { ghRun, platformRepo, repoOfPr } from "../lib/github.ts";
+import { ghRun, platformRepo, readsSeen, repoOfPr } from "../lib/github.ts";
 import { onBox } from "../lib/sandbox.ts";
 import { type Result, ShipError } from "../lib/output.ts";
 import type { RecordWrite } from "../lib/plugins/record.ts";
@@ -57,6 +57,7 @@ import {
   saidSince,
   snapshot,
   type TaskRecord,
+  textHash,
 } from "./snapshot.ts";
 import { givesWay, sameTurn, stay, stayMinutes, staysAfter, type Turn } from "./stay.ts";
 import { think as runThink, type ThinkOut } from "./think.ts";
@@ -411,6 +412,8 @@ export async function runThinkStep(
     // What the run's model takes, from its gateway's public catalog.
     look: async (url) => listOf(url),
     ...resume,
+    // A stay's turn counts only what its session adds (an agent that counts from its start).
+    ...(resume.resume ? { used: load<ThinkOut>(n, "think")?.meta?.used } : {}),
     // The files on words it takes in before it answers, fetched as the first ones were.
     fetch: async (said) => [
       ...(await chatFiles(
@@ -558,9 +561,13 @@ export async function runStay(n: number): Promise<Result> {
   const since = new Date(Date.parse(saved.s.now) - 60_000).toISOString();
   const tags: { comments?: string; issue?: string; queue?: string } = {};
   let waits = false;
-  let text: string | undefined;
-  let queued: string | undefined;
+  // The task's text as the run read it: an edit since, even during its first think, is news.
+  const text = saved.s.bodyHash;
+  let queued: { since?: string; run?: number } | undefined;
   const began = Date.now();
+  // The jobs this slot may take: any task's run, and its own box's weekly clean-up (`box-<name>`).
+  const box = process.env.SHIPIFY_BOX;
+  const mayTake = ["shipify-box", ...(box ? [`box-${box}`] : [])];
   // Your words, not a setting the door wrote (a `use` or `close` from a chat starts nothing).
   const yours = (c: Said) =>
     (c.author === "owner" || c.author === "door") && c.id > after && !c.from?.setting;
@@ -578,27 +585,29 @@ export async function runStay(n: number): Promise<Result> {
       tags.issue = r.tag;
       if (!r.issue) return "open";
       if (r.issue.state === "closed") return "closed";
-      const now = `${r.issue.title}\n${r.issue.body ?? ""}`;
-      text ??= now;
-      return now === text ? "open" : "edited";
+      return textHash(r.issue) === text ? "open" : "edited";
     },
     waiting() {
-      const r = queue().waitingFor("shipify-box", tags.queue);
+      const r = queue().waitingFor(mayTake, tags.queue);
       // Unchanged since the last look (no answer): the job seen waiting then still waits.
-      if (r.tag !== tags.queue || r.waiting || !queued) queued = r.waiting ? r.since : undefined;
+      if (r.tag !== tags.queue || r.waiting || !queued)
+        queued = r.waiting ? { since: r.since, run: r.run } : undefined;
       tags.queue = r.tag;
-      return givesWay(queued, Date.now(), onBox()?.slot ?? 1, began);
+      return givesWay(queued?.since, Date.now(), onBox()?.slot ?? 1, began);
     },
     async turn(minutes: number): Promise<Turn> {
       waits = false;
       const clock = turnClock();
       const record = readRecord(n);
+      // Closed meanwhile: a normal run says what your words on a closed task do.
+      if (record.issue.state === "closed") return "handover";
       const { s, p } = await planned(n, { kind: "comment" }, record);
       clock.lap("plan");
       const words = s.said.filter(yours);
       after = Math.max(after, ...s.said.map((c) => c.id));
-      // Your `stop` ends the stay; words that aren't yours, or only a setting, leave nothing to do.
-      if (words.some((c) => wordOf(c.text) === "stop")) return "end";
+      // A fixed word (`stop`, `continue`, `start over`…) is a normal run's, as without a stay.
+      if (words.some((c) => wordOf(c.text))) return "handover";
+      // Words that aren't yours, or only a setting, leave nothing to do.
       if (p.do === "nothing" || !words.length) return "nothing";
       if (!sameTurn(first, p)) return "handover";
       await marked(n, s, p);
@@ -612,7 +621,9 @@ export async function runStay(n: number): Promise<Result> {
       // A result that needs a token only a normal run mints (a push, a call, files): that run's.
       if (d.needs.repo || d.needs.act || d.needs.workflows) return "handover";
       if (d.writes.some((w) => w.w === "reply" && w.files?.length)) return "handover";
-      await runApply(n);
+      // Its reply refused, and the problem too: the step fails, and its failure step tells you.
+      const applied = await runApply(n);
+      if (applied.status === "failed") throw new ShipError(applied.summary);
       clock.lap("apply");
       // Where a turn's time went, in the run's log (ADR 0057): each phase, and apply's calls.
       process.stderr.write(`  · ${clock.line()}\n`);
@@ -628,7 +639,13 @@ export async function runStay(n: number): Promise<Result> {
     },
   };
   const done = await stay(io, stayMinutes(process.env.SHIPIFY_STAY));
-  log.info("run.stay.left", { answered: done.answered, why: done.why });
+  // What its reads came to, and the run it gave way to, for a look in the run's log.
+  log.info("run.stay.left", {
+    answered: done.answered,
+    why: done.why,
+    reads: readsSeen(),
+    ...(queued?.run && done.why.startsWith("another run waits") ? { to: queued.run } : {}),
+  });
   return {
     command: "run stay",
     status: "succeeded",

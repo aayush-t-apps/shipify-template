@@ -23,7 +23,7 @@ import { PLATFORM_ROOT } from "../lib/config.ts";
 import { copyValues } from "../lib/generate.ts";
 import { ghRun, platformRepo } from "../lib/github.ts";
 import { notebookSection, pagesFor } from "../lib/notebook.ts";
-import type { Adapter, AgentReport } from "../lib/plugins/agent.ts";
+import type { Adapter, AgentReport, SessionUsed } from "../lib/plugins/agent.ts";
 import { repoFor } from "../lib/projects-on-github.ts";
 import type { RunDetails } from "../lib/runs.ts";
 import { onBox } from "../lib/sandbox.ts";
@@ -193,12 +193,14 @@ export interface ThinkIn {
   resume?: string;
   /** The agent's minutes, when fewer than its own clock: a stay's turn ends within its token's hour. */
   minutes?: number;
+  /** What the resumed session had counted (ThinkMeta.used): this turn counts only what's new. */
+  used?: SessionUsed;
   /** A gateway's public answer, read with no key: what the run's model takes (none: not read). */
   look?: (url: string) => Promise<string | null>;
 }
 
 export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOut> {
-  const timing = new Stopwatch();
+  const timing = new Stopwatch(io.resume ? io.used : undefined);
   const place = placeFor(s.run.id.replace(/[^A-Za-z0-9._-]/g, "-"), io.local, Boolean(io.resume));
   rmSync(io.keep, { recursive: true, force: true });
   mkdirSync(io.keep, { recursive: true });
@@ -577,13 +579,20 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       if (!place.stop()) throw new Error("the agent left processes that couldn't be stopped");
       return { outcome, report };
     };
+    // A stay's turn carries on in the place as the last turn left it (ADR 0057): a result.json
+    // there is that answer, never this one's (#462).
+    const before = io.resume ? place.take("result.json")?.toString("utf8") : undefined;
+    const written = () => {
+      const file = place.take("result.json");
+      return file && file.toString("utf8") !== before ? file : undefined;
+    };
     const began = performance.now();
     const { outcome, report } = io.resume
       ? await ask(argvFor(io.resume), nextPrompt(fresh, notes))
       : await ask(argv, prompt);
     // Its command never started (exec's 126: not the agent's to run; 127: not there): said as that,
     // never as an agent that stopped early.
-    if ((outcome.code === 126 || outcome.code === 127) && !place.take("result.json")) {
+    if ((outcome.code === 126 || outcome.code === 127) && !written()) {
       process.stderr.write(
         `${JSON.stringify({ level: "error", event: "think.unstartable", code: outcome.code })}\n`,
       );
@@ -603,11 +612,10 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       };
     }
 
-    // What it left, taken back: the file it wrote, else its final answer in the result's schema
-    // (an adapter that can).
+    // What it left, taken back: the file it wrote this time, else its final answer in the result's
+    // schema (an adapter that can).
     const answer = (r: typeof report) =>
-      place.take("result.json") ??
-      (r.result !== undefined ? Buffer.from(JSON.stringify(r.result)) : undefined);
+      written() ?? (r.result !== undefined ? Buffer.from(JSON.stringify(r.result)) : undefined);
     const raw = answer(report);
     let result = readResult(raw?.toString("utf8"));
     if (raw) keep("result.json", raw);
@@ -626,7 +634,8 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     // rounds at most), so one reply covers it all. Their files are fetched first. Words the next
     // run must read itself (a fixed word, a `use`…) wait for it, as before, and the details say so.
     let session = report.session;
-    let last = raw?.toString("utf8");
+    // The file in its place now: a catch-up round's answer is a file only when it differs.
+    let last = place.take("result.json")?.toString("utf8");
     let waiting = 0;
     for (let round = 0; round < CATCH_UP_ROUNDS; round++) {
       if (!later || stopBy || !session || "error" in result) break;
@@ -787,6 +796,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       ...(commits && newRepo ? { firstPush: true } : {}),
       ...(handoff ? { handoff } : {}),
       ...(session ? { session } : {}),
+      ...(session && timing.sessionUsed ? { used: timing.sessionUsed } : {}),
     };
     keep("meta.json", JSON.stringify(meta));
     return { out: io.keep, meta, details: timing.details(t.why, "thought", checkNotes) };

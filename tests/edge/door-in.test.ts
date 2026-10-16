@@ -474,7 +474,7 @@ describe("answered at once, writing nothing", () => {
   it("answers /models from executors.json, and /models <word> from the gateway's list, with no key", async () => {
     const f = world(k);
     expect(await said(await post(f, update({ text: "/models" })))).toContain(
-      "\nnvidia/nemotron-3-ultra-550b-a55b:free\n",
+      "\nz-ai/glm-5.3-flash\n",
     );
     expect(f.w.calls.filter((c) => c.includes("openrouter"))).toEqual([]);
     f.w.apps["https://openrouter.ai/api/v1/models"] = {

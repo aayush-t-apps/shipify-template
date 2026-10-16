@@ -6,6 +6,7 @@
 // the core doesn't.
 import { credential, loadCredentials } from "../../cli/lib/credentials.ts";
 import { run } from "../../cli/lib/exec.ts";
+import { readReply } from "../../cli/contracts/index.ts";
 import { ghJson, ghRun, platformRepo } from "../../cli/lib/github.ts";
 import type { Check } from "../../cli/lib/output.ts";
 import { readPeople } from "../../cli/lib/people.ts";
@@ -115,34 +116,65 @@ async function staying(task: number, opts: Wait): Promise<"staying" | "done" | "
 
 type You = { post: (text: string, updateId: number) => Promise<Said> };
 
+/** How many replies a run has written on a task. */
+const replies = (task: number) =>
+  ghJson<{ body: string }[]>([
+    "api",
+    `repos/${platformRepo()}/issues/${task}/comments?per_page=100`,
+  ]).filter((c) => readReply(c.body)).length;
+
 /**
  * A run that stays (ADR 0057), live: once its Stay step is under way, your next words on its task,
- * then, 20 s later, your close, which it reads only after the turn it's on. Whether it stayed.
+ * each after the last was answered (a second turn is where #462 broke), then, 20 s after the last,
+ * your close, which it reads only after the turn it's on. Whether it stayed.
  */
 async function nextWords(
   me: You,
   task: number,
-  words: string,
+  words: string[],
   updateId: number,
   opts: Wait,
 ): Promise<boolean> {
   if ((await staying(task, opts)) !== "staying") return false;
-  await me.post(`#${task} ${words}`, updateId + 1);
-  await (opts.wait ?? ((ms: number) => new Promise((r) => setTimeout(r, ms))))(20_000);
-  await me.post(`#${task} close`, updateId + 2);
+  const wait = opts.wait ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  let seen = replies(task);
+  for (const [i, said] of words.entries()) {
+    // The words before answered first, three minutes at most.
+    for (let t = 0; i > 0 && t < 18 && replies(task) <= seen; t++) await wait(10_000);
+    seen = replies(task);
+    await me.post(`#${task} ${said}`, updateId + 1 + i);
+  }
+  await wait(20_000);
+  await me.post(`#${task} close`, updateId + 1 + words.length);
   return true;
 }
 
-/** From a finished run's log: its stay answered your next words, and the door sent both replies. */
-function stayed(log: string, who: string): Check {
+/** Whether each of a task's replies is its own answer: none says what one before it said (#462). */
+function ownAnswers(task: number): boolean {
+  const said = ghJson<{ body: string }[]>([
+    "api",
+    `repos/${platformRepo()}/issues/${task}/comments?per_page=100`,
+  ]).flatMap((c) => readReply(c.body)?.key?.split(":")[2] ?? []);
+  return new Set(said).size === said.length;
+}
+
+/**
+ * From a finished run's log: its stay answered your next words, with an answer of its own, and the
+ * door sent both replies.
+ */
+function stayed(log: string, who: string, task: number): Check {
   const line = /run stay: task #\d+: stayed, (\d+) answers?; left: ([^\n[]+)/.exec(log);
   const told = log.split("\n").filter((l) => l.includes('"door.out.sent"')).length;
-  const ok = Number(line?.[1] ?? 0) >= 1 && told >= 2;
+  const own = ownAnswers(task);
+  // Both next words answered in the stay, or the first and then its slot given to another task's
+  // run (boxes busy with other selftests), the rest handed to a run of their own.
+  const want = /another run waits/.test(line?.[2] ?? "") ? 1 : 2;
+  const ok = Number(line?.[1] ?? 0) >= want && told >= want + 1 && own;
   return {
     name: `${who} stayed: your next words were answered in the same run`,
     ok,
     detail: line
-      ? `${line[1]} answer(s) in the stay; left: ${line[2]?.trim()}; ${told} replies sent`
+      ? `${line[1]} answer(s) in the stay; left: ${line[2]?.trim()}; ${told} replies sent${own ? "" : "; a reply repeated an earlier answer"}`
       : "the run's log has no stay line",
     ...(ok ? {} : { fix: "the run's Stay step says why; SHIPIFY_STAY 0 turns staying off" }),
   };
@@ -214,7 +246,13 @@ async function endToEnd(opts: Wait): Promise<Check[]> {
   });
   // A run that stays after its answer (ADR 0057): your next words, answered by it in seconds, in
   // the same session; then your close ends it. Its log says both.
-  const stays = await nextWords(me, first.task, "And now in two words?", updateId, opts);
+  const stays = await nextWords(
+    me,
+    first.task,
+    ["And now in two words?", "And in three?"],
+    updateId,
+    opts,
+  );
   // Its run, followed to its end: its log says whether the door took the reply.
   const done = await finished(first.task, opts);
   if (!done) {
@@ -245,7 +283,7 @@ async function endToEnd(opts: Wait): Promise<Check[]> {
     ok: Boolean(sent) && !/"sent":0\b/.test(sent ?? ""),
     detail: sent ? "the door sent it (see your phone)" : "the run's log has no door.out.sent line",
   });
-  if (stays) checks.push(stayed(log, "it"));
+  if (stays) checks.push(stayed(log, "it", first.task));
   return checks;
 }
 
@@ -272,7 +310,13 @@ export async function agentLive(agent: string, opts: Wait = {}): Promise<Check[]
   ];
   if (!sent.task) return checks;
   // Its run stays after the answer (ADR 0057): the next question in the same session, then a close.
-  const stays = await nextWords(me, sent.task, "And 3 + 3? The number alone.", updateId, opts);
+  const stays = await nextWords(
+    me,
+    sent.task,
+    ["And 3 + 3? The number alone.", "And 4 + 4? The number alone."],
+    updateId,
+    opts,
+  );
   const done = await finished(sent.task, opts);
   if (!done)
     return [
@@ -306,7 +350,7 @@ export async function agentLive(agent: string, opts: Wait = {}): Promise<Check[]
       ? {}
       : { fix: `its reply on the task says why (a key: pnpm ship add <its gateway> --yes)` }),
   });
-  if (stays) checks.push(stayed(log, agent));
+  if (stays) checks.push(stayed(log, agent, sent.task));
   return checks;
 }
 

@@ -185,10 +185,14 @@ export interface Queue {
   /** A workflow's recent runs, newest first. */
   runs(workflow: string, count?: number): QueueRun[];
   /**
-   * Whether a job waits for a machine with this label (ADR 0057: a run that stays gives its slot
-   * to it). A run held back behind its task's own run has no job yet, so it never counts. Read only
-   * when the queue changed since `tag`: unchanged, it says nothing new waits. `since`: when the
-   * longest waiting job was queued.
+   * Whether a job waits for a machine with any of these labels (ADR 0057: a run that stays gives
+   * its slot to it: a task's run, or its own box's clean-up). A run held back behind its task's own
+   * run has no job yet, so it never counts. Read only when the queue changed since `tag`:
+   * unchanged, it says nothing new waits. `since`: when the longest waiting job was queued, and
+   * `run`: its run.
    */
-  waitingFor(label: string, tag?: string): { tag?: string; waiting: boolean; since?: string };
+  waitingFor(
+    labels: string[],
+    tag?: string,
+  ): { tag?: string; waiting: boolean; since?: string; run?: number };
 }

@@ -8,13 +8,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import { setupCheck } from "../cli/commands/doctor.ts";
 import { claude } from "../cli/lib/agents/claude.ts";
 import {
+  type Choice,
   choose,
   loadExecutors,
   mergeReports,
+  ownReport,
   parseUse,
   useChoices,
   useCommand,
 } from "../cli/lib/agents.ts";
+import { Stopwatch } from "../cli/kernel/agent.ts";
 import { brief } from "../cli/kernel/apply.ts";
 import { stream } from "../cli/lib/exec.ts";
 import { madeByLine, taskLine, taskNumber, withTask } from "../cli/lib/links.ts";
@@ -290,6 +293,43 @@ describe("agents: Claude Code's adapter", () => {
     for (const command of ["make verify", "git log --oneline", "grep -rn curl src", "ls curl"])
       expect(outside("Bash", { command }), command).toBe(false);
     expect(outside("Read", { file_path: "/work/curl.md" })).toBe(false);
+  });
+
+  it("counts a resumed session's ask once: Claude Code's counts are its session's from the start", () => {
+    // Measured live (Claude Code 2.1.283, haiku): an ask, then the same session resumed.
+    const haiku = "claude-haiku-4-5";
+    const first = { input: 909, cacheRead: 22562, cacheWrite: 8019, output: 52, thinking: 38 };
+    const both = { input: 919, cacheRead: 53143, cacheWrite: 8109, output: 94, thinking: 74 };
+    const resumed = {
+      sessionTotals: true,
+      models: { [haiku]: both },
+      tokens: both,
+      cost: { usd: 0.0229, plan: true },
+    };
+    const own = ownReport(resumed, { models: { [haiku]: first }, usd: 0.0195 });
+    expect(own.tokens).toEqual({
+      input: 10,
+      cacheRead: 30581,
+      cacheWrite: 90,
+      output: 42,
+      thinking: 36,
+    });
+    expect(own.cost?.usd).toBeCloseTo(0.0034);
+    // The first ask of a session, and an agent that counts each ask alone, as they are.
+    expect(ownReport(resumed, undefined)).toBe(resumed);
+    const pi = { tokens: first, models: { m: first } };
+    expect(ownReport(pi, { models: { m: first } })).toBe(pi);
+    // A run's asks in one session (a catch-up round) add up to the session's totals, once.
+    const w = new Stopwatch();
+    const asked = { sessionTotals: true, models: { [haiku]: first }, tokens: first };
+    w.ran("claude", {} as Choice, { report: asked, secs: 1 });
+    w.ran("claude", {} as Choice, { report: resumed, secs: 1 });
+    expect(w.report.tokens).toEqual(both);
+    expect(w.sessionUsed?.models[haiku]).toEqual(both);
+    // A stay's next turn starts from what its session had counted.
+    const next = new Stopwatch(w.sessionUsed);
+    next.ran("claude", {} as Choice, { report: resumed, secs: 1 });
+    expect(next.report.tokens?.cacheRead).toBe(0);
   });
 
   it("adds up a round's runs: counts sum, the latest version and limits win", () => {

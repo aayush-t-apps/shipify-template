@@ -92,6 +92,9 @@ imports the list, never an adapter.
   `config/skills`). The conformance test checks it, and that its report names the skills its agent
   loaded (`AgentReport.skills`): its own skill tool's, or a read of a `SKILL.md` (the contract's
   `skillRead`).
+- **Its counts:** each ask's own tokens and cost. An agent whose counts are its session's from the
+  start, as Claude Code's are when it carries on in a session (a catch-up round, a stay's turn),
+  says so (`AgentReport.sessionTotals`), and the core counts only what each ask adds.
 - **Folders it mustn't write:** an agent that writes in its own settings when it can names them
   (`readOnly`: OpenCode's config folder, where it would install a package from npm on every
   start), and the run makes them again, empty and read-only, as the agent, before every ask.

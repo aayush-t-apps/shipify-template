@@ -373,3 +373,53 @@ chats you'd rather not keep on GitHub. The design and its edge cases are in task
   - Rerun: all four passed, and two stayed and answered in the same session. But a job queued before
     the stays began counted as long waiting, so slots 1 and 3 both gave way. The wait now counts
     from whichever is later: the job's queuing, or the stay's start.
+- **No "staying until 14:32" line on the status comment.** GitHub shows the label `staying`; the
+  web chat says **Staying** in the task's row and its thread. Nothing else was needed.
+- **The sweep after (#451):**
+  - A box that dies mid-stay leaves its label, since its `always()` step never runs. The watch now
+    takes `staying` off on any tick once no run goes for the task (and nothing changed on it for 2
+    minutes), so your next words start a run; words already waiting are still told as Stopped. This
+    replaces "Narrowed out: the door clearing a stale `staying`": the watch, which already reads
+    the runs, does it in one line.
+  - A stay gives way to its own box's weekly clean-up (`box-<name>`), not only to a task's run.
+  - Only your comments skip while a run stays, each in a concurrency group of its own
+    (`task-<n>-staying`): a skipped run never takes a waiting run's place (a handover's, a late
+    comment's), and the web chat never shows it as Queued. A close or an edit on GitHub runs after
+    the stay, so a close that still has something to do (`needs you`, `working`, `waiting`) does it.
+  - Every fixed word (`stop`, `continue`, `start over`…) goes to a normal run, as without a stay: a
+    `stop` while it waits was answered by no one, and the watch then said Stopped.
+  - A turn on a task closed meanwhile hands over before it plans; one whose apply fails fails the
+    step, so its failure step tells you.
+  - An edit is read against the task's text as the run read it (its `bodyHash`), so an edit during
+    the first think counts too.
+  - No stay gives way before a job has waited 10 s (`PICK_UP_MS`): a free slot takes it first.
+  - A stay on a repo outside your account (the read profile) keeps its reads; words that look at
+    another repo go to a normal run (a test on plan's own reads). A task on another of your
+    accounts is a work run, so it never stays.
+- **A turn's own answer (#462):** a stay carries on in the run's folder as the last turn left it,
+  and a turn read its answer from `out/result.json` first, so once an agent wrote that file (Claude
+  Code wrote it on a first answer, then answered later turns in its final message), every later
+  turn posted the first answer again. Think now takes a file only when this ask wrote it (it
+  differs from the one before), else the agent's final answer, as catch-up rounds already did.
+  `selftest chat` checks that no reply repeats an earlier one.
+- **A turn's own counts:** Claude Code counts a resumed session from its start, so a turn's details
+  said the whole session's tokens (981k on #462 for a turn of about 70k, mostly cache reads). Its
+  adapter says so (`AgentReport.sessionTotals`), and the run counts what each ask adds; the next
+  turn starts from the session's counts kept with its think (`ThinkMeta.used`). pi and OpenCode
+  count each ask alone. Claude Code's cache lives an hour, so a turn within it reads the session
+  from the cache.
+- **The stay's log line** says its reads (`150 reads, 4 changed; rate …`: a 304 is free) and, when
+  it gives way, the run it gave way to.
+- **Ten quiet minutes by default** (was 5): on #462 the owner's pauses between a reply and the next
+  words were mostly 1–3 minutes, the longest 6.5, and 5 minutes let two of them start cold runs. A
+  turn reads the session from Claude Code's cache (an hour), the polls are free, and a stay gives
+  way to any run that needs its slot, so the longer wait costs nothing else. `SHIPIFY_STAY` still
+  sets it (0 to 45).
+- **`selftest chat` and each agent's** send two next words, each after the last was answered, as a
+  second turn is where #462 broke, and check both answers are new (or, when its slot went to
+  another task's run, the first answered in the stay and the rest handed over).
+- **A handover's run stays too (#462):** a stay that hands your words to a normal run (another
+  model, a fixed word, another repo) starts it as a dispatch, and a stay was allowed only after a
+  run your comment started, so after `use opus` the answer came, and the next words started cold
+  again. A run now stays when it answered your words (its plan's `why`), however its job started;
+  a repeat's run (`scheduled`) still never stays.

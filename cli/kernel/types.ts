@@ -2,6 +2,7 @@
 // values, so decide is tested as `snapshot → writes` with no GitHub.
 import type { From, Link, Problem, ReplyKind, ToolCall } from "../contracts/index.ts";
 import type { FormRead } from "../lib/form-reader.ts";
+import type { SessionUsed } from "../lib/plugins/agent.ts";
 import type { RepoRef } from "../lib/projects-on-github.ts";
 import type { TaskState, TaskTitle } from "../lib/task.ts";
 import type { Result } from "./result.ts";
@@ -188,6 +189,8 @@ export interface ThinkMeta {
   handoff?: string;
   /** The agent's session, for a stay's next turn to carry on in (ADR 0057). */
   session?: string;
+  /** What that session had counted, for an agent that counts from its start: the next turn's base. */
+  used?: SessionUsed;
 }
 
 /** One change a run makes, as data; apply makes it, each safe to repeat. */

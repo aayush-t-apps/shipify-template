@@ -124,15 +124,19 @@ export function taskReadOf(
   return saved.record ? saved : undefined;
 }
 
-/** A record's words: what was said on it, and its body as written (the door's line taken off). */
+/** A task's body as written (the door's line taken off), and who wrote it. */
+function bodyOf(issue: RecordIssue) {
+  const body = issue.body ?? "";
+  const ia = authorOf(issue.user.login, body, true);
+  return { words: ia.author === "door" ? withoutLine(body) : body, ia };
+}
+
+/** A task's title and words as a fingerprint (its snapshot's `bodyHash`): an edit changes it. */
+export const textHash = (issue: RecordIssue) => hash8(`${issue.title}\n${bodyOf(issue).words}`);
+
+/** A record's words: what was said on it, and its body as written. */
 function wordsOf(n: number, r: TaskRecord) {
-  const body = r.issue.body ?? "";
-  const ia = authorOf(r.issue.user.login, body, true);
-  return {
-    said: saidOf(n, r.comments, r.statusId),
-    words: ia.author === "door" ? withoutLine(body) : body,
-    ia,
-  };
+  return { said: saidOf(n, r.comments, r.statusId), ...bodyOf(r.issue) };
 }
 
 /**
@@ -280,7 +284,7 @@ export function snapshot(
     ...(read ? { form: read } : {}),
     ...(rf ? { repeatForm: rf } : {}),
     ...(firstUseOf(read, words) ? { firstUse: firstUseOf(read, words) } : {}),
-    bodyHash: hash8(`${issue.title}\n${words}`),
+    bodyHash: textHash(issue),
     projects,
     repos,
     ...(account ? { account: { login: account, reached, ...(why ? { why } : {}) } } : {}),

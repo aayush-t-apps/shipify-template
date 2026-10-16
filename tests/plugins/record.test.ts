@@ -322,7 +322,7 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
 
   it("says whether a job waits for a machine with a label, never counting a run with no job (ADR 0057)", () => {
     const { queue } = make();
-    expect(queue.waitingFor("shipify-box").waiting).toBe(false);
+    expect(queue.waitingFor(["shipify-box"]).waiting).toBe(false);
     fake.set((f) => {
       Object.assign(f, {
         queued: [
@@ -331,7 +331,7 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
         ],
       });
     });
-    const none = queue.waitingFor("shipify-box");
+    const none = queue.waitingFor(["shipify-box"]);
     expect(none.waiting).toBe(false);
     fake.set((f) => {
       Object.assign(f, {
@@ -353,6 +353,7 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
                 status: "queued",
                 labels: ["self-hosted", "shipify-box"],
                 created_at: "2026-10-15T12:00:01Z",
+                run_id: 10,
               },
             ],
           },
@@ -360,10 +361,33 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
       });
     });
     // Waiting, and since when the longest-waiting job was queued: which stay gives way first.
-    expect(queue.waitingFor("shipify-box", none.tag)).toMatchObject({
+    expect(queue.waitingFor(["shipify-box"], none.tag)).toMatchObject({
       waiting: true,
       since: "2026-10-15T12:00:01Z",
+      run: 10,
     });
+  });
+
+  it("counts a box's own clean-up for that box alone (ADR 0057)", () => {
+    const { queue } = make();
+    fake.set((f) => {
+      Object.assign(f, {
+        queued: [
+          {
+            id: 11,
+            jobs: [
+              {
+                status: "queued",
+                labels: ["self-hosted", "box-homepi"],
+                created_at: "2026-10-15T12:00:00Z",
+              },
+            ],
+          },
+        ],
+      });
+    });
+    expect(queue.waitingFor(["shipify-box", "box-homepi"]).waiting).toBe(true);
+    expect(queue.waitingFor(["shipify-box", "box-vps"]).waiting).toBe(false);
   });
 
   it("opens an issue, and pins it without failing when it can't", () => {

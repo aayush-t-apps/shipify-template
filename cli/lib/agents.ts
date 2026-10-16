@@ -20,6 +20,7 @@ import {
   type Executors,
   Gateway,
   RESERVED_DIRS,
+  type SessionUsed,
   SHARED_KEYS,
   skillsSeen,
   type Tokens,
@@ -46,6 +47,7 @@ export type {
   Executors,
   Gateway,
   OutputReader,
+  SessionUsed,
   Tokens,
 } from "./plugins/agent.ts";
 export { ADAPTERS };
@@ -290,6 +292,34 @@ const sum = (a?: Tokens, b?: Tokens): Tokens | undefined =>
         thinking: (a.thinking ?? 0) + (b.thinking ?? 0) || undefined,
       }
     : (a ?? b);
+
+const less = (a: Tokens, b?: Tokens): Tokens =>
+  b
+    ? {
+        input: Math.max(0, a.input - b.input),
+        cacheRead: Math.max(0, a.cacheRead - b.cacheRead),
+        cacheWrite: Math.max(0, a.cacheWrite - b.cacheWrite),
+        output: Math.max(0, a.output - b.output),
+        thinking: Math.max(0, (a.thinking ?? 0) - (b.thinking ?? 0)) || undefined,
+      }
+    : a;
+
+/**
+ * An ask's own counts: a report of its session's totals (sessionTotals), less what the session
+ * had counted when its last ask ended. Any other report is its ask's already.
+ */
+export function ownReport(r: AgentReport, before: SessionUsed | undefined): AgentReport {
+  if (!r.sessionTotals || !r.models || !before) return r;
+  const models = Object.fromEntries(
+    Object.entries(r.models).map(([id, t]) => [id, less(t, before.models[id])]),
+  );
+  return {
+    ...r,
+    models,
+    tokens: Object.values(models).reduce((a, b) => sum(a, b) as Tokens),
+    ...(r.cost ? { cost: { ...r.cost, usd: Math.max(0, r.cost.usd - (before.usd ?? 0)) } } : {}),
+  };
+}
 
 /**
  * Two runs' reports as one (an agent run and its retry). Counts add

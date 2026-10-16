@@ -1,6 +1,6 @@
 // The web chat stays an extension (ADR 0036, "The extension and the core"): only app.ts mounts it,
 // its form keeps step with GitHub's Repeat form, and its page stays light: plain files, no
-// libraries, no inline script, under 41 KB as sent; Mermaid draws diagrams only in the sandboxed
+// libraries, no inline script, under 42 KB as sent; Mermaid draws diagrams only in the sandboxed
 // frame.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -90,19 +90,20 @@ describe("the page", () => {
   // (ADR 0039: three panes, the task's info, the picker with each model's facts, Status & setup as
   // a summary and a table). Since 2026-10-07 it's measured as a phone gets it, compressed (gzip, as
   // Cloudflare sends it): 40 KB, the page about 36 KB then (106 KB as written, comments kept), then
-  // 41 with the gateways row of the model picker (task: Vercel's gateway; the page was at 40.0). A
-  // library or a picture slipped in still fails it.
+  // 41 with the gateways row of the model picker (task: Vercel's gateway; the page was at 40.0), then
+  // 42 with a run that stays (ADR 0057; the page was at 41.0). A library or a picture slipped in still
+  // fails it.
   // Its service worker (ADR 0050) loads on its own after the page, then is a 304: 2 KB of its own.
   // The notification's icon and badge (PNG, made from icon.svg) are fetched by the phone when one
   // shows, never by the page, so they live outside the sign-in (/note/): 8 KB of their own.
-  it.skipIf(!have)("is plain files of its own, under 41 KB as sent, its worker under 2 KB", () => {
+  it.skipIf(!have)("is plain files of its own, under 42 KB as sent, its worker under 2 KB", () => {
     const list = files(dir);
     for (const want of ["index.html", "app.js", "compose.js", "app.css", "manifest.json", "sw.js"])
       expect(list).toContain(`${dir}/${want}`);
     const gz = (f: string) => gzipSync(readFileSync(join(ROOT, f))).length;
     const worker = `${dir}/sw.js`;
     const sent = list.filter((f) => f !== worker).reduce((n, f) => n + gz(f), 0);
-    expect(sent).toBeLessThan(41 * 1024);
+    expect(sent).toBeLessThan(42 * 1024);
     expect(list.filter((f) => f.endsWith(".png"))).toEqual([]);
     const note = files("edge/public/note");
     expect(note.sort()).toEqual(["edge/public/note/badge.png", "edge/public/note/icon.png"]);

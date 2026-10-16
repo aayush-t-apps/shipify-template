@@ -149,12 +149,13 @@ const working = (r) =>
   r.queued
     ? h("span.st.open", online() ? "Queued" : "Waiting for a box")
     : h("span.st.working", { "data-since": r.since }, `Working · ${dur(r.since)}`);
-// A task's state, the same in its row and its header: its run, your words starting one, else its
-// state ("Open" said only in the header).
+// A task's state, the same in its row and its header: its run, your words starting one, a run
+// staying for them (ADR 0057), else its state ("Open" said only in the header).
 const status = (T, run, open = false) => {
   const t = S.threads[T.n];
   const go = !run && t && starting(T, t);
-  return run ? working(run) : go ? go() : (open || T.state !== "open") && dot(T.state);
+  const st = T.staying ? "staying" : (open || T.state !== "open") && T.state;
+  return run ? working(run) : go ? go() : st && dot(st);
 };
 // A title's kind ("ask:", "shipify:", a repo's, "Recipe:"): a label of its own, only the
 // kinds Shipify takes; the rest is the title.
@@ -332,7 +333,10 @@ function drawList() {
     const st = fresh && t.state !== "needs-you" ? h("span.st.fresh", "New") : status(t, r);
     const k = kindOf(t);
     const c = `a${R.n === t.n ? ".on" : ""}${t.state === "needs-you" ? ".need" : ""}${fresh ? ".fresh" : ""}`;
-    const mark = h(`i.mark.${st ? st.className.replace("st ", "") : t.state}`);
+    // The row's state is its dot (its word on hover, and for a screen reader); the header says it.
+    const mark = h(`i.mark.${st ? st.className.replace("st ", "") : t.state}`, {
+      title: st ? st.textContent : WORD[t.state],
+    });
     const meta = h("span.meta", st, k && h("span", named(k)), h("span", `#${t.n}`));
     return h(
       "li",

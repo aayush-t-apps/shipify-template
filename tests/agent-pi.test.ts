@@ -360,7 +360,7 @@ describe("choosing pi", () => {
   it("runs Auto's model, an id at its gateway, with the gateway's key as its login", () => {
     const pi = all.pi;
     const c = choose("pi", pi, {});
-    expect(c).toMatchObject({ model: "nvidia/nemotron-3-ultra-550b-a55b:free", effort: "high" });
+    expect(c).toMatchObject({ model: "z-ai/glm-5.3-flash", effort: "high" });
     // A model picked with no effort thinks at Auto's too, never at the model's own default.
     expect(choose("pi", pi, { model: "z-ai/glm-5.3-flash" }).effort).toBe("high");
     expect(choose("pi", pi, { model: "z-ai/glm-5.3-flash", effort: "max" }).effort).toBe("max");

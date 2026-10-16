@@ -80,7 +80,12 @@ describe("task.yml (ADR 0031)", () => {
   const at = (id: string) => run.steps.findIndex((s) => s.id === id);
 
   it("runs one per task at a time, with one waiting (ADR 0040): no queue of runs with nothing new", () => {
-    expect(t.concurrency?.group).toContain("task-{0}");
+    expect(t.concurrency?.group).toContain("task-{0}{1}");
+    // Your comment while a run stays skips in a group of its own: it never takes a waiting run's
+    // place (ADR 0057).
+    expect(t.concurrency?.group).toContain(
+      "github.event_name == 'issue_comment' && contains(github.event.issue.labels.*.name, 'staying') && '-staying' || ''",
+    );
     expect(t.concurrency?.["cancel-in-progress"]).toBe(false);
     expect(t.concurrency?.queue).toBeUndefined();
   });
@@ -355,7 +360,9 @@ describe("task.yml (ADR 0031)", () => {
   });
 
   it("stays after an answer with no write key, its events skipped, its label off however it ends (ADR 0057)", () => {
-    expect(run.if).toContain("!contains(github.event.issue.labels.*.name, 'staying')");
+    expect(run.if).toContain(
+      "!(github.event_name == 'issue_comment' && contains(github.event.issue.labels.*.name, 'staying'))",
+    );
     const stayStep = step("stay");
     expect(stayStep.if).toBe("steps.decide.outputs.stay == 'yes'");
     expect(stayStep.run).toContain(`${BUILT} run stay`);

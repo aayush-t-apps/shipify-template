@@ -4,8 +4,11 @@
 // rules are pure functions, and the loop gets its clock and its reads from the step that runs it.
 import type { Decided, Plan, Snapshot, ThinkMeta, Write } from "./types.ts";
 
-/** How long a stay waits with nothing to answer, unless SHIPIFY_STAY says (minutes; 0: never). */
-export const STAY_IDLE_MINUTES = 5;
+/**
+ * How long a stay waits with nothing to answer, unless SHIPIFY_STAY says (minutes; 0: never): 10
+ * covers a pause to read a reply and think (on #462 the longest was 6.5 minutes).
+ */
+export const STAY_IDLE_MINUTES = 10;
 /** A stay starts no turn after this long: its read token lasts GitHub's hour. */
 export const STAY_MINUTES = 45;
 /** Nor does a turn run past this, from when the stay began: the token's hour, with margin. */
@@ -20,6 +23,8 @@ export const LOOK_MS = 15_000;
  * other stays go on.
  */
 export const GIVE_WAY_MS = 20_000;
+/** Nor before this, on any slot: a free slot picks a new job up in a few seconds. */
+export const PICK_UP_MS = 10_000;
 
 /**
  * Whether a job waiting since `since` is this slot's to take: slot k gives way after (k - 1) steps,
@@ -28,7 +33,7 @@ export const GIVE_WAY_MS = 20_000;
  */
 export const givesWay = (since: string | undefined, now: number, slot: number, began = 0) =>
   since !== undefined &&
-  now - Math.max(Date.parse(since), began) >= Math.max(0, slot - 1) * GIVE_WAY_MS;
+  now - Math.max(Date.parse(since), began) >= Math.max(PICK_UP_MS, (slot - 1) * GIVE_WAY_MS);
 
 /** The quiet minutes a run stays, from SHIPIFY_STAY: a whole number of minutes, 0 to turn it off. */
 export function stayMinutes(setting: string | undefined): number {
@@ -42,7 +47,7 @@ export function stayMinutes(setting: string | undefined): number {
 const QUIET: Write["w"][] = ["reply", "labels", "react", "note"];
 
 /**
- * Whether a run stays after this answer: your words started it, it thought in the talk or read
+ * Whether a run stays after this answer: it answered your words, it thought in the talk or read
  * profile, its agent gave a session to carry on in, the task is open, and what it does needs no
  * token minted after the agent (no push, call, files, dispatch or close), only a plain answer.
  */
@@ -55,7 +60,8 @@ export function staysAfter(
 ): boolean {
   if (minutes <= 0 || p.do !== "think" || p.think.check) return false;
   if (p.think.profile !== "talk" && p.think.profile !== "read") return false;
-  if (!["comment", "opened", "edited"].includes(s.trigger.kind)) return false;
+  // Your words, however its job started: a stay's handover is a dispatch too. A repeat's isn't.
+  if (p.think.why === "scheduled") return false;
   if (s.issue.state !== "open" || !meta?.session || meta.stopped) return false;
   if (d.needs.repo || d.needs.act || d.needs.workflows) return false;
   return d.writes.every(
@@ -102,8 +108,6 @@ export type Turn =
   | "nothing"
   /** Words a normal run must take: a fixed word, another account, a result that needs a token. */
   | "handover"
-  /** Your `stop`. */
-  | "end"
   /** Answered, with a write a stay never follows (a run started for work, a close): it leaves. */
   | "left";
 
@@ -194,7 +198,6 @@ export async function stay(io: StayIo, idle: number): Promise<Stayed> {
       io.handover();
       return { answered, why: "words for a normal run" };
     }
-    if (r === "end") return end("you said stop");
     if (r === "left") return end(`${++answered === 1 ? "its" : "an"} answer started more work`);
     if (r === "answered") {
       answered++;

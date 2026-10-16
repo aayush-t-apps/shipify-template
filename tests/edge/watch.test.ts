@@ -273,6 +273,34 @@ describe("stopped", () => {
     expect(t.labels).toEqual(["stuck"]);
   });
 
+  it("takes a stay's label off when no run is going for it, and leaves a live stay's (ADR 0057)", async () => {
+    const f = world(k);
+    status(f);
+    const t = f.issue({ created_at: new Date(f.w.at - 2 * HOUR).toISOString() });
+    t.labels.push("staying");
+    f.comment(
+      t.number,
+      statusLine({ cursor: { id: 1, at: new Date(f.w.at - HOUR).toISOString() } }),
+      RUN,
+    );
+    const job = (status: string, conclusion: string | null) => ({
+      id: 79,
+      status,
+      conclusion,
+      display_title: `task #${t.number}`,
+      created_at: new Date(f.w.at - 5 * MIN).toISOString(),
+    });
+    f.w.runs["task.yml"] = [job("in_progress", null)];
+    await run(f);
+    expect(t.labels).toEqual(["staying"]);
+    // Its box died: GitHub ended the job, and its label-off step never ran. Nothing waits: no
+    // Stopped, only the label off, so your next words start a run at once.
+    f.w.runs["task.yml"] = [job("completed", "failure")];
+    f.later(5 * MIN);
+    await run(f);
+    expect(t.labels).toEqual([]);
+  });
+
   it("says Stopped, once, when your words wait 10 minutes with no run: it never starts one (ADR 0042)", async () => {
     const f = world(k);
     const s = status(f);

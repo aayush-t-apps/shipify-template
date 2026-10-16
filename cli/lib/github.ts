@@ -43,6 +43,17 @@ export function gh(args: string[], opts: GhOpts = {}): string {
   return r.stdout;
 }
 
+/** What the conditional reads came to (ADR 0057): how many, how many changed, and the rate budget. */
+const seen: { reads: number; changed: number; first?: string; last?: string; limit?: string } = {
+  reads: 0,
+  changed: 0,
+};
+/** `150 reads, 4 changed; rate 120 → 128 of 5000`: a 304 is free, so only the changed ones cost. */
+export const readsSeen = () =>
+  seen.reads
+    ? `${seen.reads} reads, ${seen.changed} changed${seen.first ? `; rate ${seen.first} → ${seen.last} of ${seen.limit}` : ""}`
+    : undefined;
+
 /**
  * A GET only when its answer changed since `tag` (GitHub's ETag): unchanged is `{ tag }`, a 304,
  * which costs the rate limit nothing (GitHub's REST guide; checked live for ADR 0057).
@@ -56,6 +67,14 @@ export function ghIfChanged<T>(
   const cut = r.stdout.search(/\r?\n\r?\n/);
   const head = cut < 0 ? r.stdout : r.stdout.slice(0, cut);
   const status = /^HTTP\/[\d.]+ (\d{3})/.exec(head)?.[1];
+  const used = /^x-ratelimit-used:\s*(\d+)/im.exec(head)?.[1];
+  seen.reads++;
+  if (status === "200") seen.changed++;
+  if (used) {
+    seen.first ??= used;
+    seen.last = used;
+    seen.limit = /^x-ratelimit-limit:\s*(\d+)/im.exec(head)?.[1];
+  }
   if (status === "304") return { ...(tag ? { tag } : {}) };
   if (r.code !== 0 || status !== "200")
     throw new ShipError(`gh api ${path} failed: ${(r.stderr || head).trim().split("\n")[0]}`);
@@ -482,7 +501,7 @@ export function githubQueue(opts: RecordOpts = {}): Queue {
         ["api", `repos/${repo}/actions/workflows/${workflow}/runs?per_page=${count}`],
         call(),
       ).workflow_runs,
-    waitingFor(label, tag) {
+    waitingFor(labels, tag) {
       const r = ghIfChanged<{ workflow_runs: { id: number }[] }>(
         `repos/${repo}/actions/runs?status=queued&per_page=20`,
         tag,
@@ -493,18 +512,18 @@ export function githubQueue(opts: RecordOpts = {}): Queue {
       const queued = r.body.workflow_runs
         .flatMap(
           (run) =>
-            ghJson<{ jobs: { status: string; labels: string[]; created_at?: string }[] }>(
-              ["api", `repos/${repo}/actions/runs/${run.id}/jobs?filter=latest`],
-              call(),
-            ).jobs,
+            ghJson<{
+              jobs: { status: string; labels: string[]; created_at?: string; run_id?: number }[];
+            }>(["api", `repos/${repo}/actions/runs/${run.id}/jobs?filter=latest`], call()).jobs,
         )
-        .filter((j) => j.status === "queued" && j.labels.includes(label))
-        .map((j) => j.created_at ?? "")
-        .sort();
+        .filter((j) => j.status === "queued" && j.labels.some((l) => labels.includes(l)))
+        .sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+      const first = queued[0];
       return {
         ...(r.tag ? { tag: r.tag } : {}),
         waiting: queued.length > 0,
-        ...(queued[0] ? { since: queued[0] } : {}),
+        ...(first?.created_at ? { since: first.created_at } : {}),
+        ...(first?.run_id ? { run: first.run_id } : {}),
       };
     },
   };

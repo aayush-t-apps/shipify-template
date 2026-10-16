@@ -96,10 +96,11 @@ Found walking [getting-started.md](getting-started.md) from nothing. Each is sma
 
 ## Faster and cheaper runs
 
-1. **The record over one connection:** each `gh` call costs about 1 s on a Pi (a process and a TLS
-   handshake), and a run or a stay's turn makes about 20 (measured, ADR 0057's As built). One HTTP
-   client with keep-alive for the record's reads and writes would make each about 0.2 s: a run's
-   fixed time and a stay's turn would both drop by about half.
+1. **The record over one connection (measured, not planned):** a `gh` call costs 0.66–0.69 s on
+   a Pi idle, 0.9–1.8 s in a run (a process and a TLS handshake); a call on a kept-open connection,
+   0.05–0.09 s. A stay's turn would gain about 10 s of its 30–50 s (the agent's thinking is the
+   rest), and it needs a second way of talking to GitHub that copies `gh`'s, on boxes only: not
+   worth it for now (the owner, 2026-10-16; the plan and numbers are in the closed PR #469).
 2. **One browser in the stacks' `make setup`:** `playwright install --only-shell`, since tests run
    headless: about 190 MB less on a box's first setup of a project.
 

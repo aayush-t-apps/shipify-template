@@ -210,6 +210,12 @@ export interface Tokens {
   thinking?: number;
 }
 
+/** What a session had counted when its last ask ended, for an agent that counts from its start. */
+export interface SessionUsed {
+  models: Record<string, Tokens>;
+  usd?: number;
+}
+
 /** What the core asks of an agent for one run. */
 export interface AgentRun {
   /** The executors.json command for unattended runs. */
@@ -287,6 +293,11 @@ export interface AgentReport {
   readOutside?: boolean;
   /** The agent's own estimate at API prices, and whether a subscription covers it instead. */
   cost?: { usd: number; plan: boolean };
+  /**
+   * Its models, tokens and cost count its session from the start, not this ask alone (Claude
+   * Code's, when it carries on in a session): the core counts what's new since the last ask.
+   */
+  sessionTotals?: boolean;
   /**
    * A subscription's limits after the run: each window's share used (0 to 1), when it resets, and
    * whether this run was refused because it's used up.

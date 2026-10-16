@@ -26,6 +26,8 @@ export const Row = z.object({
   from: origin,
   updated: iso,
   url,
+  /** A run stays on it, for your next words (ADR 0057). */
+  staying: z.literal(true).optional(),
   /** Its labels other than those the row already says (the list filters by them). */
   labels: z.array(z.string()).optional(),
 });
@@ -128,6 +130,8 @@ export const Thread = z.object({
     /** Closed, and your last words carry it on: the run they start opens it again. */
     wakes: z.literal(true).optional(),
     repeats: z.boolean(),
+    /** A run stays on it, for your next words (ADR 0057). */
+    staying: z.literal(true).optional(),
     url,
     /** What its runs think with: its status comment's choice, or a `use …` said since. None is Auto. */
     model: z.string().optional(),

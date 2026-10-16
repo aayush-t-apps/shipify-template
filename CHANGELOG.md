@@ -7,6 +7,38 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-10-16
+
+### Fixed
+
+- **After you switch model in a stay, the new model's run stays too (#462).** The stay handed your
+  words to a new run, as it should, but that run answered and ended, so your next words started
+  cold again.
+- **A run that stays answers each of your messages with its own answer (#462).** Once an agent had
+  written its answer as a file, a stay's later turns posted that first answer again, whatever the
+  agent said. Each turn now takes only what it wrote this time. `ship selftest chat` checks it.
+- **A stay's run details count that turn's tokens, not the whole session's,** for Claude Code (and
+  a run's catch-up rounds count each once).
+
+### Changed
+
+- **A run stays 10 quiet minutes after answering you, not 5,** so a pause to read and think doesn't
+  end the session. `SHIPIFY_STAY` still sets it (`0` turns it off). `ship selftest` checks two
+  answers in a stay, each new. Nothing to do.
+- **pi and OpenCode think with GLM 5.3 Flash by default through OpenRouter too** (was a free model,
+  whose endpoint was down for hours on 2026-10-16): fractions of a cent an answer, from your
+  OpenRouter credits. A free model is still yours with a `use` line. Nothing to do.
+- **A stay, robust end to end (ADR 0057).** A stay whose box died no longer holds its `staying`
+  label until your words have waited 10 minutes: the watch takes it off once no run goes for the
+  task, so your next words start a run. A stay gives way to its box's weekly clean-up too, not only
+  to a task's run, and never to a job a free slot picks up in seconds. Your comments skipped while
+  a run stays no longer take a waiting run's place, and a close or an edit on GitHub still runs
+  after the stay. Every fixed word (`stop`, `continue`, `start over`…) goes to a normal run, as
+  without a stay. The web chat says **Staying** in the list and the thread, not a bare tag.
+  Nothing to do.
+- **The web chat's list shows each task's state as a dot:** amber needs you, teal and beating
+  working, green staying, teal new, red stopped; the word on hover and in the thread's header.
+
 ## [0.1.10] - 2026-10-15
 
 ### Added

@@ -561,7 +561,7 @@ describe("what the page reads", () => {
     expect(by).toEqual({ plain: undefined, labelled: ["bug", "deploying", "failed"] });
   });
 
-  it("the list: a run that stays waits for you, so its row isn't Working, and says `staying` (ADR 0057)", async () => {
+  it("the list and the thread: a run that stays waits for you, so it isn't Working, it's Staying (ADR 0057)", async () => {
     const t = setUp();
     const i = t.f.issue({
       title: "disk",
@@ -580,8 +580,14 @@ describe("what the page reads", () => {
     const list = await (await t.call("/admin/chat/api/list")).json();
     const row = (title: string) => list.tasks.find((x: { title: string }) => x.title === title);
     expect(row("cpu").state).toBe("working");
-    expect(row("disk").state).not.toBe("working");
-    expect(row("disk").labels).toEqual(["staying"]);
+    expect(row("disk").state).toBe("open");
+    expect(row("disk").staying).toBe(true);
+    // Said as its state, not a filter of yours.
+    expect(row("disk").labels).toBeUndefined();
+    expect(row("cpu").staying).toBeUndefined();
+    const thread = await (await t.call(`/admin/chat/api/task/${i.number}`)).json();
+    expect(thread.task.staying).toBe(true);
+    expect(thread.task.state).toBe("open");
   });
 
   it("a thread: hidden lines never reach the page, a reply's bits are read, its HTML is cleaned", async () => {
@@ -955,7 +961,7 @@ describe("what the page reads", () => {
     expect(pi).toMatchObject({
       gateway: "openrouter",
       efforts: ["off", "low", "medium", "high", "max"],
-      auto: { model: "nvidia/nemotron-3-ultra-550b-a55b:free" },
+      auto: { model: "z-ai/glm-5.3-flash" },
     });
     expect(pi.models.map((m: { id: string }) => m.id)).toContain("z-ai/glm-5.3");
     // An agent through another gateway: under its first's tab, its models the agent's efforts,

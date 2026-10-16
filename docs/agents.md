@@ -133,8 +133,9 @@ web chat's search find the rest, with today's prices. A run's cost shows on its 
 model's price, so their runs show none rather than a guess.
 
 - **Auto** is the agent's `auto` in `executors.json`, or its gateway's: Sonnet at medium effort for
-  Claude Code, Nemotron (`nvidia/nemotron-3-ultra-550b-a55b:free`) at high for pi and OpenCode, GLM
-  5.3 Flash at high through Vercel. A model of
+  Claude Code, GLM 5.3 Flash at high for pi and OpenCode, through OpenRouter (`z-ai/glm-5.3-flash`)
+  or Vercel (`zai/glm-5.3-flash`): a paid model that costs fractions of a cent an answer, since a
+  free one's endpoint can be down for hours (2026-10-16). A model of
   theirs picked with no effort thinks at high too, never at the model's own default (GLM's is
   max, its slowest).
 - **A task picks another** with a `use` line: `use opus`, `use opus high`, `use claude-opus-5-5`,
@@ -167,8 +168,8 @@ model's price, so their runs show none rather than a guess.
     "url": "https://openrouter.ai/api/v1", "protocol": "openai-chat", "key": "OPENROUTER_API_KEY",
     "how": "openrouter.ai/settings/keys → Create key", "check": "/key",
     "search": "/models?supported_parameters=tools&limit=20&q={word}",
-    "auto": { "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "effort": "high" },
-    "models": ["nvidia/nemotron-3-ultra-550b-a55b:free", "poolside/laguna-s-2.1:free", "z-ai/glm-5.3-flash", "…"],
+    "auto": { "model": "z-ai/glm-5.3-flash", "effort": "high" },
+    "models": ["z-ai/glm-5.3-flash", "deepseek/deepseek-v4.1-flash", "…"],
     "list": { "name": "name", "price": ["pricing.prompt", "pricing.completion"], "…": "where each fact is" }
   },
   "vercel-ai-gateway": {

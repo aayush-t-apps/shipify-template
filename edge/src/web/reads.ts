@@ -102,6 +102,7 @@ const labelsOf = (i: Issue) => (i.labels ?? []).map((l) => l.name);
 // A run's own phase labels ("working", "answered") are its state, which each row shows: not filters.
 const SAID = new Set([
   NEEDS_YOU_LABEL,
+  STAYING_LABEL,
   STUCK_LABEL,
   "working",
   "answered",
@@ -125,13 +126,16 @@ function originOf(gh: GitHub, i: Issue): Origin {
   return from ?? "github";
 }
 
+/** A run stays on it after its answer (ADR 0057): your next words are answered in seconds. */
+const staying = (i: Issue) => i.state === "open" && labelsOf(i).includes(STAYING_LABEL);
+
 function stateOf(i: Issue, running: boolean): State {
   if (i.state === "closed") return "closed";
   const labels = labelsOf(i);
   if (labels.includes(NEEDS_YOU_LABEL)) return "needs-you";
-  // A run that stays after its answer (ADR 0057) is going, but waits for you: its row says
-  // `staying` as a tag, and Working only while a turn runs (the thread reads that from its status).
-  if (running && !labels.includes(STAYING_LABEL)) return "working";
+  // A run that stays after its answer (ADR 0057) is going, but waits for you: Working only while
+  // a turn runs (the thread reads that from its status), else Staying (`staying`).
+  if (running && !staying(i)) return "working";
   if (labels.includes(STUCK_LABEL)) return "stuck";
   return "open";
 }
@@ -199,6 +203,7 @@ export async function list(env: Env, deps: Deps, page = 1, closed = false): Prom
         from: originOf(gh, i),
         updated: i.updated_at,
         url: i.html_url,
+        ...(staying(i) ? { staying: true as const } : {}),
         ...(labels.length ? { labels } : {}),
       };
     });
@@ -474,6 +479,7 @@ export async function thread(
       open: issue.state === "open",
       ...(last === newest && wakes(gh, owner, issue, all) ? { wakes: true } : {}),
       repeats: labels.includes("repeats"),
+      ...(staying(issue) ? { staying: true as const } : {}),
       url: issue.html_url,
       ...(model ? { model } : {}),
       prs,

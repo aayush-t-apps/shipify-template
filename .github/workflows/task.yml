@@ -41,9 +41,11 @@ permissions:
 
 # One run per task at a time, and one waiting (ADR 0040): a newer run takes the waiting one's
 # place. Every run reads all your unread words, and what a dispatch brings is kept on the task (the
-# next run, or the next due run, does it), so nothing waits in a queue of runs.
+# next run, or the next due run, does it), so nothing waits in a queue of runs. Your comment while a
+# run stays (ADR 0057) is that run's to answer: its own run skips in a group of its own, so it never
+# takes a waiting run's place.
 concurrency:
-  group: ${{ format('task-{0}', github.event.issue.number || inputs.issue || github.event_name) }}
+  group: ${{ format('task-{0}{1}', github.event.issue.number || inputs.issue || github.event_name, github.event_name == 'issue_comment' && contains(github.event.issue.labels.*.name, 'staying') && '-staying' || '') }}
   cancel-in-progress: false
 
 env:
@@ -158,7 +160,8 @@ jobs:
     # with nothing waiting on the task (ADR 0053): only one that still says `needs you` (a PR to
     # merge, a question, a list), `working` (a run under way) or `waiting` (an errand, ADR 0054: the
     # close drops it, or the due run would still fire it) has something to do now. The door's close
-    # takes the first two off as it closes. The next run reads the rest.
+    # takes the first two off as it closes. The next run reads the rest. Nor your comment while a run
+    # stays (ADR 0057): that run answers it; a close or an edit still runs, after the stay.
     if: >-
       vars.SHIPIFY_OWNER != ''
       && !github.event.issue.pull_request
@@ -170,7 +173,7 @@ jobs:
           || contains(github.event.issue.labels.*.name, 'waiting'))
       && !contains(github.event.issue.labels.*.name, 'shipify-status')
       && !contains(github.event.issue.labels.*.name, 'notebook')
-      && !contains(github.event.issue.labels.*.name, 'staying')
+      && !(github.event_name == 'issue_comment' && contains(github.event.issue.labels.*.name, 'staying'))
       && (github.event_name != 'workflow_dispatch' || (inputs.job != 'github' && github.ref == 'refs/heads/main'))
       && (github.event_name == 'workflow_dispatch' || github.event_name == 'push'
           || github.event.sender.login == vars.SHIPIFY_OWNER

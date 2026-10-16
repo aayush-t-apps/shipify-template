@@ -293,6 +293,8 @@ function reader(): OutputReader {
           Object.entries(usage).map(([id, u]) => [id, tokensOf(u)]),
         );
         if (Object.keys(models).length) {
+          // Counted from the session's start: a resumed ask's are its earlier asks' too.
+          report.sessionTotals = true;
           report.models = models;
           report.tokens = Object.values(models).reduce(add);
           // Without an init event, the model that wrote the most did the work.

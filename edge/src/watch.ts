@@ -102,6 +102,7 @@ interface Issue {
   title: string;
   html_url: string;
   created_at: string;
+  updated_at?: string;
   user?: { login?: string } | null;
   labels: { name: string }[];
   /** How many comments it has: a run's status comment is one. */
@@ -405,6 +406,16 @@ async function stopped(t: Tick) {
       (await t.runs("task.yml")).some(
         (r) => r.status !== "completed" && r.display_title === `task #${issue.number}`,
       );
+    // A stay with no run going (ADR 0057): its box died, or its label-off step failed. Off now, so
+    // your next words start a run at once; words already waiting are told as below.
+    if (
+      issue.labels.some((l) => l.name === STAYING_LABEL) &&
+      t.now - Date.parse(issue.updated_at ?? issue.created_at) >= 2 * MINUTE &&
+      !(await busy())
+    ) {
+      await dropStaying(t, issue.number);
+      t.log.info("watch.stay.cleared", { task: issue.number });
+    }
     let note: Findings["notes"][number];
     if (seen?.working) {
       const run = await t.gh.call("GET", `repos/${t.gh.repo}/actions/runs/${seen.working}`);
@@ -468,14 +479,17 @@ async function stopped(t: Tick) {
       labels: [STUCK_LABEL],
     });
     // A stay whose box died left its label (ADR 0057): off, or task.yml would skip your `continue`.
-    if (issue.labels.some((l) => l.name === STAYING_LABEL))
-      await t.gh.call(
-        "DELETE",
-        `repos/${t.gh.repo}/issues/${issue.number}/labels/${STAYING_LABEL}`,
-      );
+    if (issue.labels.some((l) => l.name === STAYING_LABEL)) await dropStaying(t, issue.number);
     t.once.push(note);
     t.log.warn("watch.stopped", { task: issue.number, why: note.problem.code });
   }
+}
+
+/** A stay's label off its task (ADR 0057), once: the next look reads it gone. */
+async function dropStaying(t: Tick, n: number) {
+  await t.gh.call("DELETE", `repos/${t.gh.repo}/issues/${n}/labels/${STAYING_LABEL}`);
+  for (const i of await t.open())
+    if (i.number === n) i.labels = i.labels.filter((l) => l.name !== STAYING_LABEL);
 }
 
 // ---------------------------------------------------------------- notice
