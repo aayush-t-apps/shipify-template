@@ -73,6 +73,8 @@ docker run -d --name shipify-box --restart unless-stopped --stop-timeout 300 \
 - **`register`** runs `here.sh` in the container, then your copy's own `box add --container`:
   - it registers the slots and checks the sandbox;
   - it fits the slots to the container's memory limit (`--memory`), or takes `--slots`;
+  - its swap is the host's: a container gets no zram of its own (ADR 0061), so give the host swap,
+    or keep the slots to what `--memory` fits;
   - it keeps no login.
 - **The volume** keeps only the runners' registration. Everything else is the image's.
 - **A new release:** `docker compose pull && docker compose up -d`. The registration stays.
@@ -95,13 +97,16 @@ docker run -d --name shipify-box --restart unless-stopped --stop-timeout 300 \
 | Task runs (the agent) | yes | yes | yes |
 
 **Slots: several tasks at once.** A runner takes one job at a time, so a box runs one runner per
-slot. A task peaks at about 1.7 GB of memory (the agent, then `make verify`'s browser tests), and
-only for the minute its tests run, so a new Pi or VPS keeps 1 GB for the system and gets a slot
-per 2 GB of the rest: 4 GB gives 1, 6 GB 2, 8 GB (a Pi 4 or 5) 3, 12 GB and up 4. `--slots N`
-(1 to 4) picks another count, and a box keeps what it has when `box add` runs again. A box usually
-has no swap (Ubuntu's Pi image and most VPS images come without), so one that runs short has a
-test killed, not slowed: fewer slots fix it. Your Claude plan's limits are shared: N tasks at once
-use them N times as fast.
+slot. A busy slot needs about 1.6 GB of memory (its checks, browser tests included, about 1.0 GB
+for a minute or two; its agent 0.4; its runner 0.2), so a new Pi or VPS keeps 1 GB for the system
+and gets a slot per 2 GB of the rest: 4 GB gives 1, 6 GB 2, 8 GB (a Pi 4 or 5) 3, 12 GB and up 4.
+`--slots N` picks another count, any number from 1, and a box keeps what it has when `box add`
+runs again. Past what its memory fits or its cores, `box add` warns: checks that overlap get
+slower (on homepi's 4 cores, a fourth or fifth at once gets no more done per minute, ADR 0061).
+A box with no swap of its own (Ubuntu's Pi image and most VPS images come without) gets **swap in
+memory (zram)**: half its memory, compressed, so tasks that overlap and run short slow down
+instead of having a test killed. A box that has swap (WSL, a VPS with a swap file) keeps its own.
+Your Claude plan's limits are shared: N tasks at once use them N times as fast.
 
 **One OS for every Pi and VPS: Ubuntu Server 24.04 LTS (64-bit),** or a newer LTS. `box add`
 refuses any other, Raspberry Pi OS and Debian included ([About the OS](#about-the-os)), so every
@@ -309,8 +314,12 @@ pnpm ship box add <user@host> --slots 3 --manage --yes  # more (or fewer) slots 
 
 - **More slots:** each new slot gets its runner and its agent user. Fewer removes the extra ones,
   with their agents' users and runs.
-- **When to change the count:** a new box starts with what its memory fits. Pick fewer when a
-  test gets killed for memory, or when your plan's limits run out too fast.
+- **When to change the count:** a new box starts with what its memory fits. Pick fewer when
+  `box health` says a slot had a task killed for memory, or when your plan's limits run out too
+  fast. Pick more on a box with memory and cores to spare: the warning says when it's past them.
+- **Measure it:** `box/load-test.sh` runs N copies of an app's `make verify` at once on the box
+  (as your own login there, no root) and prints each one's time and memory, the box's lowest free
+  memory and any kill (`bash box/load-test.sh <app folder> 1 3 4 5`).
 - **More boxes or more slots:** your Claude plan, not the hardware, is usually the limit: for one
   person, 2 to 4 slots in all. Add a box when tasks wait in the queue, not before.
 - **Names:** each box's is its own. `box add` refuses a name another machine has, unless you add
@@ -336,9 +345,11 @@ updates itself.
 | packages | one pnpm store per box, pruned weekly |
 | the box itself | `box/setup.sh`: a change bumps `SETUP_VERSION`, and `ship doctor` names a box set up by an older one |
 
-**Time limits:** the agent stops after 50 minutes, `make verify` after 25, a check after one; the
-run's job after 4 hours. A run cut off anyway is marked Stopped by the watch, and your `continue`
-carries it on from where it got to.
+**Time limits:** the agent works up to 200 minutes in one session (ADR 0059), its fix round 20,
+`make verify` 25, a check one; the run's job stops after 460 minutes. A run cut off anyway is
+marked Stopped by the watch, and your `continue` carries it on from where it got to. A box that
+restarts or loses power mid-run loses that run's work since its start: the agent's commits leave
+the box when the run ends.
 
 ## Commands
 
@@ -347,7 +358,7 @@ carries it on from where it got to.
 | `pnpm ship box list` | every box: online, busy, its slots, "no sandbox", its Cockpit link (from anywhere) |
 | `pnpm ship box add [<user@host>] --yes` | makes a box: a Pi or VPS over SSH, or this PC with no target; again, it brings a box up to date |
 | `pnpm ship box status` | this machine's box (this PC's, or a Pi's when you run it there): each slot's service, GitHub's view and the task it runs |
-| `pnpm ship box health [<user@host>]` | disk, memory, temperature, a pending restart, updates, services: here or over SSH |
+| `pnpm ship box health [<user@host>]` | disk, memory and swap, temperature, a pending restart, updates, services, each slot's memory: here or over SSH |
 | `pnpm ship box stop` · `start` · `restart` | this machine's box: off until started, even after a restart; on; both, with sudo. Stop asks first while a task runs |
 | `pnpm ship box logs -f` · `peek -f` | this machine's slots' log, live; what the agent is doing now |
 | `pnpm ship box remove <name> --yes` | unregisters its slots from GitHub, and stops its services when it's this machine's (with sudo); a Pi's, it says what to run there |
@@ -358,14 +369,15 @@ carries it on from where it got to.
 - **Usually, nothing:**
   - the box restarts itself, and Ubuntu installs security updates (restarting at 04:30 if needed);
   - **the weekly clean-up:** the due run starts it on each box once its last is a week old. It
-    removes closed and deleted tasks' folders, the agents' run folders older than 6 hours (as each
+    removes closed and deleted tasks' folders, the agents' run folders older than 8 hours (as each
     agent, who owns them), runs `ship doctor` (the sandbox check included), checks the door
     answers, and takes the newest Node 22.x. When no other slot is busy, it keeps the box's shared
     tools to each agent's pinned version and the two newest Node versions, and prunes the package
     store and npm's cache. Its result goes on the status task, naming what it removed; a problem
     comes as a comment there, which notifies you on GitHub;
-  - each due run writes the box's health to the status task (disk, temperature, throttling, a
-    pending restart, updates, services);
+  - each due run writes the box's health to the status task (disk, memory and swap, temperature,
+    throttling, a pending restart, updates, services, and the most each slot has used since it
+    started); a slot that had a task killed for memory comes as a comment there;
   - the watch says when a box is offline for 4 minutes or more, and again when it's back.
 - **See what the agent is doing,** over SSH or Cockpit's terminal:
   `sudo node /home/shipify/runner/_work/shipify/shipify/box/peek.mjs --follow` (the agents'

@@ -199,7 +199,8 @@ a time, with **Tasks, Repeats, Notebook, Files and Setup** as tabs at the foot
   review** (shipify's open PRs, each with the task it's for), then what needs you, then what's
   running (its own row says "Working · 2m", "Queued", or "Waiting for a box" with none online; a
   run that stays after its answer says **Staying**, waiting for you, in its row and its thread,
-  ADR 0057), then
+  ADR 0057, and "Working" with a clock only while it answers: timed from that answer's start, never
+  the stay's), then
   the 50 open tasks updated last. Open repeats and recipes (they stay open between runs) come last,
   under a **Repeats** heading that opens Repeats, unless one needs you or is running. A row shows
   its state as a dot (amber: needs you; teal and beating: working or starting; green: staying,
@@ -226,7 +227,8 @@ a time, with **Tasks, Repeats, Notebook, Files and Setup** as tabs at the foot
   wait for one). A run the list shows stops counting once a reply comes after it began (GitHub
   lists a run for its last steps, and words it took in still queue one that finds nothing new),
   unless you write again or your newest message has no 👀 yet (sent as the reply was written, so
-  that run reads it); one that writes its status shows till it ends. Under each of your messages,
+  that run reads it); one that writes its status shows till it ends, timed from that status, in
+  its row as in its header. Under each of your messages,
   as in any chat: the model you picked for it, its time, and a tick once a run read it (GitHub's
   👀 count, sent with each comment). The thin bar at the top
   moves only while you wait for something not on screen yet, never for the timed polls. While a

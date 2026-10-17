@@ -482,6 +482,20 @@ describe("the box's checks on a task's work", () => {
     expect(out.details?.notes?.join(" ")).not.toContain("wait");
   }, 30_000);
 
+  it("takes in every message while you keep writing, with no round count (ADR 0060)", async () => {
+    remote({ "shipify.json": manifest, Makefile: "setup:\n\t@true\nverify:\n\t@true\n" });
+    process.env.FAKE_WORK = "ok";
+    // A new message on each read, five rounds running, then quiet.
+    const said = [7, 8, 9, 10, 11].map((id) => you(id, `Also ${id}`));
+    const reads = [[], ...said.map((_, i) => said.slice(0, i + 1))];
+    let n = 0;
+    const later = () => reads[Math.min(n++, reads.length - 1)] ?? [];
+    const { out } = await run(snap(), { later });
+    expect(out.meta.caughtUp).toEqual([7, 8, 9, 10, 11]);
+    expect(out.details?.notes?.join(" ")).toContain("5 messages you sent while it worked");
+    expect(out.details?.notes?.join(" ")).not.toContain("wait");
+  }, 30_000);
+
   it("keeps the commits when the checks still fail: #166's change doc with no released line", async () => {
     remote({
       "shipify.json": manifest,
@@ -581,8 +595,25 @@ describe("an agent that stops before its answer keeps its work (ADR 0035)", () =
     expect(b.files).toEqual(expect.arrayContaining(["change.txt", "draft.txt"]));
   }, 30_000);
 
+  it("a `stop` read that fails while it works is told in the run's details, once (ADR 0059)", async () => {
+    remote({ "shipify.json": manifest, Makefile: MAKEFILE });
+    process.env.FAKE_WORK = "slow";
+    let reads = 0;
+    // The read as it starts works; every one while it works fails, as an expired key's would.
+    const later = () => {
+      if (reads++) throw new Error("HTTP 401: Bad credentials");
+      return [];
+    };
+    const { out } = await run(snap(), { later, everyMs: 300 });
+    expect(reads).toBeGreaterThan(2);
+    const told = (out.details?.notes ?? []).filter((n) => n.includes("couldn't be read"));
+    expect(told).toEqual([
+      "Your `stop` couldn't be read while it worked: HTTP 401: Bad credentials.",
+    ]);
+  }, 30_000);
+
   it("its clock, and which stop wins: your plan's limit, then the clock, then a crash", () => {
-    expect(stopOf({ code: 124, timedOut: true }, {})).toEqual({ why: "clock", minutes: 50 });
+    expect(stopOf({ code: 124, timedOut: true }, {})).toEqual({ why: "clock", minutes: 200 });
     const used = [{ window: "seven_day", used: 1, rejected: true }];
     expect(stopOf({ code: 1, timedOut: false }, { limits: used })).toEqual({
       why: "plan",
@@ -602,8 +633,9 @@ describe("an agent that stops before its answer keeps its work (ADR 0035)", () =
       why: "no-answer",
       error: { by: "nemotron-3-ultra-550b-a55b:free at openrouter.ai", said: "Service overloaded" },
     });
-    // The sum of think's own clocks, which task.yml's job limit covers (tests/workflows.test.ts).
-    expect(THINK_MINUTES).toBe(192);
+    // The sum of think's own clocks and the finish's (ADR 0059: 200 for the agent, 20 for its fix
+    // round), which task.yml's job limit covers (tests/workflows.test.ts).
+    expect(THINK_MINUTES).toBe(353);
   });
 });
 

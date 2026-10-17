@@ -1,5 +1,5 @@
 ---
-status: accepted (merged 2026-10-02 in shipify #38 with its build, the owner's choice of one PR; shipify-admin #20). Live the same day: homepi with 2 slots ran 3 pings (2 at once, the third waited) and 2 tasks at once, each with its PR after make verify. Amends ADR 0019's "one runner per box". Amended 2026-10-08 (shipify #245): a new Pi or VPS keeps 1 GB of its memory for the system and gets a slot per 2 GB of the rest (an 8 GB Pi 3, from the 1.7 GB a task peaks at, measured below), not 2. homepi runs 3 from the same day
+status: accepted (merged 2026-10-02 in shipify #38 with its build, the owner's choice of one PR; shipify-admin #20). Live the same day: homepi with 2 slots ran 3 pings (2 at once, the third waited) and 2 tasks at once, each with its PR after make verify. Amends ADR 0019's "one runner per box". Amended 2026-10-08 (shipify #245): a new Pi or VPS keeps 1 GB of its memory for the system and gets a slot per 2 GB of the rest (an 8 GB Pi 3, from the 1.7 GB a task peaks at, measured below), not 2. homepi runs 3 from the same day Amended 2026-10-17 by ADR 0061: `--slots` has no hard cap (past what memory or cores suggest, `box add` warns), and a box with no swap gets zram.
 date: 2026-10-02
 ---
 

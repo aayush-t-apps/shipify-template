@@ -29,14 +29,15 @@ const labelsOf = (name: string) => `${BOX_LABEL},${boxLabel(name)}`;
 /**
  * Slots (ADR 0020): slot 1 is the runner named after the box, in the box's folder; slot k is the
  * runner `<box>-<k>`, in `<folder>/slot-<k>`. A new box gets slotsFor its memory (DEFAULT_SLOTS
- * when it doesn't say); `--slots` changes it.
+ * when it doesn't say); `--slots` changes it, with no cap: past what the box suggests, it warns
+ * (ADR 0061).
  */
 export const MAX_SLOTS = 4;
 export const DEFAULT_SLOTS = 2;
 /**
  * A new Pi or VPS's slots, from its memory (MemTotal, in KiB): 1 GiB for the system, then one
- * per 2 GiB (a task peaks at about 1.7 GB, ADR 0020), 1 to MAX_SLOTS. 4 GB gives 1, 6 GB 2, a
- * Pi's 8 GB 3, 12 GB and up 4.
+ * per 2 GiB (a busy slot needs about 1.6 GB: its checks 1.0, its agent 0.4, its runner 0.2; ADR
+ * 0061's load test), 1 to MAX_SLOTS. 4 GB gives 1, 6 GB 2, a Pi's 8 GB 3, 12 GB and up 4.
  */
 const GIB = 1024 * 1024;
 export const slotsFor = (memKiB: number) =>
@@ -61,9 +62,22 @@ export const slotOf = (box: string, runner: string): number => slotOfRunner(runn
 function parseSlots(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 1 || n > MAX_SLOTS)
-    throw new ShipError(`--slots is a number from 1 to ${MAX_SLOTS}.`, "blocked");
+  if (!Number.isInteger(n) || n < 1)
+    throw new ShipError("--slots is a whole number from 1.", "blocked");
   return n;
+}
+
+/**
+ * The warning for more slots than a box suggests (ADR 0061): more than its memory fits (2 GB a
+ * slot, uncapped), or more than its cores, where checks that overlap slow each other down. Nothing
+ * is refused.
+ */
+function slotsWarning(slots: number, memKiB: number, cores: number): string | undefined {
+  const memory = memKiB > 0 ? Math.max(1, Math.floor((memKiB - GIB) / (2 * GIB))) : slots;
+  const suggests = Math.min(memory, cores > 0 ? cores : slots);
+  if (slots <= suggests) return undefined;
+  const gb = memKiB > 0 ? `${(memKiB / 1024 / 1024).toFixed(1)} GB` : "its memory";
+  return `${slots} slots on ${gb}${cores > 0 ? ` and ${cores} cores` : ""}: more than it suggests (${suggests}), so tasks whose checks overlap get slower, and one that runs short of memory may be killed; \`pnpm ship doctor\` shows if a slot did`;
 }
 
 const safeName = (s: string) =>
@@ -425,7 +439,7 @@ export function boxAdd(
     );
   const repo = platformRepo();
   const probe = m.sh(
-    "uname -m; . /etc/os-release; echo $ID $VERSION_ID; hostname -s; awk '/^MemTotal:/{print $2}' /proc/meminfo; cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max",
+    "uname -m; . /etc/os-release; echo $ID $VERSION_ID; hostname -s; awk '/^MemTotal:/{print $2}' /proc/meminfo; cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max; nproc",
   );
   if (probe.code !== 0)
     throw new ShipError(
@@ -434,7 +448,7 @@ export function boxAdd(
         : `Couldn't read this PC: ${probe.stderr.trim()}`,
       "blocked",
     );
-  const [machine, os, hostName, mem, limit] = probe.stdout.trim().split("\n");
+  const [machine, os, hostName, mem, limit, nproc] = probe.stdout.trim().split("\n");
   // The machine's own name (Tailscale uses it too), not an IP address typed as the target.
   const host = target?.split("@").pop() ?? "";
   const name = safeName(opts.name ?? hostName ?? host.split(".")[0] ?? host);
@@ -462,6 +476,7 @@ export function boxAdd(
       ? ""
       : ` (what its ${(memKiB / 1024 / 1024).toFixed(1)} GB of memory fits)`;
   checkSlotNames(all, name, slots);
+  const tooMany = slotsWarning(slots, memKiB, Number(nproc));
   // One name, one machine: a second machine with the same hostname would silently take over the
   // first one's runners. Running box add again on the same machine is fine (it has the service).
   if (!opts.replace && have.length) {
@@ -496,6 +511,12 @@ export function boxAdd(
       .join(
         ", ",
       )} (labels ${labelsOf(name)}), as the system services shipify-box-${name}${slots > 1 ? `[-2…-${slots}]` : ""} (UMask=0077), with one tool cache for the machine in /opt/shipify/tool`,
+    ...(tooMany ? [tooMany] : []),
+    ...(opts.container
+      ? []
+      : [
+          "on a box with no swap of its own, swap in memory (zram, ADR 0061): half its memory, compressed, so tasks that overlap slow down instead of having a test killed; a box with swap (WSL, a swap file) keeps its own",
+        ]),
     `the sandbox (setup 5): one user per slot for its agent (${agents}), each with its own folder in /srv; one sudo rule, /etc/sudoers.d/shipify-agents, lets the runner run commands as them and no one else (installed only once visudo accepts it)`,
     `then a check that the runner starts each agent without a password, and no agent can read the runner's folders, its environment or another slot's runs (on WSL, nor open Windows' drives or start Windows programs: it prints the fix for /etc/wsl.conf); once it passes, the label "${SANDBOX_LABEL}" on each slot, so task runs can go to them`,
     ...have

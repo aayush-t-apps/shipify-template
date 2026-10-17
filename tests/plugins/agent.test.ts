@@ -711,6 +711,9 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
     // A link stays in the agent's own folders, where the run makes it as the agent.
     if (link) expect(link.startsWith(`${dir}/`), link).toBe(true);
     handed?.(adapter.argv(run), link, paths);
+    // Shipify's skills alone: Claude Code's own bundled ones (loop, schedule, claude-api…) are off.
+    if (name === "claude")
+      expect(adapter.env?.(paths).CLAUDE_CODE_DISABLE_BUNDLED_SKILLS).toBe("1");
     // The read profile reads nothing of Shipify's: the core gives no skills, and none are added.
     const reading = adapter.argv({ ...run, commands: { ...run.commands, run: false } });
     if (!link) expect(reading.join(" ")).not.toContain(join(ROOT, "skills"));

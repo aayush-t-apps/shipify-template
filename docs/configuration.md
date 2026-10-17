@@ -178,7 +178,7 @@ each slot's `.env` the box's own (`SHIPIFY_BOX`, `SHIPIFY_BOX_DIR`, `RUNNER_TOOL
 
 **What the agent gets:** its run's folders (`HOME`, `TMPDIR`), `PATH`, `SHIPIFY_TASK`, and its
 adapter's own variables (Claude Code: `CLAUDE_CONFIG_DIR`, `DISABLE_AUTOUPDATER=1`,
-`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`; pi: `PI_CODING_AGENT_DIR`, `PI_OFFLINE=1`,
+`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`; pi: `PI_CODING_AGENT_DIR`, `PI_OFFLINE=1`,
 `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, `SHIPIFY_LOGIN_FD=3`; OpenCode: `OPENCODE_CONFIG`,
 its `XDG_*` folders, the `OPENCODE_DISABLE_*` switches, `SHIPIFY_LOGIN_FD=3`); on stdin, a read-only
 `GH_TOKEN` and the tools' look keys; on fd 3, a pipe it reads once, its login (its own, or its

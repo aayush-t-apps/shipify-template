@@ -714,7 +714,7 @@ describe("boxes: the setup version (ADR 0017)", () => {
     // No record (its setup never finished): version 1, behind the repo's.
     expect(setupCheck("shipify", dir)).toMatchObject({
       ok: false,
-      detail: "version 1; the repo's is 5",
+      detail: "version 1; the repo's is 6",
     });
     // The repo's script moved on: the box says so, and how to catch up.
     const tmp = mkdtempSync(join(tmpdir(), "setup-"));

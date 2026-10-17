@@ -22,8 +22,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 5, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=5$/m);
+  it("is version 6, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=6$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -73,6 +73,26 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(all).toBeGreaterThan(install);
     expect(undo).toBeGreaterThan(all);
     expect(code).toContain("SUDOERS=/etc/sudoers.d/shipify-agents");
+  });
+
+  it("turns on swap in memory (zram) only where there's no swap, and never fails the setup over it (ADR 0061)", () => {
+    const zram = setup.slice(at('say "Swap in memory (zram)"'), at('say "What the stacks need"'));
+    // Its own swap kept (WSL's, a VPS's file), no systemd, no zram in the kernel, no package: a line each.
+    expect(zram).toContain(
+      "swapon --show=NAME --noheadings 2>/dev/null | grep -v '^/dev/zram' || true",
+    );
+    expect(zram).toContain("skipped: this box has swap of its own");
+    expect(zram).toContain("skipped: systemd isn't running here");
+    expect(zram).toContain("skipped: this kernel has no zram");
+    expect(zram).toContain("skipped: systemd-zram-generator didn't install");
+    // Half the memory, at most 8 GB, compressed; settings for swap that's fast.
+    expect(zram).toContain('"zram-size = min(ram / 2, 8192)" "compression-algorithm = zstd"');
+    expect(zram).toContain('"vm.swappiness = 180" "vm.page-cluster = 0"');
+    // Run again, it changes nothing: the file replaced (and zram restarted) only when it differs.
+    expect(zram).toContain('if ! cmp -s "$WORK/zram.conf" "$ZRAM_CONF"; then');
+    // Never in an image or a container, and never a swap file on the disk.
+    expect(setup).toContain('if [ -z "$IMAGE$CONTAINER" ]; then\nsay "Swap in memory (zram)"');
+    expect(code).not.toMatch(/mkswap|fallocate|swapfile/);
   });
 
   it("proves the sandbox before it records setup 5", () => {
@@ -228,7 +248,7 @@ esac`),
     expect(calls).toContain("mktemp -d");
     // The script goes in on stdin, as every file does: nothing but ssh reaches the machine.
     expect(calls).toContain("umask 077 && cat > /tmp/tmp.Ab12/setup.sh");
-    expect(readFileSync(join(got, "setup.sh"), "utf8")).toContain("SETUP_VERSION=5");
+    expect(readFileSync(join(got, "setup.sh"), "utf8")).toContain("SETUP_VERSION=6");
     expect(calls).toContain(
       "sudo bash /tmp/tmp.Ab12/setup.sh /tmp/tmp.Ab12/box.env /tmp/tmp.Ab12/prep.tsv /tmp/tmp.Ab12/box.service",
     );
@@ -265,6 +285,7 @@ esac`),
     expect(plan).toContain("shipify-agent-1, shipify-agent-2");
     expect(plan).toContain("/etc/sudoers.d/shipify-agents");
     expect(plan).toContain('the label "sandbox"');
+    expect(plan).toContain("swap in memory (zram, ADR 0061)");
     expect(log()).not.toContain("sudo bash");
   });
 
@@ -278,6 +299,28 @@ esac`),
     const { sb } = machine(0);
     const kept = (ship(sb, "box", "add", "homepi").plannedActions ?? []).join("\n");
     expect(kept).toContain("runs 2 slot(s), one task");
+  });
+
+  it("takes more slots than its memory or cores suggest, with a warning, never a refusal (ADR 0061)", () => {
+    const plan = (
+      slots: string,
+      probe = "aarch64\\nubuntu 24.04\\nnewpi\\n7969000\\nmax\\n4\\n",
+    ) => {
+      const { sb } = machine(0, probe);
+      return ship(sb, "box", "add", "newpi", "--name", "newpi", "--slots", slots);
+    };
+    const six = plan("6");
+    expect(six.status).toBe("requires-approval");
+    const said = (six.plannedActions ?? []).join("\n");
+    expect(said).toContain("runs 6 slot(s)");
+    expect(said).toContain(
+      "6 slots on 7.6 GB and 4 cores: more than it suggests (3), so tasks whose checks overlap get slower",
+    );
+    // At or under what it suggests, no warning; on a big box, no cap.
+    expect((plan("3").plannedActions ?? []).join("\n")).not.toContain("more than it suggests");
+    const big = plan("12", "x86_64\\nubuntu 24.04\\nnewpi\\n67000000\\nmax\\n16\\n");
+    expect((big.plannedActions ?? []).join("\n")).toContain("runs 12 slot(s)");
+    expect(plan("0").summary).toContain("--slots is a whole number from 1");
   });
 
   it("refuses an OS other than Ubuntu LTS before anything happens", () => {

@@ -19,8 +19,9 @@ each agent's adapter writes them its own way (ADR 0038, ADR 0043).
   (`loginFromPipe`).
 - **Shipify's skills** (`skills/`), which the agent lists itself, each with when it applies, and
   loads when one fits: pi takes the folder (`--skill`), OpenCode its config's `skills.paths`, and
-  Claude Code finds it linked in its settings folder (`config/skills`, made as the agent). A read
-  run gets none.
+  Claude Code finds it linked in its settings folder (`config/skills`, made as the agent), with
+  its own bundled skills off (`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`), so its list is Shipify's
+  alone. A read run gets none.
 - **A fresh folder each run:** `/srv/shipify-agent-<k>/run-<id>/` (its home, config, temp, work,
   the repos it reads, files in, files out). The slot's next run, and the weekly clean-up, remove
   the old ones.
@@ -468,7 +469,9 @@ runs. A run that ends without a usable `result.json` fails, and the reply says w
 - **Settings:** only its own user's settings and the run's MCP config (`--setting-sources user
   --strict-mcp-config`, which the adapter adds), so a project's files can't widen what it may do.
   Its settings and sessions live in the run's `config/` (`CLAUDE_CONFIG_DIR`), and it never updates
-  itself mid-task (`DISABLE_AUTOUPDATER=1`): both from the adapter's `env`. Its user's
+  itself mid-task (`DISABLE_AUTOUPDATER=1`), and lists none of its own bundled skills or
+  workflows (`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`; a user's skills folder, where Shipify's are,
+  stays): all from the adapter's `env`. Its user's
   `settings.json` there, which a command could write (hooks, `env`, a key helper), is removed before
   every ask (the adapter's `cleared`), and the skills link made again.
 - **Its login:** from fd 3 (`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`), its own setting, which

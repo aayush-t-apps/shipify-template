@@ -1200,6 +1200,56 @@ describe("boxes: what a box says about itself", () => {
       expect(names).not.toContain(lacking);
   });
 
+  it("says its swap, each slot's peak, and a task killed for memory (ADR 0061)", async () => {
+    const { boxFacts } = await import("../cli/lib/box-facts.ts");
+    const cg = "/sys/fs/cgroup/system.slice";
+    const files: Record<string, string> = {
+      "/proc/meminfo": "MemTotal:  8000000 kB\nMemAvailable:  7340032 kB\n",
+      "/proc/swaps":
+        "Filename\tType\tSize\tUsed\tPriority\n/dev/zram0  partition\t3994620\t104857\t100\n",
+      [`${cg}/shipify-box-homepi.service/memory.peak`]: `${1.2 * 1024 ** 3}\n`,
+      [`${cg}/shipify-box-homepi.service/memory.events`]:
+        "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n",
+      [`${cg}/shipify-box-homepi-2.service/memory.peak`]: `${0.5 * 1024 ** 3}\n`,
+      [`${cg}/shipify-box-homepi-2.service/memory.events`]: "oom 1\noom_kill 2\n",
+    };
+    const out: Record<string, string> = {
+      "systemctl --version": "systemd 255\n",
+      "systemctl list-unit-files --no-legend shipify-box-* tailscaled.service cockpit.socket":
+        "shipify-box-homepi.service enabled enabled\nshipify-box-homepi-2.service enabled enabled\n",
+      "systemctl is-active shipify-box-homepi.service": "active\n",
+      "systemctl is-active shipify-box-homepi-2.service": "active\n",
+      "systemctl show -p ControlGroup --value shipify-box-homepi.service": `/system.slice/shipify-box-homepi.service\n`,
+      "systemctl show -p ControlGroup --value shipify-box-homepi-2.service": `/system.slice/shipify-box-homepi-2.service\n`,
+    };
+    const facts = boxFacts({
+      ...none,
+      read: (f) => files[f],
+      exec: (cmd, args) => out[[cmd, ...args].join(" ")] ?? "",
+    });
+    const by = Object.fromEntries(facts.map((f) => [f.name, f]));
+    expect(by.memory?.value).toBe("7.0 GB free of 7.6 GB; swap: zram 3.8 GB (0.1 GB used)");
+    expect(by.slots?.value).toBe(
+      "at most since each started: homepi 1.2 GB, homepi-2 0.5 GB; homepi-2 had 2 killed for memory",
+    );
+    expect(by.slots?.look).toBe(
+      "homepi-2 had a task killed for memory: fewer slots, or swap (pnpm ship box add again turns it on)",
+    );
+    // No swap, and no kill: said, with nothing to look at.
+    files["/proc/swaps"] = "Filename\tType\tSize\tUsed\tPriority\n";
+    files[`${cg}/shipify-box-homepi-2.service/memory.events`] = "oom_kill 0\n";
+    const calm = Object.fromEntries(
+      boxFacts({
+        ...none,
+        read: (f) => files[f],
+        exec: (c, a) => out[[c, ...a].join(" ")] ?? "",
+      }).map((f) => [f.name, f]),
+    );
+    expect(calm.memory?.value).toBe("7.0 GB free of 7.6 GB; swap: none");
+    expect(calm.slots?.value).toBe("at most since each started: homepi 1.2 GB, homepi-2 0.5 GB");
+    expect(calm.slots?.look).toBeUndefined();
+  });
+
   it("says what needs a look: throttling, a pending restart, updates and failed services", async () => {
     const { boxFacts } = await import("../cli/lib/box-facts.ts");
     const files: Record<string, string> = {

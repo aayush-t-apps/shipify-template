@@ -59,8 +59,8 @@ import {
   type TaskRecord,
   textHash,
 } from "./snapshot.ts";
-import { givesWay, sameTurn, stay, stayMinutes, staysAfter, type Turn } from "./stay.ts";
-import { think as runThink, type ThinkOut } from "./think.ts";
+import { boxAnswer, givesWay, sameTurn, stay, stayMinutes, staysAfter, type Turn } from "./stay.ts";
+import { finish, think as runThink, type ThinkOut } from "./think.ts";
 import type { Decided, Plan, Said, Snapshot, ThinkMeta, Trigger, Write } from "./types.ts";
 import { wordOf } from "./words.ts";
 
@@ -362,7 +362,13 @@ async function chatFiles(
 
 export async function runThinkStep(
   n: number,
-  stay: { resume?: string; minutes?: number; record?: TaskRecord } = {},
+  stay: {
+    resume?: string;
+    minutes?: number;
+    record?: TaskRecord;
+    /** Each read of your words since plan's, newest last: a stay's decide takes the newest. */
+    heard?: (said: Said[]) => void;
+  } = {},
 ): Promise<Result> {
   const saved = load<{ s: Snapshot; p: Plan }>(n, "plan");
   if (saved?.p.do !== "think")
@@ -377,7 +383,7 @@ export async function runThinkStep(
     s.said.filter((c) => c.author === "owner" || c.author === "door").map((c) => c.id),
   );
   // A stay's turn hands in the read its plan made a moment ago (ADR 0057): no second read.
-  const { record, ...resume } = stay;
+  const { record, heard, ...resume } = stay;
   const given = await taskAttachments(
     n,
     record?.issue ?? rec().issue(n),
@@ -408,7 +414,11 @@ export async function runThinkStep(
     keep: join(dir(n), "out"),
     local: join(dir(n), "agent"),
     notes,
-    later: () => saidSince(n, since),
+    later: () => {
+      const said = saidSince(n, since);
+      heard?.(said);
+      return said;
+    },
     // What the run's model takes, from its gateway's public catalog.
     look: async (url) => listOf(url),
     ...resume,
@@ -427,8 +437,47 @@ export async function runThinkStep(
   return { command: "run think", status: "succeeded", summary: `task #${n}: thought` };
 }
 
-/** Decide's core (decide's step, and each turn of a stay): the writes, saved for apply. */
-function decided(n: number): { s: Snapshot; p: Plan; d: Decided; meta?: ThinkMeta } | undefined {
+/**
+ * The finish (ADR 0059), between think and decide: a work run's branch, on a project of yours that
+ * its PR is asked for, brought up to date with main and checked again, with a read key minted after
+ * the agent. Any other run has nothing to finish.
+ */
+export async function runFinishStep(n: number): Promise<Result> {
+  const saved = load<{ s: Snapshot; p: Plan }>(n, "plan");
+  const t = load<ThinkOut>(n, "think");
+  const nothing = { command: "run finish", status: "skipped" as const };
+  if (saved?.p.do !== "think" || !t)
+    return { ...nothing, summary: `task #${n}: nothing to finish` };
+  const k = saved.p.think;
+  const path = join(t.out, "result.json");
+  const result = readResult(existsSync(path) ? readFileSync(path, "utf8") : undefined);
+  const asks = !("error" in result) && result.state !== "failed" && result.pr?.kind !== "publish";
+  const mine = k.profile === "work" && k.project && !k.ownRules && !k.account;
+  if (!mine || !asks || !result.pr || !t.meta.commits || t.meta.firstPush)
+    return { ...nothing, summary: `task #${n}: no PR to bring up to date` };
+  const done = await finish({ ...saved.s, state: saved.p.state }, k, {
+    keep: t.out,
+    local: join(dir(n), "agent"),
+  });
+  if (done.note && t.details) t.details.notes = [...(t.details.notes ?? []), done.note];
+  if (done.changed)
+    t.meta.touchesWorkflows = done.changed.some((f) => f.startsWith(".github/workflows/"));
+  save(n, "think", t);
+  return {
+    command: "run finish",
+    status: "succeeded",
+    summary: `task #${n}: ${done.note ?? "up to date with main"}`,
+  };
+}
+
+/**
+ * Decide's core (decide's step, and each turn of a stay): the writes, saved for apply. A stay's turn
+ * hands in think's newest read of your words (`heard`), made as its agent answered: no read again.
+ */
+function decided(
+  n: number,
+  heard?: Said[],
+): { s: Snapshot; p: Plan; d: Decided; meta?: ThinkMeta } | undefined {
   const saved = load<{ s: Snapshot; p: Plan }>(n, "plan");
   if (!saved || saved.p.do === "nothing" || saved.p.do === "github") return undefined;
   const { s, p } = saved;
@@ -454,7 +503,7 @@ function decided(n: number): { s: Snapshot; p: Plan; d: Decided; meta?: ThinkMet
     d.needs = { ...needsOf(d.writes, d.state), ...d.needs };
     // Your words since its last read (its checks ran meanwhile): one more read, said in the reply.
     try {
-      stillWaiting(d, saidSince(n, new Date(Date.parse(s.now) - 60_000).toISOString()));
+      stillWaiting(d, heard ?? saidSince(n, new Date(Date.parse(s.now) - 60_000).toISOString()));
     } catch {}
   }
   save(n, "decided", d);
@@ -492,7 +541,8 @@ export async function runDecide(n: number): Promise<Result> {
   };
 }
 
-export async function runApply(n: number): Promise<Result> {
+/** Apply's step; a stay's turn hands in the read its plan made (`record`): no read again. */
+export async function runApply(n: number, record?: TaskRecord): Promise<Result> {
   const saved = load<{ s: Snapshot; p: Plan }>(n, "plan");
   const d = load<Decided>(n, "decided");
   if (!saved || !d)
@@ -500,6 +550,7 @@ export async function runApply(n: number): Promise<Result> {
   const t = load<ThinkOut>(n, "think");
   const done = await apply(saved.s, d.state, d.writes, {
     ...outward(),
+    ...(record ? { comments: record.comments } : {}),
     ...(t?.details ? { details: t.details as RunDetails } : {}),
     ...(t?.out ? { out: t.out } : {}),
     tokens: {
@@ -609,12 +660,30 @@ export async function runStay(n: number): Promise<Result> {
       if (words.some((c) => wordOf(c.text))) return "handover";
       // Words that aren't yours, or only a setting, leave nothing to do.
       if (p.do === "nothing" || !words.length) return "nothing";
+      // The box's own answer, the pick unchanged (a `use` you're already on, a thanks): posted here.
+      if (boxAnswer(first, p)) {
+        await marked(n, s, p);
+        decided(n);
+        const applied = await runApply(n, record);
+        if (applied.status === "failed") throw new ShipError(applied.summary);
+        return "answered";
+      }
       if (!sameTurn(first, p)) return "handover";
       await marked(n, s, p);
       clock.lap("marks");
-      await runThinkStep(n, { resume: session, minutes, record });
+      // One read of the task a turn, and one of your words as it answers (ADR 0057): decide takes
+      // that newest, apply the turn's. Words after it are the next turn's, which the stay answers.
+      let heard: Said[] | undefined;
+      await runThinkStep(n, {
+        resume: session,
+        minutes,
+        record,
+        heard: (said) => {
+          heard = said;
+        },
+      });
       clock.lap("think");
-      const got = decided(n);
+      const got = decided(n, heard);
       clock.lap("decide");
       if (!got) return "handover";
       const { d, meta } = got;
@@ -622,7 +691,7 @@ export async function runStay(n: number): Promise<Result> {
       if (d.needs.repo || d.needs.act || d.needs.workflows) return "handover";
       if (d.writes.some((w) => w.w === "reply" && w.files?.length)) return "handover";
       // Its reply refused, and the problem too: the step fails, and its failure step tells you.
-      const applied = await runApply(n);
+      const applied = await runApply(n, record);
       if (applied.status === "failed") throw new ShipError(applied.summary);
       clock.lap("apply");
       // Where a turn's time went, in the run's log (ADR 0057): each phase, and apply's calls.
@@ -677,6 +746,7 @@ const STEPS = {
   plan: runPlan,
   agent: runAgentStep,
   think: runThinkStep,
+  finish: runFinishStep,
   decide: runDecide,
   apply: runApply,
   stay: runStay,

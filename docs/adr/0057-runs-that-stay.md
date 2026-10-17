@@ -359,6 +359,9 @@ chats you'd rather not keep on GitHub. The design and its edge cases are in task
     1 s on a Pi (a process and a TLS handshake) and a turn makes about 20 of them.
   - Each turn now logs where its time went (`stay turn: plan … · think … · apply …`).
   - A turn hands its plan's read to think, which saves two of those calls.
+  - A turn then read your words five times (plan, think twice, decide, apply), about 0.9 s each.
+    Now twice: its plan's read, which apply takes, and think's as its agent answers, which decide
+    takes (task #502). Words after it are the next turn's.
   - One HTTP connection for the record's calls is on the roadmap, to make every run and every stay
     faster.
 - **Four agents at once on homepi's three slots** (`selftest claude`, `pi`, `opencode` and
@@ -423,3 +426,7 @@ chats you'd rather not keep on GitHub. The design and its edge cases are in task
   run your comment started, so after `use opus` the answer came, and the next words started cold
   again. A run now stays when it answered your words (its plan's `why`), however its job started;
   a repeat's run (`scheduled`) still never stays.
+- **A run stays after a question too (#487):** a reply that asks you something is "needs you",
+  and the gate took only "answer", so your answer to every question started cold. It now takes a
+  question that waits on nothing else, by decide's own rule (`questionWaits`: no list for your
+  `yes`, no PR open); a list or a PR still goes to a normal run.

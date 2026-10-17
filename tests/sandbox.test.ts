@@ -473,7 +473,7 @@ describe("the sandbox: killing and cleaning", () => {
       "-name",
       "run-*",
       "-mmin",
-      "+360",
+      "+480",
     ]);
     // All of them (before a run): no age.
     cleanRuns(1, 0, io);
@@ -832,7 +832,7 @@ describe("the sandbox's own scripts, run for real (as this user, without the sud
     for (const r of ["run-old", "run-new", "keep-me"])
       mkdirSync(join(slot, r, "work"), { recursive: true });
     const hours = (h: number) => new Date(Date.now() - h * 3_600_000);
-    utimesSync(join(slot, "run-old"), hours(7), hours(7));
+    utimesSync(join(slot, "run-old"), hours(9), hours(9));
     const io = local(root);
     expect(cleanRuns(2, STALE_RUN_MS, io)).toEqual({ ok: true, removed: 1 });
     expect(readdirSync(slot).sort()).toEqual(["keep-me", "run-new"]);

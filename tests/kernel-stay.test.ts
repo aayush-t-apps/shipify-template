@@ -2,6 +2,7 @@
 // run's, and the loop: its turns, its clocks, giving way, and leaving with nothing unanswered.
 import { describe, expect, it } from "vitest";
 import {
+  boxAnswer,
   GIVE_WAY_MS,
   givesWay,
   LOOK_MS,
@@ -16,7 +17,7 @@ import {
   staysAfter,
   type Turn,
 } from "../cli/kernel/stay.ts";
-import type { Decided, Plan, Snapshot, Think, ThinkMeta } from "../cli/kernel/types.ts";
+import type { Decided, Plan, Snapshot, Think, ThinkMeta, Write } from "../cli/kernel/types.ts";
 import { newState } from "../cli/lib/task.ts";
 
 const think = (t: Partial<Think> = {}): Think => ({
@@ -48,14 +49,14 @@ const answer: Decided = {
 const meta: ThinkMeta = { readOutside: false, touchesWorkflows: false, session: "s1" };
 
 describe("when a run stays", () => {
-  it("stays after a plain answer to your words, in the talk or read profile", () => {
+  it("stays after an answer to your words, in every profile (ADR 0060)", () => {
     expect(staysAfter(snap(), plan(), answer, meta, 5)).toBe(true);
     expect(staysAfter(snap(), plan({ profile: "read" }), answer, meta, 5)).toBe(true);
+    expect(staysAfter(snap(), plan({ profile: "work" }), answer, meta, 5)).toBe(true);
     expect(staysAfter(snap({ trigger: { kind: "opened" } }), plan(), answer, meta, 5)).toBe(true);
   });
 
-  it("never stays for work, a check, a repeat, a closed task, no session, or when it's off", () => {
-    expect(staysAfter(snap(), plan({ profile: "work" }), answer, meta, 5)).toBe(false);
+  it("never stays for a check, a repeat, a closed task, no session, or when it's off", () => {
     expect(staysAfter(snap(), plan({ check: "disk" }), answer, meta, 5)).toBe(false);
     const due = snap({ trigger: { kind: "dispatch", job: "run" } });
     expect(staysAfter(due, plan({ why: "scheduled" }), answer, meta, 5)).toBe(false);
@@ -67,32 +68,55 @@ describe("when a run stays", () => {
     expect(staysAfter(snap(), plan(), answer, meta, 0)).toBe(false);
   });
 
-  it("never stays when its answer needs a token, starts more work, or isn't a plain answer", () => {
-    const needs = (n: Decided["needs"]) => ({ ...answer, needs: n });
-    expect(staysAfter(snap(), plan(), needs({ repo: "spotter" }), meta, 5)).toBe(false);
-    expect(staysAfter(snap(), plan(), needs({ act: "notion" }), meta, 5)).toBe(false);
+  it("leaves it to the run that carries on: a work run its answer started, or a close", () => {
     const more = (w: Decided["writes"][number]) => ({ ...answer, writes: [...answer.writes, w] });
     expect(staysAfter(snap(), plan(), more({ w: "dispatch", job: "run" }), meta, 5)).toBe(false);
     expect(staysAfter(snap(), plan(), more({ w: "close" }), meta, 5)).toBe(false);
-    const files = { ...answer.writes[0], files: ["chart.png"] } as Decided["writes"][number];
-    expect(staysAfter(snap(), plan(), { ...answer, writes: [files] }, meta, 5)).toBe(false);
-    const asks = { ...answer.writes[0], kind: "needs-you" } as Decided["writes"][number];
-    expect(staysAfter(snap(), plan(), { ...answer, writes: [asks] }, meta, 5)).toBe(false);
   });
 
-  it("reads SHIPIFY_STAY as whole minutes, 10 by default, 0 for off, at most STAY_MINUTES", () => {
-    expect(stayMinutes(undefined)).toBe(10);
-    expect(stayMinutes("")).toBe(10);
+  it("stays after whatever it applied before the stay: a PR, a question, a list, files", () => {
+    // Pushed and opened with keys minted before the stay; the stay's own turns need none.
+    const pushed = {
+      ...answer,
+      needs: { repo: "spotter" },
+      writes: [...answer.writes, { w: "push", branch: "task-12" }] as Decided["writes"],
+    };
+    expect(staysAfter(snap(), plan({ profile: "work" }), pushed, meta, 5)).toBe(true);
+    const reply = (over: Record<string, unknown>) =>
+      ({ ...answer, writes: [{ ...answer.writes[0], ...over }] }) as Decided;
+    const pr = "https://github.com/o/spotter/pull/3";
+    const asked = reply({ kind: "needs-you", question: "90 or 120 minutes?" });
+    asked.state = { ...newState(), phase: "needs-you", prs: [pr] };
+    expect(staysAfter(snap(), plan({ profile: "work" }), asked, meta, 5)).toBe(true);
+    expect(staysAfter(snap(), plan(), reply({ kind: "needs-you", list: "k3" }), meta, 5)).toBe(
+      true,
+    );
+    expect(staysAfter(snap(), plan(), reply({ files: ["chart.png"] }), meta, 5)).toBe(true);
+  });
+
+  it("reads SHIPIFY_STAY as whole minutes, 20 by default, 0 for off, at most STAY_MINUTES", () => {
+    expect(stayMinutes(undefined)).toBe(20);
+    expect(stayMinutes("")).toBe(20);
     expect(stayMinutes("0")).toBe(0);
     expect(stayMinutes("10")).toBe(10);
     expect(stayMinutes("600")).toBe(STAY_MINUTES);
-    expect(stayMinutes("soon")).toBe(10);
+    expect(stayMinutes("soon")).toBe(20);
   });
 });
 
 describe("the gate: plan asked again makes the same choice", () => {
   it("lets a stay answer when plan would think the same way", () => {
     expect(sameTurn(plan(), plan({ fresh: [9] }))).toBe(true);
+  });
+
+  it("takes a `use` that comes to the agent, model and effort already running as no change (ADR 0059)", () => {
+    // Auto runs Claude Code's Sonnet at medium (executors.json): naming it is the same session.
+    const sonnet = { agent: "claude", label: "Claude Code", model: "sonnet" };
+    expect(sameTurn(plan(), plan({}, sonnet))).toBe(true);
+    expect(sameTurn(plan({}, sonnet), plan({}, { ...sonnet, effort: "medium" }))).toBe(true);
+    // Another model or effort is a new session.
+    expect(sameTurn(plan({}, sonnet), plan({}, { ...sonnet, effort: "high" }))).toBe(false);
+    expect(sameTurn(plan(), plan({}, { ...sonnet, model: "opus" }))).toBe(false);
   });
 
   it("hands everything else to a normal run: another profile, account, repo, agent or model", () => {
@@ -108,6 +132,47 @@ describe("the gate: plan asked again makes the same choice", () => {
     const noted: Plan = { ...(plan() as Extract<Plan, { do: "think" }>), writes: [] };
     if (noted.do === "think") noted.writes = [{ w: "note", topic: "t", line: "l" }];
     expect(sameTurn(plan(), noted)).toBe(false);
+  });
+});
+
+describe("the box's own answers in a stay (ADR 0059)", () => {
+  const claude = { agent: "claude", label: "Claude Code", model: "opus", effort: "high" };
+  const said = (use: typeof claude | undefined, ...writes: Write[]): Plan => ({
+    do: "box",
+    writes,
+    state: { ...newState(), ...(use ? { use } : {}) },
+    why: "a command",
+  });
+  const reply = (over: Partial<Extract<Write, { w: "reply" }>> = {}) =>
+    ({
+      w: "reply",
+      kind: "answer",
+      state: "Done",
+      text: "On Opus · high.",
+      key: "use-9",
+      ...over,
+    }) as Write;
+
+  it("posts one itself when the pick is as it was: a `use` you're already on, a thanks", () => {
+    expect(boxAnswer(plan({}, claude), said(claude, reply()))).toBe(true);
+    expect(
+      boxAnswer(plan({}, claude), said(claude, { w: "react", comment: 9, content: "+1" })),
+    ).toBe(true);
+  });
+
+  it("posts a `use` that comes to what's already running, Auto's model named (ADR 0059)", () => {
+    const named = { agent: "claude", label: "Claude Code", model: "sonnet", effort: "medium" };
+    expect(boxAnswer(plan(), said(named as typeof claude, reply()))).toBe(true);
+  });
+
+  it("hands a new pick, a reply with files or a list, or a write a stay never makes to a normal run", () => {
+    expect(boxAnswer(plan({}, claude), said({ ...claude, effort: "medium" }, reply()))).toBe(false);
+    expect(boxAnswer(plan(), said(claude, reply()))).toBe(false);
+    expect(boxAnswer(plan({}, claude), said(claude, reply({ files: ["a.png"] })))).toBe(false);
+    expect(boxAnswer(plan({}, claude), said(claude, reply({ list: "k3" })))).toBe(false);
+    expect(boxAnswer(plan({}, claude), said(claude, { w: "close" } as Write))).toBe(false);
+    expect(boxAnswer(plan({}, claude), said(claude))).toBe(false);
+    expect(boxAnswer(plan({}, claude), plan({}, claude))).toBe(false);
   });
 });
 

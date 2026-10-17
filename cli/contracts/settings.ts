@@ -139,7 +139,7 @@ export const CORE_SETTINGS: readonly Setting[] = [
   {
     name: "SHIPIFY_STAY",
     lives: ["variable"],
-    what: "how many quiet minutes a run stays after answering your words, so your next words are answered in the same session (`10`, the default; `0`: never; at most `45`)",
+    what: "how many quiet minutes a run stays after answering your words, so your next words are answered in the same session (`20`, the default; `0`: never; at most `45`)",
     setBy: "you",
     readBy: "a task's run: its decide and stay steps (ADR 0057)",
     optional: true,

@@ -6,7 +6,10 @@
 FROM ubuntu:24.04
 
 COPY box/setup.sh box/here.sh box/container.sh box/prep.tsv /opt/shipify/
-RUN SHIPIFY_IMAGE=1 bash /opt/shipify/setup.sh "" /opt/shipify/prep.tsv \
+# The build's GitHub token, when it gives one (`--secret id=gh`): only for setup.sh's one call to
+# GitHub's API, never in the image.
+RUN --mount=type=secret,id=gh,required=false \
+  SHIPIFY_IMAGE=1 bash /opt/shipify/setup.sh "" /opt/shipify/prep.tsv \
   && chmod 0755 /opt/shipify/here.sh /opt/shipify/container.sh
 
 # The runners' registration and the box's own files: kept across new images.

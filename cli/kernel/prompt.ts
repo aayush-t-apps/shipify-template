@@ -241,6 +241,9 @@ export function buildPrompt(p: PromptInput): string {
     "  approve), or `failed` (you couldn't: say why in `text`).",
     "- `text`: the reply, in GitHub markdown. Its first paragraph stands alone (a chat shows it).",
     "- Leave out every field you don't use: never write it as `null`.",
+    p.profile === "read"
+      ? ""
+      : `- A field has a size limit (\`work.brief\` 2,000 characters, a note's \`line\` 500). What's longer\n  (a plan, a long brief) goes whole into a file: ${p.profile === "work" ? "a doc committed in your clone, or " : ""}a file in your out folder, named in\n  \`files\`. The field holds a summary and where the rest is.`,
     "- `question`: one clear question, when you need the owner; `choices`, up to three short answers",
     '  to it when there are some ("Yes, match it"), which a chat shows as buttons.',
     p.profile === "work" && p.ownRules

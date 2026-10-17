@@ -2,13 +2,15 @@
 // quiet minutes and answers your next plain words itself, in the same agent session, so the next
 // answer starts in seconds, not in a new run. Anything else goes to a normal run. Plain code: the
 // rules are pure functions, and the loop gets its clock and its reads from the step that runs it.
+import { choiceFor, defaultAgent, taskChoice } from "./agent.ts";
 import type { Decided, Plan, Snapshot, ThinkMeta, Write } from "./types.ts";
 
 /**
- * How long a stay waits with nothing to answer, unless SHIPIFY_STAY says (minutes; 0: never): 10
- * covers a pause to read a reply and think (on #462 the longest was 6.5 minutes).
+ * How long a stay waits with nothing to answer, unless SHIPIFY_STAY says (minutes; 0: never): 20
+ * covers a pause to read a reply and think (on #462 the longest was 6.5 minutes), as the owner
+ * asked (ADR 0059).
  */
-export const STAY_IDLE_MINUTES = 10;
+export const STAY_IDLE_MINUTES = 20;
 /** A stay starts no turn after this long: its read token lasts GitHub's hour. */
 export const STAY_MINUTES = 45;
 /** Nor does a turn run past this, from when the stay began: the token's hour, with margin. */
@@ -47,9 +49,10 @@ export function stayMinutes(setting: string | undefined): number {
 const QUIET: Write["w"][] = ["reply", "labels", "react", "note"];
 
 /**
- * Whether a run stays after this answer: it answered your words, it thought in the talk or read
- * profile, its agent gave a session to carry on in, the task is open, and what it does needs no
- * token minted after the agent (no push, call, files, dispatch or close), only a plain answer.
+ * Whether a run stays after this answer (ADR 0060): it answered your words, in any profile, its
+ * agent gave a session to carry on in, and the task stays open with no other run carrying on from
+ * it (a work run its answer started, the GitHub job). What it pushed, opened or listed was applied
+ * before the stay, with keys minted then: a stay's own turns need none (run.ts hands those over).
  */
 export function staysAfter(
   s: Snapshot,
@@ -59,16 +62,10 @@ export function staysAfter(
   minutes: number,
 ): boolean {
   if (minutes <= 0 || p.do !== "think" || p.think.check) return false;
-  if (p.think.profile !== "talk" && p.think.profile !== "read") return false;
   // Your words, however its job started: a stay's handover is a dispatch too. A repeat's isn't.
   if (p.think.why === "scheduled") return false;
   if (s.issue.state !== "open" || !meta?.session || meta.stopped) return false;
-  if (d.needs.repo || d.needs.act || d.needs.workflows) return false;
-  return d.writes.every(
-    (w) =>
-      QUIET.includes(w.w) &&
-      (w.w !== "reply" || (w.kind === "answer" && !w.files?.length && !w.list)),
-  );
+  return !d.writes.some((w) => w.w === "dispatch" || w.w === "close");
 }
 
 /**
@@ -87,7 +84,6 @@ export function sameTurn(first: Plan, next: Plan): boolean {
       .map((r) => r.name)
       .sort()
       .join(",");
-  const use = (p: typeof first) => JSON.stringify(p.state.use ?? null);
   return (
     a.profile === b.profile &&
     a.account === b.account &&
@@ -96,7 +92,33 @@ export function sameTurn(first: Plan, next: Plan): boolean {
     a.ownRules === b.ownRules &&
     a.web === b.web &&
     reads(a) === reads(b) &&
-    use(first) === use(next)
+    runsWith(first) === runsWith(next)
+  );
+}
+
+/**
+ * The agent, model and effort a plan's pick runs, Auto worked out as think works it out
+ * (executors.json): `use sonnet` while Auto runs Sonnet is no change, so it's the same session
+ * (ADR 0059). Another model or effort is a new one.
+ */
+function runsWith(p: Plan): string {
+  const pick = p.state ? taskChoice(p.state) : { agent: defaultAgent() };
+  const agent = pick.agent ?? defaultAgent();
+  const { model, effort } = choiceFor(agent, pick);
+  return JSON.stringify([agent, model ?? null, effort ?? null]);
+}
+
+/**
+ * The box's own answer, which a stay posts itself and keeps staying (ADR 0059): no agent, only
+ * writes a stay makes (a reply with no files or list, a 👍, a label, a note), and the same agent,
+ * model and effort running: a `use` that comes to them, a thanks, `/ping`. A new model or effort is
+ * a new session's, so it's a normal run's.
+ */
+export function boxAnswer(first: Plan, next: Plan): boolean {
+  if (next.do !== "box" || !next.writes.length) return false;
+  if (runsWith(first) !== runsWith(next)) return false;
+  return next.writes.every(
+    (w) => QUIET.includes(w.w) && (w.w !== "reply" || (!w.files?.length && !w.list)),
   );
 }
 

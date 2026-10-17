@@ -179,11 +179,11 @@ jobs:
           || github.event.sender.login == vars.SHIPIFY_OWNER
           || (vars.SHIPIFY_DOOR_SLUG != '' && github.event.sender.login == format('{0}[bot]', vars.SHIPIFY_DOOR_SLUG)))
     runs-on: [self-hosted, shipify-box, sandbox]
-    # The sum of its clocks (tests/workflows.test.ts): think's steps (THINK_MINUTES, 192), plan's
-    # follow of a merge's deploy (30), about 15 for setup, decide and apply, and a stay's last turn
-    # (STAY_LAST_MINUTES, 55; ADR 0057). A run never outgrows its own job, so whatever stops its
+    # The sum of its clocks (tests/workflows.test.ts): think's steps and the finish (THINK_MINUTES,
+    # 353; ADR 0059), plan's follow of a merge's deploy (30), about 15 for setup, decide and apply,
+    # and a stay's last turn (STAY_LAST_MINUTES, 55; ADR 0057). A run never outgrows its own job, so whatever stops its
     # agent, its work is kept (ADR 0035).
-    timeout-minutes: 300
+    timeout-minutes: 460
     env:
       ISSUE: ${{ github.event.issue.number || inputs.issue }}
       EVENT: ${{ github.event_name }}
@@ -252,10 +252,10 @@ jobs:
             node scripts/build-cli.mjs --out "$part/cli/dist/ship.mjs"
             touch "$part/.built"
             mv -T "$part" "$dir" 2>/dev/null || rm -rf "$part"
-            # Keep the three newest copies, and any used within the job's limit (300 minutes): a run in
+            # Keep the three newest copies, and any used within the job's limit (460 minutes): a run in
             # flight keeps its own however many merges land meanwhile.
             find "$base" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn \
-              | awk -v now="$(date +%s)" 'NR > 3 && now - $1 > 18000 { print $2 }' | xargs -r rm -rf || true
+              | awk -v now="$(date +%s)" 'NR > 3 && now - $1 > 27600 { print $2 }' | xargs -r rm -rf || true
           fi
           if [ ! -f "$dir/.built" ]; then
             echo "::error::$dir is there but not built (made by hand, or by an older Shipify): remove it on the box, then run this again"
@@ -372,8 +372,9 @@ jobs:
         id: think
         if: steps.plan.outputs.do == 'think'
         env:
-          # Read-only, even for the record: this step writes nothing on GitHub.
-          SHIPIFY_ISSUES_TOKEN: ${{ steps.agent_token.outputs.token }}
+          # The record's token for the runner's own reads (your `stop`, your words while it works), as
+          # a stay's: it lasts the job (ADR 0059). The agent, as its own user, never holds it.
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
           SHIPIFY_READ_TOKEN: ${{ steps.agent_token.outputs.token }}
           GH_TOKEN: ${{ steps.agent_token.outputs.token }}
           # The agent's login (its own, or its gateway's key: plan names the one secret), handed to
@@ -402,6 +403,16 @@ jobs:
           permission-statuses: read
           permission-actions: read
 
+      # The finish (ADR 0059): a work run's branch brought up to date with main and checked again,
+      # with the read key minted just now, so its PR opens up to date however long the agent worked.
+      # No agent, no write key; it skips any other run.
+      - name: Finish (the branch up to date with main, checked again; no agent)
+        id: finish
+        if: steps.think.outcome == 'success' && steps.plan.outputs.profile == 'work'
+        env:
+          SHIPIFY_READ_TOKEN: ${{ steps.apply_token.outputs.token }}
+        run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run finish "$ISSUE"
+
       - name: Decide (the agent's proposals into writes; what to mint)
         id: decide
         if: steps.plan.outputs.do == 'box' || steps.plan.outputs.do == 'think'
@@ -409,7 +420,7 @@ jobs:
           SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
           SHIPIFY_READ_TOKEN: ${{ steps.apply_token.outputs.token }}
           GH_TOKEN: ${{ steps.apply_token.outputs.token }}
-          # How long a run stays after its answer (ADR 0057): minutes, 5 when unset, 0 for never.
+          # How long a run stays after its answer (ADR 0057): minutes, 20 when unset, 0 for never.
           SHIPIFY_STAY: ${{ vars.SHIPIFY_STAY }}
         run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run decide "$ISSUE"
 
@@ -469,7 +480,7 @@ jobs:
           SHIPIFY_NOTION_WRITE: ${{ steps.decide.outputs.act == 'notion' && secrets.SHIPIFY_NOTION_WRITE || '' }}
         run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run apply "$ISSUE"
 
-      # A run that stays (ADR 0057): after its answer, for SHIPIFY_STAY quiet minutes (5), it answers
+      # A run that stays (ADR 0057): after its answer, for SHIPIFY_STAY quiet minutes (20), it answers
       # your plain words itself, in the same agent session, while `staying` makes task.yml start no
       # run for them; anything else it hands to a normal run. Its own read-only tokens, minted now,
       # cover what its run's did: every project, as a talk run's agent token does.

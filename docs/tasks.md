@@ -95,7 +95,8 @@ A run reads its task when it starts, and the agent can't take a message mid-step
 - **Taken in before it answers:** when the agent has its answer, and before anything is posted, the
   run reads the task again. Plain words you wrote since go to the same agent session, which takes
   them in (changing the work if they ask). Then it reads again, in case you wrote more meanwhile,
-  up to 3 rounds. You get one reply that covers it all: the agent's first ask, and each catch-up,
+  until a read finds nothing new (no round count, ADR 0060). You get one reply that covers it all:
+  the agent's first ask, and each catch-up,
   lists every one of your asks so far, numbered (the task's own words, then each message), so none
   is left out. 👀 goes on each message it took in when the
   reply is posted (the run's agent step has no key that can write on GitHub). The next run finds
@@ -106,7 +107,7 @@ A run reads its task when it starts, and the agent can't take a message mid-step
   - **What waits for the next run instead:** a fixed word, a `use`, a command, a note, a lone
     thanks, an edited comment, and anything after one of those. As before, the next run reads
     them, and the run details say how many wait.
-  - **Only with time left:** with less than 5 minutes left on the agent's 50, the next run reads
+  - **Only with time left:** with less than 5 minutes left on the agent's 200, the next run reads
     them.
 - **`stop`:** while the agent works, the run reads the task about once a minute for a `stop`. It
   stops the agent and everything it started; what it committed (and edits it hadn't) is kept on
@@ -129,16 +130,24 @@ A run reads its task when it starts, and the agent can't take a message mid-step
 
 ### A run that stays
 
-After a run answers your words, it stays (ADR 0057): for `SHIPIFY_STAY` quiet minutes (10 unless
+After a run answers your words, it stays (ADR 0057): for `SHIPIFY_STAY` quiet minutes (20 unless
 you set it; `0` turns it off) it reads the task every 2 seconds and answers your next plain words
 itself, in the same agent session, so they're answered in seconds rather than in a new run.
 
-- **When:** after a plain answer to your words, in the talk or read profile. Never after a change,
-  a list waiting for your `yes`, a repeat, a due run or a check.
+- **When:** after every answer to your words (ADR 0060), whatever the run did: an answer, a
+  question, a PR it opened or updated, a list for your `yes`. Not when its answer started another
+  run (a work run, the GitHub job) or closed the task, nor after a repeat, a due run or a check.
+- **On a project:** the stay carries on in the run's clone, and pushes nothing. Asked for a change,
+  it says what it will change and starts a work run on the task's branch, which does it with the
+  whole thread.
 - **The same answer as a run's:** each turn is plan, think, decide and apply, with 👀, the run
   details ("The run stayed…") and one reply for everything you sent meanwhile, each ask numbered.
+- **The same model stays** (ADR 0059): a `use` that comes to the agent, model and effort already
+  running (`use sonnet` while Auto runs Sonnet), alone or with your words, a thanks or `/ping` is
+  answered in the stay, which keeps staying. Another model or effort is a new session: a normal
+  run.
 - **What goes to a normal run instead:** a fixed word (`yes`, `go`, `use`, `continue`…), an edit,
-  another repo, account, agent or model, a change, or an answer that needs a file or a write key.
+  another repo, account, agent or model, or an answer that needs a file or a write key.
   The stay takes its label off and starts that run, which reads every word it hasn't answered.
 - **It ends** after its quiet minutes, 45 minutes in all, on your `stop` or a close, or when another
   task's run, or its box's weekly clean-up, waits for its slot. It answers words already waiting
@@ -149,6 +158,20 @@ itself, in the same agent session, so they're answered in seconds rather than in
   (each shows as a skipped run in Actions); a close or an edit on GitHub runs after the stay. The web chat says **Staying**, in the list and the thread.
   A stay whose box died leaves its label: the watch takes it off within 5 minutes of GitHub ending
   its job, so your next words start a run.
+
+**Same session, or a new run:** one rule, which plan applies to your next words: the stay answers
+them itself when a run would think about them the same way, else a new run does.
+
+| Your next words | Who answers | The agent's session | Its cache |
+|---|---|---|---|
+| plain words, a thanks, a `use` you're already on | the stay | the same, resumed (`--resume`) | warm: only the new words are new |
+| a change (a PR) | a work run on the task's branch | new, with the thread and the handoff | cold, once |
+| another model or effort, agent, repo or account | a normal run | new | cold, once |
+| a fixed word (`yes`, `go`, `stop`, `continue`…), an edit | a normal run | new | cold, once |
+
+A change goes to a work run because a PR needs what no stay holds: the project's clone set up, and a
+write key, which the job mints in its own step after the agent and never hands it (ADR 0031, ADR
+0059). The stay says so in its reply ("A work run on … starts now"), then leaves.
 
 **Where you see it:**
 - **👀** on your comment, and on the task itself for its own words: a run has read it (the web
@@ -488,14 +511,19 @@ as a feature".
    terminal: first what the PR needs besides tests (`ship pr <clone> --check`: every change doc
    readable, the version bumped with its changelog section when merging ships one; for Shipify, a
    changelog line and stack versions), then `make verify`. When they fail, the agent gets one round,
-   in the same session, to fix what they found. If they still fail, no PR opens and the reply shows
-   the end of their output. The agent's commits are kept on the task's branch, so `continue`
+   in the same session (up to 20 minutes), to fix what they found. If they still fail, no PR opens
+   and the reply shows the end of their output. The agent's commits are kept on the task's branch, so `continue`
    carries on from them. Shipify itself keeps the same targets: on it, `make verify` checks what
    the change reaches, quickly (its `Makefile` says how).
+   **Up to date when it finishes** (ADR 0059): after the agent, with a key minted then, the box
+   fetches `main` again. When it moved while the agent worked, the box refreshes the branch as
+   above and runs the checks again, so the PR opens up to date; the run's details say so. Where the
+   refresh stops on a conflict, or the checks fail on the merged branch, the PR opens as the agent
+   left it, and the details say your `continue` brings it up to date first.
    **Kept work, whatever stops a run** (ADR 0035): an agent that stops before its answer keeps its
    commits the same way, with any edits it hadn't committed as one `Work in progress` commit. That
-   covers its 50-minute clock, your plan's limit, a crash, or an answer that doesn't read. The reply
-   names the stop: "The agent stopped before it finished: it ran for 50 minutes", or "Your plan's
+   covers its 200-minute clock, your plan's limit, a crash, or an answer that doesn't read. The reply
+   names the stop: "The agent stopped before it finished: it ran for 200 minutes", or "Your plan's
    5-hour limit is used up" with when it resets. Reply `continue` to carry on. Two exceptions,
    each said in the reply: never into an open PR (you might merge it), and never a new project's
    first push (it goes to `main`, which deploys).
@@ -507,6 +535,9 @@ as a feature".
    **Its handoff:** the agent keeps a short note for the next run as it works (Goal, Done, Next,
    Decisions, Open), and the box keeps it in the status comment however the run ends, even when
    it's stopped. The next run reads it, then checks the branch and the tests before trusting it.
+   A run after a stay ends starts a fresh agent session: it reads the whole thread, this handoff,
+   the branch and the notebook, not the old session's working notes. Only a stay keeps the same
+   session, in the run's folder.
    **Helpers:** an agent may work with helpers of its own (Claude Code does, in parallel). Every
    rule binds them, since the rules sit outside the agent: its own user, read-only keys, the box
    making every change. A checkout inside the clone (a helper's worktree) is never committed.
@@ -607,7 +638,9 @@ a `failed` reply that says what happened, with its real cause, and the one thing
   Upstream error from Nvidia: Service temporarily overloaded". An agent may try its model again on
   its own first (pi does); that's the agent's.
 - **An answer that didn't fit the result's shape** names what was wrong, with the agent's words
-  below it, where a chat shows them.
+  below it, where a chat shows them. The run stays (ADR 0061): your next words go to the same
+  session, which can send it again. When the agent fixed its answer itself before it ended, the
+  fixed one is taken, never the file it wrote first.
 - **A run that broke before it could answer:** the job says so on the task with the task as it is
   now, naming the step that broke: one of Shipify's, with its error ("The run's plan step failed:
   …"), or one of the workflow's own ("The run's “A read-only token for plan…” step failed").

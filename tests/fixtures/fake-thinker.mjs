@@ -211,6 +211,11 @@ writeFileSync(
 );
 if (process.env.FAKE_FILE) writeFileSync(join(out, "report.txt"), process.env.FAKE_FILE);
 if (process.env.FAKE_RESULT && result) writeFileSync(result, process.env.FAKE_RESULT);
+// FAKE_SESSION: its session, with no final answer (only the file it wrote).
+if (process.env.FAKE_SESSION && !process.env.FAKE_FINAL)
+  process.stdout.write(
+    `${JSON.stringify({ type: "system", subtype: "init", session_id: process.env.FAKE_SESSION })}\n`,
+  );
 // Its model's error, as Claude Code's stream ends on one when its own retries gave up: FAKE_ERROR.
 if (process.env.FAKE_ERROR)
   process.stdout.write(

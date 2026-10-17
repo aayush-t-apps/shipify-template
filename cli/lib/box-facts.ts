@@ -62,15 +62,27 @@ const THROTTLED = "/sys/devices/platform/soc/soc:firmware/get_throttled";
 const THROTTLE_BITS = ["under-voltage", "frequency capped", "throttled", "soft temperature limit"];
 
 /**
- * The system, uptime, load, memory, disk, temperature and throttling (where the board has them),
- * a pending restart, waiting updates, and the box's services.
+ * The system, uptime, load, memory and swap, disk, temperature and throttling (where the board has
+ * them), a pending restart, waiting updates, the box's services, and its slots' memory.
  */
 export function boxFacts(given: Partial<BoxIo> = {}, now = Date.now()): Fact[] {
   const { read, exec, changed } = { ...machine, ...given };
   const cores = cpus().length;
   const system = read("/etc/os-release")?.match(/^PRETTY_NAME="?([^"\n]+)"?/m)?.[1] ?? "Linux";
   // MemAvailable, not MemFree: what's really free for new work, counting reclaimable cache.
-  const available = Number(read("/proc/meminfo")?.match(/^MemAvailable:\s+(\d+) kB/m)?.[1]) * 1024;
+  const meminfo = read("/proc/meminfo");
+  const available = Number(meminfo?.match(/^MemAvailable:\s+(\d+) kB/m)?.[1]) * 1024;
+  const total = Number(meminfo?.match(/^MemTotal:\s+(\d+) kB/m)?.[1]) * 1024 || totalmem();
+  // Its swap (ADR 0061): zram that box add turns on, a file of its own, or none.
+  const swaps = (read("/proc/swaps") ?? "")
+    .split("\n")
+    .slice(1)
+    .map((l) => l.trim().split(/\s+/))
+    .filter((f) => f.length >= 4)
+    .map(([name = "", type = "", size = "0", used = "0"]) => {
+      const kind = name.startsWith("/dev/zram") ? "zram" : type === "file" ? "a file" : name;
+      return `${kind} ${gb(Number(size) * 1024)} (${gb(Number(used) * 1024)} used)`;
+    });
   const facts: Fact[] = [
     { name: "system", value: `${system}, ${arch()}, ${cores} cores, Node ${process.version}` },
   ];
@@ -86,7 +98,7 @@ export function boxFacts(given: Partial<BoxIo> = {}, now = Date.now()): Fact[] {
     },
     {
       name: "memory",
-      value: `${gb(Number.isFinite(available) && available > 0 ? available : freemem())} free of ${gb(totalmem())}`,
+      value: `${gb(Number.isFinite(available) && available > 0 ? available : freemem())} free of ${gb(total)}; swap: ${swaps.join(", ") || "none"}`,
     },
   );
   try {
@@ -157,6 +169,7 @@ export function boxFacts(given: Partial<BoxIo> = {}, now = Date.now()): Fact[] {
     // The box's own services, a system one (a Pi, a VPS) or a user one (this PC), stopped too.
     const states: string[] = [];
     const failed: string[] = [];
+    const peaks: { slot: string; peak: number; kills: number }[] = [];
     for (const scope of [[], ["--user"]]) {
       const ctl = (...args: string[]) => exec("systemctl", [...scope, ...args]) ?? "";
       const first = (out: string) =>
@@ -173,8 +186,17 @@ export function boxFacts(given: Partial<BoxIo> = {}, now = Date.now()): Fact[] {
           "cockpit.socket",
         ),
       );
-      for (const u of units)
+      for (const u of units) {
         states.push(`${u.replace(/\.service$/, "")} ${ctl("is-active", u).trim()}`);
+        // A slot's memory (ADR 0061): the most it has used since it started, and its OOM kills.
+        const slot = /^shipify-box-(.+)\.service$/.exec(u)?.[1];
+        const group = slot && ctl("show", "-p", "ControlGroup", "--value", u).trim();
+        const peak = group ? Number(read(`/sys/fs/cgroup${group}/memory.peak`)) : Number.NaN;
+        if (slot && peak > 0) {
+          const events = read(`/sys/fs/cgroup${group}/memory.events`) ?? "";
+          peaks.push({ slot, peak, kills: Number(/^oom_kill (\d+)$/m.exec(events)?.[1] ?? 0) });
+        }
+      }
       failed.push(...first(ctl("list-units", "--failed", "--no-legend", "--plain")));
     }
     const stopped = states.filter((x) => /^shipify-/.test(x) && !/ active$/.test(x));
@@ -191,6 +213,19 @@ export function boxFacts(given: Partial<BoxIo> = {}, now = Date.now()): Fact[] {
             ].join("; ")
           : undefined,
     });
+    if (peaks.length) {
+      const killed = peaks.filter((p) => p.kills > 0);
+      facts.push({
+        name: "slots",
+        value: [
+          `at most since each started: ${peaks.map((p) => `${p.slot} ${gb(p.peak)}`).join(", ")}`,
+          ...killed.map((p) => `${p.slot} had ${p.kills} killed for memory`),
+        ].join("; "),
+        look: killed.length
+          ? `${killed.map((p) => p.slot).join(", ")} had a task killed for memory: fewer slots, or swap (pnpm ship box add again turns it on)`
+          : undefined,
+      });
+    }
   }
   return facts;
 }

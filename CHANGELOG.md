@@ -7,6 +7,81 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-10-17
+
+### Changed
+
+- **Steady runs (ADR 0061).** When the agent fixes an answer its schema refused, the fixed one is
+  taken, never the file it wrote first (#506). A slip in an answer's shape no longer ends the stay:
+  the reply says what didn't fit, and your next words go to the same session. The prompt says that
+  content too long for a field goes into a file, and the playbook that a big change starts as a
+  proposed ADR.
+- **Roomy boxes (ADR 0061).** `box add` turns on swap in memory (zram, half the memory,
+  compressed) on a box with no swap of its own, so tasks that overlap slow down instead of having a
+  test killed; WSL, a VPS with a swap file, a container and a box without systemd keep theirs, each
+  with a line saying so. `--slots` has no cap of 4 any more (`box add` and `here.sh`): past what memory or
+  cores suggest, it warns. `box health` and the status task show the swap, the most each slot has used, and a task
+  killed for memory. Box setup is version 6: `ship doctor` names a box set up before it, and
+  `pnpm ship box add <box> --yes` again brings it up to date. `box/load-test.sh` measures N tasks'
+  checks at once on a box.
+- **One writing rule for people and agents.** `playbooks/task.md` now has "How you write": use
+  ASD-STE100 as a guide, with short sentences, active voice and one term per idea. Keep precision
+  and say what is uncertain. `CONTRIBUTING.md` points to it.
+- **Every answer stays (ADR 0060).** A run stays after any answer to your words, a work run's and
+  one that opened a PR or asked you something included, unless it started another run or closed
+  the task. On a project the stay pushes nothing: a change you ask of it starts a work run. What
+  you write while a run works is taken in with no round count (3 before), until nothing new comes.
+- **Long sessions (ADR 0059).** A run's agent works up to 200 minutes in one session (50 before),
+  its fix round 20, and the job's limit is 460 minutes. Your `stop` and your words while it works
+  are read with the workflow's own token, which lasts the job, so both work to the end; a read that
+  fails says so in the run's details. A stay waits 20 minutes by default (10 before).
+- **A PR opens up to date with `main` (ADR 0059).** After a work run's agent, a new step, the
+  finish, fetches `main` with a key minted then; when it moved while the agent worked, the box
+  refreshes the branch and checks it again before the PR. Where that stops, the PR opens as the
+  agent left it and the details say `continue` brings it up to date.
+- **A stay's turn reads your words twice (ADR 0057).** It read them five times (plan, think
+  twice, decide, apply), about a second each on a box: now its plan's read, which apply takes, and
+  one as the agent answers, which decide takes. Words after that are the next turn's.
+- **Claude Code lists Shipify's skills alone.** Its own bundled skills and workflows (loop,
+  schedule, claude-api, init and others) are off (`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`), so a
+  run's agent isn't offered skills that never fit a task, and each prompt is a little shorter.
+
+### Fixed
+
+- **The web chat times a stay's answer, not the stay.** A task's row said "Working · 40m" for a
+  10-second answer, and its header the same till the turn's status was read, then dropped to 0.
+  Both now time the answer from its `working` status, and say "Starting…" or Staying till then.
+- **The tasks doc says in one table when a stay answers and when a new run does.** For each kind
+  of next words, it shows who answers, whether the agent's session carries on, and whether its cache
+  starts warm. It also says why a change goes to a work run: the clone and the write key a PR needs.
+- **The docs match long sessions (ADR 0059).** The glossary's stay is 20 quiet minutes (it said
+  10), the catch-up needs 5 minutes left of the agent's 200 (it said 50), and old run folders are
+  swept after 8 hours (it said 6). The security doc says the agent's own GitHub read lasts its
+  token's first hour, and the tasks doc says what a cold run reads after a stay ends.
+- **ADR 0059 says what a long run proved.** One work run on homepi kept its agent in one session
+  for about an hour, then the box's checks, about 75 minutes in one step, with nothing failing.
+  The live check is closed for now, and the ADR names what it didn't try.
+- **Naming the model you're already on keeps the session (#497).** A stay compared the pick as
+  written, so `use claude sonnet` while Auto ran Sonnet at medium, or `use claude sonnet medium`
+  after `use claude sonnet`, started a fresh run. It compares the agent, model and effort the pick
+  runs, Auto worked out as the run does; another model or effort is still a new session. The
+  playbook tells the agent a `use` line is already applied, so it doesn't answer it.
+- **A release's box images build every time.** Building them asked GitHub's API for the newest
+  runner with no token, from GitHub's shared machines, and was refused when those had used the
+  hour's 60 calls (0.1.11's first build). The build now passes its own token, as a build secret
+  never kept in the image. A box set up with `here.sh` needs none, as before.
+- **A run stays after it asks you a question (#487).** It stayed only after a plain answer, so
+  your answer to its question started a new run, cold. A question that waits on nothing else (no
+  list for your `yes`, no PR open) now keeps it staying, and your answer comes in the same session.
+- **On a phone, the web chat lets you copy part of a reply (#487).** A long press opened the
+  chat's own menu, which copies the whole reply, and hid the phone's Copy for a selection. It's
+  the phone's own again; **⋯** on each reply still gives Copy and Download.
+- **A `use` you're already on keeps a stay (#487).** A message that was only `use <the pick in
+  place>` (or a thanks) got the box's own reply and ended the stay, so your next words started
+  cold. The stay answers it and stays; a new pick still starts a new session.
+- **A long run's folder is never swept as left over.** Old run folders went at 6 hours, under the
+  job's new limit; now 8, tested against it.
+
 ## [0.1.11] - 2026-10-16
 
 ### Fixed

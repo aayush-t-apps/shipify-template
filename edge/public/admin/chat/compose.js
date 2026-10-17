@@ -29,6 +29,12 @@ export const pretty = (s) => (s ? s.split(" ").map(nm).join(" · ") : "Auto");
 /** A pick as the chip says it ("Pi · Vercel · glm-5.3 · High"), once the menu is there. */
 export const said = (m, s) => (s && m?.agents ? label(m, read(m, s)) : pretty(s));
 export const size = (b) => (b < 1e6 ? `${Math.ceil(b / 1e3)} KB` : `${(b / 1e6).toFixed(1)} MB`);
+/**
+ * The run a task's clock times, the same in its row and its header: the turn its thread's status
+ * says is `working` (from that answer's start), else the job the list knows (from the job's). A run
+ * that stays after its answer (ADR 0057) began with the stay: its job never times a turn.
+ */
+export const timed = (staying, turn, job) => turn || (!staying && job) || undefined;
 
 // Icons: one stroked path each, on a 24px grid; the stylesheet gives them their size and colour.
 const P = {

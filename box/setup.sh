@@ -32,7 +32,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=5
+SETUP_VERSION=6
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -128,6 +128,42 @@ else
   echo "  some didn't install now (see /var/log/shipify-box-updates.log); the daily run tries again"
 fi
 [ ! -f /var/run/reboot-required ] || echo "  they need a restart: it happens at 04:30 by itself, or run: sudo reboot"
+fi
+
+# Swap in memory, compressed (ADR 0061): when tasks overlap and memory runs short, they slow down
+# instead of being killed. Only where there's no swap of its own (WSL and a VPS with a swap file
+# keep theirs), never a swap file on the disk, and never a reason for the setup to fail.
+if [ -z "$IMAGE$CONTAINER" ]; then
+say "Swap in memory (zram)"
+ZRAM_CONF=/etc/systemd/zram-generator.conf
+ZRAM_SYSCTL=/etc/sysctl.d/90-shipify-zram.conf
+other=$(swapon --show=NAME --noheadings 2>/dev/null | grep -v '^/dev/zram' || true)
+if [ -n "$other" ]; then
+  echo "  skipped: this box has swap of its own ($(echo "$other" | tr '\n' ' ' | sed 's/ $//'))"
+elif [ ! -d /run/systemd/system ]; then
+  echo "  skipped: systemd isn't running here"
+elif ! modinfo zram >/dev/null 2>&1; then
+  echo "  skipped: this kernel has no zram; tasks that overlap may be killed when memory runs short (fewer slots, or swap, fixes it)"
+elif ! apt_get install -y -q systemd-zram-generator >/dev/null 2>&1; then
+  echo "  skipped: systemd-zram-generator didn't install (the box works as before)"
+else
+  printf '%s\n' "# Written by Shipify box setup (docs/box-setup.md, ADR 0061): swap in memory, compressed." \
+    "[zram0]" "zram-size = min(ram / 2, 8192)" "compression-algorithm = zstd" > "$WORK/zram.conf"
+  printf '%s\n' "# Written by Shipify box setup (docs/box-setup.md, ADR 0061): settings for swap in memory." \
+    "vm.swappiness = 180" "vm.page-cluster = 0" > "$ZRAM_SYSCTL"
+  sysctl -q -p "$ZRAM_SYSCTL" || true
+  if ! cmp -s "$WORK/zram.conf" "$ZRAM_CONF"; then
+    install -m 644 "$WORK/zram.conf" "$ZRAM_CONF"
+    systemctl daemon-reload
+    systemctl restart systemd-zram-setup@zram0.service || true
+  fi
+  systemctl start systemd-zram-setup@zram0.service || true
+  if swapon --show=NAME --noheadings 2>/dev/null | grep -q '^/dev/zram0'; then
+    echo "  on: $(swapon --show=SIZE --noheadings /dev/zram0 | tr -d ' ') of swap in memory (zstd)"
+  else
+    echo "  not on yet: it starts at the next restart"
+  fi
+fi
 fi
 
 if [ -z "$CONTAINER" ]; then
@@ -263,7 +299,11 @@ echo "  $rule"
 TARBALL=""
 fetch_runner() {
   [ -n "$TARBALL" ] && return
-  release=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest)
+  # An image's build gives its GitHub token (box/Dockerfile): GitHub's machines share addresses,
+  # and a call with none is refused once they've made 60 in the hour. A box's own needs none.
+  local auth=()
+  [ -r /run/secrets/gh ] && auth=(-H "Authorization: Bearer $(cat /run/secrets/gh)")
+  release=$(curl -fsSL "${auth[@]}" https://api.github.com/repos/actions/runner/releases/latest)
   version=$(printf '%s' "$release" | jq -r .tag_name | sed 's/^v//')
   file="actions-runner-linux-${ARCH}-${version}.tar.gz"
   sum=$(printf '%s' "$release" | jq -r --arg f "$file" '.assets[] | select(.name == $f) | .digest' | sed 's/^sha256://')

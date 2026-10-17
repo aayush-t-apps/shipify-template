@@ -363,8 +363,14 @@ export const claude: Adapter = {
   modelName,
   workspace,
   // The pinned version stays the version: no update in the middle of a task. Its settings and
-  // sessions live in the run's own folder.
-  env: (p) => ({ DISABLE_AUTOUPDATER: "1", CLAUDE_CONFIG_DIR: p.config }),
+  // sessions live in the run's own folder. Its own bundled skills and workflows (loop, schedule,
+  // claude-api, init…) are off, so its list is Shipify's skills alone: they're a user's skills
+  // folder, which the switch leaves (its setting's own words in 2.1.284).
+  env: (p) => ({
+    DISABLE_AUTOUPDATER: "1",
+    CLAUDE_CONFIG_DIR: p.config,
+    CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1",
+  }),
   // Its subscription login from the pipe: its own setting, not in its public docs; checked live
   // on 2.1.284, it reads the pipe once and keeps the login in memory, never in a file.
   loginFromPipe: (name) =>

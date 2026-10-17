@@ -39,9 +39,9 @@ Names only: no value appears in any doc, file or log. How to make and replace ea
 
 | Token | Which steps | What it can do |
 |---|---|---|
-| the bot's read-only tokens (one hour each, minted right before each phase) | plan's; decide and apply's | read every project: code, PRs, issues, statuses, runs |
-| the agent's read-only token (one hour, minted right before think) | think (the agent's copy) | read the same, but in a work run only its project or repo and Shipify; a talk run reads every project, as its profile says. A read run's agent gets none: the box keeps it, for the task and your repos it reads (ADR 0044) |
-| `GITHUB_TOKEN` (the workflow's own) | the task step, plan, decide, apply; never think | write shipify's issues and comments, start runs |
+| the bot's read-only tokens (one hour each, minted right before each phase) | plan's; the finish's, decide's and apply's (ADR 0059: the finish fetches main with it, with no agent) | read every project: code, PRs, issues, statuses, runs |
+| the agent's read-only token (one hour, minted right before think, and not renewed: an agent working longer reads GitHub only in its first hour, ADR 0059) | think (the agent's copy) | read the same, but in a work run only its project or repo and Shipify; a talk run reads every project, as its profile says. A read run's agent gets none: the box keeps it, for the task and your repos it reads (ADR 0044) |
+| `GITHUB_TOKEN` (the workflow's own) | the task step, plan, decide, apply; the runner of think and of a stay, never their agent (below) | write shipify's issues and comments, start runs |
 | the write token | apply, minted after decide | contents and PRs on the one repo decide named; workflows write only for files that match the stack (below) |
 | the files token | apply, when the run made files | write shipify's `shipify-files` branch |
 | an act key (a tool's write key) | apply, when decide found the calls approved | the approved calls, made by the box |
@@ -219,14 +219,16 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
 - **A form fixes its target:** each act call names the argument that says what it changes
   (`args.<call>.target`: Notion's `parent` and `page`), and the tool contract refuses a form that
   doesn't fix it, so no form writes wherever a capped string points.
-- **`tests/workflows.test.ts`** holds `task.yml` to this: no write token, record token, act key or
-  channel key in the think step, and write tokens only after it.
-- **A run that stays** (ADR 0057) holds no write key either: its own read-only tokens, the agent's
-  login and the tools' look keys, and the record's token (`GITHUB_TOKEN`) for its answers, as apply
-  does. That's the one step where the record's token and the agent's login are in the same
-  runner process while its agent runs: behind the same wall as think's keys (the agent is its own
-  user, with `env -i`, and can't read the runner's environment or memory). Anything that needs a
-  write token, an act key or a files token goes to a normal run, which mints it after its agent.
+- **The record's token beside a running agent, in the runner alone** (ADR 0057, ADR 0059): think's
+  runner reads your `stop` and your words with `GITHUB_TOKEN`, which lasts the job, and a stay's
+  posts its answers with it. Its agent never holds it: the sandbox refuses the name, and the agent
+  is its own user, with `env -i`, that can't read the runner's environment or memory (the walls
+  above). So the rule is one: the record's token may be in a runner's process while its agent
+  runs, and never in the agent's; a write token, an act key, a files token or a channel's key never
+  in either, minted only after the agent.
+- **`tests/workflows.test.ts`** holds `task.yml` to this: in think and a stay, the record's token
+  only as `SHIPIFY_ISSUES_TOKEN`, no write token, act key or channel key, and write tokens only
+  after the agent.
 
 ## Apply never runs the agent's code
 
@@ -456,7 +458,7 @@ Nothing secret:
 | `/opt/shipify/tool` | Node, and each agent a run has picked, at the version `executors.json` pins |
 | `/opt/shipify/tool/shipify-app/<commit>` | read-only copies of Shipify, each with its CLI built as one file and no packages installed: what every step and the agent start (the three newest, and any a run is on) |
 | the pnpm store, checkouts | code and packages |
-| each slot's last run folder | the agent's clone and sessions, until that slot's next run (or 6 hours, by the weekly clean-up). Its token went in as a header and is kept nowhere |
+| each slot's last run folder | the agent's clone and sessions, until that slot's next run (or 8 hours, by the weekly clean-up). Its token went in as a header and is kept nowhere |
 
 - **A job's tokens** live in its processes' memory and expire within the hour.
 - **On GitHub's machines instead:** CI and deploys, a merged plan's repo, settings and keys

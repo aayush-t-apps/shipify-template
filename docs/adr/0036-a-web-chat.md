@@ -231,7 +231,8 @@ animations beyond a fade.
   shown whole, as GitHub renders it.
 - **Under each reply:** one run line ("Opus 5.5 · high · 5m 44s · 2.3M in, 29k out"). Tap it for the
   full table and the run. Then the reply's buttons (the PR, **Approve on GitHub** …) and its question.
-  A long press (or **⋯** on a PC) gives Copy and Download (`#12-reply-3.md`).
+  **⋯** gives Copy and Download (`#12-reply-3.md`); a long press is the phone's own, so a selection
+  copies as anywhere else.
 - **Calls waiting for your `yes`:** shown as a card with each call exactly as the run proposed it,
   and **Say yes on GitHub**.
 - **While a run is going:** a quiet "Working · 1m 05s" bubble at the bottom. It becomes the reply

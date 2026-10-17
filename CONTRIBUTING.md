@@ -29,7 +29,8 @@ Shipify itself (the CLI, stacks, presets, workflows, docs).
    gets `stacks/<id>/migrations/<version>.md` (ADR 0005). Stack templates are stored exactly as the
    project formatter writes them.
 6. **Docs:** update the doc that owns the fact (the [docs index](docs/README.md) says which), using
-   the words in [the glossary](docs/glossary.md). Plain words, short sentences. Every doc, skill,
+   the words in [the glossary](docs/glossary.md). Write as `playbooks/task.md` says ("How you write": ASD-STE100 as a guide, short sentences,
+   active voice, one term per idea). Every doc, skill,
    guide and playbook the change touches is updated in the same PR, and what it made obsolete is
    removed: docs are part of done.
 7. **Open the PR** and link its task, if it has one. The owner merges it.

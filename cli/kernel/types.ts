@@ -189,6 +189,8 @@ export interface ThinkMeta {
   handoff?: string;
   /** The agent's session, for a stay's next turn to carry on in (ADR 0057). */
   session?: string;
+  /** A stay's turn: it pushes nothing, so a change it's asked for goes to a work run (ADR 0060). */
+  stayed?: true;
   /** What that session had counted, for an agent that counts from its start: the next turn's base. */
   used?: SessionUsed;
 }

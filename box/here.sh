@@ -14,7 +14,7 @@
 #      tools in it, and the link to revoke the approval on GitHub
 # After it the box holds no key: each job brings its own (ADR 0031).
 #
-#   bash here.sh [--remove] [--token] [--copy <owner/repo>] [--name <name>] [--slots <1-4>]
+#   bash here.sh [--remove] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]
 #   curl … | bash -s -- --remove      (options after `bash -s --` when piped)
 # In the box's Docker image (ADR 0056), `docker run -it … register` runs it with --container: as the
 # container's root, with the image's own gh and Node, and `box add --container`.
@@ -73,7 +73,7 @@ cleanup() {
 
 usage() {
   sed -n '2,23p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
-  printf 'bash here.sh [--remove] [--token] [--copy <owner/repo>] [--name <name>] [--slots <1-4>]\n'
+  printf 'bash here.sh [--remove] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]\n'
 }
 
 # ---------------------------------------------------------------- 1. looks first
@@ -110,7 +110,7 @@ preflight() {
   local kb
   kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
   if [ "$kb" -lt 3500000 ]; then
-    die "it has $((kb / 1024)) MB of memory: a box needs 4 GB for one slot (a task peaks near 2 GB)." \
+    die "it has $((kb / 1024)) MB of memory: a box needs 4 GB for one slot (a busy slot needs about 1.6 GB, the system 1)." \
       "Pick a machine with 4 GB or more."
   fi
   local free
@@ -275,7 +275,7 @@ main() {
       --name) NAME=${2:-} && shift ;;
       --slots)
         SLOTS=${2:-} && shift
-        [[ "$SLOTS" =~ ^[1-4]$ ]] || die "--slots is a number from 1 to 4."
+        [[ "$SLOTS" =~ ^[1-9][0-9]*$ ]] || die "--slots is a whole number from 1."
         ;;
       -h | --help) usage && exit 0 ;;
       *) die "unknown option $1" "$(usage)" ;;

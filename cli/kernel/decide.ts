@@ -855,7 +855,7 @@ const thumbsUp = (said: Said[]): Write[] =>
   said.map((c) => ({ w: "react", comment: c.id, content: "+1" }));
 
 /** A question waits on you: the task needs you, with no PR to merge and no list for your `yes`. */
-const questionWaits = (st: TaskState) =>
+export const questionWaits = (st: TaskState) =>
   st.phase === "needs-you" &&
   !st.pending.calls &&
   !st.pending.notes &&
@@ -2100,12 +2100,13 @@ function decideAfter(
     };
   }
 
-  // Work a talk run found for a project, or another of your repos: a work run follows on it.
+  // Work a talk run found for a project, or another of your repos, or a change asked of a stay on
+  // one (it pushes nothing, ADR 0060): a work run follows on it.
   if (r.work && think.profile === "read")
     left.push(
       "a change (a run that reads a repo outside your account changes nothing: ask for it in a new task)",
     );
-  else if (r.work && think.profile === "talk") {
+  else if (r.work && (think.profile === "talk" || meta.stayed)) {
     const n = named(s, st, r.work.project);
     if (n && "refused" in n) text += `\n\n${n.refused}`;
     else if (n) {

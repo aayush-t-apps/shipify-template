@@ -166,6 +166,24 @@ describe("the page", () => {
     expect(via).toMatchObject({ claude: undefined, pi: "OpenRouter", "pi-vercel": "Vercel" });
   });
 
+  // A run that stays (ADR 0057) has run since the stay began: "Working · 40m" for a 10 s answer, in
+  // the row and in the header till the turn's status was read, then 0 there. Only the turn is timed.
+  it.skipIf(!have)("times a turn, never a stay's whole job, in a row and a header", async () => {
+    const { timed } = await import(join(ROOT, dir, "compose.js"));
+    const url = "https://github.com/o/s/actions/runs/9";
+    const job = { n: 7, since: "2026-10-17T00:10:00Z", url };
+    const turn = { ...job, since: "2026-10-17T00:49:50Z" };
+    // A stay: its turn once its status says `working`; till then none (Starting…, or Staying).
+    expect(timed(true, turn, job)).toBe(turn);
+    expect(timed(true, undefined, job)).toBeUndefined();
+    // Any other run: its turn, else the job the list knows first.
+    expect(timed(false, turn, job)).toBe(turn);
+    expect(timed(false, undefined, job)).toBe(job);
+    expect(timed(false, undefined, undefined)).toBeUndefined();
+    const js = readFileSync(join(ROOT, dir, "app.js"), "utf8");
+    expect(js.match(/timed\(/g)?.length, "the row and the header both time by it").toBe(2);
+  });
+
   // Back from away after Access's session ended, a followed redirect fails as if offline and the
   // page stays stale under "Offline"; a redirect not followed is the sign-in, said as such.
   it.skipIf(!have)("tells a sign-in that ended from being offline", async () => {

@@ -46,8 +46,8 @@ export const AGENT_ROOT = "/srv";
  * or files; the weekly clean-up trims what hasn't been used in a while.
  */
 export const KEPT = ["cache", "data"];
-/** A run's folder older than this is left over: no job runs longer (task.yml's limit is 2 hours). */
-export const STALE_RUN_MS = 6 * 60 * 60_000;
+/** A run's folder older than this is left over: longer than any job (task.yml's limit, tested). */
+export const STALE_RUN_MS = 8 * 60 * 60_000;
 /** The biggest file readOut takes back. */
 export const OUT_MAX_BYTES = 10 * 1024 * 1024;
 const MAX_SLOT = 9;

@@ -27,6 +27,7 @@ import {
   runApply,
   runDecide,
   runFailed,
+  runFinishStep,
   runGithub,
   runPlan,
   runStay,
@@ -117,7 +118,7 @@ async function step(name: string, here: () => Promise<Result>): Promise<Result> 
   return JSON.parse(r.stdout.slice(at)) as Result;
 }
 
-async function job(event: string, action = "") {
+async function job(event: string, action = "", meanwhile?: () => void) {
   Object.assign(process.env, {
     EVENT: event,
     ACTION: action,
@@ -128,9 +129,16 @@ async function job(event: string, action = "") {
   await step("task", () => runTask(12));
   const plan = await step("plan", () => runPlan(12));
   const think = out("do") === "think" ? await step("think", () => runThinkStep(12)) : undefined;
+  // What happens on GitHub while the agent works (a sibling's PR merged into main).
+  meanwhile?.();
+  // The finish (ADR 0059): after a work run's think, before decide, as task.yml runs it.
+  const finish =
+    think?.status === "succeeded" && out("profile") === "work"
+      ? await step("finish", () => runFinishStep(12))
+      : undefined;
   const decide = await step("decide", () => runDecide(12));
   const apply = await step("apply", () => runApply(12));
-  return { plan, think, decide, apply, do: out("do") };
+  return { plan, think, finish, decide, apply, do: out("do") };
 }
 
 beforeEach(() => {
@@ -312,6 +320,15 @@ async function onProject(): Promise<string> {
     f.issue.title = "demo: a bigger font";
   });
   return origin;
+}
+/** A commit on the project's main, as a sibling task's merged PR makes it. */
+function onMain(origin: string, name: string, text: string) {
+  const sib = join(dirname(file), `sibling-${Date.now()}`);
+  git(dirname(file), "clone", "-q", origin, sib);
+  writeFileSync(join(sib, name), text);
+  git(sib, "add", "-A");
+  git(sib, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", `Sibling: ${name}`);
+  git(sib, "push", "-q", "origin", "main");
 }
 const branches = (origin: string) =>
   git(origin, "for-each-ref", "--format=%(refname:short)", "refs/heads").trim().split("\n");
@@ -566,6 +583,75 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     aChange,
     90_000,
   );
+
+  it("main moved while the agent worked: the finish brings the branch up to date and checks it again, and the PR opens from it (ADR 0059)", async () => {
+    const origin = await onProject();
+    process.env.FAKE_WORK = "ok";
+    const r = await job("issues", "opened", () =>
+      onMain(origin, "sibling.txt", "merged meanwhile\n"),
+    );
+    expect(r.finish?.summary).toContain("brought the branch up to date");
+    expect(r.apply.status).toBe("succeeded");
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    const files = git(origin, "ls-tree", "-r", "--name-only", branch);
+    expect(files).toContain("sibling.txt");
+    expect(files).toContain("change.txt");
+    expect(git(origin, "merge-base", "--is-ancestor", "main", branch)).toBe("");
+    expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
+    expect(lastReply()?.c.body).toContain("brought the branch up to date");
+  }, 90_000);
+
+  it("main moved and conflicts: the PR opens as the agent left it, and the reply says `continue` brings it up to date (ADR 0059)", async () => {
+    const origin = await onProject();
+    process.env.FAKE_WORK = "ok";
+    const r = await job("issues", "opened", () => onMain(origin, "change.txt", "theirs\n"));
+    expect(r.finish?.summary).toContain("refreshing the branch stopped");
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    expect(git(origin, "show", `${branch}:change.txt`)).toBe("x\n");
+    expect(git(origin, "log", "--format=%s", branch)).not.toContain("Merge");
+    expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
+    expect(lastReply()?.c.body).toContain("reply `continue`");
+  }, 90_000);
+
+  it("stays after its PR opens; a change asked of the stay goes to a work run (ADR 0060)", async () => {
+    await onProject();
+    process.env.FAKE_WORK = "ok";
+    await job("issues", "opened");
+    expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
+    expect(out("stay")).toBe("yes");
+    expect(read().issue.labels.map((l) => l.name)).toContain("staying");
+    // The stay's turn, in the same session and clone: it changes nothing, and hands the change on.
+    delete process.env.FAKE_WORK;
+    process.env.FAKE_FINAL = JSON.stringify({
+      v: 2,
+      state: "done",
+      text: "I'll make it green.",
+      work: { project: "demo", brief: "Make it green" },
+    });
+    try {
+      say("make it green");
+      const done = await runStay(12);
+      expect(done.summary).toContain("1 answer; left: its answer started more work");
+      const prompt = readFileSync(
+        join(workspace(), ".tasks", "12", "agent", "out", "next-prompt.md"),
+        "utf8",
+      );
+      expect(prompt).toContain("This turn comes from a stay, which pushes nothing");
+      expect(lastReply()?.c.body).toContain("A work run on demo starts now");
+      expect(read().calls).toContain("workflow run task.yml -R o/shipify -f issue=12 -f job=run");
+      expect(read().issue.labels.map((l) => l.name)).not.toContain("staying");
+    } finally {
+      delete process.env.FAKE_FINAL;
+    }
+  }, 120_000);
+
+  it("main didn't move: the finish fetches and changes nothing (ADR 0059)", async () => {
+    await onProject();
+    process.env.FAKE_WORK = "ok";
+    const r = await job("issues", "opened");
+    expect(r.finish?.summary).toBe("task #12: up to date with main");
+    expect(lastReply()?.c.body).not.toContain("Main moved");
+  }, 90_000);
 
   it("a run that stops early keeps its work on the branch, and `continue` opens the PR from it", async () => {
     const origin = await onProject();
@@ -1071,6 +1157,75 @@ describe("a run end to end", () => {
       }
     });
 
+    // A slip in its answer's shape: a note longer than its 500 characters.
+    const slip = JSON.stringify({
+      v: 2,
+      state: "done",
+      text: "Long one.",
+      notes: [{ topic: "Box", line: "x".repeat(501) }],
+    });
+
+    it("takes its valid final answer over a stale file it wrote first, and stays (#506, ADR 0061)", async () => {
+      process.env.FAKE_RESULT = slip;
+      process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "Shorter now." });
+      try {
+        await job("issues", "opened");
+        expect(replies().at(-1)?.c.body).toContain("Shorter now.");
+        expect(replies().at(-1)?.c.body).not.toContain("didn't fit");
+        expect(out("stay")).toBe("yes");
+      } finally {
+        delete process.env.FAKE_FINAL;
+        process.env.FAKE_RESULT = "";
+      }
+    });
+
+    it("keeps its stay after a slip in its answer's shape: told once, the session kept (ADR 0061)", async () => {
+      process.env.FAKE_RESULT = slip;
+      process.env.FAKE_SESSION = "s-1";
+      try {
+        await job("issues", "opened");
+        expect(replies().at(-1)?.c.body).toContain("didn't fit Shipify's shape");
+        expect(out("stay")).toBe("yes");
+        expect(labels()).toContain("staying");
+      } finally {
+        process.env.FAKE_RESULT = "";
+        delete process.env.FAKE_SESSION;
+      }
+    });
+
+    it("reads your words twice in a turn: plan's read, and once more before it answers", async () => {
+      process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
+      const line: string[] = [];
+      const write = process.stderr.write.bind(process.stderr);
+      const spy = vi.spyOn(process.stderr, "write").mockImplementation((s, ...rest) => {
+        if (String(s).includes("stay turn:")) line.push(String(s));
+        return write(s, ...(rest as []));
+      });
+      try {
+        await job("issues", "opened");
+        say("and the swap?");
+        process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "2 GB of swap." });
+        const staying = runStay(12);
+        await until(() => replies().length === 2 && line.length === 1);
+        await sayNow("stop");
+        await staying;
+        // The turn's own reads of the task's comments, by phase ("comments 0.1 s" each).
+        const reads = (phase: string) =>
+          (new RegExp(`${phase} [\\d.]+ s(?: \\(([^)]*)\\))?`).exec(line[0] ?? "")?.[1] ?? "")
+            .split(", ")
+            .filter((c) => /^comments /.test(c)).length;
+        expect({
+          plan: reads("plan"),
+          think: reads("think"),
+          decide: reads("decide"),
+          apply: reads("apply"),
+        }).toEqual({ plan: 1, think: 1, decide: 0, apply: 0 });
+      } finally {
+        spy.mockRestore();
+        delete process.env.FAKE_FINAL;
+      }
+    });
+
     it("answers each turn with its own answer, never the file an earlier answer left (#462)", async () => {
       // The first answer is the file the agent wrote (its session from its final answer); the
       // turn's, its final answer only.
@@ -1090,6 +1245,54 @@ describe("a run end to end", () => {
         expect(replies()[1]?.c.body).not.toContain("12 GB free.");
       } finally {
         delete process.env.FAKE_RESULT;
+        delete process.env.FAKE_FINAL;
+      }
+    });
+
+    it("a `use` you're already on, alone, is answered in the stay, which stays for your next words (ADR 0059)", async () => {
+      process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
+      try {
+        say("use opus high\nhow much is free?");
+        await job("issue_comment", "created");
+        expect(labels()).toContain("staying");
+        const before = replies().length;
+        // The same pick again, alone: the box's own reply, from the stay, with no run started.
+        say("use opus high");
+        const staying = runStay(12);
+        await until(() => replies().length === before + 1);
+        process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "2 GB of swap." });
+        await sayNow("and the swap?");
+        await until(() => replies().length === before + 2);
+        await sayNow("stop");
+        const done = await staying;
+        expect(done.summary).toContain("2 answers");
+        expect(replies().at(-1)?.c.body).toContain("2 GB of swap.");
+        // Only the `stop` started a run.
+        expect(read().calls.filter((c) => c.startsWith("workflow run task.yml"))).toHaveLength(1);
+      } finally {
+        delete process.env.FAKE_FINAL;
+      }
+    });
+
+    it("`use` naming the model and effort Auto already runs, with your words: answered in the stay (ADR 0059)", async () => {
+      process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
+      try {
+        await job("issues", "opened");
+        expect(labels()).toContain("staying");
+        // Auto runs Sonnet at medium: naming it changes nothing, so the same session answers.
+        say("use claude sonnet medium\nand the swap?");
+        process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "2 GB of swap." });
+        const staying = runStay(12);
+        await until(() => replies().length === 2);
+        await sayNow("stop");
+        const done = await staying;
+        expect(done.summary).toContain("1 answer");
+        expect(replies().at(-1)?.c.body).toContain("2 GB of swap.");
+        const argv = JSON.parse(readFileSync(join(agentOut(), "next-final-argv.json"), "utf8"));
+        expect(argv).toEqual(expect.arrayContaining(["--resume", "s-1"]));
+        // Only the `stop` started a run.
+        expect(read().calls.filter((c) => c.startsWith("workflow run task.yml"))).toHaveLength(1);
+      } finally {
         delete process.env.FAKE_FINAL;
       }
     });
@@ -1115,7 +1318,7 @@ describe("a run end to end", () => {
       }
     });
 
-    it("never stays after work, nor when SHIPIFY_STAY is 0", async () => {
+    it("never stays when SHIPIFY_STAY is 0", async () => {
       process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
       process.env.SHIPIFY_STAY = "0";
       try {

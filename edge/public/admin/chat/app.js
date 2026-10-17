@@ -14,6 +14,7 @@ import {
   repeatForm,
   set,
   size,
+  timed,
   uid,
 } from "./compose.js";
 
@@ -192,7 +193,11 @@ const goes = (r) => {
 };
 // A task's run: the list knows first (from the runs), the thread once the run writes its status.
 const runOf = (T) =>
-  T.running || (Date.now() - R.at < 12e4 && S.list.running.find((r) => r.n === T.n && goes(r)));
+  timed(
+    T.staying,
+    T.running,
+    Date.now() - R.at < 12e4 && S.list.running.find((r) => r.n === T.n && goes(r)),
+  );
 // Closed or open now: the door changes the task as it writes the word, and the next read agrees.
 function turn(T) {
   T.open = !T.open;
@@ -327,7 +332,11 @@ function drawList() {
   const more = R.shut ? C?.more : R.old ? R.old.more : L.more;
   // A row: a mark for its state, its title and age; then the state's word, its kind and number.
   const row = (t) => {
-    const r = runs.get(t.n);
+    const job = runs.get(t.n);
+    // Its thread's turn only when it's this job's (by the run's id): a kept thread may be older.
+    const turn = S.threads[t.n]?.task.running;
+    const same = job && turn?.url.split("/").pop() === job.url.split("/").pop();
+    const r = timed(t.staying, same && turn, job);
     // New wins over a guess from the thread kept here (its "Starting…" may be from before a reply).
     const fresh = !r && S.saw[t.n] && Date.parse(t.updated) > S.saw[t.n];
     const st = fresh && t.state !== "needs-you" ? h("span.st.fresh", "New") : status(t, r);
@@ -729,9 +738,7 @@ function msg(x, i, n) {
   const seen = x.read && h("span.seen", { title: "A run read it" }, icon("seen"));
   const at = h("time", { title: new Date(x.at).toLocaleString() }, ago(x.at));
   const foot = h("footer", use, at, seen, more);
-  const a = h(`article.msg.${x.who}`, who, md, x.files.map(file), links, ask, line, det, foot);
-  a.oncontextmenu = (e) => e.preventDefault() || menu();
-  return a;
+  return h(`article.msg.${x.who}`, who, md, x.files.map(file), links, ask, line, det, foot);
 }
 
 function file(f) {

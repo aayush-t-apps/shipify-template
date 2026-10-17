@@ -13,6 +13,7 @@ import { GIVE_UP_MS } from "../cli/kernel/decide.ts";
 import { agentOf, agentRepos } from "../cli/kernel/run.ts";
 import { STAY_LAST_MINUTES } from "../cli/kernel/stay.ts";
 import { THINK_MINUTES } from "../cli/kernel/think.ts";
+import { STALE_RUN_MS } from "../cli/lib/sandbox.ts";
 import type { Plan, Snapshot } from "../cli/kernel/types.ts";
 import { workflowsMismatch } from "../cli/kernel/workflows.ts";
 import { loginOf, readExecutors } from "../cli/lib/agents.ts";
@@ -208,12 +209,16 @@ describe("task.yml (ADR 0031)", () => {
     expect(github.if).toContain("inputs.job == 'github'");
   });
 
-  it("the think step holds the agent's login and read-only keys: no write token, no write key, no record write", () => {
+  it("the think step holds the agent's login and read-only keys, and the record's token for the runner alone: no write token or key", () => {
     const env = step("think").env ?? {};
     expect(Object.keys(env)).not.toContain("SHIPIFY_WRITE_TOKEN");
     expect(Object.keys(env).filter((k) => k.endsWith("_WRITE"))).toEqual([]);
+    // The runner reads your `stop` and words with the record's token, which lasts the job, as a
+    // stay's does (ADR 0059); the sandbox keeps it from the agent (sandbox.test.ts).
     // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression
-    expect(env.SHIPIFY_ISSUES_TOKEN).toBe("${{ steps.agent_token.outputs.token }}");
+    expect(env.SHIPIFY_ISSUES_TOKEN).toBe("${{ github.token }}");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression
+    expect(env.GH_TOKEN).toBe("${{ steps.agent_token.outputs.token }}");
     // The chosen agent's login alone (plan names the secret: an agent's login or its gateway's key).
     // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression
     expect(env.SHIPIFY_AGENT_LOGIN).toBe("${{ secrets[steps.plan.outputs.login] }}");
@@ -274,6 +279,17 @@ describe("task.yml (ADR 0031)", () => {
     expect(step("think").env?.SHIPIFY_AGENT_READ_TOKEN).toBe(token("agent_token"));
     for (const s of [step("decide"), apply])
       expect(s.env?.SHIPIFY_READ_TOKEN).toBe(token("apply_token"));
+  });
+
+  it("finishes a work run after think with the read key minted then, before decide: no agent, no write key (ADR 0059)", () => {
+    expect(at("finish")).toBeGreaterThan(at("apply_token"));
+    expect(at("finish")).toBeLessThan(at("decide"));
+    expect(step("finish").if).toBe(
+      "steps.think.outcome == 'success' && steps.plan.outputs.profile == 'work'",
+    );
+    const key = `\${{ steps.apply_token.outputs.token }}`;
+    expect(step("finish").env).toEqual({ SHIPIFY_READ_TOKEN: key });
+    expect(step("finish").run).toContain('run finish "$ISSUE"');
   });
 
   it("starts every step of a box's run from the CLI built once per commit, in a copy made first (ADR 0051)", () => {
@@ -390,6 +406,8 @@ describe("task.yml (ADR 0031)", () => {
     );
     const copy = run.steps.find((s) => s.run?.includes("scripts/build-cli.mjs"))?.run ?? "";
     expect(Number(/now - \$1 > (\d+)/.exec(copy)?.[1])).toBeGreaterThanOrEqual(job * 60);
+    // Nor is a run's folder swept as left over while its job can still be using it (ADR 0059).
+    expect(STALE_RUN_MS).toBeGreaterThanOrEqual(job * 60_000);
   });
 
   it("reads only outputs its steps write, each a plain word or a list of them (#174)", () => {

@@ -103,6 +103,11 @@ describe("box/here.sh: before it changes anything", () => {
 
   it("refuses an option it doesn't know, and slots out of range", () => {
     expect(runIt(UBUNTU("24.04"), "--fast").out).toContain("unknown option --fast");
-    expect(runIt(UBUNTU("24.04"), "--slots", "9").out).toContain("--slots is a number from 1 to 4");
+    expect(runIt(UBUNTU("24.04"), "--slots", "0").out).toContain(
+      "--slots is a whole number from 1",
+    );
+    expect(runIt(UBUNTU("24.04"), "--slots", "two").out).toContain(
+      "--slots is a whole number from 1",
+    );
   });
 });

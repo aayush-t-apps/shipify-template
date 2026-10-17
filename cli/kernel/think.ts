@@ -10,6 +10,7 @@ import { tryOr } from "../commands/task/context.ts";
 import { readNotebook } from "../commands/task/notebook.ts";
 import {
   canonicalJson,
+  errorLine,
   MAX_FILES_OUT,
   maskSecrets,
   modelFacts,
@@ -41,29 +42,37 @@ import type { Said, Snapshot, Stop, Think, ThinkMeta } from "./types.ts";
 const CLONE_MINUTES = 5;
 const LAYOUT_MINUTES = 5;
 const SETUP_MINUTES = 15;
-const AGENT_MINUTES = 50;
+/** The session's clock (ADR 0059): the first ask and your words taken in share it. */
+const AGENT_MINUTES = 200;
+/** The fix round's own clock, when the box's checks fail. */
+const FIX_MINUTES = 20;
 const RULES_MINUTES = 2;
 const VERIFY_MINUTES = 25;
 const GIT_MINUTES = 2;
 /** What you wrote while it worked is taken in only with this much of the agent's clock left. */
 const CATCH_UP_MINUTES = 5;
-/** How many times a run reads its task again before it answers, while you keep writing. */
-const CATCH_UP_ROUNDS = 3;
+/** A stay's turn on a project: it answers, and a change goes to a work run (ADR 0060). */
+export const STAY_WORK_NOTE = (project: string) =>
+  `This turn comes from a stay, which pushes nothing. Answer as before; if they ask for a change, change no files: say in \`text\` what you'll change, and set \`work\` to {"project": "${project}", "brief": "…"}. A work run on this task's branch does it, with the whole thread.`;
 /** How often a run reads its task for your `stop` while the agent works: one small read. */
 const STOP_EVERY_MS = 60_000;
 /** `ship refresh` on a box: the CLI's start, a merge, and `make version` twice. */
 const REFRESH_MINUTES = 5;
 /** The clone, a new repo's layout and setup; a branch behind main refreshed, and the way back if
- * it stops; the agent and the checks (its PR's rules, then make verify), twice with the fix round;
- * and three git steps (is there a main, the work-in-progress commit, the bundle). */
+ * it stops; the agent and its fix round; the checks (its PR's rules, then make verify), twice with
+ * the fix round; three git steps (is there a main, the work-in-progress commit, the bundle); and
+ * the finish after it (ADR 0059): main fetched, refreshed, checked once more, bundled again. */
 export const THINK_MINUTES =
   CLONE_MINUTES +
   LAYOUT_MINUTES +
   SETUP_MINUTES +
   REFRESH_MINUTES +
   GIT_MINUTES +
-  2 * (AGENT_MINUTES + RULES_MINUTES + VERIFY_MINUTES) +
-  3 * GIT_MINUTES;
+  AGENT_MINUTES +
+  FIX_MINUTES +
+  2 * (RULES_MINUTES + VERIFY_MINUTES) +
+  3 * GIT_MINUTES +
+  (CLONE_MINUTES + REFRESH_MINUTES + RULES_MINUTES + VERIFY_MINUTES + 2 * GIT_MINUTES);
 /** A merge left half-done (the agent stopped mid-merge), dropped: conflict markers are never kept. */
 const DROP_HALF_MERGE =
   'if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then git merge --abort; fi';
@@ -204,14 +213,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
   const place = placeFor(s.run.id.replace(/[^A-Za-z0-9._-]/g, "-"), io.local, Boolean(io.resume));
   rmSync(io.keep, { recursive: true, force: true });
   mkdirSync(io.keep, { recursive: true });
-  // Its own `<ship>` calls name your Shipify repo as the run does, and lay out a project with your
-  // copy's settings (ADR 0047): no file says them.
-  const env = {
-    LANG: "C.UTF-8",
-    SHIPIFY_TASK: String(s.n),
-    GITHUB_REPOSITORY: platformRepo(),
-    ...copyValues(),
-  };
+  const env = runEnv(s);
   const keep = (name: string, body: string | Buffer) => writeFileSync(join(io.keep, name), body);
   try {
     // A check: its reviewed script, as the agent's user, with no keys and a minute at most. The agent
@@ -286,49 +288,12 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
         `\`${trunk}\` moved past this task's branch: merge \`origin/${trunk}\` into your clone (\`git merge origin/${trunk}\`), keeping both changes where they meet, before you ask for the PR.`,
       );
     else if (cloned.behind) {
-      const head = cloned.head;
-      let said = "";
-      const r = head
-        ? await place.run([...copy.cli.split(" "), "refresh", place.work, "--no-fetch", "--json"], {
-            cwd: place.work,
-            minutes: REFRESH_MINUTES,
-            env,
-            onLine: (l) => {
-              said += `${l}\n`;
-            },
-          })
-        : { code: 1, timedOut: false };
-      const res = tryOr(
-        () =>
-          JSON.parse(said) as {
-            status?: string;
-            summary?: string;
-            checks?: { name: string }[];
-          },
-        {},
+      const r = await refresh(place, copy.cli, env, cloned.head);
+      notes.push(
+        r.ok
+          ? `Main moved past this task's branch, so the box brought it up to date with \`<ship> refresh\`, as on the PC: ${r.said}. Run the project's checks again before you ask for the PR.`
+          : `Main moved past this task's branch, and refreshing it stopped: ${r.said}. Run \`<ship> refresh ${place.work} --no-fetch\` yourself; where it stops, keep both changes and remove the conflict markers, then run it again, not a plain \`git commit\`: it finishes the merge and redoes the version bump.`,
       );
-      if (r.code === 0 && res.status === "succeeded")
-        notes.push(
-          `Main moved past this task's branch, so the box brought it up to date with \`<ship> refresh\`, as on the PC: ${maskSecrets(res.summary ?? "")}. Run the project's checks again before you ask for the PR.`,
-        );
-      else {
-        // Back to the branch as it was: the agent never starts inside a half-done refresh.
-        if (head)
-          await place.run(
-            [
-              "sh",
-              "-c",
-              `${DROP_HALF_MERGE}; rm -f "$(git rev-parse --git-dir)/SHIPIFY_REFRESH"; git reset -q --hard "$1"`,
-              "sh",
-              head,
-            ],
-            { cwd: place.work, minutes: GIT_MINUTES, env },
-          );
-        const files = (res.checks ?? []).map((c) => c.name).join(", ");
-        notes.push(
-          `Main moved past this task's branch, and refreshing it stopped: ${maskSecrets(res.summary ?? "it didn't run")}${files ? ` (${files})` : ""}. Run \`<ship> refresh ${place.work} --no-fetch\` yourself; where it stops, keep both changes and remove the conflict markers, then run it again, not a plain \`git commit\`: it finishes the merge and redoes the version bump.`,
-        );
-      }
     }
     // A repo with no default branch yet: a new project, whose first push goes to main.
     const newRepo =
@@ -355,7 +320,8 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     }
     // A project's own setup (its make targets); a repo that keeps its own rules is set up its own
     // way, by the agent, as its docs say.
-    if (t.profile === "work" && !t.ownRules) await setUp(place, env);
+    // A stay's turn carries on in the clone its run set up.
+    if (t.profile === "work" && !t.ownRules && !io.resume) await setUp(place, env);
 
     // The prompt, and the agent.
     const base = ex?.task ?? ex?.command;
@@ -390,7 +356,12 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       if (fetched.length) giveFiles();
       return fetched.map(asGiven);
     };
-    const early = later ? tryOr(() => laterWords(later(), after, Boolean(io.fetch)).plain, []) : [];
+    // A stay's turn starts a moment after its plan read the task, with no clone or setup between:
+    // what came since is taken in before it answers.
+    const early =
+      later && !io.resume
+        ? tryOr(() => laterWords(later(), after, Boolean(io.fetch)).plain, [])
+        : [];
     if (early.length) {
       notes.push(...(await filesOf(early)));
       takeIn(early);
@@ -529,6 +500,10 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       });
     };
     let stopBy: Said | undefined;
+    // What the run's details say besides the agent's own; a read of your words that failed while
+    // it worked is one, told once, never dropped (ADR 0059).
+    const checkNotes: string[] = [];
+    const tell = (note: string) => checkNotes.includes(note) || checkNotes.push(note);
     // One ask of the agent: the prompt, what you wrote since, or what to fix, in the same session.
     // While it works, the task is read now and then for your `stop`, which stops all of it.
     const agentMinutes = Math.min(io.minutes ?? AGENT_MINUTES, AGENT_MINUTES);
@@ -543,7 +518,12 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
         setInterval(() => {
           // Once stopped, it's read no more: the agent is ending, however long that takes.
           if (stopBy) return;
-          const stop = tryOr(() => laterWords(later(), after).stop, undefined);
+          let stop: Said | undefined;
+          try {
+            stop = laterWords(later(), after).stop;
+          } catch (e) {
+            tell(`Your \`stop\` couldn't be read while it worked: ${maskSecrets(errorLine(e))}.`);
+          }
           if (stop) {
             stopBy = stop;
             halt.abort();
@@ -587,6 +567,8 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       return file && file.toString("utf8") !== before ? file : undefined;
     };
     const began = performance.now();
+    // A stay on a project pushes nothing (ADR 0060): a change it's asked for goes to a work run.
+    if (io.resume && t.profile === "work" && t.project) notes.push(STAY_WORK_NOTE(t.project));
     const { outcome, report } = io.resume
       ? await ask(argvFor(io.resume), nextPrompt(fresh, notes))
       : await ask(argv, prompt);
@@ -613,14 +595,18 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     }
 
     // What it left, taken back: the file it wrote this time, else its final answer in the result's
-    // schema (an adapter that can).
-    const answer = (r: typeof report) =>
-      written() ?? (r.result !== undefined ? Buffer.from(JSON.stringify(r.result)) : undefined);
+    // schema (an adapter that can). A file that doesn't read is stale when its final answer does:
+    // the agent fixed what its schema refused (#506, ADR 0061).
+    const answer = (r: typeof report) => {
+      const file = written();
+      const final = r.result !== undefined ? Buffer.from(JSON.stringify(r.result)) : undefined;
+      const reads = (b: Buffer) => !("error" in readResult(b.toString("utf8")));
+      return file && final && !reads(file) && reads(final) ? final : (file ?? final);
+    };
     const raw = answer(report);
     let result = readResult(raw?.toString("utf8"));
     if (raw) keep("result.json", raw);
     let touchesWorkflows = false;
-    const checkNotes: string[] = [];
     // A question answered in words, not in the result's shape (a smaller model): its words are the
     // reply. A change still needs the result, with what it asks for, so it fails as before.
     if (!raw && t.profile !== "work" && report.said && !report.error) {
@@ -630,16 +616,23 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     }
 
     // What you wrote while it worked, taken in before anything is posted: given to the same session
-    // while its clock has time left, then the task read again, until nothing new came in (a few
-    // rounds at most), so one reply covers it all. Their files are fetched first. Words the next
+    // while its clock has time left, then the task read again, until nothing new came in (no round
+    // count, ADR 0060), so one reply covers it all. Their files are fetched first. Words the next
     // run must read itself (a fixed word, a `use`…) wait for it, as before, and the details say so.
     let session = report.session;
     // The file in its place now: a catch-up round's answer is a file only when it differs.
     let last = place.take("result.json")?.toString("utf8");
     let waiting = 0;
-    for (let round = 0; round < CATCH_UP_ROUNDS; round++) {
+    for (;;) {
       if (!later || stopBy || !session || "error" in result) break;
-      const late = tryOr(() => laterWords(later(), after, Boolean(io.fetch)), undefined);
+      let late: ReturnType<typeof laterWords> | undefined;
+      try {
+        late = laterWords(later(), after, Boolean(io.fetch));
+      } catch (e) {
+        tell(
+          `What you wrote while it worked couldn't be read before it answered: ${maskSecrets(errorLine(e))}. The next run reads it.`,
+        );
+      }
       const plain = late?.plain ?? [];
       waiting = plain.length + (late?.waiting ?? 0);
       const left = agentMinutes - (performance.now() - began) / 60_000;
@@ -696,7 +689,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       // they fail, the agent gets one round, in the same session, to fix what they found.
       let g = await gate(place, copy.cli, env);
       if (!g.ok && !g.timedOut && session && !stopBy) {
-        const fixed = await ask(argvFor(session), fixPrompt(g.tail));
+        const fixed = await ask(argvFor(session), fixPrompt(g.tail), FIX_MINUTES);
         // Its new answer, when it gave one; the PR it asked for stands either way.
         const next = readResult(
           (fixed.report.result !== undefined
@@ -730,9 +723,11 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     // The agent's commits, bundled for apply: for the PR it asked for, or, from a work run that
     // failed, stopped or asks you something with none, to keep on the task's branch (decide says
     // where they go). Edits it hadn't committed go in first, as one commit.
+    // A slip in its answer's shape, with its session alive, isn't a stop: it finished, the reply says
+    // what didn't fit, and the run stays for your next words (ADR 0061).
     const stopped: Stop | undefined = stopBy
       ? { why: "asked", comment: stopBy.id }
-      : "error" in result
+      : "error" in result && !(result.wrong && session)
         ? stopOf(outcome, report, modelBy(report.model ?? choice.model, adapter.name, gateway))
         : undefined;
     const failed = "error" in result || result.state === "failed";
@@ -797,6 +792,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       ...(handoff ? { handoff } : {}),
       ...(session ? { session } : {}),
       ...(session && timing.sessionUsed ? { used: timing.sessionUsed } : {}),
+      ...(io.resume ? { stayed: true as const } : {}),
     };
     keep("meta.json", JSON.stringify(meta));
     return { out: io.keep, meta, details: timing.details(t.why, "thought", checkNotes) };
@@ -885,6 +881,144 @@ async function check(
     ...(ok ? { checkOutput: output, checkHash: hash8(output) } : {}),
   };
   return { out, meta };
+}
+
+/** What a run's own commands start with: its `<ship>` calls name your Shipify repo as the run
+ * does, and lay out a project with your copy's settings (ADR 0047), so no file says them. */
+const runEnv = (s: Snapshot) => ({
+  LANG: "C.UTF-8",
+  SHIPIFY_TASK: String(s.n),
+  GITHUB_REPOSITORY: platformRepo(),
+  ...copyValues(),
+});
+
+/**
+ * The task's branch brought up to date with main by `ship refresh`, as the PC does: main merged,
+ * both changelogs kept, change docs renumbered, the version bump redone. Where it stops (a real
+ * conflict), the clone goes back to `head`, as it was: never left inside a half-done merge.
+ */
+async function refresh(
+  place: Place,
+  cli: string,
+  env: Record<string, string>,
+  head: string | undefined,
+): Promise<{ ok: boolean; said: string }> {
+  let out = "";
+  const r = head
+    ? await place.run([...cli.split(" "), "refresh", place.work, "--no-fetch", "--json"], {
+        cwd: place.work,
+        minutes: REFRESH_MINUTES,
+        env,
+        onLine: (l) => {
+          out += `${l}\n`;
+        },
+      })
+    : { code: 1, timedOut: false };
+  const res = tryOr(
+    () => JSON.parse(out) as { status?: string; summary?: string; checks?: { name: string }[] },
+    {},
+  );
+  if (r.code === 0 && res.status === "succeeded")
+    return { ok: true, said: maskSecrets(res.summary ?? "") };
+  if (head) await backTo(place, head, env);
+  const files = (res.checks ?? []).map((c) => c.name).join(", ");
+  return {
+    ok: false,
+    said: `${maskSecrets(res.summary ?? "it didn't run")}${files ? ` (${files})` : ""}`,
+  };
+}
+
+/** The clone back to a commit, with no half-done merge or refresh left behind. */
+const backTo = (place: Place, head: string, env: Record<string, string>) =>
+  place.run(
+    [
+      "sh",
+      "-c",
+      `${DROP_HALF_MERGE}; rm -f "$(git rev-parse --git-dir)/SHIPIFY_REFRESH"; git reset -q --hard "$1"`,
+      "sh",
+      head,
+    ],
+    { cwd: place.work, minutes: GIT_MINUTES, env },
+  );
+
+/**
+ * The finish (ADR 0059): after a work run's agent, in its run's folder, with a read key minted
+ * after it (SHIPIFY_READ_TOKEN). When main moved past the branch while the agent worked, the box
+ * brings it up to date as a run's start does, runs its checks again and bundles it again, so the
+ * PR opens up to date. Where refresh or the checks stop, the branch stays as the agent left it,
+ * and its PR opens from that, as before; the note says so. No agent runs here: a conflict is the
+ * next run's, from your `continue`.
+ */
+export async function finish(
+  s: Snapshot,
+  t: Think,
+  io: { keep: string; local: string },
+): Promise<{ note?: string; changed?: string[] }> {
+  const place = placeFor(s.run.id.replace(/[^A-Za-z0-9._-]/g, "-"), io.local, true);
+  const done = await upToDate(place, s, t, io.keep).catch((e) => ({
+    note: `The branch couldn't be brought up to date with main: ${maskSecrets(errorLine(e))}. ${AS_LEFT}`,
+  }));
+  // As after the agent: nothing of its user's left running before a write key is minted.
+  if (!place.stop()) throw new Error("the finish left processes that couldn't be stopped");
+  return done;
+}
+
+const AS_LEFT =
+  "Its PR opens as the agent left it: reply `continue`, and the next run brings it up to date first.";
+
+/** The finish's work: main fetched; behind it, refreshed, checked and bundled again (see finish). */
+async function upToDate(
+  place: Place,
+  s: Snapshot,
+  t: Think,
+  keep: string,
+): Promise<{ note?: string; changed?: string[] }> {
+  const env = runEnv(s);
+  const cli = shipifyCopy().cli;
+  const key = process.env.SHIPIFY_READ_TOKEN;
+  let said = "";
+  await place.run(
+    [
+      "sh",
+      "-c",
+      'git fetch --quiet origin "$1" && { git merge-base --is-ancestor "origin/$1" work || echo "BEHIND $(git rev-parse HEAD)"; }',
+      "sh",
+      t.base ?? "main",
+    ],
+    {
+      cwd: place.work,
+      minutes: CLONE_MINUTES,
+      secrets: key ? gitConfig([keyFor(key)]) : {},
+      env: { ...env, GIT_TERMINAL_PROMPT: "0" },
+      onLine: (l) => {
+        said += `${l}\n`;
+      },
+    },
+  );
+  const head = /^BEHIND ([0-9a-f]{40,64})$/m.exec(said)?.[1];
+  if (!head) return {};
+  const r = await refresh(place, cli, env, head);
+  if (!r.ok)
+    return {
+      note: `Main moved while it worked, and refreshing the branch stopped: ${r.said}. ${AS_LEFT}`,
+    };
+  if (!(await gate(place, cli, env)).ok) {
+    await backTo(place, head, env);
+    return {
+      note: `Main moved while it worked; brought up to date, the box's checks failed. ${AS_LEFT}`,
+    };
+  }
+  const changed = await bundle(place, s);
+  const b = place.take("work.bundle", BUNDLE_MAX);
+  if (!b)
+    return {
+      note: `Main moved while it worked, and the branch couldn't be bundled again. ${AS_LEFT}`,
+    };
+  writeFileSync(join(keep, "work.bundle"), b);
+  return {
+    note: "Main moved while it worked, so the box brought the branch up to date (`ship refresh`) and checked it again before its PR.",
+    changed,
+  };
 }
 
 /**

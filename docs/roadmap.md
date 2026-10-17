@@ -32,8 +32,8 @@ pipeline (ADR 0048).
    built when you ask for it:
    - **Notion as your outward side:** `share` and `share thread` put a reply or a conversation on a
      Notion page others can read; a recipe's `share: replace` keeps one current.
-   - **A read token right before the agent:** a `ready` step for the clone and `make setup`, so a
-     long ask keeps its token's hour and `stop` works to the end.
+   - **A read token right before the agent:** a `ready` step for the clone and `make setup`, so the
+     agent's own GitHub reads get their whole hour (`stop` already works to the end: ADR 0059).
    - **Channels in step:** a reply's next words as buttons (Telegram too), `pause` for repeats (the
      web chat's Pause ends one today), Operate from a chat as a pre-filled form, a run's progress
      in the web chat.

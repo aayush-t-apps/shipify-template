@@ -28,7 +28,7 @@ import { modelLabel } from "../lib/agents.ts";
 import { cloneArgs, gitEnv, githubUrl } from "../lib/clones.ts";
 import { gh, ghRun, RECORD_WRITER } from "../lib/github.ts";
 import { madeWith, taskLine } from "../lib/links.ts";
-import type { RecordWrite } from "../lib/plugins/record.ts";
+import type { RecordComment, RecordWrite } from "../lib/plugins/record.ts";
 import { repoFor } from "../lib/projects-on-github.ts";
 import { type RunDetails, recordRun, renderRunDetails } from "../lib/runs.ts";
 import { secretFindings } from "../lib/secret-scan.ts";
@@ -55,6 +55,11 @@ export interface ApplyEnv {
   tokens: { repo?: string; files?: string };
   /** Tell the door of a new reply (POST /door/replied with the run's OIDC token). */
   tellDoor?: (task: number, comment: number, files: string[]) => Promise<void>;
+  /**
+   * The task's comments as a stay's turn read them a moment ago (ADR 0057): no one but this run
+   * replies on the task, so they hold every reply written, and apply reads them no more.
+   */
+  comments?: RecordComment[];
 }
 
 export interface Applied {
@@ -77,7 +82,7 @@ export async function apply(
   const task = taskReadOf(s.n);
   const own = task && task.run === thisRun() ? task : undefined;
   // A comment the read held and the new one edited since is there twice: the newer copy counts.
-  const raw = [
+  const raw = env.comments ?? [
     ...new Map(
       [...(own?.record.comments ?? []), ...rec().comments(s.n, own?.at)].map((c) => [c.id, c]),
     ).values(),

@@ -1,6 +1,6 @@
 ---
 name: codebase-design
-description: Shared vocabulary for designing deep modules. Use when the user wants to design or improve a module's interface, find deepening opportunities, decide where a seam goes, make code more testable or AI-navigable, or when another skill needs the deep-module vocabulary.
+description: "Designing deep modules, and weighing options for a change. Use when designing or improving a module's interface, deciding where a seam goes, making code more testable, or choosing between approaches for a change, a plan or a change doc (\"is there a simpler way?\")."
 ---
 
 # Codebase Design
@@ -63,6 +63,7 @@ When designing an interface, ask:
 - **The deletion test.** Imagine deleting the module. If complexity vanishes, it was a pass-through. If complexity reappears across N callers, it was earning its keep.
 - **The interface is the test surface.** Callers and tests cross the same seam. If you want to test *past* the interface, the module is probably the wrong shape.
 - **One adapter means a hypothetical seam. Two adapters means a real one.** Don't introduce a seam unless something actually varies across it.
+- **A rule's reason before you rule an option out.** When a rule seems to forbid the simplest option ("never in this step"), read why the rule exists and search for where the code already does the same thing. The reason is the boundary, not the wording: a place that already does it, behind the same wall, shows the option is open. Then check each option against the owner's standing rules (decision records, what the roadmap says isn't wanted, their notes) before offering it.
 
 ## Designing for testability
 

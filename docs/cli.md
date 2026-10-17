@@ -199,7 +199,7 @@ conflicts stop it: fix them, then run it again.
 | `box remove <name>` | removes every slot's runner from GitHub, and stops this machine's services when it's its box (with sudo) | needed |
 | `box status` · `start` · `stop` · `restart` `[<name>]` | this machine's box (its `shipify-box-*` services), slot by slot · on, at boot too · off until started · both; start, stop and restart with sudo. Stop asks first while a task runs | stop, restart while a run is under way |
 | `box logs [<name>] [-f]` · `box peek [-f]` | every slot's log · what the agent is doing now (`-f`: keep reading) | – |
-| `box health [<user@host>]` | disk, memory, temperature, a pending restart, updates, services: here, or over SSH | – |
+| `box health [<user@host>]` | disk, memory and swap, temperature, a pending restart, updates, services, each slot's memory: here, or over SSH | – |
 
 **`bot`:** a page on this machine sends GitHub the bot's manifest; you press **Create GitHub
 App** and install it on the org (All repositories). It sets the secret `SHIPIFY_BOT_KEY` and the
