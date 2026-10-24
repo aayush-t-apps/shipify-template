@@ -147,6 +147,8 @@ export interface TaskRecord {
   together(writes: RecordWrite[]): Promise<number[]>;
   /** Kept on top of the list, when the record and the key allow. Best effort. */
   pin(issue: RecordIssue): void;
+  /** Off the top of the list. Best effort. */
+  unpin(issue: RecordIssue): void;
   /**
    * The issues with this label (open ones, or all), oldest first, 100 at most, each with who opened
    * it and who last edited its text. What the core trusts (a notebook page) it

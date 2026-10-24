@@ -39,6 +39,7 @@ import {
 } from "../lib/repeat.ts";
 import { limitName } from "../lib/runs.ts";
 import {
+  AT_ONCE,
   droppedBy,
   looksAt,
   nextBranch,
@@ -60,7 +61,7 @@ import type {
   ThinkWhy,
   Write,
 } from "./types.ts";
-import { acceptedFrom, type Word, wordOf } from "./words.ts";
+import { type Word, wordOf } from "./words.ts";
 
 /** Said under a pick it can't take: nothing ran with another. */
 const PICK_AGAIN = "Nothing ran: send your message again with a pick it takes.";
@@ -108,7 +109,7 @@ export interface Context {
   errand?: ErrandSeen;
   /** The task's own URL, for links. */
   taskUrl: string;
-  /** Operations' form on GitHub, for a refusal from a chat. */
+  /** Operations' form on GitHub, for an operation that starts only there. */
   operateForm: string;
   /** The answer to `/ping`, `/apps`, `/help`, `/notebook` or `/recipes`, as a chat gets it. */
   instant: (name: Instant, rest: string) => string;
@@ -188,6 +189,68 @@ export function stillWaiting(d: Decided, later: Said[]): void {
   const r = d.writes.find((w): w is Extract<Write, { w: "reply" }> => w.w === "reply");
   if (!n || !r) return;
   r.text += `\n\n${n === 1 ? "A message" : `${n} messages`} you sent after this run last read the task ${n === 1 ? "is" : "are"} next: the run ${n === 1 ? "it" : "they"} started reads ${n === 1 ? "it" : "them"} now.`;
+}
+
+/**
+ * A stay's turn (ADR 0057): your `stop`, with nothing after it, that came as its agent answered (its
+ * last read, `later`) came too late to stop anything. It's read with this answer, which says so,
+ * so no run starts for it alone and the stay goes on.
+ */
+export function lateStop(d: Decided, later: Said[]): void {
+  const after = later.filter((c) => isYou(c) && c.id > d.state.seen);
+  const r = d.writes.find((w): w is Extract<Write, { w: "reply" }> => w.w === "reply");
+  if (!r || !after.length || !after.every((c) => !c.edited && wordOf(c.text) === "stop")) return;
+  d.state.seen = Math.max(...after.map((c) => c.id));
+  d.writes.push(...after.map((c): Write => ({ w: "react", comment: c.id, content: "eyes" })));
+  r.text += "\n\nYour `stop` came as it answered, so there was nothing left to stop.";
+}
+
+/** A shared file's name, as apply finds it in the agent's out folder. */
+const nameOf = (f: string) => f.split("/").pop() ?? f;
+/** How many shared files a task's status keeps, newest last. */
+export const SHARED_KEPT = 20;
+
+/** The task's shared files after a reply shared `files` (paths), with their hashes and links. */
+export function sharedNow(
+  was: TaskState["shared"],
+  files: string[],
+  hashes: string[],
+  links: Map<string, string>,
+): TaskState["shared"] {
+  const now = { ...was };
+  files.forEach((f, i) => {
+    const url = links.get(f);
+    const hash = hashes[i];
+    if (!url || !hash) return;
+    // Newest last: shared again, it moves to the end.
+    delete now[nameOf(f)];
+    now[nameOf(f)] = { hash, url };
+  });
+  return Object.fromEntries(Object.entries(now).slice(-SHARED_KEPT));
+}
+
+/**
+ * A file the task has shared already, unchanged (the same hash, by its name), isn't uploaded again:
+ * the reply links that copy. So an answer that only lists it again needs no files key, and a
+ * stay's turn goes on (ADR 0062). `hashOf` reads the file the agent left; undefined if it's gone.
+ */
+export function sharedBefore(d: Decided, hashOf: (name: string) => string | undefined): void {
+  const shared = d.state.shared ?? {};
+  for (const r of d.writes) {
+    if (r.w !== "reply" || !r.files?.length) continue;
+    const links: Link[] = [];
+    const files = r.files.filter((f) => {
+      const name = nameOf(f);
+      const was = shared[name];
+      if (!was || hashOf(name) !== was.hash) return true;
+      links.push([`${name.slice(0, 66)} (unchanged)`, was.url]);
+      return false;
+    });
+    if (!links.length) continue;
+    if (files.length) r.files = files;
+    else delete r.files;
+    r.links = [...(r.links ?? []), ...links];
+  }
 }
 
 const reply = (
@@ -377,7 +440,7 @@ function planned(s: Snapshot, ctx: Context): Plan {
   const inStep = recipeInStep(s, st, ctx, writes);
   if (inStep) return inStep;
 
-  // An operation runs by itself, once, from GitHub only (the Operate form, or `<app>: release`).
+  // An operation runs by itself, once (the Operate form, or its title); see opPlan for where from.
   if (s.parsed.kind === "op") return opPlan(s, st, fresh, first, ctx, writes);
 
   // A form with a wrong answer runs nothing until an edit fixes it.
@@ -441,22 +504,13 @@ function planned(s: Snapshot, ctx: Context): Plan {
       note: noteOf(c.text),
     };
   });
-  for (const x of said.filter((x) => x.word && !acceptedFrom(x.word, viaGithub(x.c)))) {
-    const p = problem("not-allowed-here", { word: x.word as string });
-    writes.push(
-      reply("answer", "Done", renderProblem(p), `word-${x.c.id}`, {
-        links: [["The task on GitHub", ctx.taskUrl]],
-        problem: p,
-      }),
-    );
-  }
   // A list's Yes with no list waiting (made, dropped, expired): said, with no agent.
   const gone = (x: (typeof said)[number]) => x.word === "yes" && !listed;
   for (const x of said.filter(gone)) {
     const p = problem("list-gone");
     writes.push(reply("answer", "Done", renderProblem(p), `yes-gone-${x.c.id}`, { problem: p }));
   }
-  const usable = said.filter((x) => !gone(x) && (!x.word || acceptedFrom(x.word, viaGithub(x.c))));
+  const usable = said.filter((x) => !gone(x));
   // `use <model>` changes the task's model. Alone, it's all this run does, and the reply says so;
   // with your words (a setting from a chat, then them), this run thinks with it and says nothing.
   const withWords = usable.some((x) => !x.use && !x.instant && !x.note);
@@ -616,16 +670,26 @@ function planned(s: Snapshot, ctx: Context): Plan {
   )
     return repeatWords(s, st, words, fresh, writes);
 
-  // A merged plan's build and publish again; a big change's build after its doc merged.
-  if (words.includes("publish")) {
+  // A merged plan's build, or again after it stopped. `go` on a new project's task is the same:
+  // its plan is the doc you merged (a big change's `go` is below).
+  const go = words.includes("go") && Boolean(st.plan) && !docMerged(st);
+  if (words.includes("publish") || go) {
     st.seen = upTo(s, fresh);
     if (!st.plan || !ctx.planMerged(st.plan))
       return box(
         st,
         "publish with no merged plan",
         ...writes,
-        reply("answer", "Done", "There's no merged plan on this task to publish.", "publish-none"),
+        reply(
+          "answer",
+          "Done",
+          st.plan
+            ? `Merge the plan's PR first; then say \`${go ? "go" : "publish"}\`.`
+            : "There's no merged plan on this task to publish.",
+          "publish-none",
+        ),
       );
+    const again = st.prepared === st.plan || st.built === st.plan;
     st.pending.prepare = { plan: st.plan, at: s.now };
     return box(
       st,
@@ -635,7 +699,7 @@ function planned(s: Snapshot, ctx: Context): Plan {
       reply(
         "answer",
         "Working",
-        `Publishing ${st.plan} again: its repo and keys first, then the build.`,
+        `Publishing ${st.plan}${again ? " again" : ""}: its repo and keys first, then the build.`,
         "publish",
       ),
     );
@@ -829,6 +893,15 @@ function planned(s: Snapshot, ctx: Context): Plan {
     st.notes = undefined;
   }
   const think = thinkFor(s, st, why, fresh);
+  // A merged plan whose build never started: the run that started it is one dispatch, which a
+  // newer run of the task can replace (one waits per task, ADR 0040). This run starts it, once.
+  if (st.plan && ctx.planMerged(st.plan) && st.built !== st.plan && st.prepared !== st.plan) {
+    st.pending.prepare ??= { plan: st.plan, at: s.now };
+    writes.push({ w: "dispatch", job: "github" });
+    think.notes.push(
+      `The plan ${st.plan} is merged, and its build starts after this run (its repo and keys first, then a build run): tell the owner so, and don't ask them to say \`go\` or \`publish\`.`,
+    );
+  }
   return {
     do: "think",
     think,
@@ -1304,9 +1377,14 @@ function opPlan(
   writes: Write[],
 ): Plan {
   const p = s.parsed;
-  if (s.issue.author === "door" || (fresh.length && fresh.every((c) => !viaGithub(c)) && !first)) {
+  // A release starts from GitHub or a chat alike (one flow, ADR 0049): it opens a PR that only
+  // your merge deploys. Taking an app down, bringing it back and a rollback change the live app at
+  // once, so they start, and run again, only on GitHub.
+  const atOnce = p.op !== undefined && AT_ONCE.includes(p.op);
+  const door = s.issue.author === "door";
+  if (atOnce && (door || (fresh.length && fresh.every((c) => !viaGithub(c)) && !first))) {
     st.seen = upTo(s, fresh);
-    st.phase = "done";
+    if (door) st.phase = "done";
     return box(
       st,
       "an operation from a chat",
@@ -1314,14 +1392,14 @@ function opPlan(
       reply(
         "answer",
         "Done",
-        "Operations (release, take down, bring back, roll back) start only from GitHub: open the Operate form there.",
+        `Nothing ran. \`${p.project}: ${p.ask}\` changes the live app at once, with no merge, so it starts only on GitHub: open the Operate form there, or a task with these words as its title.`,
         "op-chat",
         { links: [["The Operate form", ctx.operateForm]] },
       ),
-      { w: "close", reason: "completed" },
+      ...(door ? [{ w: "close" as const, reason: "completed" as const }] : []),
     );
   }
-  const again = fresh.some((c) => viaGithub(c) && wordOf(c.text) === "continue");
+  const again = fresh.some((c) => (!atOnce || viaGithub(c)) && wordOf(c.text) === "continue");
   if (
     first ||
     again ||

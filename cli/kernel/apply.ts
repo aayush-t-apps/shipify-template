@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { queue, rec, thisRun, timeZone } from "../commands/task/context.ts";
 import { publishedDeploy } from "../commands/task/deploys.ts";
-import { publishMade } from "../commands/task/files.ts";
+import { fileHash, publishMade } from "../commands/task/files.ts";
 import { Status, type StatusIssue } from "../commands/task/issue.ts";
 import { forget, remember } from "../commands/task/notebook.ts";
 import {
@@ -34,7 +34,7 @@ import { type RunDetails, recordRun, renderRunDetails } from "../lib/runs.ts";
 import { secretFindings } from "../lib/secret-scan.ts";
 import { dropRepeat, tryStatusIssue, upsertRepeat } from "../lib/status-issue.ts";
 import { findStatus, inertImages, MAX_REPLY, safeMarkdown, type TaskState } from "../lib/task.ts";
-import { cursorOf } from "./decide.ts";
+import { cursorOf, sharedNow } from "./decide.ts";
 import { replyKey } from "./keys.ts";
 import { makeCalls } from "./mcp-client.ts";
 import { saidAs } from "./result.ts";
@@ -301,10 +301,14 @@ export async function apply(
             r.files?.length && env.out
               ? r.files.map((f) => join(env.out as string, basename(f))).filter(existsSync)
               : [];
-          const filesBlock =
+          // Each file's hash as the agent left it (publishMade hides keys in a text one first).
+          const hashes = out.map(fileHash);
+          const made =
             out.length && env.tokens.files
               ? withToken(env.tokens.files, () => publishMade(s.n, out))
-              : "";
+              : undefined;
+          const filesBlock = made?.text ?? "";
+          if (made) st.shared = sharedNow(st.shared, out, hashes, made.links);
           const allLinks = [...(r.links ?? []), ...links];
           const to = replyTo({
             kind: r.kind,

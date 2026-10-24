@@ -9,7 +9,10 @@
 //   in/      what the agent reads: the prompt, files, the playbook and skills (give())
 //   out/     what the runner takes back: the result, files, the bundle (readOut(), after killAll)
 // Beside the runs, the slot's caches (KEPT): what a run downloads (packages, a test browser) is
-// there for the slot's next run.
+// there for the slot's next run. The lab (box setup 8, ADR 0064): the agent's containers are its
+// own rootless Podman's, its store in data/containers and its state while it runs in runtime/, both
+// by paths that never change, as Podman records them at its first use; runtime/ is emptied at each
+// run's start, so to Podman each run starts as after a restart.
 // The slot's folder is the agent's, with group shipify and setgid (2710): the runner can pass
 // through to a run's out/ (2750), and no other user, another slot's agent included, can enter it.
 //
@@ -46,6 +49,8 @@ export const AGENT_ROOT = "/srv";
  * or files; the weekly clean-up trims what hasn't been used in a while.
  */
 export const KEPT = ["cache", "data"];
+/** Podman's settings for the agents' users alone (box setup 8, ADR 0064), named in each command. */
+export const CONTAINERS_CONF = "/etc/containers/shipify-agents.conf";
 /** A run's folder older than this is left over: longer than any job (task.yml's limit, tested). */
 export const STALE_RUN_MS = 8 * 60 * 60_000;
 /** The biggest file readOut takes back. */
@@ -69,6 +74,19 @@ export function agentUser(slot: number): string {
 
 /** Slot k's folder: its runs, each in run-<id>. */
 export const slotRoot = (slot: number, root = AGENT_ROOT) => join(root, agentUser(slot));
+
+/**
+ * The names Podman needs as slot k's agent (ADR 0064), the same at every run: its store under the
+ * slot's data/ (by its real path, the folder a run's ~/.local/share links to), its state while it
+ * runs in the slot's runtime/, and the agents' own settings.
+ */
+export function containerEnv(slot: number, root = AGENT_ROOT): Record<string, string> {
+  return {
+    XDG_DATA_HOME: join(slotRoot(slot, root), "data"),
+    XDG_RUNTIME_DIR: join(slotRoot(slot, root), "runtime"),
+    CONTAINERS_CONF_OVERRIDE: CONTAINERS_CONF,
+  };
+}
 
 /**
  * Which slot of a box a runner is (ADR 0020): 1 for the runner named after the box, k for
@@ -112,7 +130,7 @@ export function onBox(
   const slot = slotOf(env.RUNNER_NAME, box);
   if (slot > 0 && existsSync(slotRoot(slot, root))) return { slot };
   throw new ShipError(
-    `This box has no sandbox for its runner "${env.RUNNER_NAME ?? "?"}" (box setup 5), so no agent runs here. From your PC, when no task runs: pnpm ship box add <this box's SSH address> (it asks for sudo once).`,
+    `This box has no sandbox for its runner "${env.RUNNER_NAME ?? "?"}" (box setup 5), so no agent runs here. When no task runs: on the box, its here.sh command again; or from a PC, pnpm ship box add <its SSH address> --manage (it asks for sudo once).`,
     "blocked",
   );
 }
@@ -352,11 +370,18 @@ export async function asAgent(
 export function asAgentNow(
   slot: number,
   argv: string[],
-  opts: { cwd: string; input?: string; login?: string; timeoutMs?: number },
+  opts: {
+    cwd: string;
+    input?: string;
+    login?: string;
+    timeoutMs?: number;
+    env?: Record<string, string>;
+  },
   io: SandboxIo = REAL_IO,
 ): { code: number; stdout: string; stderr: string } {
   const { args, head } = sudoArgs(slot, argv, {
     cwd: opts.cwd,
+    ...(opts.env ? { env: opts.env } : {}),
     ...(opts.login !== undefined ? { login: opts.login } : {}),
   });
   const r = io.run("sudo", args, {
@@ -370,8 +395,20 @@ export function asAgentNow(
 }
 
 /**
+ * Exits 0 while a process of the agent ($1) runs, or of an ID in its range (/etc/subuid: its
+ * containers' users, ADR 0064), 1 when none does, 2 when it can't tell: one read of the process
+ * list, as the runner.
+ */
+const LEFT = String.raw`u=$(id -u -- "$1") || exit 2
+r=$(awk -F: -v n="$1" -v u="$u" '$1 == n || $1 == u { print $2, $3; exit }' /etc/subuid 2>/dev/null)
+uids=$(ps -A -o uid=) || exit 2
+printf '%s\n' "$uids" | awk -v u="$u" -v r="$r" 'BEGIN { split(r, a, " ") }
+  $1 == u || (a[2] > 0 && $1 >= a[1] && $1 < a[1] + a[2]) { f = 1 } END { exit f ? 0 : 1 }'`;
+
+/**
  * Every process of slot k's agent, killed (`kill -KILL -1` as the agent), and checked gone: after a
- * think, at a time limit, and before a run starts. True when none is left; false when sudo
+ * think, at a time limit, and before a run starts. The kill reaches its containers too: the agent
+ * owns their user namespace. True when none is left, of the agent or its range; false when sudo
  * refused or one survived, and then nothing that holds a key may start.
  */
 export function killAll(slot: number, io: SandboxIo = REAL_IO): boolean {
@@ -384,7 +421,11 @@ export function killAll(slot: number, io: SandboxIo = REAL_IO): boolean {
     });
     // "No such process" is the usual answer: there was nothing to kill.
     if (k.code !== 0 && /^sudo:/m.test(k.stderr)) return false;
-    const left = io.run("pgrep", ["-u", user], { cwd: "/", env: SPAWN_ENV, timeoutMs: 30_000 });
+    const left = io.run("/bin/sh", ["-c", LEFT, "left", user], {
+      cwd: "/",
+      env: SPAWN_ENV,
+      timeoutMs: 30_000,
+    });
     if (left.code === 1) return true;
     if (left.code !== 0) return false;
     io.sleep(200);
@@ -392,8 +433,18 @@ export function killAll(slot: number, io: SandboxIo = REAL_IO): boolean {
   return false;
 }
 
-/** Removes each run folder (and all in it) the agent may have made read-only, as the agent. */
-const RM = 'for d do chmod -R u+rwX -- "$d" 2>/dev/null; rm -rf -- "$d" && echo gone; done';
+/**
+ * Removes each run folder (and all in it) the agent may have made read-only, as the agent. What a
+ * container wrote under its own IDs (a bind mount) plain rm can't remove: `podman unshare` can,
+ * where the agent is root over its range (ADR 0064). A folder still there fails it.
+ */
+const RM = `s=0
+for d do
+  chmod -R u+rwX -- "$d" 2>/dev/null
+  rm -rf -- "$d" 2>/dev/null || podman unshare rm -rf -- "$d" 2>/dev/null || rm -rf -- "$d"
+  if [ -e "$d" ]; then s=1; else echo gone; fi
+done
+exit $s`;
 
 /**
  * Slot k's run folders older than `olderThanMs` (0: all of them), removed as the agent, who owns
@@ -428,7 +479,7 @@ export function cleanRuns(
       "{}",
       "+",
     ],
-    { cwd: dir, timeoutMs: 10 * 60_000 },
+    { cwd: dir, timeoutMs: 10 * 60_000, env: containerEnv(slot, io.root) },
     io,
   );
   const removed = r.stdout.split("\n").filter((l) => l === "gone").length;
@@ -449,18 +500,82 @@ export function cleanStaleRuns(
     removed += r.removed;
     if (!r.ok) failed.push(`${agentUser(slot)}: ${r.error}`);
     // The kept caches, trimmed: what no run has read in 30 days goes (a tool fetches it again).
+    // Never inside the containers' store, where a deleted file breaks an image: Podman prunes it
+    // (pruneContainers).
+    const inStore = '! -path "data/containers/*"';
     asAgentNow(
       slot,
       [
         "/bin/sh",
         "-c",
-        `for d in ${KEPT.join(" ")}; do [ -d "$d" ] && find "$d" -type f -atime +30 -delete 2>/dev/null; [ -d "$d" ] && find "$d" -mindepth 1 -type d -empty -delete 2>/dev/null; done; true`,
+        `for d in ${KEPT.join(" ")}; do [ -d "$d" ] && find "$d" -type f -atime +30 ${inStore} -delete 2>/dev/null; [ -d "$d" ] && find "$d" -mindepth 1 -type d -empty ! -path "data/containers" ${inStore} -delete 2>/dev/null; done; true`,
       ],
       { cwd: slotRoot(slot, io.root), timeoutMs: 10 * 60_000 },
       io,
     );
   }
   return { removed, failed };
+}
+
+/**
+ * Shell functions for Podman's state in a slot (ADR 0064), run as its agent in its folder with
+ * containerEnv. `wipe` empties runtime/, Podman's state while it runs (it wants it wiped at each
+ * restart); what plain rm can't remove goes through `podman unshare`, whose pause process is then
+ * stopped. `fresh`, at a run's start: wipe, and when Podman left state there, one prune of the
+ * earlier runs' containers, pods, volumes and networks (the images stay), the pause process that
+ * starts stopped, and runtime/ wiped again: a run starts with nothing of the agent's running and
+ * runtime/ empty, so a run that uses no container leaves nothing to do. Each says "podman" when it
+ * ran Podman. `kill -KILL -1` spares only the shell itself: nothing else of the agent's runs then.
+ */
+const PODMAN_STATE = String.raw`wipe() {
+  chmod -R u+rwX runtime 2>/dev/null; rm -rf runtime 2>/dev/null
+  if [ -e runtime ] && command -v podman >/dev/null; then
+    echo podman; podman unshare rm -rf -- "$PWD/runtime" >/dev/null 2>&1; kill -KILL -1 2>/dev/null
+  fi
+  mkdir -p -m 700 runtime
+}
+fresh() {
+  mkdir -p -m 700 runtime
+  [ -n "$(ls -A runtime)" ] || return 0
+  used=; [ -d runtime/libpod ] && command -v podman >/dev/null && used=1
+  wipe
+  [ -n "$used" ] || return 0
+  echo podman
+  podman system prune --force --volumes >/dev/null 2>&1
+  kill -KILL -1 2>/dev/null
+  wipe
+}`;
+
+/**
+ * Each slot's containers' store, pruned as its agent (ADR 0064), in the weekly clean-up while no
+ * other slot runs: every image (no container outlives a run), then what an unclean stop (a power
+ * cut) left in the store, so a slot holds at most a week of images. Only where a slot has a store.
+ */
+export function pruneContainers(io: SandboxIo = REAL_IO): { pruned: number; failed: string[] } {
+  let pruned = 0;
+  const failed: string[] = [];
+  const script = [
+    PODMAN_STATE,
+    "[ -d data/containers ] && command -v podman >/dev/null || exit 0",
+    "wipe >/dev/null",
+    "podman system prune --all --force --volumes >/dev/null || exit 1",
+    "podman system prune --external --force >/dev/null || exit 1",
+    "kill -KILL -1 2>/dev/null",
+    "wipe >/dev/null",
+    "echo pruned",
+  ].join("\n");
+  for (const slot of sandboxSlots(io.root)) {
+    const r = asAgentNow(
+      slot,
+      ["/bin/sh", "-c", script, "prune"],
+      { cwd: slotRoot(slot, io.root), timeoutMs: 10 * 60_000, env: containerEnv(slot, io.root) },
+      io,
+    );
+    if (r.code !== 0)
+      failed.push(`${agentUser(slot)}: ${r.stderr.trim().split("\n")[0] || `exit ${r.code}`}`);
+    else if (r.stdout.split("\n").includes("pruned")) pruned++;
+  }
+  return { pruned, failed };
 }
 
 // ---------------------------------------------------------------- a run's folder
@@ -478,7 +593,7 @@ export interface AgentRun {
   read: string;
   in: string;
   out: string;
-  /** HOME, TMPDIR and the XDG folders: give it to asAgent. */
+  /** HOME, TMPDIR, the XDG folders and Podman's settings (containerEnv): give it to asAgent. */
   env: Record<string, string>;
 }
 
@@ -506,7 +621,7 @@ export function runPaths(slot: number, runId: string, root = AGENT_ROOT): AgentR
       TMPDIR: at("tmp"),
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_CACHE_HOME: join(home, ".cache"),
-      XDG_DATA_HOME: join(home, ".local", "share"),
+      ...containerEnv(slot, root),
     },
   };
 }
@@ -514,21 +629,27 @@ export function runPaths(slot: number, runId: string, root = AGENT_ROOT): AgentR
 /**
  * Makes the run's folder, as the agent: home, config, tmp, work, read and in only its own (0700), and
  * out/ the runner's to read (2750, group shipify). Any process left of the slot's agent is killed
- * first, and its earlier runs removed. Once per job.
+ * first, its earlier runs removed, and what they left of Podman's (ADR 0064) too. Once per job.
  */
 export function prepareRun(slot: number, runId: string, io: SandboxIo = REAL_IO): AgentRun {
   const run = runPaths(slot, runId, io.root);
-  if (!killAll(slot, io))
-    throw new ShipError(
-      `Couldn't stop what ${run.user} left running (sudo -n refused, or a process survived): ship doctor's sandbox check says which.`,
-    );
+  const stopped = () => {
+    if (!killAll(slot, io))
+      throw new ShipError(
+        `Couldn't stop what ${run.user} left running (sudo -n refused, or a process survived): ship doctor's sandbox check says which.`,
+      );
+  };
+  stopped();
   const cleaned = cleanRuns(slot, 0, io);
   if (!cleaned.ok)
     throw new ShipError(`Couldn't remove ${run.user}'s earlier runs: ${cleaned.error}`);
-  // A fresh run folder each time, but the slot's caches kept across its runs (KEPT): the agent's
+  // To Podman, a run starts as after a restart (fresh, never a reason to stop the run); then a
+  // fresh run folder each time, but the slot's caches kept across its runs (KEPT): the agent's
   // ~/.cache and ~/.local/share are links to them, so packages, a project's toolchain and a test
   // browser download once per slot, not once per run. Only this slot's agent can reach them.
   const script = [
+    PODMAN_STATE,
+    "fresh",
     "set -e",
     `mkdir -p -m 700 -- ${KEPT.join(" ")}`,
     'mkdir -m 2710 -- "$1"',
@@ -542,13 +663,15 @@ export function prepareRun(slot: number, runId: string, io: SandboxIo = REAL_IO)
   const r = asAgentNow(
     slot,
     ["/bin/sh", "-c", script, "prepare", run.dir],
-    { cwd: slotRoot(slot, io.root) },
+    { cwd: slotRoot(slot, io.root), env: containerEnv(slot, io.root) },
     io,
   );
   if (r.code !== 0)
     throw new ShipError(
       `Couldn't make ${run.user}'s run folder: ${r.stderr.trim().split("\n")[0] || `exit ${r.code}`}`,
     );
+  // Podman ran: its pause process was stopped in there; checked here, as before any run.
+  if (r.stdout.split("\n").includes("podman")) stopped();
   return run;
 }
 
@@ -698,6 +821,13 @@ done
 true`;
 
 /**
+ * Each root container socket the agent could write to, a line each (ADR 0064): Docker's, and Podman's
+ * root one (box setup turns it off). Either, or the docker group, would give an agent the box.
+ */
+const SOCKETS_PROBE =
+  'for s in /run/docker.sock /run/podman/podman.sock; do [ -w "$s" ] && echo "$s"; done; true';
+
+/**
  * What a command of the agent's finds of a dummy login handed over as a run's is (on fd 3), with the
  * same dummy on its stdin to compare, a word for each wall that holds: fd 3 is a pipe, it holds the
  * login, a second read gets nothing, and it's in no environment. Then whether the kernel keeps a
@@ -723,8 +853,9 @@ const LOGIN_WALLS: [string, string][] = [
  * What's wrong with the sandbox of these slots, as the runner sees it (empty when nothing):
  * each agent user exists, sudo starts it without a password, and it can't read the runner's
  * home, its jobs' folder, another slot's runs, or a runner process's environment; on WSL, nor
- * reach Windows (its drives, its programs). A dummy login, handed over as a run's is, reaches it
- * on a pipe it reads once and in no environment, and its commands can't read its memory.
+ * reach Windows (its drives, its programs); nor write to a root container socket. A dummy login,
+ * handed over as a run's is, reaches it on a pipe it reads once and in no environment, and its
+ * commands can't read its memory.
  */
 export function sandboxProblems(
   slots: number[],
@@ -764,6 +895,16 @@ export function sandboxProblems(
     if (reached.length)
       problems.push(
         `${user} can reach Windows: ${reached.join(", ")} (WSL: close it in /etc/wsl.conf, docs/box-setup.md#this-pc)`,
+      );
+    const sockets = asAgentNow(
+      k,
+      ["/bin/sh", "-c", SOCKETS_PROBE, "sockets"],
+      { cwd, timeoutMs: 30_000 },
+      io,
+    );
+    for (const s of sockets.stdout.split("\n").filter((l) => l.trim()))
+      problems.push(
+        `${user} can write ${s}, a root container socket (the docker group, or Docker's or Podman's root socket, gives the box: docs/security.md#the-agents-sandbox)`,
       );
     const dummy = `shipify-check-${randomBytes(8).toString("hex")}`;
     const login = asAgentNow(

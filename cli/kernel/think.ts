@@ -200,7 +200,7 @@ export interface ThinkIn {
    * run's folder as it is, with only the words it answers now. Nothing is cloned or read again.
    */
   resume?: string;
-  /** The agent's minutes, when fewer than its own clock: a stay's turn ends within its token's hour. */
+  /** The agent's minutes, when fewer than its own clock: a stay's turn ends within its job's time. */
   minutes?: number;
   /** What the resumed session had counted (ThinkMeta.used): this turn counts only what's new. */
   used?: SessionUsed;
@@ -568,7 +568,20 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     };
     const began = performance.now();
     // A stay on a project pushes nothing (ADR 0060): a change it's asked for goes to a work run.
-    if (io.resume && t.profile === "work" && t.project) notes.push(STAY_WORK_NOTE(t.project));
+    // What it commits anyway is measured from where its turn began: the run before it already
+    // pushed what came earlier, which its clone's origin/<branch> doesn't know (ADR 0063).
+    let from: string | undefined;
+    if (io.resume && t.profile === "work" && t.project) {
+      notes.push(STAY_WORK_NOTE(t.project));
+      await place.run(["git", "rev-parse", "--verify", "--quiet", "HEAD"], {
+        cwd: place.work,
+        minutes: GIT_MINUTES,
+        env,
+        onLine: (l) => {
+          from = l.trim() || from;
+        },
+      });
+    }
     const { outcome, report } = io.resume
       ? await ask(argvFor(io.resume), nextPrompt(fresh, notes))
       : await ask(argv, prompt);
@@ -749,7 +762,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
           ],
           { cwd: place.work, minutes: GIT_MINUTES, env },
         );
-      const changed = await bundle(place, s);
+      const changed = await bundle(place, s, from);
       place.stop();
       const b = place.take("work.bundle", BUNDLE_MAX);
       if (b) keep("work.bundle", b);
@@ -1160,9 +1173,10 @@ export const catchUpPrompt = (said: Said[], files: string[] = [], before: string
     "Change the work if they ask for it (commit as before), then give your whole result again as before: one reply that covers what they asked before and now.",
   ].join("\n");
 
-/** The agent's commits as a bundle in out/, made by the agent; the files they change. */
-async function bundle(place: Place, s: Snapshot): Promise<string[]> {
-  const base = s.state.branch ? `origin/${s.state.branch}` : "origin/main";
+/** The agent's commits as a bundle in out/, made by the agent; the files they change. `from`: a
+ * stay's turn's start, so only that turn's commits go. */
+async function bundle(place: Place, s: Snapshot, from?: string): Promise<string[]> {
+  const base = from ?? (s.state.branch ? `origin/${s.state.branch}` : "origin/main");
   let changed = "";
   await place.run(
     [

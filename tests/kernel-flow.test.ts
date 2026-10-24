@@ -100,6 +100,36 @@ const status = () => findStatus(read().comments as never).state;
 const out = (name: string) =>
   new RegExp(`^${name}=(.*)$`, "m").exec(readFileSync(outputs, "utf8"))?.[1];
 
+/** Waits for what a running stay does, reading the fake's state as it goes. */
+const until = async (done: () => boolean) => {
+  // The fake's state is rewritten whole by each gh the stay starts: a read mid-write retries.
+  const now = () => {
+    try {
+      return done();
+    } catch {
+      return false;
+    }
+  };
+  for (let i = 0; i < 300 && !now(); i++) await new Promise((r) => setTimeout(r, 100));
+  expect(now()).toBe(true);
+};
+/** Your words while a stay runs: under the fake gh's own lock, so neither loses the other's. */
+const sayNow = async (body: string) => {
+  for (;;) {
+    try {
+      mkdirSync(`${file}.lock`);
+      break;
+    } catch {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  }
+  try {
+    say(body);
+  } finally {
+    rmSync(`${file}.lock`, { recursive: true, force: true });
+  }
+};
+
 /** One run of the job: its steps in order, each as task.yml calls it. */
 /** The CLI built as one file (ADR 0051 B1): set, `job` starts each step from it as a box does. */
 let built: string | undefined;
@@ -599,7 +629,9 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     expect(git(origin, "merge-base", "--is-ancestor", "main", branch)).toBe("");
     expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
     expect(lastReply()?.c.body).toContain("brought the branch up to date");
-  }, 90_000);
+    // A job and a refresh (`ship refresh`: a merge and `make version` twice): about 50 s on a
+    // Raspberry Pi box, over 90 while its other slots run their own checks.
+  }, 180_000);
 
   it("main moved and conflicts: the PR opens as the agent left it, and the reply says `continue` brings it up to date (ADR 0059)", async () => {
     const origin = await onProject();
@@ -611,7 +643,8 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     expect(git(origin, "log", "--format=%s", branch)).not.toContain("Merge");
     expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
     expect(lastReply()?.c.body).toContain("reply `continue`");
-  }, 90_000);
+    // A job and a refresh that stops, as above.
+  }, 180_000);
 
   it("stays after its PR opens; a change asked of the stay goes to a work run (ADR 0060)", async () => {
     await onProject();
@@ -640,6 +673,36 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
       expect(lastReply()?.c.body).toContain("A work run on demo starts now");
       expect(read().calls).toContain("workflow run task.yml -R o/shipify -f issue=12 -f job=run");
       expect(read().issue.labels.map((l) => l.name)).not.toContain("staying");
+    } finally {
+      delete process.env.FAKE_FINAL;
+    }
+  }, 120_000);
+
+  it("a stay's question on a project sends only its own commits: none, so it stays (ADR 0063)", async () => {
+    const origin = await onProject();
+    // A question mid-change: its commits are kept on the task's branch before the stay.
+    process.env.FAKE_WORK = "question";
+    await job("issues", "opened");
+    expect(branches(origin).some((b) => b.startsWith("task/12-"))).toBe(true);
+    expect(out("stay")).toBe("yes");
+    delete process.env.FAKE_WORK;
+    process.env.FAKE_FINAL = JSON.stringify({
+      v: 2,
+      state: "needs-you",
+      text: "Green or blue?",
+      question: "Green or blue?",
+    });
+    try {
+      say("what colour should the button be?");
+      writeFileSync(outputs, "");
+      const staying = runStay(12);
+      // The run's own commits were pushed before the stay: this question needs no push, no key.
+      await until(() => lastReply()?.c.body.includes("Green or blue?") ?? false);
+      expect(read().issue.labels.map((l) => l.name)).toContain("staying");
+      await sayNow("start over");
+      const done = await staying;
+      expect(done.summary).toContain("1 answer; left: words for a normal run");
+      expect(out("apply")).toBeUndefined();
     } finally {
       delete process.env.FAKE_FINAL;
     }
@@ -1079,39 +1142,10 @@ describe("a run end to end", () => {
   });
 
   describe("a run that stays (ADR 0057)", () => {
-    /** Waits for what a running stay does, reading the fake's state as it goes. */
-    const until = async (done: () => boolean) => {
-      // The fake's state is rewritten whole by each gh the stay starts: a read mid-write retries.
-      const now = () => {
-        try {
-          return done();
-        } catch {
-          return false;
-        }
-      };
-      for (let i = 0; i < 300 && !now(); i++) await new Promise((r) => setTimeout(r, 100));
-      expect(now()).toBe(true);
-    };
     const labels = () => read().issue.labels.map((l) => l.name);
     const agentOut = () => join(workspace(), ".tasks", "12", "agent", "out");
-    /** Your words while a stay runs: under the fake gh's own lock, so neither loses the other's. */
-    const sayNow = async (body: string) => {
-      for (;;) {
-        try {
-          mkdirSync(`${file}.lock`);
-          break;
-        } catch {
-          await new Promise((r) => setTimeout(r, 5));
-        }
-      }
-      try {
-        say(body);
-      } finally {
-        rmSync(`${file}.lock`, { recursive: true, force: true });
-      }
-    };
 
-    it("answers your next words in the same session, collated; your `stop` goes to a normal run", async () => {
+    it("answers your next words in the same session, collated; your `stop` too, and `start over` goes to a normal run", async () => {
       process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
       // Written from a chat: its body carries the door's line, which is never an edit.
       set((f) => {
@@ -1130,19 +1164,27 @@ describe("a run end to end", () => {
         process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "2 GB of swap." });
         const staying = runStay(12);
         await until(() => replies().length === 2);
-        // A fixed word is a normal run's, as without a stay: it says what `stop` does now.
+        // Your `stop` with no turn working: the stay's own answer, and it keeps staying (#526).
         await sayNow("stop");
+        await until(() => replies().length === 3);
+        expect(replies().at(-1)?.c.body).toContain("there was nothing to stop");
+        expect(labels()).toContain("staying");
+        // A fresh clone is a normal run's (ADR 0063).
+        await sayNow("start over");
         const done = await staying;
-        expect(done.summary).toContain("1 answer; left: words for a normal run");
+        expect(done.summary).toContain("2 answers; left: words for a normal run");
         // One reply covers both asks, from the same session carried on, with only the new words.
-        expect(replies().at(-1)?.c.body).toContain("2 GB of swap.");
+        expect(replies()[1]?.c.body).toContain("2 GB of swap.");
+        // Each reply counts its own ask, never the session's totals so far (as Claude Code gives them).
+        expect(replies()[0]?.c.body).toContain("10k in, 1k out");
+        expect(replies()[1]?.c.body).toContain("10k in, 1k out");
         const argv = JSON.parse(readFileSync(join(agentOut(), "next-final-argv.json"), "utf8"));
         expect(argv).toEqual(expect.arrayContaining(["--resume", "s-1"]));
         const prompt = readFileSync(join(agentOut(), "next-prompt.md"), "utf8");
         expect(prompt).toContain("and the swap?");
         expect(prompt).toContain("and the inodes?");
         expect(prompt).not.toContain("how much disk is free?");
-        // Its label is off, one run was started (for the `stop`), and both words were read (👀).
+        // Its label is off, one run was started (for `start over`), and both words were read (👀).
         expect(labels()).not.toContain("staying");
         expect(read().calls.filter((c) => c.startsWith("workflow run task.yml"))).toHaveLength(1);
         expect(status().seen).toBeGreaterThanOrEqual(
@@ -1207,7 +1249,7 @@ describe("a run end to end", () => {
         process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "2 GB of swap." });
         const staying = runStay(12);
         await until(() => replies().length === 2 && line.length === 1);
-        await sayNow("stop");
+        await sayNow("start over");
         await staying;
         // The turn's own reads of the task's comments, by phase ("comments 0.1 s" each).
         const reads = (phase: string) =>
@@ -1239,7 +1281,7 @@ describe("a run end to end", () => {
         say("and the swap?");
         const staying = runStay(12);
         await until(() => replies().length === 2);
-        await sayNow("stop");
+        await sayNow("start over");
         await staying;
         expect(replies()[1]?.c.body).toContain("2 GB of swap.");
         expect(replies()[1]?.c.body).not.toContain("12 GB free.");
@@ -1263,11 +1305,11 @@ describe("a run end to end", () => {
         process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "2 GB of swap." });
         await sayNow("and the swap?");
         await until(() => replies().length === before + 2);
-        await sayNow("stop");
+        await sayNow("start over");
         const done = await staying;
         expect(done.summary).toContain("2 answers");
         expect(replies().at(-1)?.c.body).toContain("2 GB of swap.");
-        // Only the `stop` started a run.
+        // Only `start over` started a run.
         expect(read().calls.filter((c) => c.startsWith("workflow run task.yml"))).toHaveLength(1);
       } finally {
         delete process.env.FAKE_FINAL;
@@ -1284,14 +1326,89 @@ describe("a run end to end", () => {
         process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "2 GB of swap." });
         const staying = runStay(12);
         await until(() => replies().length === 2);
-        await sayNow("stop");
+        await sayNow("start over");
         const done = await staying;
         expect(done.summary).toContain("1 answer");
         expect(replies().at(-1)?.c.body).toContain("2 GB of swap.");
         const argv = JSON.parse(readFileSync(join(agentOut(), "next-final-argv.json"), "utf8"));
         expect(argv).toEqual(expect.arrayContaining(["--resume", "s-1"]));
-        // Only the `stop` started a run.
+        // Only `start over` started a run.
         expect(read().calls.filter((c) => c.startsWith("workflow run task.yml"))).toHaveLength(1);
+      } finally {
+        delete process.env.FAKE_FINAL;
+      }
+    });
+
+    it("keeps the session through a new model and effort: the next ask takes them, no new run (#532, ADR 0063)", async () => {
+      process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
+      try {
+        await job("issues", "opened");
+        // A `use` alone: the box's own reply, from the stay.
+        say("use claude opus high");
+        const staying = runStay(12);
+        await until(() => replies().length === 2);
+        expect(labels()).toContain("staying");
+        // Your next words: the same session, with Opus at high.
+        process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "2 GB of swap." });
+        await sayNow("and the swap?");
+        await until(() => replies().length === 3);
+        await sayNow("start over");
+        const done = await staying;
+        expect(done.summary).toContain("2 answers");
+        expect(replies().at(-1)?.c.body).toContain("2 GB of swap.");
+        const argv = JSON.parse(readFileSync(join(agentOut(), "next-final-argv.json"), "utf8"));
+        expect(argv).toEqual(
+          expect.arrayContaining(["--resume", "s-1", "--model", "opus", "--effort", "high"]),
+        );
+        expect(read().calls.filter((c) => c.startsWith("workflow run task.yml"))).toHaveLength(1);
+      } finally {
+        delete process.env.FAKE_FINAL;
+      }
+    });
+
+    it("carries `continue` on in the session, and posts `close` itself, then leaves (ADR 0063)", async () => {
+      process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
+      try {
+        await job("issues", "opened");
+        say("continue");
+        process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "Carried on." });
+        const staying = runStay(12);
+        await until(() => replies().length === 2);
+        expect(replies().at(-1)?.c.body).toContain("Carried on.");
+        await sayNow("close");
+        const done = await staying;
+        expect(done.summary).toContain("2 answers; left: an answer started more work");
+        expect(read().issue.state).toBe("closed");
+        // Neither started a run.
+        expect(read().calls.filter((c) => c.startsWith("workflow run task.yml"))).toHaveLength(0);
+      } finally {
+        delete process.env.FAKE_FINAL;
+      }
+    });
+
+    it("decides your `yes` to a list in the stay, and its job makes the calls: no new run (ADR 0063)", async () => {
+      process.env.FAKE_FINAL = JSON.stringify({
+        v: 2,
+        state: "needs-you",
+        text: "I'd add it to your jots.",
+        calls: [{ tool: "jot", name: "add", args: { text: "buy milk" } }],
+      });
+      try {
+        await job("issues", "opened");
+        expect(labels()).toContain("staying");
+        const code = replies().at(-1)?.line?.list;
+        say(`yes ${code}`);
+        // The stay's own step outputs, as task.yml reads them.
+        writeFileSync(outputs, "");
+        const done = await runStay(12);
+        expect(done.summary).toContain("left: its answer needs a token");
+        // The job's own steps mint the tool's key and apply what the stay decided.
+        expect(out("act")).toBe("jot");
+        expect(out("apply")).toBe("yes");
+        process.env.SHIPIFY_JOT_WRITE = jots;
+        await runApply(12);
+        expect(made()).toHaveLength(1);
+        expect(read().calls.filter((c) => c.startsWith("workflow run task.yml"))).toHaveLength(0);
       } finally {
         delete process.env.FAKE_FINAL;
       }
@@ -1302,17 +1419,34 @@ describe("a run end to end", () => {
       try {
         await job("issues", "opened");
         expect(labels()).toContain("staying");
-        // Another model: plan chooses differently, so a normal run takes it.
-        say("use opus\nand the swap?");
+        // A fresh clone: a normal run takes it.
+        say("start over");
         const done = await runStay(12);
         expect(done.summary).toContain("left: words for a normal run");
         expect(labels()).not.toContain("staying");
         expect(read().calls).toContain("workflow run task.yml -R o/shipify -f issue=12 -f job=run");
-        // That run answers your words with Opus, and stays in its turn (#462).
+        // That run answers your words, and stays in its turn (#462).
         const next = await job("workflow_dispatch");
         expect(next.do).toBe("think");
         expect(out("stay")).toBe("yes");
         expect(labels()).toContain("staying");
+      } finally {
+        delete process.env.FAKE_FINAL;
+      }
+    });
+
+    it("leaves within a look when its label is taken off (a merged plan's build waits, #528)", async () => {
+      process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
+      try {
+        await job("issues", "opened");
+        expect(labels()).toContain("staying");
+        set((f) => {
+          f.issue.labels = f.issue.labels.filter((l) => l.name !== "staying");
+        });
+        const done = await runStay(12);
+        expect(done.summary).toContain("left: its label was taken off");
+        // No words waited: no run started by it, so the build's run keeps its place.
+        expect(read().calls.filter((c) => c.startsWith("workflow run task.yml"))).toHaveLength(0);
       } finally {
         delete process.env.FAKE_FINAL;
       }

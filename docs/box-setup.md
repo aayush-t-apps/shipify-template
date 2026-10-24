@@ -1,14 +1,15 @@
-# Setting up a box: a Raspberry Pi, a VPS or this PC
+# Setting up a box: a Pi, a laptop, a VPS or this PC
 
 A box is a Linux machine that runs Shipify's jobs: task runs, due runs, clean-ups and alerts. Its
 slots are GitHub runners for the shipify repo only, labelled `shipify-box` and `box-<name>`. It
 runs what the queue hands it and keeps no secret: each job gets fresh tokens. CI and deploys never
 run on a box, so your apps don't depend on one. With every box off, runs wait in the queue.
 
-**One way for every machine** (ADR 0047): `pnpm ship box add` sets up a Pi or a VPS over SSH, or
-this PC with no target, with the same script. On each, the agent runs as a user of its own (the
-sandbox), and its slots get the label `sandbox` once that checks out, so every box takes task runs
-([The agent's own user](#the-agents-own-user)).
+**One way for every machine** (ADR 0047): `pnpm ship box add` sets up a Pi, a laptop, a spare PC
+or a VPS over SSH, or this PC with no target, with the same script. Every box gets the same OS, the
+same setup and the same rules; `box add` reads its cores and memory and picks its slots. On each,
+the agent runs as a user of its own (the sandbox), and its slots get the label `sandbox` once that
+checks out, so every box takes task runs ([The agent's own user](#the-agents-own-user)).
 
 ## Anywhere, with one command
 
@@ -26,8 +27,9 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
    - GitHub reachable.
 2. **It shows a code.** On your phone, open github.com/login/device, enter it, and approve
    "GitHub CLI". Approve only a code you started just now.
-3. **It asks your copy** (`<you>/shipify` by default). It checks that you manage it, that it's
-   private, and that it's a Shipify copy.
+3. **It asks your copy:** by default the one private `shipify` repo you manage (yours, or an
+   organization's), else `<you>/shipify`. It checks that you manage it, that it's private, and that
+   it's a Shipify copy.
 4. **It runs your copy's own `box add` on the machine:**
    - the plan first;
    - the box's name (the hostname by default) and its slots;
@@ -37,10 +39,17 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
    fetched go. It prints the link to revoke the approval: needed on a machine that isn't yours.
 
 **Its options,** after `bash -s --` when piped:
-- `--remove` takes the box away.
+- `--manage` makes it a box you keep: it never sleeps, and gets Tailscale, Cockpit and a firewall
+  ([below](#what-it-leaves-out-and---manage)).
+- `--replace` takes the place of a machine that had the same box name (this one, reinstalled).
+- `--remove` takes the box away; `--remove --purge` takes Shipify off the machine too
+  ([below](#taking-shipify-off-a-machine)).
 - `--token` takes a fine-grained token instead of the code: your copy only, Administration and
   Variables write, Contents read, a day long.
 - `--copy`, `--name` and `--slots` answer its questions ahead.
+
+**Run it again** for anything: to update the box's setup, to finish one that stopped, or to fix
+what `ship doctor` names. It carries on from what's done.
 
 **To read it or pin it first:** each release lists `here.sh`'s SHA-256 in its notes.
 ```sh
@@ -52,6 +61,28 @@ bash here.sh
 **What it needs:** the template public (otherwise `latest/download` isn't reachable without a
 login), and your copy private: a box never serves a public repo. `box add` and `ship doctor`
 refuse one. From a PC, `pnpm ship box add` below does the same.
+
+### What it leaves out, and `--manage`
+
+**Without `--manage`,** it sets the machine up as [this PC](#this-pc) is: its power and SSH
+settings stay as they are (a laptop still sleeps when its lid closes), and there's no Tailscale,
+Cockpit or firewall. That fits a machine you also use for other things.
+
+**With `--manage`,** for a machine you keep as a box (a laptop, a spare PC), it's set up as one
+from a PC over SSH is, with one difference:
+```sh
+curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/here.sh | bash -s -- --manage
+```
+- **The same:** it never sleeps (the lid does nothing, and sleep is off), and it gets Tailscale,
+  Cockpit and the firewall ([Managing it from a browser](#managing-it-from-a-browser)). Sign in to
+  Tailscale at the link it prints.
+- **The difference:** its SSH settings stay as they are, because you set it up at the machine,
+  not over SSH. The firewall lets SSH in only from your own network and Tailscale. For keys only,
+  add your key (`ssh-copy-id`), then run `pnpm ship box add <it> --manage --yes` from a PC once.
+- **Not on WSL** (Windows runs that machine), nor in Docker.
+
+The whole way for a laptop or a PC, with no other machine: [No PC?](#no-pc-the-machine-sets-itself-up)
+below.
 
 ## With Docker
 
@@ -81,34 +112,63 @@ docker run -d --name shipify-box --restart unless-stopped --stop-timeout 300 \
 - **To stop it:** `docker compose down`, or `docker stop -t 300 shipify-box`. Each runner gets 5
   minutes to cancel its job, as on a box.
 - **To remove it:** `docker compose run --rm box remove`, then `docker volume rm` its volume.
-- **Never `--privileged`, never the Docker socket:** either would give a task the host.
+- **Never `--privileged`, never the Docker socket:** either would give a task the host. So a box
+  in Docker gives its agents no containers ([the lab](#containers-the-lab)): a container can't make
+  containers without them.
 - **On Docker Desktop (Mac, Windows):** it works when Docker's own kernel allows the sandbox. If
   it doesn't, `register` says so and the box takes no tasks.
 - **One volume, one container:** a second container on the same volume refuses to start.
 
 ## Which box
 
-| | This PC | A Raspberry Pi 4 | A VPS |
+| | This PC | A machine of your own (a Pi, a laptop, a spare PC) | A VPS |
 |---|---|---|---|
-| Always on | while the PC and WSL run | yes | yes |
+| Always on | while the PC and WSL run | yes: a box never sleeps | yes |
 | Cost | none | the hardware, once | monthly |
-| Set up with | `box add` | `box add <user@host>` over SSH | `box add <user@host>` over SSH |
+| Set up with | `box add` | `box add <user@host>` over SSH, or `here.sh --manage` on it | `box add <user@host>` over SSH |
 | sudo | once, during setup (and `box start`, `stop`) | once, during setup | once, during setup |
 | Task runs (the agent) | yes | yes | yes |
 
 **Slots: several tasks at once.** A runner takes one job at a time, so a box runs one runner per
-slot. A busy slot needs about 1.6 GB of memory (its checks, browser tests included, about 1.0 GB
-for a minute or two; its agent 0.4; its runner 0.2), so a new Pi or VPS keeps 1 GB for the system
-and gets a slot per 2 GB of the rest: 4 GB gives 1, 6 GB 2, 8 GB (a Pi 4 or 5) 3, 12 GB and up 4.
-`--slots N` picks another count, any number from 1, and a box keeps what it has when `box add`
-runs again. Past what its memory fits or its cores, `box add` warns: checks that overlap get
-slower (on homepi's 4 cores, a fourth or fifth at once gets no more done per minute, ADR 0061).
+slot. One rule for every box: **a slot per core, no more than its memory fits.** A busy slot needs
+about 1.6 GB of memory (its checks, browser tests included, about 1.0 GB for a minute or two; its
+agent 0.4; its runner 0.2), so the box keeps 1 GB for the system and fits a slot per 2 GB of the
+rest. Past its cores, checks that overlap only slow each other down (on homepi's 4 cores, a fourth
+or fifth at once gets no more done per minute, ADR 0061).
+
+| The box | Slots |
+|---|---|
+| a 4 GB VPS | 1 (memory) |
+| a Pi 4 or 5, 8 GB, 4 cores | 3 (memory) |
+| a laptop, 32 GB, 4 cores (8 threads) | 8 (threads: `nproc` counts them) |
+| 64 GB, 16 cores | 9, the most a box has |
+
+`--slots N` picks another count, 1 to 9, and a box keeps what it has when `box add` runs again.
+Past what it suggests, `box add` warns. Your Claude plan's limits are shared: N tasks at once use
+them N times as fast, and a slot with no task uses none.
 A box with no swap of its own (Ubuntu's Pi image and most VPS images come without) gets **swap in
 memory (zram)**: half its memory, compressed, so tasks that overlap and run short slow down
 instead of having a test killed. A box that has swap (WSL, a VPS with a swap file) keeps its own.
-Your Claude plan's limits are shared: N tasks at once use them N times as fast.
 
-**One OS for every Pi and VPS: Ubuntu Server 24.04 LTS (64-bit),** or a newer LTS. `box add`
+**How slots share a box.** Nothing is set aside for a slot: Linux shares the box between them, as it
+shares a laptop between its apps.
+- **The cores:** Linux gives each program short turns on a core and switches many times a second.
+  A slot whose agent waits for its model, or whose tests wait on the disk, takes no turns. When
+  more programs want turns than there are cores, each runs slower, and nothing breaks; far past
+  the cores, a test with a time limit can run out of time (6 at once on homepi's 4).
+- **The memory:** a program gets memory when it asks, and gives it back when it ends. An idle slot
+  holds about 0.2 GB, so a task alone can use the rest. Memory nothing uses holds the disk's cache,
+  given back at once when a program asks.
+- **When memory runs short:** with swap, Linux moves what's idle out of the way and things slow
+  down; with none, it kills a program, and a test fails. zram is swap kept in memory, compressed
+  to about a third, so it's fast and never wears out a USB stick or SD card.
+- **Each slot's count:** each slot is a systemd service, and systemd gives each service a group of
+  its own (a cgroup) that counts its memory. `box health` reads it: the most each slot has used,
+  and any task killed for memory. No slot has a limit of its own: a task alone gets the whole box,
+  and a limit comes only if a slot is ever killed for memory (ADR 0061).
+- **Measure a box:** `box/load-test.sh`, below.
+
+**One OS for every box: Ubuntu Server 24.04 LTS (64-bit),** or a newer LTS. `box add`
 refuses any other, Raspberry Pi OS and Debian included ([About the OS](#about-the-os)), so every
 box is set up and tested the same way.
 
@@ -120,37 +180,72 @@ time, and carries on from any box: its branch and status live on GitHub.
 The bot and the agent's login: [setup.md](setup.md), about 10 minutes on the PC. None of it goes on
 a box: it lives in shipify's secrets.
 
-## A Raspberry Pi 4 (8 GB)
+## A machine of your own: a Pi, a laptop or a spare PC
 
-**What you need:** the Pi 4 (8 GB; 4 GB works, slower), a USB 3 SSD (SD cards wear out), the
-official 15 W power supply, a case with a fan, and Ethernet or Wi-Fi. Five steps, about 30
-minutes; reinstalling is the same five.
+**What you need:** a 64-bit machine (x64 or arm64) with 4 GB of memory or more, an SSD (SD cards
+and USB sticks wear out) and Ethernet or Wi-Fi. A Pi 4 or 5 also needs the official power supply
+and a case with a fan; a laptop works with its lid closed, on an open shelf where air reaches it.
+Five steps, about 30 minutes; reinstalling is the same five.
+
+### No PC? The machine sets itself up
+
+A laptop or a spare PC, with only your phone beside it:
+1. **Write the OS and start it:** steps 1 and 2 below (on a laptop, keep it plugged in, and on
+   Ethernet if you can).
+2. **At its keyboard,** signed in as the user you made:
+   ```sh
+   curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/here.sh | bash -s -- --manage --copy <owner>/shipify
+   ```
+   Approve the code on your phone, check the plan, say `yes`, and give your password once. About
+   15 minutes. Last, it prints a Tailscale link: open it on your phone and sign in with the
+   account its Tailscale app uses (within 15 minutes).
+3. **In Tailscale's admin page:** the machine → **Disable key expiry**. If Cockpit's address
+   doesn't open, turn on HTTPS certificates there (DNS), then run the same command again.
+4. **Check it:** step 5 below, from your phone: `/ping` in your chat, then a real task.
+
+Anything goes wrong, or `ship doctor` later says its setup is older: the same command again. It
+never needs a PC. (From another machine you can reach, such as another box over Tailscale, steps
+3 to 5 work as from a PC: as your own user there, `gh auth login`, clone your copy, `make setup`;
+afterwards `gh auth logout` and delete the clone.)
 
 ### 1. Write the OS, on the PC
 
-1. In **Raspberry Pi Imager**, pick: Device **Raspberry Pi 4**; OS **Other general-purpose OS →
-   Ubuntu → Ubuntu Server 24.04.x LTS (64-bit)** (check the version: older ones sit next to it);
-   Storage: the SSD.
+**A Pi:**
+1. In **Raspberry Pi Imager**, pick: Device **Raspberry Pi 4** (or 5); OS **Other general-purpose
+   OS → Ubuntu → Ubuntu Server 24.04.x LTS (64-bit)** (check the version: older ones sit next to
+   it); Storage: the SSD.
 2. At OS customisation, **Edit settings**:
    - a hostname: it becomes the box's name (for example `mybox`);
    - a username and password (setup asks for the password once);
    - your Wi-Fi, unless it's on Ethernet;
    - **Services**: enable SSH (password login is fine: step 3 adds your key).
 
-### 2. Boot from the SSD
+**A laptop or a PC:** write the [Ubuntu Server 24.04.x LTS](https://ubuntu.com/download/server)
+installer to a USB stick (for example with Raspberry Pi Imager's **Use custom**), and start the machine from
+it. In the installer:
+- **Storage:** the internal SSD, and untick **Set up this disk as an LVM group**, so the system gets
+  the whole disk. Leave any second disk (an HDD) out.
+- **Profile:** the server's name is the box's name (for example `mybox`); a username and password.
+- **SSH:** tick **Install OpenSSH server**.
+- **Featured snaps:** none.
 
-Plug the SSD into a blue USB 3 port and power on (about two minutes). If it doesn't boot, the
-bootloader is too old: write **Misc utility images → Bootloader → USB Boot** to an SD card, boot
-from it until the green light blinks steadily, then remove the card.
+### 2. Start it
+
+- **A Pi:** plug the SSD into a blue USB 3 port and power on (about two minutes). If it doesn't
+  boot, the bootloader is too old: write **Misc utility images → Bootloader → USB Boot** to an SD
+  card, boot from it until the green light blinks steadily, then remove the card.
+- **A laptop or a PC:** let the installer finish, remove the stick, and restart. Nothing else on
+  the machine needs setting: the setup keeps every box awake, and swaps the installer's swap file
+  (`/swap.img`, on the disk) for swap in memory (zram), as a Pi has.
 
 ### 3. Connect from the PC, once
 
-Find the Pi's address in your router (reserve it there), then:
+Find the machine's address in your router (reserve it there), then:
 
 ```sh
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_pi -N ""        # once per PC: a key just for the Pi
-ssh-keygen -R <address>                                    # only when reinstalling
-ssh-copy-id -i ~/.ssh/id_ed25519_pi.pub <user>@<address>   # asks for the Pi's password once
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_box -N ""        # once per PC: a key just for boxes
+ssh-keygen -R <address>                                     # only when reinstalling
+ssh-copy-id -i ~/.ssh/id_ed25519_box.pub <user>@<address>   # asks for the machine's password once
 ```
 
 Give it a short name in `~/.ssh/config`, then check `ssh mybox true` asks for nothing:
@@ -159,33 +254,43 @@ Give it a short name in `~/.ssh/config`, then check `ssh mybox true` asks for no
 Host mybox
   HostName <address>
   User <user>
-  IdentityFile ~/.ssh/id_ed25519_pi
+  IdentityFile ~/.ssh/id_ed25519_box
   IdentitiesOnly yes
 ```
 
 ### 4. Make it a box, from the PC
 
 ```sh
-pnpm ship box add mybox --manage        # shows what it will do
-pnpm ship box add mybox --manage --yes  # asks for the Pi's password once
+pnpm ship box add mybox --manage        # shows what it will do, and its slots
+pnpm ship box add mybox --manage --yes  # asks for the machine's password once
 ```
 
 `--manage` adds Tailscale and Cockpit ([Managing it from a browser](#managing-it-from-a-browser)).
 Make a free [Tailscale](https://tailscale.com) account first (sign in with GitHub), and install
 its phone app with the same login.
 
-- **What it installs:** git (2.26 or newer: `ship doctor` checks), make, gh, Node 22, what each stack needs; automatic security updates
-  (restarting at 04:30 when one needs it); SSH by key only; the user `shipify` (no sudo, its home
-  0700) running one runner per slot as system services (`shipify-box-<name>`, then
+- **What it installs:** git (2.26 or newer: `ship doctor` checks), make, gh, Node 22, shellcheck,
+  fd and sqlite3 (shellcheck and fd come from Ubuntu's universe, on by default: without it the
+  setup goes on and says how to add them), what each stack needs; automatic security updates
+  (restarting at 04:30 when one needs it, and never restarting a slot mid-task); no sleep (the lid
+  does nothing, and sleep is off: on a Pi or a VPS this changes nothing); SSH by key only; the
+  user `shipify` (no sudo, its home 0700) running one runner per slot as system services (`shipify-box-<name>`, then
   `shipify-box-<name>-<k>`, with `UMask=0077`); the machine's tools in `/opt/shipify`; the sandbox
-  ([below](#the-agents-own-user)); with `--manage`, Tailscale, Cockpit and a firewall.
+  ([below](#the-agents-own-user)), the agents' network wall included; containers for the agents,
+  the lab ([below](#containers-the-lab)); then the updates waiting now; with `--manage`, last,
+  Tailscale, Cockpit and a firewall.
+- **Right after a first boot,** Ubuntu's own updates hold apt for a while: the setup waits for them
+  (up to 20 minutes) and says so. A run cut off mid-install is finished first when you run it
+  again.
 - **Then it checks the sandbox.** Only when every wall holds does it add the label `sandbox` to the
-  slots, so task runs can go to them.
+  slots, so task runs can go to them. It says `containers: … nothing was left` when the lab works.
+  It's done only when every slot has the label and one is online; otherwise it says which.
 - **Time:** 10 to 15 minutes. Running it again updates the box in place (not while a task runs).
-- **With `--manage`:** sign in to Tailscale at the link it prints, and if asked, turn on HTTPS
-  certificates in Tailscale's admin page (DNS).
-- **Reinstalling:** the name looks taken, so add `--replace` (and delete the old machine in
-  Tailscale).
+- **With `--manage`:** sign in to Tailscale at the link it prints, within 15 minutes, and if asked,
+  turn on HTTPS certificates in Tailscale's admin page (DNS). If you miss it, the box works anyway:
+  run the same command again.
+- **Reinstalling:** the name looks taken, so add `--replace` (`here.sh` takes it too), and delete
+  the old machine in Tailscale.
 
 ### 5. Check it
 
@@ -197,14 +302,15 @@ its phone app with the same login.
 
 ## A VPS
 
-Any VPS with Ubuntu Server 24.04 LTS, x64 or arm64, works like a Pi. It costs money every month.
+Any VPS with Ubuntu Server 24.04 LTS, x64 or arm64, is set up the same way. It costs money every
+month.
 
-1. **Create it** with Ubuntu 24.04 LTS, your SSH key and a user who can use sudo; 4 GB of memory
-   for 1 slot, 8 GB for 3.
+1. **Create it** with Ubuntu 24.04 LTS, your SSH key and a user who can use sudo; a core and 2 GB
+   of memory per slot, plus 1 GB (4 GB for 1 slot, 8 GB and 3 cores for 3).
 2. **Firewall:** in the provider's firewall, allow only SSH in. The box only connects out.
 3. **Make it a box:** `pnpm ship box add <user>@<ip> --manage`, then again with `--yes`. It's
    named after the hostname; `--name <name>` picks another.
-4. **Check:** as for the Pi, step 5.
+4. **Check:** as for a machine of your own, step 5.
 
 To remove it: `pnpm ship box remove <name> --yes`, then delete the VPS.
 
@@ -218,8 +324,10 @@ pnpm ship box add --yes  # does it: asks for sudo once
 - **The same box as a Pi's:** the same script, run here with sudo, so the same user `shipify`, the
   same agent users and sandbox, the same system services, and the same `sandbox` label once its
   check passes. It takes task runs like any box.
-- **What stays as it is:** this PC's SSH settings and its network. `--manage` (Tailscale, Cockpit,
-  a firewall) is for a machine you reach over SSH, so it's refused here.
+- **What stays as it is:** this PC's SSH settings, its power settings and its network. With
+  `--manage`, it's a box you keep instead: it never sleeps, and gets Tailscale, Cockpit and a
+  firewall; its SSH settings still stay ([one command](#what-it-leaves-out-and---manage)). Not on
+  WSL.
 - **Ubuntu 24.04 LTS or newer,** natively or in WSL. The runner and the agents are their own
   users, who can't read your Linux home.
 - **On WSL, Windows is walled off too.** By default WSL lets every Linux user open your Windows
@@ -296,44 +404,103 @@ reaches the runner's keys or changes what the runner runs next.
   code, home and work, gone before the next run ([security.md](security.md#the-agents-sandbox)).
 - **Kept per slot:** `/srv/shipify-agent-<k>/cache` and `data` (the agent's `~/.cache` and
   `~/.local/share`), so tools download once per slot, not once per run: pnpm, the
-  project's packages, a test browser. The weekly clean-up trims what hasn't been read in 30 days.
+  project's packages, a test browser, its containers' images (`data/containers`). The weekly
+  clean-up trims what hasn't been read in 30 days, and leaves the images to Podman's prune.
 - **The check, at setup and every week:** the runner starts each agent without a password, and no
   agent can read the runner's home, its jobs' folder (`_work`), a runner process's environment or
-  another slot's runs, nor, on WSL, open a Windows drive or start a Windows program
-  ([This PC](#this-pc)). `box add` adds the `sandbox` label only after it passes. `ship doctor`
-  (so each weekly clean-up) checks it again, plus the home's 0700 and the jobs' umask 0077.
-- **Its network is open,** as the work needs (npm, the agent's API, GitHub). A firewall for the
-  agents' users is for later.
+  another slot's runs, nor write to a root container socket, nor, on WSL, open a Windows drive or
+  start a Windows program ([This PC](#this-pc)). At setup, also: no agent reaches a private
+  network (below). `box add` adds the `sandbox` label only after it passes. `ship doctor` (so each
+  weekly clean-up) checks it again, plus the home's 0700 and the jobs' umask 0077.
+- **Its network: the internet, never a private network** (setup 9). An agent and its containers
+  reach what the work needs (GitHub, npm, the agent's API), and no private address: not your home
+  network (the router, a camera, a NAS, homepi), not the tailnet, nor a cloud's metadata address
+  (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `169.254/16`, `fc00::/7`, `fe80::/10`). DNS stays
+  open, since a resolver on your network may answer it. It's a table of its own in nftables
+  (`/etc/shipify/agents-net.nft`), for each agent's user and the IDs of its range, loaded at every
+  start by `shipify-agents-net.service`, before the network is up. Your own rules, ufw's and
+  Tailscale's stay as they are. The setup's check proves it: a listener on the box's own private
+  address, which root reaches and no agent does. The rest of the internet stays open: a list of
+  allowed hosts is for later ([roadmap.md](roadmap.md)).
+
+## Containers: the lab
+
+Every box gives its agents containers (box setup 8, ADR 0064): a task can run `docker run …` or
+`docker compose up` for tests that need a database, to try a repo with its own services, or to test
+a theory. Nothing to set: `box add` installs it, the same on a Pi, a laptop, a spare PC or a VPS.
+
+- **Rootless only:** Podman, as each slot's own agent user, in a user namespace the agent owns,
+  with a range of 65,536 IDs of its own (`/etc/subuid`, `/etc/subgid`). `docker` is Podman
+  (podman-docker), and `docker compose` is podman-compose. No Docker Engine, no root daemon, no
+  `docker` group and no socket: setup turns off the root API socket Ubuntu's package starts.
+- **Gone with the turn:** a container is a child of the agent's command, so the box's kill at each
+  turn's end stops it. Its record, volumes and networks go when the slot's next run starts, which
+  empties Podman's state in `/srv/shipify-agent-<k>/runtime` (as a restart would) and prunes them.
+- **Images are kept per slot, for a week,** in `/srv/shipify-agent-<k>/data/containers`, so a
+  second run is fast. The weekly clean-up removes them, when no other slot is busy. Each slot pulls
+  its own copy: a store two agents share would break the wall between slots.
+- **Docker's habits:** a short name (`postgres`) is Docker Hub's
+  (`/etc/containers/registries.conf.d/50-shipify.conf`). Docker Hub lets an address pull 100 times
+  in 6 hours without a login.
+- **The agents' settings,** `/etc/containers/shipify-agents.conf`, which the runner names in each
+  agent command: there's no systemd user session, so the cgroupfs group manager, and logs and
+  events to files (`docker logs` works). Healthchecks don't run, and podman-compose 1.0.6 doesn't
+  wait for a healthy service, so an agent waits in its own command. A container stays in its
+  slot's group, so its memory counts as the slot's.
+- **Ubuntu's normal updates:** Podman's fix for stopping containers is only in `<codename>-updates`.
+  A box whose sources lack it (homepi's image did) gets it in
+  `/etc/apt/sources.list.d/shipify-updates.sources`. Automatic updates stay security-only.
+- **A machine with a Docker of its own** keeps it: setup installs no `docker` command there, and
+  removes no package. Agents use `podman`, which takes the same commands.
+- **Your own Podman** on the box works as before, as your user, with your own range and settings.
+- **Never a reason for setup to fail:** when the packages can't install (no Ubuntu universe), the
+  step says so, and the box works without containers. A box in Docker skips it.
+- **The check, at setup:** on every slot, the agent's range works; on slot 1, the whole way, as a
+  run does: a container writes into a folder as a user of its own, the box's kill stops it and
+  leaves no process of the agent or its range (a wall: no label until it holds), a run start's
+  prune leaves no container, and `podman unshare` removes what the container wrote. A pull that
+  fails (no network, Docker Hub's limit) is said, and the box keeps its label.
 
 ## Adding a box or a slot
 
 ```sh
-pnpm ship box add <user@host> --manage --yes            # a new box, a slot per 2 GB of memory
+pnpm ship box add <user@host> --manage --yes            # a new box: a slot per core, as memory fits
 pnpm ship box add <user@host> --slots 3 --manage --yes  # more (or fewer) slots on a box
 ```
 
 - **More slots:** each new slot gets its runner and its agent user. Fewer removes the extra ones,
   with their agents' users and runs.
-- **When to change the count:** a new box starts with what its memory fits. Pick fewer when
+- **When to change the count:** a new box starts with what its cores and memory fit. Pick fewer when
   `box health` says a slot had a task killed for memory, or when your plan's limits run out too
   fast. Pick more on a box with memory and cores to spare: the warning says when it's past them.
 - **Measure it:** `box/load-test.sh` runs N copies of an app's `make verify` at once on the box
   (as your own login there, no root) and prints each one's time and memory, the box's lowest free
   memory and any kill (`bash box/load-test.sh <app folder> 1 3 4 5`).
-- **More boxes or more slots:** your Claude plan, not the hardware, is usually the limit: for one
-  person, 2 to 4 slots in all. Add a box when tasks wait in the queue, not before.
+- **More boxes or more slots:** your Claude plan, not the hardware, is usually the limit: N tasks
+  at once use its 5-hour limit N times as fast. Start with what `box add` picks; if runs hit the
+  limit, the same command with `--slots 4` (or fewer). Add a box when tasks wait in the queue, not
+  before.
 - **Names:** each box's is its own. `box add` refuses a name another machine has, unless you add
   `--replace`.
-- **Another Linux PC or laptop** on your network, with Ubuntu 24.04 LTS, is set up like a VPS (it
-  needs `sudo apt install openssh-server`). A laptop that sleeps is better as extra capacity than as the only box.
+- **Moving to another machine,** in one go:
+  1. Set the new one up (steps 1 to 5, or [No PC?](#no-pc-the-machine-sets-itself-up)).
+  2. On the old one, `sudo systemctl stop shipify-box-<old name> shipify-box-<old name>-2 …`, so
+     the next task goes to the new one. Run one, and check its run details name the new box.
+  3. [Take Shipify off the old one](#taking-shipify-off-a-machine) (`here.sh --remove --purge` on
+     it), or write it a fresh OS. Nothing is lost: a box holds nothing that isn't on GitHub.
 
 ## How every box stays running
 
 Each slot is a systemd service running the runner's `bin/runsvc.sh`: a system service run as
-`shipify` on a Pi or VPS, your user's service (with linger, no sudo) on this PC. It starts at boot,
-comes back 10 seconds after anything but you stops it (`Restart=always`), and a stop asks the runner
-to cancel its job first (`KillMode=mixed`). On a Pi or VPS it runs with `UMask=0077`. The runner
-updates itself.
+`shipify`, the same on every machine. It starts at boot, comes back 10 seconds after anything but
+you stops it (`Restart=always`), and a stop asks the runner to cancel its job first
+(`KillMode=mixed`). It runs with `UMask=0077`. The runner updates itself. A slot GitHub deleted
+(after `box remove`, or 14 days off) registers again when the box is set up again.
+
+Every box you keep (set up over SSH, or with `--manage`) never sleeps: a logind setting makes the
+lid do nothing, and the sleep states are masked. An automatic update never restarts a slot (a
+needrestart rule for `shipify-box-*`): a slot takes a new library at its next start. This PC without
+`--manage` keeps its own power settings; a container's host keeps its own.
 
 ## Fast and current
 
@@ -358,10 +525,10 @@ the box when the run ends.
 | `pnpm ship box list` | every box: online, busy, its slots, "no sandbox", its Cockpit link (from anywhere) |
 | `pnpm ship box add [<user@host>] --yes` | makes a box: a Pi or VPS over SSH, or this PC with no target; again, it brings a box up to date |
 | `pnpm ship box status` | this machine's box (this PC's, or a Pi's when you run it there): each slot's service, GitHub's view and the task it runs |
-| `pnpm ship box health [<user@host>]` | disk, memory and swap, temperature, a pending restart, updates, services, each slot's memory: here or over SSH |
+| `pnpm ship box health [<user@host>]` | disk, memory and swap, temperature, how a Pi last started (power-on or a restart), a pending restart, updates, services, each slot's memory: here or over SSH |
 | `pnpm ship box stop` · `start` · `restart` | this machine's box: off until started, even after a restart; on; both, with sudo. Stop asks first while a task runs |
 | `pnpm ship box logs -f` · `peek -f` | this machine's slots' log, live; what the agent is doing now |
-| `pnpm ship box remove <name> --yes` | unregisters its slots from GitHub, and stops its services when it's this machine's (with sudo); a Pi's, it says what to run there |
+| `pnpm ship box remove <name> [--purge] --yes` | unregisters its slots from GitHub, and stops its services when it's this machine's (with sudo); a Pi's, it says what to run there. `--purge`, on the machine itself: Shipify off it too (`box/remove.sh`) |
 | `pnpm ship doctor` | on a box: its setup version and the sandbox check, among the rest |
 
 ## Looking after it
@@ -372,11 +539,12 @@ the box when the run ends.
     removes closed and deleted tasks' folders, the agents' run folders older than 8 hours (as each
     agent, who owns them), runs `ship doctor` (the sandbox check included), checks the door
     answers, and takes the newest Node 22.x. When no other slot is busy, it keeps the box's shared
-    tools to each agent's pinned version and the two newest Node versions, and prunes the package
-    store and npm's cache. Its result goes on the status task, naming what it removed; a problem
-    comes as a comment there, which notifies you on GitHub;
+    tools to each agent's pinned version and the two newest Node versions, prunes the package
+    store and npm's cache, and removes each slot's containers' images. Its result goes on the
+    status task, naming what it removed; a problem comes as a comment there, which notifies you on
+    GitHub;
   - each due run writes the box's health to the status task (disk, memory and swap, temperature,
-    throttling, a pending restart, updates, services, and the most each slot has used since it
+    throttling, how a Pi last started, a pending restart, updates, services, and the most each slot has used since it
     started); a slot that had a task killed for memory comes as a comment there;
   - the watch says when a box is offline for 4 minutes or more, and again when it's back.
 - **See what the agent is doing,** over SSH or Cockpit's terminal:
@@ -387,11 +555,45 @@ the box when the run ends.
   shipify-box-<name> shipify-box-<name>-2 …`; logs: `journalctl -u 'shipify-box-<name>*' -f`.
 - **A task cut off mid-run** (a restart, a power cut): the watch marks it Stopped and tells you
   once; reply `continue` and any box carries it on.
-- **Update its setup** (when doctor says it's older): `pnpm ship box add <user@host> --manage
-  --yes`, while no task runs.
-- **Remove it:** `pnpm ship box remove mybox --yes` (the box's name, not the SSH alias), then on
-  the Pi `sudo systemctl disable --now shipify-box-mybox …`, or write a fresh OS.
+- **Update its setup** (when doctor says it's older), while no task runs: on the box, its
+  `here.sh` command again; from a PC, `pnpm ship box add <user@host> --manage --yes`.
+- **Remove it:** [Taking Shipify off a machine](#taking-shipify-off-a-machine), or write a fresh
+  OS.
 - **Lost or stolen:** [security.md](security.md#if-something-leaks-or-a-box-is-lost).
+
+## Taking Shipify off a machine
+
+For a machine that stays in use: a Pi that keeps other work, a laptop you take back. Writing a fresh
+OS does the same; nothing is lost either way, since a box holds nothing that isn't on GitHub.
+
+1. **On the machine,** while no task runs on it, one command (setup 9):
+   ```sh
+   curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/here.sh | bash -s -- --remove --purge
+   ```
+   (or, in a clone of your copy there, `pnpm ship box remove <name> --purge --yes`). GitHub forgets
+   its slots, then `box/remove.sh` takes off, with sudo: its services, its users with their ID
+   ranges, folders and processes (the containers' images too), the sudo rule, the update rule for
+   the slots, the agents' network rules and `/opt/shipify`. Last, it checks nothing of the box is
+   left, and says what is. It's safe to run again.
+2. **A machine you can't reach any more:** from a PC, `pnpm ship box remove <name> --yes` (the
+   box's name, not the SSH alias): GitHub forgets its slots. Write it a fresh OS when you have it
+   back.
+3. **The tools only Shipify used,** when nothing else on the machine needs them: Node and pnpm,
+   gh, and the lab's Podman and its settings. shellcheck, fd and sqlite3 can stay.
+   ```sh
+   sudo rm -rf /opt/node
+   sudo rm -f /usr/local/bin/{node,npm,npx,corepack,pnpm,pnpx,yarn,yarnpkg}
+   sudo apt purge -y gh && sudo apt autoremove -y
+   sudo rm -f /etc/apt/sources.list.d/github-cli.list /etc/apt/keyrings/githubcli-archive-keyring.gpg
+   sudo apt purge -y podman podman-docker podman-compose uidmap slirp4netns catatonit netavark aardvark-dns && sudo apt autoremove -y
+   sudo rm -f /etc/containers/shipify-agents.conf /etc/containers/registries.conf.d/50-shipify.conf /etc/containers/nodocker
+   ```
+4. **What stays, as the machine's own:** security updates (with the restart at 04:30), Ubuntu's
+   normal updates where setup added them (`/etc/apt/sources.list.d/shipify-updates.sources`), SSH
+   by key only, zram, and with `--manage` Tailscale, Cockpit and the firewall. A laptop you take
+   back sleeps again with `sudo rm /etc/systemd/logind.conf.d/50-shipify-box.conf` and `sudo
+   systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target
+   suspend-then-hibernate.target`, then a restart.
 
 ## Managing it from a browser
 
@@ -406,7 +608,12 @@ CPU and disk.
 - **A terminal without Cockpit:** Tailscale's admin page → Machines → the box → **SSH to machine**.
 - **Keep it on your tailnet:** Tailscale's admin page → Machines → the box → **Disable key expiry**
   (otherwise it drops off after 180 days).
-- **"Bad Origin" in Cockpit:** run `box add --manage` again.
+- **"Bad Origin" in Cockpit:** run the same command again (`here.sh --manage`, or `box add
+  --manage`). It restarts Cockpit only when its settings change, so it works from Cockpit's own
+  terminal too.
+- **No NetworkManager:** Cockpit comes without what it recommends, so its Networking and Storage
+  pages are missing: NetworkManager would take a laptop's Wi-Fi from Ubuntu Server's own settings.
+  Its updates page is there.
 
 ## Using it anywhere
 
@@ -419,7 +626,7 @@ CPU and disk.
 
 ## About the OS
 
-- **Ubuntu Server LTS only,** on a Pi and a VPS alike: one OS, one setup, tested the same way.
+- **Ubuntu Server LTS only,** on every box: one OS, one setup, tested the same way.
   `box add` checks it first (24.04 or a newer LTS) and refuses any other.
 - **Not Raspberry Pi OS:** `make verify` starts Cloudflare's local runtime, which needs a
   kernel with 48-bit addresses; Raspberry Pi OS's has 39
@@ -431,10 +638,16 @@ CPU and disk.
 
 ## When something's off
 
+"Run it again" below means the box's own setup command: on the box, its `here.sh` command; from a
+PC, `pnpm ship box add <user@host> --manage --yes`. Either works, while no task runs.
+
 | You see | Do |
 |---|---|
-| a task gets no 👀 for minutes | no box is online: `pnpm ship box list`, then turn one on. GitHub's queue starts the task when one is back |
-| tasks wait with a box online | no online slot has the `sandbox` label (`box list` says "no sandbox"): run `box add` again on that box, while no task runs |
+| a task gets no 👀 for minutes | no box is online: `/ping` in your chat (or `pnpm ship box list`), then turn one on. GitHub's queue starts the task when one is back |
+| tasks wait with a box online | no online slot has the `sandbox` label (`box list` says "no sandbox"): run its setup again, while no task runs |
+| the setup says none of its slots is online | `sudo systemctl status shipify-box-<name>` on it says why; then run it again |
+| the setup waits at "Waiting for cache lock" | Ubuntu's own updates, after a first boot: it waits up to 20 minutes, then goes on. Stopped anyway (Ctrl-C, a lost session)? Run it again: it finishes the cut-off install first |
+| the sandbox check says the agents can reach your network | their rules didn't load: `sudo systemctl status shipify-agents-net` says why; then run it again |
 | `ship doctor` (or the clean-up) says the sandbox isn't right | it names the wall that's open. Run `box add` again: it sets the sandbox up and checks it |
 | the sandbox check says an agent's commands can read its memory, or its login isn't on a pipe | both are Ubuntu's own settings, which `box add` leaves as they are: put `kernel.yama.ptrace_scope = 1` in `/etc/sysctl.d/10-ptrace.conf` and run `sudo sysctl --system`; `/bin/sh` must be dash (`ls -l /bin/sh`). Then `box add` again |
 | `box add` stops at "Checking the sandbox" | the line above names the wall. The box keeps working, without the `sandbox` label. Run it again; if it fails the same way, look at `/etc/sudoers.d/shipify-agents` and `ls -ld /home/shipify /srv/shipify-agent-*`. On WSL, "the agents can reach Windows": make the fix it prints in `/etc/wsl.conf` first ([This PC](#this-pc)) |
@@ -444,4 +657,4 @@ CPU and disk.
 | `ship doctor` says the kernel is 39-bit | write Ubuntu Server 24.04 LTS instead |
 | offline after a power cut | wait a minute; then Cockpit, or `ssh` in and `sudo systemctl status shipify-box-<name>` |
 | a box's clean-up waits in the queue | its slots lack the `box-<name>` label: run `box add` again |
-| a box vanished from `box list` | GitHub removes a runner that's been off 14 days: `box add` again |
+| a box vanished from `box list` | GitHub removes a runner that's been off 14 days: run its setup again, which registers its slots again |

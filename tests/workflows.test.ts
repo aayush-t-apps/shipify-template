@@ -11,7 +11,7 @@ import { REPOS_PERMISSIONS } from "../cli/commands/bot.ts";
 import { NEEDS_YOU_LABEL } from "../cli/contracts/labels.ts";
 import { GIVE_UP_MS } from "../cli/kernel/decide.ts";
 import { agentOf, agentRepos } from "../cli/kernel/run.ts";
-import { STAY_LAST_MINUTES } from "../cli/kernel/stay.ts";
+import { JOB_MINUTES } from "../cli/kernel/stay.ts";
 import { THINK_MINUTES } from "../cli/kernel/think.ts";
 import { STALE_RUN_MS } from "../cli/lib/sandbox.ts";
 import type { Plan, Snapshot } from "../cli/kernel/types.ts";
@@ -397,13 +397,55 @@ describe("task.yml (ADR 0031)", () => {
     expect(step("decide").env?.SHIPIFY_STAY).toBe("${{ vars.SHIPIFY_STAY }}");
   });
 
+  it("applies a stay's answer that needs a token in the same job, with decide's mints (ADR 0062)", () => {
+    const at = (s: Step) => run.steps.indexOf(s);
+    const named = (prefix: string) => run.steps.filter((s) => s.name?.startsWith(prefix));
+    const [apply, stayApply] = named("Apply") as [Step, Step];
+    expect(stayApply.name).toBe("Apply the stay's answer (as apply does)");
+    expect(stayApply.if).toBe(
+      "steps.stay.outcome == 'success' && steps.stay.outputs.apply == 'yes'",
+    );
+    // The same steps as decide's, each reading the stay's outputs: nothing more is minted.
+    const asStay = (v: unknown) =>
+      JSON.stringify(v)
+        .replaceAll("steps.decide.outputs.", "steps.stay.outputs.")
+        .replace(
+          /steps\.(apply_token|write|write_account|files)\.outputs/g,
+          "steps.stay_$1.outputs",
+        );
+    const pairs = [
+      ["apply_token", "stay_apply_token"],
+      ["write", "stay_write"],
+      ["write_account", "stay_write_account"],
+      ["files", "stay_files"],
+    ] as const;
+    for (const [was, now] of pairs) {
+      expect(JSON.stringify(step(now).with), now).toBe(asStay(step(was).with));
+      expect(String(step(now)["continue-on-error"] ?? ""), now).toBe(
+        JSON.parse(asStay(String(step(was)["continue-on-error"] ?? ""))),
+      );
+      expect(step(now).if, now).toContain("steps.stay.outputs.apply == 'yes'");
+      // Only after the stay, its agent done: no write key while an agent runs.
+      expect(at(step(now)), now).toBeGreaterThan(at(step("stay")));
+      expect(at(step(now)), now).toBeLessThan(at(stayApply));
+    }
+    for (const [was, now] of pairs.slice(1))
+      expect(step(now).if, now).toBe(
+        `steps.stay.outputs.apply == 'yes' && ${JSON.parse(asStay(step(was).if))}`,
+      );
+    expect(JSON.stringify(stayApply.env)).toBe(asStay(apply.env));
+    expect(stayApply.run).toBe(apply.run);
+    // Then the label's step, however the job ends.
+    const off = run.steps.find((s) => s.name === "Its stay's label off, however the job ends");
+    expect(at(off as Step)).toBeGreaterThan(at(stayApply));
+  });
+
   it("gives the job the sum of its clocks, and keeps a run's copy of Shipify at least as long (ADR 0035)", () => {
     const job = run["timeout-minutes"] ?? 0;
-    // think's steps, plan's follow of a deploy, about 15 for setup, decide and apply, and a stay's
-    // last turn (ADR 0057).
-    expect(job).toBeGreaterThanOrEqual(
-      THINK_MINUTES + GIVE_UP_MS / 60_000 + 15 + STAY_LAST_MINUTES,
-    );
+    // think's steps, plan's follow of a deploy, and about 15 for setup, decide and apply. A stay
+    // takes what's left of the job, by the job's limit it knows (ADR 0057).
+    expect(job).toBeGreaterThanOrEqual(THINK_MINUTES + GIVE_UP_MS / 60_000 + 15);
+    expect(JOB_MINUTES).toBe(job);
     const copy = run.steps.find((s) => s.run?.includes("scripts/build-cli.mjs"))?.run ?? "";
     expect(Number(/now - \$1 > (\d+)/.exec(copy)?.[1])).toBeGreaterThanOrEqual(job * 60);
     // Nor is a run's folder swept as left over while its job can still be using it (ADR 0059).
@@ -425,9 +467,17 @@ describe("task.yml (ADR 0031)", () => {
     const writes = run.steps.filter((s) =>
       Object.keys(s.env ?? {}).some((k) => k.endsWith("_WRITE")),
     );
-    expect(writes.map((s) => s.name)).toEqual([expect.stringContaining("Apply")]);
-    for (const [k, v] of Object.entries(writes[0]?.env ?? {}))
-      if (k.endsWith("_WRITE")) expect(v).toContain("steps.decide.outputs.act ==");
+    // Apply, and the apply of a stay's answer (ADR 0062), each for the calls its own decide found.
+    expect(writes.map((s) => s.name)).toEqual([
+      expect.stringMatching(/^Apply \(/),
+      "Apply the stay's answer (as apply does)",
+    ]);
+    for (const [s, by] of [
+      [writes[0], "decide"],
+      [writes[1], "stay"],
+    ] as const)
+      for (const [k, v] of Object.entries(s?.env ?? {}))
+        if (k.endsWith("_WRITE")) expect(v).toContain(`steps.${by}.outputs.act ==`);
   });
 
   it("mints each token for another of your accounts from the repos App, for that account alone (ADR 0045)", () => {

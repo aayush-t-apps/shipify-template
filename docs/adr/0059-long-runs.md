@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #488) and built; see [As built](#as-built-2026-10-16)
+status: accepted (merged #488) and built; see [As built](#as-built-2026-10-16); amended by 0063 (a new model or effort keeps the stay's session)
 date: 2026-10-16
 amends: 0035 (the agent's clock, the job's limit; the checks after the agent move to a step of their own), 0037 (the catch-up shares the session's clock, as now, only a longer one), 0057 (think holds the record's token as a stay does; a stay of 20 minutes by default)
 ---

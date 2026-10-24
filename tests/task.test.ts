@@ -288,6 +288,15 @@ describe("tasks: titles, state and the status comment", () => {
     expect(parseTask("bigger margins", "The cards feel cramped.", FORMS).kind).toBe("none");
   });
 
+  it("reads an operation typed anywhere in the Operate form's own words (one flow, ADR 0049)", () => {
+    expect(parseTitle("spotter: take it down")).toMatchObject({ kind: "op", op: "down" });
+    expect(parseTitle("spotter: Bring it back.")).toMatchObject({ kind: "op", op: "up" });
+    expect(parseTitle("spotter: roll back production")).toMatchObject({ op: "rollback" });
+    expect(parseTitle("spotter: release to production")).toMatchObject({ op: "release" });
+    // Anything more is a change, for the agent.
+    expect(parseTitle("spotter: take it down a notch").kind).toBe("app");
+  });
+
   it("reads operations, questions and releases, with no agent needed for operations", () => {
     const op = (action: string, version = "_No response_") =>
       `### Project\n\nspotter\n\n### Action\n\n${action}\n\n### Version\n\n${version}`;
@@ -1163,7 +1172,11 @@ esac
     const { sb, calls } = setup({ box: "pi-1", slots: 2 });
     const plan = ship(sb, "box", "remove", "pi-1");
     expect(plan.status).toBe("requires-approval");
-    expect(plan.nextSteps).toEqual(["pnpm ship box remove pi-1 --yes"]);
+    // Its box here: the one command, and how to take Shipify off this machine too (setup 9).
+    expect(plan.nextSteps).toEqual([
+      "pnpm ship box remove pi-1 --yes",
+      "to take Shipify off this machine too (its users, folders and rules): pnpm ship box remove pi-1 --purge --yes",
+    ]);
     expect(ship(sb, "box", "remove", "pi-1", "--yes").status).toBe("succeeded");
     expect(read(calls)).toContain(
       "sudo systemctl disable --now shipify-box-pi-1.service shipify-box-pi-1-2.service",
@@ -1171,6 +1184,10 @@ esac
     const there = ship(setup({ box: "pi-2", elsewhere: true }).sb, "box", "remove", "pi-2");
     expect(there.nextSteps?.[1]).toBe(
       "on the machine, so its services stop restarting: sudo systemctl disable --now shipify-box-pi-2",
+    );
+    // A Pi's: Shipify off it is one command on it (setup 9).
+    expect(there.nextSteps?.[2]).toBe(
+      'to take Shipify off it fully (its users, folders and rules), on it: here.sh --remove --purge (docs/box-setup.md, "Taking Shipify off a machine")',
     );
   });
 });
@@ -1198,6 +1215,21 @@ describe("boxes: what a box says about itself", () => {
     const names = boxFacts(none).map((f) => f.name);
     for (const lacking of ["board", "temperature", "throttling", "updates", "services"])
       expect(names).not.toContain(lacking);
+  });
+
+  it("says how a Raspberry Pi last started: from power-on (power off, cut or dropped) or a restart", async () => {
+    const { boxFacts } = await import("../cli/lib/box-facts.ts");
+    const RSTS = "/proc/device-tree/chosen/bootloader/rsts";
+    const started = (rsts?: string) =>
+      boxFacts({ ...none, read: (f) => (f === RSTS ? rsts : undefined) }).find(
+        (f) => f.name === "started",
+      )?.value;
+    // The firmware's PM_RSTS at boot, 4 bytes big-endian: bit 12 is a power-on reset.
+    expect(started("\0\0\x10\0")).toBe("from power-on: the power was off, cut or dropped");
+    expect(started("\0\0\0\x20")).toBe("by a restart");
+    // Not a Pi, or a value it can't read: nothing said.
+    expect(started(undefined)).toBeUndefined();
+    expect(started("\0\0")).toBeUndefined();
   });
 
   it("says its swap, each slot's peak, and a task killed for memory (ADR 0061)", async () => {
@@ -1334,6 +1366,59 @@ describe("boxes: what a box says about itself", () => {
       restart: "a restart has waited since Thu 1 Oct, 11:12: the 04:30 restart didn't happen",
       services: "failed: cockpit.socket; not running: shipify-box-homepi inactive",
     });
+  });
+});
+
+describe("tasks: what publishing a merged plan needs", () => {
+  it("asks the bot's own token whether it may set variables, never the workflow's (#528)", async () => {
+    const { publishNeeds } = await import("../cli/commands/task/plans.ts");
+    const { planSkeleton } = await import("../cli/lib/plan.ts");
+    // A plan of its own: a release checks the template's files, which have none of your plans
+    // (#564).
+    const root = mkdtempSync(join(tmpdir(), "plans-"));
+    mkdirSync(join(root, "plans"));
+    writeFileSync(
+      join(root, "plans", "demo.plan.md"),
+      planSkeleton({
+        app: "demo",
+        title: "Demo: a test",
+        summary: "A small demo app for tests.",
+        stack: "ts-worker",
+        preset: "tool",
+        visibility: "public",
+      }),
+    );
+    // A gh that lists variables only for the bot's token, as GitHub does: the workflow's token
+    // has no Variables permission at all.
+    const bin = mkdtempSync(join(tmpdir(), "fake-gh-"));
+    writeFileSync(
+      join(bin, "gh"),
+      '#!/bin/sh\n[ "$GH_TOKEN" = "bot-token" ] && { echo "{}"; exit 0; }\necho "HTTP 403" >&2\nexit 1\n',
+      { mode: 0o755 },
+    );
+    const was = {
+      PATH: process.env.PATH,
+      GH: process.env.GH_TOKEN,
+      ISSUES: process.env.SHIPIFY_ISSUES_TOKEN,
+    };
+    const variables = () => publishNeeds("demo", root).filter((m) => m.startsWith("Variables:"));
+    try {
+      process.env.PATH = `${bin}:${process.env.PATH}`;
+      process.env.SHIPIFY_ISSUES_TOKEN = "workflow-token";
+      process.env.GH_TOKEN = "bot-token";
+      expect(variables()).toEqual([]);
+      // The bot without it: said, with the fix.
+      process.env.GH_TOKEN = "other-token";
+      expect(variables()).toHaveLength(1);
+    } finally {
+      process.env.PATH = was.PATH;
+      for (const [k, v] of [
+        ["GH_TOKEN", was.GH],
+        ["SHIPIFY_ISSUES_TOKEN", was.ISSUES],
+      ] as const)
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+    }
   });
 });
 

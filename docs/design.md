@@ -42,7 +42,9 @@ memory.
 5. **The least each part needs:** two profiles for the agent; write tokens minted after it, for
    exactly one repo; an act key only for a call you approved.
 6. **Approvals are yours:** your merge, on GitHub; or your whole, unedited `yes` to a list, from
-   GitHub or your chat (ADR 0049). `go`, `publish`, `preview` and `start over` stay on GitHub.
+   GitHub or your chat (ADR 0049). One flow, one rule: every word, task and release works the
+   same from any channel; only a PR's merge, and what changes the live app at once (down, up,
+   rollback), are GitHub's.
 7. **Only you start work:** your comments, and the door's on your behalf. The watch starts no run
    (ADR 0042): a stuck task is marked Stopped and waits for your `continue`. A dispatch carries
    only a task number, and starts nothing the task's status doesn't already have pending.
@@ -93,7 +95,7 @@ order.
 | **decide** | `ship run decide <n>` | the runner | `GITHUB_TOKEN`, a fresh read-only token, shared with apply | turns the result into writes. Outputs what to mint: `repo`, its `account`, `act`, `workflows`, `files` |
 | **mint** | workflow steps | | the bot App's key, or the repos App's | a write token for exactly the one repo decide named, from the App on its account; a token for shipify's files branch; an act key only for approved calls |
 | **apply** | `ship run apply <n>` | the runner | the minted tokens | makes the writes, tells the door of each reply as it's written, and saves the status comment last |
-| **stay** | `ship run stay <n>` | the runner; the agent as the slot's own user | `GITHUB_TOKEN`, its own read-only token (every project, as a talk run's; the repos App's on another account), the agent's login, the tools' look keys; no write key | after every answer to your words, unless it started another run or closed the task (decide's `stay`, ADR 0060). For `SHIPIFY_STAY` quiet minutes (20) it reads the task every 2 s (a read that finds nothing costs nothing) and answers your plain words itself: each turn is plan, think in the same session, decide and apply, as a run's are. Words plan would choose differently (a fixed word, another account, repo, agent or model) and a result that needs a token go to a normal run; on a project it pushes nothing, and a change it's asked for starts a work run; it gives way when a box job waits. `staying` is on the task meanwhile, and taken off however it ends (ADR 0057) |
+| **stay** | `ship run stay <n>` | the runner; the agent as the slot's own user | `GITHUB_TOKEN`, its own read-only token (every project, as a talk run's; the repos App's on another account), the agent's login, the tools' look keys; no write key | after every answer to your words, unless it started another run or closed the task (decide's `stay`, ADR 0060). For `SHIPIFY_STAY` quiet minutes (20) it reads the task every 2 s (a read that finds nothing costs nothing) and does with your words what a normal run would (ADR 0063): each turn is plan, think in the same session (a new model or effort too), decide and apply, as a run's are. Only what needs another agent, account or repo, a fresh clone (`start over`, `go`) or an edit goes to a normal run; an answer that needs a token (files, a call, a push) ends the stay, and the job's steps after it mint those keys and apply it (ADR 0062); on a project it pushes nothing, and a change it's asked for starts a work run; it gives way when a box job waits. `staying` is on the task meanwhile, and taken off however it ends (ADR 0057) |
 
 If a step breaks before a reply, `ship run failed <n>` says so on the task. Outputs come from fixed
 lists only, never free text.
@@ -158,7 +160,7 @@ These words are for the code and this page, not the everyday docs.
 | **journal** | a line in the status comment saved before each outside change (a tool call, a push, a dispatch). One started and not finished is reported, never redone | `cli/kernel/apply.ts` |
 | **cursor** | the newest comment a run has read; what came after is still to answer | the status comment |
 | **place** | where a think runs: the slot's sandbox on a box, or a plain folder off a box (this PC, tests); made fresh once per job, and reopened as it is for a stay's turns | `cli/kernel/place.ts`, `cli/lib/sandbox.ts` |
-| **stay** | the loop a run that stays runs, its rules (`staysAfter`, `sameTurn`) and its reads (`news`, `task`, `waiting`: the mailbox it reads, the task today) | `cli/kernel/stay.ts` |
+| **stay** | the loop a run that stays runs, its rules (`staysAfter`, `takes`, `needsMint`) and its reads (`news`, `task`, `waiting`: the mailbox it reads, the task today) | `cli/kernel/stay.ts` |
 
 **The writes,** and what keeps each safe to repeat:
 

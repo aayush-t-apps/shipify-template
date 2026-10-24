@@ -266,6 +266,20 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
     return ghJson<T>(args, call({ input: body === undefined ? undefined : JSON.stringify(body) }));
   };
   const issues = `repos/${repo}/issues`;
+  const pinning = (mutation: "pinIssue" | "unpinIssue", issue: RecordIssue) => {
+    if (!issue.node_id) return;
+    ghRun(
+      [
+        "api",
+        "graphql",
+        "-f",
+        `query=mutation($id: ID!) { ${mutation}(input: {issueId: $id}) { issue { number } } }`,
+        "-f",
+        `id=${issue.node_id}`,
+      ],
+      call(),
+    );
+  };
   return {
     id: "github",
     issue: (n) => api<RecordIssue>("GET", `${issues}/${n}`),
@@ -462,20 +476,8 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
         editor: login(node?.editor ?? null),
       };
     },
-    pin(issue) {
-      if (!issue.node_id) return;
-      ghRun(
-        [
-          "api",
-          "graphql",
-          "-f",
-          "query=mutation($id: ID!) { pinIssue(input: {issueId: $id}) { issue { number } } }",
-          "-f",
-          `id=${issue.node_id}`,
-        ],
-        call(),
-      );
-    },
+    pin: (issue) => pinning("pinIssue", issue),
+    unpin: (issue) => pinning("unpinIssue", issue),
   };
 }
 

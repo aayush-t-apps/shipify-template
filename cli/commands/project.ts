@@ -504,7 +504,7 @@ export async function publishProject(path: string, yes: boolean): Promise<Result
   if (prepared) {
     if (!state.exists)
       throw new ShipError(
-        `${repo} isn't there: it's made on GitHub's runners before the build. Comment **publish** on the task to make it again.`,
+        `${repo} isn't there: it's made on GitHub's runners before the build. Say **publish** on the task to make it again.`,
         "blocked",
       );
     if (!state.empty)

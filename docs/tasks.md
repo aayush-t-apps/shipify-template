@@ -22,7 +22,7 @@ anything that isn't a reply to one of its messages becomes a new task, titled fr
 | `new: …` | new | a plan PR; merging it builds and publishes the app |
 | `remember: …`, `remember <topic>: …` | remember | a note in the [notebook](notebook.md), written with no agent; the task closes |
 | `repeat: …`, or the Repeat form | repeat | a reminder, a job or a check on a schedule ([Repeats](#repeats)) |
-| the Operate form, or `<app>: release` | operate | a release, take-down, bring-back or rollback, run once on GitHub's machines with no agent |
+| the Operate form, or its title from any channel (`<app>: release`, `take it down`, `bring it back`, `roll back production`) | operate | a release, take-down, bring-back or rollback, run once on GitHub's machines with no agent |
 | `shipify: release`, `shipify: release minor` or `major` | operate | a release of Shipify itself: checked, versioned (patch by default) and published to the template, which offers it to every copy as a PR ([releases.md](releases.md)) |
 
 - **The body is optional:** details, links, screenshots.
@@ -46,7 +46,11 @@ anything that isn't a reply to one of its messages becomes a new task, titled fr
   `v1.0.3` gets a "needs you" reply and runs nothing. Edit the issue (**⋯ → Edit**) to fix it: that
   starts it.
 - **Editing a Repeat form later** changes the repeat, with no agent.
-- **Operations start only from GitHub:** from a chat, the reply links the form.
+- **An operation:** the form on GitHub, or its words as a task's title (`spotter: release`,
+  `spotter: take it down`, `spotter: bring it back`, `spotter: roll back production`). A release
+  works from any chat too: it opens a PR, and your merge deploys it. The other three change the
+  live app at once, with no merge, so they start (and run again with `continue`) only on GitHub;
+  from a chat, nothing runs and the reply links the form (ADR 0049).
 
 ## What happens: one run, one reply
 
@@ -112,9 +116,9 @@ A run reads its task when it starts, and the agent can't take a message mid-step
 - **`stop`:** while the agent works, the run reads the task about once a minute for a `stop`. It
   stops the agent and everything it started; what it committed (and edits it hadn't) is kept on
   the task's branch, as when a run stops by itself ([ADR 0035](adr/0035-runs-keep-their-work.md)).
-  The reply says "Stopped": say what's next, or `continue`. Words after the `stop` start the next
-  run. A `stop` once the agent has answered (its checks running, the reply going out) finds
-  nothing to stop, and says so.
+  The reply says "Stopped": say what's next, or `continue`. The run then stays, as after any
+  answer: your next words carry on in the same session. A `stop` once the agent has answered (its
+  checks running, the reply going out) finds nothing to stop, and says so.
 - **Sent as the reply was written** (while the box's checks ran, after its last read): the run reads
   the task once more as it replies. The reply says how many of your messages are next, so its
   "needs you" never hides them. The run their comments queued reads them now.
@@ -131,8 +135,10 @@ A run reads its task when it starts, and the agent can't take a message mid-step
 ### A run that stays
 
 After a run answers your words, it stays (ADR 0057): for `SHIPIFY_STAY` quiet minutes (20 unless
-you set it; `0` turns it off) it reads the task every 2 seconds and answers your next plain words
-itself, in the same agent session, so they're answered in seconds rather than in a new run.
+you set it; `0` turns it off) it reads the task every 2 seconds. **One rule** (ADR 0063): it does
+with your next words what a normal run would do, in the same job and agent session, so they're
+answered in seconds rather than in a new run. It hands over only what needs something a stay
+can't have.
 
 - **When:** after every answer to your words (ADR 0060), whatever the run did: an answer, a
   question, a PR it opened or updated, a list for your `yes`. Not when its answer started another
@@ -142,36 +148,52 @@ itself, in the same agent session, so they're answered in seconds rather than in
   whole thread.
 - **The same answer as a run's:** each turn is plan, think, decide and apply, with 👀, the run
   details ("The run stayed…") and one reply for everything you sent meanwhile, each ask numbered.
-- **The same model stays** (ADR 0059): a `use` that comes to the agent, model and effort already
-  running (`use sonnet` while Auto runs Sonnet), alone or with your words, a thanks or `/ping` is
-  answered in the stay, which keeps staying. Another model or effort is a new session: a normal
-  run.
-- **What goes to a normal run instead:** a fixed word (`yes`, `go`, `use`, `continue`…), an edit,
-  another repo, account, agent or model, or an answer that needs a file or a write key.
-  The stay takes its label off and starts that run, which reads every word it hasn't answered.
-- **It ends** after its quiet minutes, 45 minutes in all, on your `stop` or a close, or when another
+- **A new model or effort keeps the session** (ADR 0063): `use opus high`, alone or with your
+  words, is answered in the stay, and your next words go to the same session with the new model.
+  Only another agent (`use pi`) needs a new session: a normal run.
+- **The fixed words are the stay's too:** `continue` carries on in the session; `no`, `resume`,
+  `stop repeating`, `reopen`, a thanks and `/ping` are answered in the stay, which keeps staying;
+  `close` closes the task, and `publish` starts the build, then the stay ends.
+- **Your `stop`:** a turn that's working stops (as a run does, within a minute) and says
+  "Stopped"; with no turn working, the stay says there was nothing to stop; one that came as a turn
+  answered is said in that answer. Either way it keeps staying, in the same session.
+- **What goes to a normal run instead:** only what a stay can't have: another agent, repo or
+  account; a fresh clone (`start over`, `go`); or the task's text read again (an edit).
+- **The box's own files are never shared:** a reply never uploads the agent's handoff or result,
+  which the box keeps itself. A file shared before, unchanged, is linked ("… (unchanged)"), not
+  uploaded. Neither needs a key, so the stay goes on.
+- **An answer that needs a write key** (a new or changed file, your `yes` to a list, a push; ADR
+  0062): the stay ends with it decided, and its own job mints just those keys and posts it. No new
+  run, nothing thought twice. Words you send after it go to a normal run, which reads every word
+  the stay hasn't answered. A stay on a project sends only its own turn's commits: what the run
+  pushed before it never needs a key again.
+- **It ends** after its quiet minutes, when its job's time is nearly up (no cap of its own: past an
+  hour, only the agent's own GitHub reads fail, as in a long work run), on a close, when its label
+  is taken off (your merge of its plan does that, so the build runs next), or when another
   task's run, or its box's weekly clean-up, waits for its slot. It answers words already waiting
-  first, and stays on different
-  slots give way one at a time, so one slot frees per run that waits. Words that came as it left go
+  first. Stays on different slots give way one at a time, so one slot frees per run that waits. Words that came as it left go
   to a run of their own: never unanswered.
 - **On the task:** the label `staying` while it does. No run starts for your comments meanwhile
   (each shows as a skipped run in Actions); a close or an edit on GitHub runs after the stay. The web chat says **Staying**, in the list and the thread.
   A stay whose box died leaves its label: the watch takes it off within 5 minutes of GitHub ending
   its job, so your next words start a run.
 
-**Same session, or a new run:** one rule, which plan applies to your next words: the stay answers
-them itself when a run would think about them the same way, else a new run does.
+**Same session, or a new run:** one rule, which plan applies to your next words: the stay does
+what a normal run would do with them, else a new run does.
 
 | Your next words | Who answers | The agent's session | Its cache |
 |---|---|---|---|
-| plain words, a thanks, a `use` you're already on | the stay | the same, resumed (`--resume`) | warm: only the new words are new |
-| a change (a PR) | a work run on the task's branch | new, with the thread and the handoff | cold, once |
-| another model or effort, agent, repo or account | a normal run | new | cold, once |
-| a fixed word (`yes`, `go`, `stop`, `continue`…), an edit | a normal run | new | cold, once |
+| plain words, `continue`, `stop`, a `use` of the same agent (any model or effort) | the stay | the same, resumed (`--resume`) | warm: only the new words are new |
+| `no`, `resume`, `stop repeating`, `reopen`, a thanks, `/ping` | the stay, with no agent | kept for your next words | warm |
+| `yes` to a list, an answer with a new file or a push | the stay decides; its job mints the key and posts it | ends with that job | — |
+| `close`, `publish`, a change (a PR) | the stay; then the task closes, the build or a work run starts | new, with the thread and the handoff | cold, once |
+| another agent, repo or account; `start over`, `go`; an edit | a normal run | new | cold, once |
 
 A change goes to a work run because a PR needs what no stay holds: the project's clone set up, and a
 write key, which the job mints in its own step after the agent and never hands it (ADR 0031, ADR
-0059). The stay says so in its reply ("A work run on … starts now"), then leaves.
+0059). The stay says so in its reply ("A work run on … starts now"), then leaves. Why a stay can't
+come back after its job posts an answer: GitHub runs a job's steps once, in order, and the keys are
+made after the agent's step. Only a new job can stay again, and that's a normal run.
 
 **Where you see it:**
 - **👀** on your comment, and on the task itself for its own words: a run has read it (the web
@@ -273,25 +295,25 @@ and the web chat's **Change a repo** offers the same list (a tap writes "acme-si
 
 ## Fixed words
 
-A **fixed word** is a whole comment the box reads itself, with no agent. Each is accepted from
-GitHub only, or anywhere (GitHub or a chat). Said where it isn't accepted, it does nothing and the
-reply links the task on GitHub.
+A **fixed word** is a whole comment the box reads itself, with no agent. **One flow, one rule:**
+each works the same from GitHub or any chat. Only GitHub gives a PR's merge, and starts what
+changes the live app at once (taking an app down, bringing it back, a rollback) (ADR 0049).
 
-| Word | What it does | Where it's accepted |
+| Word | What it does | When it counts |
 |---|---|---|
-| `yes` | makes exactly the listed tool calls (and notes), once each. A list's **Yes** in a chat sends `yes <its code>` | anywhere: your whole, unedited message, after the list, within a day; a list over 3,000 characters, GitHub only |
-| `no` | drops the listed calls: nothing changes. A list's **No** in a chat sends `no <its code>` | anywhere |
-| `continue` (or `again`) | tries again after a failure; on an operation, runs it again. `again` on a repeat or a recipe runs its job now | anywhere; an operation's, GitHub only |
-| `start over` | closes the open PR and begins again from the repo's default branch | GitHub only |
-| `preview` | a live preview of the open PR, with its checks run against it | GitHub only |
-| `publish` | a merged plan's repo, keys and build again, after they stopped | GitHub only |
-| `go` | builds a big change once its doc PR is merged | GitHub only |
-| `stop repeating` | ends a repeat and closes the task | anywhere |
-| `resume` | starts a paused repeat again | anywhere |
-| `close` | closes the task: its PRs stay, a repeat pauses (`resume` carries it on); write again to reopen it. From a chat, the door closes it at once with its state labels, the chat answers "Closed · #12", and no run starts: the next run that reads the task notes it (ADR 0040). On GitHub, a run closes it and says so | anywhere |
-| `reopen` | reopens a closed task with no agent, and it waits for what you'd like next. From a chat, the door reopens it at once ("Reopened · #12") and no run starts: your next words do. On GitHub, a run reopens it, a minute or more after it closed, and says so | anywhere |
-| `stop` | stops the run that's going, within a minute: what it committed stays on the task's branch, and your next words start the next run ([below](#words-while-a-run-works)) | anywhere |
-| `remember: …` · `forget: …` | keeps or removes a note in the notebook, with no agent ([notebook.md](notebook.md)) | anywhere |
+| `yes` | makes exactly the listed tool calls (and notes), once each. A list's **Yes** in a chat sends `yes <its code>` | your whole, unedited message, after the list, within a day. A list over 3,000 characters can't be shown whole in a chat, so it's approved on GitHub, where you see it all |
+| `no` | drops the listed calls: nothing changes. A list's **No** in a chat sends `no <its code>` | a list waits |
+| `continue` (or `again`) | tries again after a failure; on an operation, runs it again. `again` on a repeat or a recipe runs its job now | always; taking an app down, bringing it back or a rollback runs again only from GitHub |
+| `start over` | closes the open PR and begins again from the repo's default branch | a PR is open, or not |
+| `preview` | a live preview of the open PR, with its checks run against it | a PR is open |
+| `publish` | a merged plan's repo, keys and build, or again after they stopped | the plan is merged |
+| `go` | builds a big change once its doc PR is merged; on a new project's task, the same as `publish` | the doc (or plan) is merged |
+| `stop repeating` | ends a repeat and closes the task | it repeats |
+| `resume` | starts a paused repeat again | it's paused |
+| `close` | closes the task: its PRs stay, a repeat pauses (`resume` carries it on); write again to reopen it. From a chat, the door closes it at once with its state labels, the chat answers "Closed · #12", and no run starts: the next run that reads the task notes it (ADR 0040). On GitHub, a run closes it and says so | always |
+| `reopen` | reopens a closed task with no agent, and it waits for what you'd like next. From a chat, the door reopens it at once ("Reopened · #12") and no run starts: your next words do. On GitHub, a run reopens it, a minute or more after it closed, and says so | it's closed |
+| `stop` | stops the run that's going, within a minute: what it committed stays on the task's branch, and the run stays ([above](#a-run-that-stays)), so your next words carry on in the same session ([below](#words-while-a-run-works)) | always |
+| `remember: …` · `forget: …` | keeps or removes a note in the notebook, with no agent ([notebook.md](notebook.md)) | always |
 | `/ping` · `/apps` · `/repos` · `/help` · `/notebook` · `/recipes` · `/models` | the same answer a chat gets, with no agent | anywhere |
 | `use <model>` | the model (or effort, or agent) for the task's runs: alone, from your next message (from a chat it starts no run; on GitHub a run says so); as a line in a message, from that message's run | anywhere |
 
@@ -557,7 +579,7 @@ as a feature".
    deploy have no event of their own: they're labelled `deploying` and followed by the watch's due
    runs.
 
-**A preview** (`preview`, GitHub only) deploys a live copy of the PR and runs its checks. Nothing
+**A preview** (`preview`) deploys a live copy of the PR and runs its checks. Nothing
 follows them: look at the PR, and ask why they failed or to fix them (ADR 0046). A preview's link
 is public. The box adds the
 `preview` label after the PR is open (making it when the repo has none), then pushes an empty commit
@@ -568,8 +590,10 @@ its PR on the next run, with no new commits needed; an approved call that failed
 `start over` starts the new branch from `main`, never the old PR's commits.
 
 **A new app:** `new: …` → a plan PR → your merge → its repo and keys are made on GitHub's machines
-→ a box builds it → the first push → Live, and the task closes. If a key or permission was missing,
-the reply names it; fix it, then say `publish`. If its first build fails its checks, `continue`
+→ a box builds it → the first push → Live, and the task closes. Your merge starts it: a run that
+stays on the task leaves for it, and if a newer run took its place in the queue, that run starts it
+(once). If a key or permission was missing, the reply names it; fix it, then say `publish` (or
+`go`), from GitHub or a chat. If its first build fails its checks, `continue`
 builds it again in the new repo (the failed attempt isn't kept: a first push goes to `main`).
 
 **Shipify itself:** `shipify: …` works the same way, as a PR to this repo checked by `pnpm verify`.
@@ -677,7 +701,6 @@ watch):
 | `stopped` | the task's run stopped before it finished | `continue` (it carries on from where it got to), or close it |
 | `words-unanswered` | no run replied to your words (none started, or one broke before it could say so) | `continue` |
 | `form-wrong` | a form has a wrong answer | edit the issue |
-| `not-allowed-here` | a word that only works on GitHub | say it on the task there |
 | `no-such-task` | a chat message names a task that doesn't exist | reply to one of the bot's messages, or use the right number |
 | `no-such-project` | the work names no project | name one of the projects it lists |
 | `approval-expired` | the `yes` came after the list stopped being good | ask again for a fresh list |

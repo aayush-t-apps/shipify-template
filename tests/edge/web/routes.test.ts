@@ -545,6 +545,39 @@ describe("what the page reads", () => {
     ).toBe(304);
   });
 
+  // A moment's hiccup isn't shown: a read is tried once more, and when GitHub still isn't read, the
+  // list and a thread are the last good answer, marked `stale` (the page says it's retrying).
+  it("tries a read again, then serves the last good answer marked stale, else says so", async () => {
+    clearCaches();
+    const t = setUp();
+    t.f.issue({ title: "from GitHub", user: { login: "owner" } });
+    const n = t.f.w.issues[0]?.number;
+    expect((await t.call(`/admin/chat/api/task/${n}`)).status).toBe(200);
+    expect((await t.call("/admin/chat/api/list")).status).toBe(200);
+    t.f.later(10_000);
+    t.f.w.calls.length = 0;
+    t.f.w.githubBlips = 1;
+    const once = await t.call("/admin/chat/api/list");
+    expect(once.status).toBe(200);
+    expect((await once.json()).stale).toBeUndefined();
+    expect(t.f.w.githubBlips).toBe(0);
+    expect(t.f.w.calls.filter((c) => c.includes("/issues?state=open"))).toHaveLength(2);
+    t.f.later(10_000);
+    t.f.w.githubDown = true;
+    const list = await t.call("/admin/chat/api/list");
+    expect(list.status).toBe(200);
+    expect(await list.json()).toMatchObject({ stale: true, tasks: [{ title: "from GitHub" }] });
+    const thread = await t.call(`/admin/chat/api/task/${n}`);
+    expect(await thread.json()).toMatchObject({ stale: true, task: { n } });
+    // Nothing read before: GitHub's trouble, said as before.
+    const closed = await t.call("/admin/chat/api/list?closed=1");
+    expect(closed.status).toBe(503);
+    expect(await closed.json()).toMatchObject({ error: "Couldn't read GitHub just now." });
+    t.f.later(10_000);
+    t.f.w.githubDown = false;
+    expect((await (await t.call("/admin/chat/api/list")).json()).stale).toBeUndefined();
+  });
+
   it("the list: a task's own labels, to filter by, not those its row already says", async () => {
     const t = setUp();
     t.f.issue({ title: "plain", user: { login: "owner" }, labels: ["stuck"] });
@@ -640,7 +673,6 @@ describe("what the page reads", () => {
           { label: "Not yet", words: "Not yet" },
           { label: "Continue", words: "continue" },
         ],
-        github: [],
       },
     });
     expect(reply.html).toContain("<strong>faster</strong>");
@@ -677,7 +709,6 @@ describe("what the page reads", () => {
         { label: "Yes", words: "yes 1a2b3c4d" },
         { label: "No", words: "no 1a2b3c4d" },
       ],
-      github: [],
     });
   });
 

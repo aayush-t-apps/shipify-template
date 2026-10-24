@@ -14,8 +14,11 @@ web chat**, a page of Shipify's own ([below](#the-web-chat)). The edge is at
 
 **Every channel can do the same things** (ADR 0032, ADR 0042): the same words, the same commands
 and the same answers, each defined once (`cli/contracts/`: `words.ts` for the fixed words, `use.ts`
-for picking a model, `answers.ts` for the commands). Only merges and the words that act on code
-differ, on purpose. **Where you
+for picking a model, `answers.ts` for the commands). **One flow, one rule:** every word, task and
+release works the same from any of them. Only two things are GitHub's, where your GitHub sign-in
+says it's you: a PR's merge, the approval for code and production, and the operations that change
+the live app at once with no merge (taking an app down, bringing it back, rolling it back)
+(ADR 0049). **Where you
 type decides the task**, everywhere, with no mode to remember: a GitHub issue, the web chat's open
 thread, or the Telegram message you reply to.
 
@@ -32,7 +35,9 @@ thread, or the Telegram message you reply to.
 | `/ping`, `/apps`, `/repos`, `/help`, `/notebook`, `/recipes`, `/models`, `/tasks` | as a comment: a run answers with no agent, in about 30 s | answered at once by the door | answered at once |
 | Every reply | ✓ on the task | ✓ copied by the door, shortened, with its task's number linked | ✓ read on the task, whole |
 | Approve a list (`yes`) | ✓ | ✓ its **Yes**, or typed (ADR 0049); a list too long to show whole: on GitHub | ✓ its **Yes**, or typed |
-| `publish`, `go`, `preview`, `start over`, a merge | ✓ | ✗ by design: they act on code or deploy it, and your GitHub sign-in protects them | ✗ (a link to GitHub) |
+| A release (`spotter: release`) | ✓ the title, or the Operate form | ✓ typed | ✓ typed |
+| Take an app down, bring it back, roll back production (they change the live app at once) | ✓ the title, or the Operate form | ✗ by design: a link to the form | ✗ (a link to the form) |
+| Merge a PR (the one approval only GitHub gives) | ✓ | ✗ by design: a link to the PR | ✗ (a link to the PR) |
 
 The answers' words live in `cli/contracts/answers.ts`, used by both the door and a run. On GitHub,
 `/ping` and `/apps` say what the watch last saw (a box can't list runners); in a chat, `/apps`
@@ -55,11 +60,12 @@ You don't need to know any word: type what you want, and tap the rest (ADR 0042)
 | `/ask …`, `/new …`, `/change …`, `/repeat …` | always a new task, even sent as a reply: a command never carries one on |
 | `remember: …`, `forget: …` | the notebook, at once, as on GitHub |
 | a photo or a file, with a caption | on the task, for the agent. An album lands on one task |
-| a reply that's a fixed word: `yes`, `no`, `continue`, `stop`, `stop repeating`, `resume`, `close`, `reopen`, `use <model>`; or a lone `ok` to a question waiting on you | the same as on GitHub ([tasks.md](tasks.md#fixed-words)). **Yes** under a list sends yes and the list's code: it approves only that list |
+| a reply that's a fixed word: `yes`, `no`, `continue`, `start over`, `preview`, `go`, `publish`, `stop`, `stop repeating`, `resume`, `close`, `reopen`, `use <model>`; or a lone `ok` to a question waiting on you | the same as on GitHub ([tasks.md](tasks.md#fixed-words)). **Yes** under a list sends yes and the list's code: it approves only that list |
 | `/tasks` | your open tasks as buttons, grouped: **Working**, **Needs you**, **Repeating** (with each one's next time), **Answered**. A tap is `#12` alone. Up to 100 open issues are read; past that it says the rest are on GitHub |
 | `/use` | your model, or that task's as a reply or after its number (`#12 /use`): the model picker ([below](#picking-a-model-your-model)) |
 | `/ping`, `/apps`, `/repos`, `/notebook`, `/recipes`, `/models`, `/help` | answered at once, with no task |
-| `start over`, `preview`, `publish`, `go`, an operation | not from a chat: the reply links where to do it on GitHub |
+| `spotter: release` | a release, as the Operate form runs it. It opens a PR: your merge on GitHub deploys it |
+| `spotter: take it down`, `spotter: bring it back`, `spotter: roll back production` | nothing runs: they change the live app at once, so they start only on GitHub. The reply links the Operate form |
 
 - **Answered at once, nothing written:** a command alone (`/ask`), a lone thanks, a voice note or
   video with no words, a photo with no caption and no task. The full list:
@@ -294,8 +300,8 @@ a time, with **Tasks, Repeats, Notebook, Files and Setup** as tabs at the foot
   (`replyButtons`, `cli/contracts/answers.ts`): the fixed words the newest reply names (`continue`,
   `close`, `reopen`, `again`, `resume`, `no`, `stop`, `stop repeating`), **Another model** under a
   failure (it opens the chip), and **Stop repeating** under a reminder. Under a list, only **Yes**
-  and **No** (ADR 0049). One that counts only on GitHub (`go`, `start over`, `preview`,
-  `publish`) is a link to the task there. So a run
+  and **No** (ADR 0049). `go`, `start over`, `preview` and `publish` are buttons too, as every
+  word works from a chat. So a run
   stopped by your plan's limit is one tap to carry on once it resets. The door's own answers
   (`/use`, `/tasks`) stand here as text: the chip and the list do the same.
 - **Repeats:** what runs (your repeats, then recipes), each with Run now, Pause, Change and Stop,
@@ -391,6 +397,15 @@ only if it changed) and draws its times again. A newer page (the edge deployed) 
 then, unless you've written something that a reload would lose: then it says "Updated: tap to
 reload". When Access's session has ended, it says so instead of "Offline", and loads again
 through the sign-in on the same terms.
+
+**When GitHub isn't read for a moment:** the edge tries a read once more. If it still fails, the
+list and a thread come from the last good copy the edge has. The page's timed polls stay quiet and
+try again, slower each time (5 s, 10 s, 20 s, 40 s, then each minute). After about a minute, or on
+that last good copy, a calm line says "Can't reach GitHub · retrying", and it goes away by itself
+at the next good read. A read you waited for (a tap, ↻, opening a thread) still says what failed,
+in red, and the next good read takes that away too. A message that didn't go (offline, or GitHub
+not reached: nothing was saved) is sent again by itself, with its own id, so never twice: after
+10 s, 20 s and 40 s, and when the browser is online again. **Retry** stays on it.
 
 ### Notifications
 

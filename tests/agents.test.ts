@@ -41,8 +41,10 @@ import {
   setBox,
   setCleanup,
   setUpcoming,
+  updateStatusIssue,
   upsertRepeat,
 } from "../cli/lib/status-issue.ts";
+import type { RecordIssue, TaskRecord } from "../cli/lib/plugins/record.ts";
 import { ROOT } from "./helpers.ts";
 
 // The agents as executors.json makes them.
@@ -705,16 +707,145 @@ describe("the status issue (ADR 0017, ADR 0019)", () => {
     ).toBe("- **telegram** reaches the door again.");
     expect(renderStatusIssue(s, "UTC")).not.toContain("**Channels:**");
   });
+
+  /** A record of issues in memory, its lists missing everything `miss` times, and what it did. */
+  function memory(list: RecordIssue[], miss = 0) {
+    const did: string[] = [];
+    const record = {
+      issues: (q: { state?: string; labels?: string[] } = {}) => {
+        did.push(`list ${q.state}`);
+        if (miss-- > 0) return [];
+        return list
+          .filter((i) => q.state === "all" || i.state === (q.state ?? "open"))
+          .filter((i) => (q.labels ?? []).every((l) => i.labels.some((x) => x.name === l)))
+          .sort((a, b) => b.number - a.number);
+      },
+      updateIssue: (n: number, p: { state?: "open" | "closed"; body?: string }) => {
+        const i = list.find((x) => x.number === n) as RecordIssue;
+        if (p.state) i.state = p.state;
+        if (p.body) i.body = p.body;
+        did.push(p.state ? `close #${n}` : `write #${n}`);
+      },
+      createIssue: (i: { title: string; body: string; labels?: string[] }) => {
+        const made: RecordIssue = {
+          number: 100 + list.length,
+          title: i.title,
+          body: i.body,
+          state: "open",
+          labels: (i.labels ?? []).map((name) => ({ name })),
+          user: { login: "github-actions[bot]" },
+        };
+        list.push(made);
+        did.push(`open #${made.number}`);
+        return made;
+      },
+      makeLabel: () => {},
+      pin: (i: RecordIssue) => did.push(`pin #${i.number}`),
+      unpin: (i: RecordIssue) => did.push(`unpin #${i.number}`),
+    };
+    return { record: record as unknown as TaskRecord, did };
+  }
+  const issue = (number: number, body: string, state: "open" | "closed" = "open"): RecordIssue => ({
+    number,
+    title: "Shipify status",
+    body,
+    state,
+    labels: [{ name: "shipify-status" }],
+    user: { login: "github-actions[bot]" },
+  });
+  const held = (text: string) => {
+    const s = fresh();
+    addEvent(s, text, "2026-10-22T15:00:00Z");
+    return renderStatusIssue(s, "UTC");
+  };
+
+  it("writes the one that holds the record, open first, then the oldest, and closes the other open ones", () => {
+    const list = [
+      issue(31, held("the old record"), "closed"),
+      issue(554, held("the record")),
+      issue(560, held("a stray one")),
+      issue(540, "Shipify's own status: the watch rings its runs here."),
+    ];
+    const { record, did } = memory(list);
+    expect(updateStatusIssue(() => undefined, { timeZone: "UTC", record })).toEqual({ issue: 554 });
+    expect(did).toEqual([
+      "list open",
+      "close #560",
+      "unpin #560",
+      "close #540",
+      "unpin #540",
+      "write #554",
+    ]);
+    const s = parseStatusIssue(list.find((i) => i.number === 554)?.body ?? null);
+    expect(s.events.map((e) => e.text)).toEqual([
+      "Closed 2 other status issues (#560, #540): the record is #554",
+      "the record",
+    ]);
+    // Next time, it's the only open one: nothing more to close.
+    did.length = 0;
+    updateStatusIssue(() => undefined, { timeZone: "UTC", record });
+    expect(did).toEqual(["list open", "write #554"]);
+  });
+
+  it("takes the door's issue, or a closed one, before opening one, and opens one only when a second look finds none", () => {
+    // The door opened it, with no record yet: the first due run writes the record there.
+    const door = memory([issue(1, "Shipify's own status: the watch rings its runs here.")]);
+    expect(updateStatusIssue(() => undefined, { timeZone: "UTC", record: door.record })).toEqual({
+      issue: 1,
+    });
+    expect(door.did).toEqual(["list open", "list all", "write #1"]);
+    // All closed: the newest that holds the record is written, never a new one.
+    const closed = memory([
+      issue(31, held("the old record"), "closed"),
+      issue(554, held("the record"), "closed"),
+    ]);
+    updateStatusIssue(() => undefined, { timeZone: "UTC", record: closed.record });
+    expect(closed.did).toEqual(["list open", "list all", "write #554"]);
+    // Then you open a new one: it takes the record over, and says so.
+    const list = closed.record.issues({ state: "all" });
+    list.push(issue(570, ""));
+    const yours = memory(list);
+    updateStatusIssue(() => undefined, { timeZone: "UTC", record: yours.record });
+    expect(yours.did).toEqual(["list open", "list all", "write #570"]);
+    const moved = parseStatusIssue(list.find((i) => i.number === 570)?.body ?? null);
+    expect(moved.events.map((e) => e.text)).toEqual([
+      "The record moved here from #554",
+      "the record",
+    ]);
+    // The lists leave it out once (both lists): the second look finds it.
+    const missed = memory([issue(554, held("the record"))], 2);
+    expect(updateStatusIssue(() => undefined, { timeZone: "UTC", record: missed.record })).toEqual({
+      issue: 554,
+    });
+    expect(missed.did).toEqual(["list open", "list all", "list open", "write #554"]);
+    // None at all, twice: a new one, pinned.
+    const none = memory([]);
+    expect(updateStatusIssue(() => undefined, { timeZone: "UTC", record: none.record })).toEqual({
+      issue: 100,
+    });
+    expect(none.did).toEqual([
+      "list open",
+      "list all",
+      "list open",
+      "list all",
+      "open #100",
+      "pin #100",
+    ]);
+  });
 });
 
 describe("boxes: the setup version (ADR 0017)", () => {
   it("names a box set up by an older box/setup.sh, only on a box", () => {
     const dir = join(ROOT, "tests", "fixtures");
     expect(setupCheck("someone", dir)).toBeUndefined();
-    // No record (its setup never finished): version 1, behind the repo's.
+    // No record (its setup never finished): version 1, behind the repo's, which a new setup bumps.
+    const repos = /^SETUP_VERSION=(\d+)$/m.exec(
+      readFileSync(join(ROOT, "box", "setup.sh"), "utf8"),
+    )?.[1];
+    expect(Number(repos)).toBeGreaterThan(1);
     expect(setupCheck("shipify", dir)).toMatchObject({
       ok: false,
-      detail: "version 1; the repo's is 6",
+      detail: `version 1; the repo's is ${repos}`,
     });
     // The repo's script moved on: the box says so, and how to catch up.
     const tmp = mkdtempSync(join(tmpdir(), "setup-"));

@@ -417,6 +417,17 @@ The listed models are a few of hundreds. The rest are found by a word, on any ch
 - **The weekly clean-up** keeps each agent's pinned version (its other versions are removed) and
   the two newest Node versions in the box's shared tools, while no other slot runs. Its summary on
   the status task names what it removed.
+- **Containers** (box setup 8, ADR 0064): every agent can run `docker run …` and `docker compose`,
+  rootless Podman as its own user, for tests that need a database or another service, or to try a
+  repo with its services. Each agent command gets the names Podman needs, by paths that never
+  change (`XDG_DATA_HOME`, `XDG_RUNTIME_DIR`, `CONTAINERS_CONF_OVERRIDE`: `containerEnv` in
+  `cli/lib/sandbox.ts`). Its containers stop with the box's kill at each turn's end, so in a stay
+  (ADR 0057) a turn starts what it needs; images stay in its slot for a week. The playbook tells it
+  the rest ([box-setup.md](box-setup.md#containers-the-lab)).
+- **Its network** (box setup 9): the internet, as the work needs, and no private network: not your
+  home network, the tailnet or a metadata address, for the agent and its containers alike
+  ([box-setup.md](box-setup.md#the-agents-own-user)). A container's published port on `127.0.0.1`
+  stays the agent's to reach.
 
 ## Run details
 
@@ -521,11 +532,11 @@ small agent core that does the work its own way:
     --no-context-files`, so no repo's `AGENTS.md` or `CLAUDE.md` loads): no command and no tool's
     call, a file read only inside its working folder and its read folders (links resolved first),
     and nothing written. With no bash there, it reads and lists files; its grep and find need
-    `rg` and `fd`, which a box doesn't have.
+    `rg` and `fd`, and a box has only `fd` (from setup 7).
 
   A refused call shows in the run details. pi keeps its own four tools (read, bash, edit, write);
-  its grep and find need `rg` and `fd`, which a box doesn't have, so it searches with `grep` and
-  `ls` through bash.
+  its grep and find need `rg` and `fd`, and a box has only `fd` (from setup 7), so it searches
+  with `grep` and `ls` through bash.
 - **Its answer:** the result file, or its final message when that's the result's JSON. A question
   answered in plain words (a smaller model may) takes those words as the reply, and the run
   details say so; a change still needs the result, with what it asks for.

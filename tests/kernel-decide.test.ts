@@ -4,14 +4,18 @@ import {
   afterThink,
   type Context,
   laterWords,
+  lateStop,
   plan,
+  SHARED_KEPT,
+  sharedBefore,
+  sharedNow,
   stillWaiting,
   type ToolAct,
 } from "../cli/kernel/decide.ts";
 import { listCode } from "../cli/kernel/keys.ts";
 import { buildPrompt, type PromptInput } from "../cli/kernel/prompt.ts";
 import { type Result, readResult } from "../cli/kernel/result.ts";
-import { sameTurn } from "../cli/kernel/stay.ts";
+import { takes } from "../cli/kernel/stay.ts";
 import { toolActs } from "../cli/kernel/snapshot.ts";
 import type { Plan, Said, Snapshot, Think, ThinkMeta, Write } from "../cli/kernel/types.ts";
 import { repeatLine } from "../cli/lib/repeat.ts";
@@ -272,17 +276,57 @@ describe("plan: intents", () => {
     expect(replies(writes(q))[0]?.text).toContain("What should I remember?");
   });
 
-  it("an operation runs once on GitHub's machines, and never from a chat", () => {
-    const op = { kind: "op" as const, project: "spotter", ask: "release", op: "down" as const };
+  it("an operation runs once on GitHub's machines; a release from a chat too", () => {
+    const op = {
+      kind: "op" as const,
+      project: "spotter",
+      ask: "take it down",
+      op: "down" as const,
+    };
     const p = plan(snap({ parsed: op }), ctx());
     expect(p.do).toBe("box");
     expect(kinds(writes(p))).toContain("dispatch");
     expect(p.do === "box" && p.state.pending.operate?.op).toBe("down");
-    const minor = plan(snap({ parsed: { ...op, op: "release", bump: "minor" } }), ctx());
+    const release = { ...op, ask: "release minor", op: "release" as const, bump: "minor" as const };
+    const minor = plan(snap({ parsed: release }), ctx());
     expect(minor.do === "box" && minor.state.pending.operate?.bump).toBe("minor");
-    const chat = plan(snap({ parsed: op, issue: { ...snap().issue, author: "door" } }), ctx());
-    expect(replies(writes(chat))[0]?.text).toContain("start only from GitHub");
-    expect(kinds(writes(chat))).toContain("close");
+    const door = { ...snap().issue, author: "door" as const };
+    const chat = plan(snap({ parsed: release, issue: door }), ctx());
+    expect(chat.do === "box" && chat.state.pending.operate?.op).toBe("release");
+    expect(kinds(writes(chat))).toContain("dispatch");
+  });
+
+  it("taking an app down, bringing it back and a rollback start, and run again, only on GitHub", () => {
+    const door = { ...snap().issue, author: "door" as const };
+    for (const [ask, o] of [
+      ["take it down", "down"],
+      ["bring it back", "up"],
+      ["roll back production", "rollback"],
+    ] as const) {
+      const p = plan(
+        snap({ parsed: { kind: "op", project: "spotter", ask, op: o }, issue: door }),
+        ctx(),
+      );
+      expect(p.do === "box" && p.state.pending.operate, o).toBeUndefined();
+      expect(kinds(writes(p)), o).toEqual(["reply", "close"]);
+      const r = replies(writes(p))[0];
+      expect(r?.text, o).toContain(`\`spotter: ${ask}\` changes the live app at once`);
+      expect(r?.links, o).toEqual([["The Operate form", ctx().operateForm]]);
+    }
+    // Started on GitHub: a chat's `continue` runs nothing and closes nothing; GitHub's runs it again.
+    const down = {
+      kind: "op" as const,
+      project: "spotter",
+      ask: "take it down",
+      op: "down" as const,
+    };
+    const later = (c: Said) =>
+      snap({ parsed: down, said: [c], statusId: 5, state: { bodyHash: "aaaa", seen: 100 } });
+    const chat = plan(later(viaChat(101, "continue")), ctx());
+    expect(kinds(writes(chat))).toEqual(["reply"]);
+    expect(chat.do === "box" && chat.state.seen).toBe(101);
+    const gh = plan(later(said(101, "continue")), ctx());
+    expect(kinds(writes(gh))).toContain("dispatch");
   });
 });
 
@@ -637,11 +681,56 @@ describe("plan: fixed words, and where each is accepted", () => {
     );
   });
 
-  it("`go`, `publish`, `preview` and `start over` from a chat are still refused", () => {
-    for (const word of ["go", "publish", "preview", "start over"])
-      expect(replies(writes(plan(base([viaChat(101, word)]), ctx())))[0]?.problem?.code, word).toBe(
-        "not-allowed-here",
-      );
+  it("every word works the same from a chat as on GitHub: one flow, only a merge is GitHub's", () => {
+    for (const word of ["go", "publish"]) {
+      const p = plan(base([viaChat(101, word)], { plan: "tipcalc" }), ctx());
+      expect(p.do === "box" && p.state.pending.prepare?.plan, word).toBe("tipcalc");
+      expect(kinds(writes(p)), word).toContain("dispatch");
+    }
+    const pr = "https://github.com/o/spotter/pull/3";
+    const preview = plan(base([viaChat(101, "preview")], { project: "spotter", prs: [pr] }), ctx());
+    expect(writes(preview).find((w) => w.w === "preview")).toMatchObject({ repo: "spotter", pr });
+    const over = plan(base([viaChat(101, "start over")], { project: "spotter", prs: [pr] }), ctx());
+    expect(over.do === "think" && over.think.why).toBe("start-over");
+    expect(over.state?.pending.closePrs).toEqual([pr]);
+  });
+
+  it("`go` on a new project's task is its `publish`: the plan is the doc you merged (#528)", () => {
+    const p = plan(base([said(101, "go")], { plan: "tipcalc" }), ctx());
+    expect(p.do === "box" && p.state.pending.prepare?.plan).toBe("tipcalc");
+    expect(replies(writes(p))[0]?.text).toBe(
+      "Publishing tipcalc: its repo and keys first, then the build.",
+    );
+    // Its plan not merged yet: said so, with the word that starts it after.
+    expect(replies(writes(plan(base([said(101, "go")], { plan: "other" }), ctx())))[0]?.text).toBe(
+      "Merge the plan's PR first; then say `go`.",
+    );
+    // Asked again once it was tried: "again".
+    const again = plan(
+      base([said(101, "publish")], { plan: "tipcalc", prepared: "tipcalc" }),
+      ctx(),
+    );
+    expect(replies(writes(again))[0]?.text).toContain("Publishing tipcalc again");
+  });
+
+  it("a merged plan whose build never started (its run replaced by a newer one) is started by the next run (#528)", () => {
+    const p = plan(base([said(101, "its merged, lets go please")], { plan: "tipcalc" }), ctx());
+    // Your words are answered, and the github job starts the plan's repo and keys after.
+    expect(p.do).toBe("think");
+    expect(p.state?.pending.prepare?.plan).toBe("tipcalc");
+    expect(p.do === "think" && p.writes).toContainEqual({ w: "dispatch", job: "github" });
+    expect(p.do === "think" && p.think.notes.join(" ")).toContain(
+      "its build starts after this run",
+    );
+    // Tried once already (it stopped, and said what's missing), or built: only `publish` starts it.
+    for (const st of [
+      { plan: "tipcalc", prepared: "tipcalc" },
+      { plan: "tipcalc", built: "tipcalc" },
+    ]) {
+      const q = plan(base([said(101, "what's missing?")], st), ctx());
+      expect(q.do === "think" && q.writes).toBeFalsy();
+      expect(q.state?.pending.prepare).toBeUndefined();
+    }
   });
 
   it("`no` drops the list; other words after it plan again", () => {
@@ -682,7 +771,7 @@ describe("plan: fixed words, and where each is accepted", () => {
     expect(kinds(writes(p))).toContain("dispatch");
   });
 
-  it("`preview` needs an open PR; `go` needs the doc merged; both only on GitHub", () => {
+  it("`preview` needs an open PR; `go` needs the doc merged", () => {
     expect(replies(writes(plan(base([said(101, "preview")]), ctx())))[0]?.text).toContain(
       "no PR yet",
     );
@@ -697,11 +786,6 @@ describe("plan: fixed words, and where each is accepted", () => {
     );
     expect(writes(own).some((w) => w.w === "preview")).toBe(false);
     expect(replies(writes(own))[0]?.text).toContain("A preview is an app's");
-    expect(
-      replies(
-        writes(plan(base([viaChat(101, "preview")], { project: "spotter", prs: [pr] }), ctx())),
-      )[0]?.problem?.code,
-    ).toBe("not-allowed-here");
     expect(replies(writes(plan(base([said(101, "go")]), ctx())))[0]?.text).toContain(
       "Merge the change doc",
     );
@@ -1687,11 +1771,9 @@ describe("plan: the repos a task reads (ADR 0044)", () => {
 
   it("a stay on it answers your next words, and hands words that look at another repo to a run (ADR 0057)", () => {
     const first = asking("ask: look at acme/tool");
-    expect(sameTurn(first, asking("ask: look at acme/tool", "and what about its tests?"))).toBe(
-      true,
-    );
-    expect(sameTurn(first, asking("ask: look at acme/tool", "now look at acme/x"))).toBe(false);
-    expect(sameTurn(asking("ask: what is this?"), first)).toBe(false);
+    expect(takes(first, asking("ask: look at acme/tool", "and what about its tests?"))).toBe(true);
+    expect(takes(first, asking("ask: look at acme/tool", "now look at acme/x"))).toBe(false);
+    expect(takes(asking("ask: what is this?"), first)).toBe(false);
   });
 
   it("a word after `look at` that names no repo of yours is only a word", () => {
@@ -1996,6 +2078,71 @@ describe("afterThink: the agent's result, kept as far as the task allows", () =>
     expect(text()).toContain(
       "2 messages you sent after this run last read the task are next: the run they started reads them now.",
     );
+  });
+
+  it("a stay's `stop` that came as its agent answered is read with that answer: no run for it alone", () => {
+    const d = afterThink(s(), s().state, talk, r({}), meta, ctx());
+    lateStop(d, [said(101, "hi"), said(104, "stop")]);
+    expect(d.state.seen).toBe(104);
+    expect(d.writes).toContainEqual({ w: "react", comment: 104, content: "eyes" });
+    expect(replies(d.writes)[0]?.text).toBe(
+      "Done it.\n\nYour `stop` came as it answered, so there was nothing left to stop.",
+    );
+    // Then it's read: stillWaiting says nothing of it.
+    stillWaiting(d, [said(101, "hi"), said(104, "stop")]);
+    expect(replies(d.writes)[0]?.text).not.toContain("is next");
+    // Other words after it, or none, are left for the next turn or run, as before.
+    for (const later of [[said(104, "stop"), said(105, "and the Pi?")], [said(101, "hi")]]) {
+      const e = afterThink(s(), s().state, talk, r({}), meta, ctx());
+      lateStop(e, later);
+      expect(e.state.seen).toBe(101);
+      expect(replies(e.writes)[0]?.text).toBe("Done it.");
+    }
+  });
+
+  it("links a file already shared on the task, unchanged, rather than upload it again", () => {
+    const view = "https://github.com/o/shipify/blob/shipify-files/task-12/t1/design.md";
+    const st = { ...s().state, shared: { "design.md": { hash: "h1", url: view } } };
+    const d = afterThink(s(), st, talk, r({ files: ["design.md", "chart.png"] }), meta, ctx());
+    const hashes: Record<string, string> = { "design.md": "h1", "chart.png": "h2" };
+    sharedBefore(d, (name) => hashes[name]);
+    const reply = replies(d.writes)[0];
+    expect(reply?.files).toEqual(["chart.png"]);
+    expect(reply?.links).toContainEqual(["design.md (unchanged)", view]);
+    // Changed since, or never shared: uploaded as before.
+    hashes["design.md"] = "h3";
+    const e = afterThink(s(), st, talk, r({ files: ["design.md"] }), meta, ctx());
+    sharedBefore(e, (name) => hashes[name]);
+    expect(replies(e.writes)[0]?.files).toEqual(["design.md"]);
+    // All of them unchanged: no files left, so it needs no files key.
+    hashes["design.md"] = "h1";
+    const f = afterThink(s(), st, talk, r({ files: ["out/design.md"] }), meta, ctx());
+    sharedBefore(f, (name) => hashes[name]);
+    expect(replies(f.writes)[0]?.files).toBeUndefined();
+  });
+
+  it("keeps each shared file's hash and link, the newest SHARED_KEPT names", () => {
+    const at = (name: string) =>
+      `https://github.com/o/shipify/blob/shipify-files/task-12/t2/${name}`;
+    const files = ["/out/a.md", "/out/b.png"];
+    const links = new Map(files.map((f) => [f, at(f.slice(5))]));
+    const was = {
+      "a.md": { hash: "old", url: at("x/a.md") },
+      "c.csv": { hash: "c", url: at("c") },
+    };
+    const now = sharedNow(was, files, ["h1", "h2"], links);
+    // Shared again, a name moves to the end with its new hash and link.
+    expect(Object.keys(now ?? {})).toEqual(["c.csv", "a.md", "b.png"]);
+    expect(now?.["a.md"]).toEqual({ hash: "h1", url: at("a.md") });
+    const many = Array.from({ length: SHARED_KEPT + 5 }, (_, i) => `/out/f${i}.md`);
+    const all = sharedNow(
+      undefined,
+      many,
+      many.map(() => "h"),
+      new Map(many.map((f) => [f, at(f)])),
+    );
+    expect(Object.keys(all ?? {})).toHaveLength(SHARED_KEPT);
+    expect(Object.keys(all ?? {}).at(-1)).toBe(`f${SHARED_KEPT + 4}.md`);
   });
 
   it("what it read as it started counts as read when it fails too: 👀 on each, as on the words it began with", () => {
@@ -2853,6 +3000,19 @@ describe("the prompt for a new project's runs", () => {
     },
     notes: [],
     playbook: "",
+  });
+
+  it("says who Shipify is in every profile, in a few lines the owner's tone notes win over (task #520)", () => {
+    for (const profile of ["read", "talk", "work"] as const) {
+      const said = buildPrompt({ ...input("tipcalc"), profile });
+      expect(said).toContain("You are Shipify, the owner's personal assistant");
+      expect(said).toContain("their notebook's notes on tone, win over this");
+      // Before the task, and short: every run and stay turn pays for it.
+      expect(said.indexOf("You are Shipify")).toBeLessThan(said.indexOf("# Task #12"));
+    }
+    const lines = buildPrompt(input("tipcalc")).split("\n");
+    const at = lines.findIndex((l) => l.startsWith("You are Shipify"));
+    expect(lines.slice(at).findIndex((l) => l === "")).toBeLessThanOrEqual(6);
   });
 
   it("says each profile's folders (ADR 0044): a read run only reads; a talk run clones on demand", () => {

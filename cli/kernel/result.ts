@@ -85,6 +85,13 @@ function withoutNulls(v: unknown, key?: string): unknown {
   );
 }
 
+/**
+ * The box's own files in the out folder: its result, its handoff (kept for the next run however a
+ * run ends), and what the box writes beside them. Never a file for you, so a reply never shares one,
+ * and an answer that names one needs no files key (ADR 0063).
+ */
+export const BOX_FILES = ["result.json", "handoff.md", "meta.json", "work.bundle"];
+
 /** The result file read, or why it can't be used. */
 export function readResult(text: string | undefined): Result | Unusable {
   if (text === undefined) return { error: "the agent stopped without writing its result" };
@@ -95,7 +102,11 @@ export function readResult(text: string | undefined): Result | Unusable {
     return { error: "its result isn't JSON" };
   }
   const r = Result.safeParse(withoutNulls(raw));
-  if (r.success) return r.data;
+  if (r.success) {
+    const { files, ...rest } = r.data;
+    const yours = files?.filter((f) => !BOX_FILES.includes(f.split("/").pop() ?? ""));
+    return yours?.length ? { ...rest, files: yours } : rest;
+  }
   const wrong = r.error.issues
     .slice(0, 3)
     .map((i) => `${i.path.join(".") || "it"}: ${i.message}`)

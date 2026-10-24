@@ -78,14 +78,16 @@ describe("POST /door/replied", () => {
     const failed = f.reply(
       task.number,
       line({ kind: "failed", state: "Failed" }),
-      "It broke. Reply `continue`, or `start over` on GitHub.",
+      "It broke. Reply `continue`, or `start over`.",
     );
     await call(f, { task: task.number, comment: failed.id });
     const [sent] = sends(f);
     expect(sent?.body.reply_markup).toMatchObject({
       inline_keyboard: [
+        // Every word a reply names is a button: none is GitHub's alone (ADR 0049).
         [
           { text: "Continue", callback_data: "continue" },
+          { text: "Start over", callback_data: "start over" },
           { text: "Another model", callback_data: "/use" },
         ],
         [{ text: "On GitHub" }],

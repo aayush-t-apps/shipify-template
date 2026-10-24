@@ -24,7 +24,7 @@ Write `<app>: what you want`. Changes come in three lanes (ADR 0003):
 |---|---|---|---|
 | Tweak or fix | a margin, a wording, a bug | one PR | look, **merge** |
 | Feature | new behaviour that's easy to undo | one PR with its change doc and the code | read, look, **merge** |
-| Big | data, sign-in, a new service or host | a docs-only PR first (a change doc, an ADR) | **merge** it, then say `go` on GitHub; then merge the build PR |
+| Big | data, sign-in, a new service or host | a docs-only PR first (a change doc, an ADR) | **merge** it, then say `go` (on GitHub or in your chat); then merge the build PR |
 
 The agent updates `docs/spec.md`, runs `ship version` (not for apps with staging) and `make verify`
 in its own clone, and asks for the PR; apply pushes and opens it (from a terminal: `ship pr`).
@@ -35,7 +35,7 @@ in its own clone, and asks for the PR; apply pushes and opens it (from a termina
 | CI | checks once, deploys (apps), smoke-tests (rolls back on failure), tags `vX.Y.Z` | deploys exactly the commit that passed staging, smoke-tests, tags |
 | You hear | "**Live:** <app> at <link>" on the task and in your chat, once the health check passed (or that it failed, with its run) | "On staging", with the link to release |
 
-Comment `preview` on the task (GitHub only) for a preview link before you merge.
+Say `preview` on the task (on GitHub or in your chat) for a preview link before you merge.
 
 **Throwaway experiments** go to the playground: `playground: …` gives a PR with no versions. Merge to keep it, close to drop it.
 

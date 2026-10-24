@@ -135,6 +135,8 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     at: start,
     /** GitHub's listings lag a moment after a write: they show nothing while this is on. */
     listsLag: false,
+    /** As GitHub did once for an hour, with no error: the next this many issue lists show nothing. */
+    listsMiss: 0,
     issues: [] as Issue[],
     comments: [] as Comment[],
     events: {} as Record<number, Record<string, unknown>[]>,
@@ -155,6 +157,8 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     runs: {} as Record<string, Run[]>,
     tokenStatus: 201,
     githubDown: false,
+    /** GitHub's next this many calls get a 502 (a moment's hiccup), its token's left alone. */
+    githubBlips: 0,
     /** One task's read fails (a GitHub hiccup), by its number. */
     issueReadFails: undefined as number | undefined,
     /** One task's change (closing, reopening) fails, by its number. */
@@ -301,12 +305,16 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
       return run ? { body: run } : { status: 404 };
     }
     if (p === "issues" && method === "GET") {
-      let list = w.listsLag ? [] : [...w.issues];
+      const missed = w.listsMiss > 0;
+      if (missed) w.listsMiss--;
+      let list = w.listsLag || missed ? [] : [...w.issues];
       if (q.get("labels")) list = list.filter((i) => i.labels.includes(q.get("labels") as string));
       // As GitHub does: open ones unless asked for closed ones, or all.
       const state = q.get("state") ?? "open";
       if (state !== "all") list = list.filter((i) => i.state === state);
-      list.sort((a, b) => b.number - a.number);
+      list.sort((a, b) =>
+        q.get("direction") === "asc" ? a.number - b.number : b.number - a.number,
+      );
       const per = Number(q.get("per_page") ?? 30);
       const page = Number(q.get("page") ?? 1);
       return { body: list.slice((page - 1) * per, page * per).map(issueJson) };
@@ -447,6 +455,10 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     if (url.host === "api.github.com") {
       if (w.githubDown && !url.pathname.includes("access_tokens"))
         return new Response(null, { status: 502 });
+      if (w.githubBlips > 0 && !url.pathname.includes("access_tokens")) {
+        w.githubBlips--;
+        return new Response(null, { status: 502 });
+      }
       if (method === "GET" && url.pathname.endsWith(`/issues/${w.issueReadFails}`))
         return new Response(null, { status: 502 });
       if (method === "PATCH" && url.pathname.endsWith(`/issues/${w.issueWriteFails}`))

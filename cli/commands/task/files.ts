@@ -1,5 +1,6 @@
 // What a task's round takes in and gives out besides words: the owner's pasted images and linked
 // files, and the files a run shares, on a side branch (ADR 0021).
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -386,9 +387,19 @@ const TEXT = new Set([
   ".env",
 ]);
 
-/** A run's files on Shipify's `shipify-files` branch: images shown, the rest linked, as markdown. */
-export function publishMade(n: number, files: string[]): string {
-  if (!files.length) return "";
+/** A file's content hash, as a task's status keeps it for each file it shared (`shared`). */
+export const fileHash = (file: string) =>
+  createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 16);
+
+/**
+ * A run's files on Shipify's `shipify-files` branch: images shown, the rest linked, as markdown,
+ * and each file's link by its path here.
+ */
+export function publishMade(
+  n: number,
+  files: string[],
+): { text: string; links: Map<string, string> } {
+  if (!files.length) return { text: "", links: new Map() };
   for (const f of files)
     if (TEXT.has(extname(f).toLowerCase())) writeFileSync(f, maskSecrets(readFileSync(f, "utf8")));
   const urls = publishToBranch(
@@ -404,5 +415,8 @@ export function publishMade(n: number, files: string[]): string {
     if (!u) return "";
     return SHOWN.has(extname(f).toLowerCase()) ? `![${name}](${u.raw})` : `- [${name}](${u.view})`;
   });
-  return ["**Files:**", ...lines.filter(Boolean)].join("\n");
+  return {
+    text: ["**Files:**", ...lines.filter(Boolean)].join("\n"),
+    links: new Map([...urls].map(([f, u]) => [f, u.view])),
+  };
 }

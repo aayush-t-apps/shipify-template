@@ -1,6 +1,7 @@
 // The product and your copy (ADR 0047): Shipify's own files go to the template, one clean commit per
 // version (`ship template`), and come back to every copy as one PR (`ship update`, update.yml). Your
 // files are never in either: your plans, recipes and checks, and the apps your forms list.
+import { stripVTControlCharacters } from "node:util";
 import { FORM_PROJECTS, formIds, setFormProjects } from "./forms.ts";
 
 /**
@@ -112,4 +113,32 @@ export function unpublishable(text: string, words: Record<string, string>): stri
     if (new RegExp(escapeRe(word), "i").test(text)) return `your word "${word}"`;
   if (TAILNET.test(text)) return "a tailnet's name";
   return undefined;
+}
+
+/**
+ * What a failed check names, from its output, for a reply that has no log in view: each failing
+ * test (the test runner's `FAIL` lines) and the first error after them, else the first lines that
+ * say an error (the format, lint, types or install). At most five lines, each cut to 200
+ * characters.
+ */
+export function checkFailures(output: string): string[] {
+  const lines = stripVTControlCharacters(output).split("\n");
+  const cut = (l: string) => l.trim().slice(0, 200);
+  const failed = [
+    ...new Set(lines.map((l) => /^\s*FAIL\s+(.+)$/.exec(l)?.[1]?.trim()).filter(Boolean)),
+  ] as string[];
+  if (failed.length) {
+    const after = lines.slice(lines.findIndex((l) => /^\s*FAIL\s/.test(l)));
+    const error = after.find((l) => /^\s*(\w*Error|ERR_\w+)\b[^:]*:/.test(l));
+    return [
+      ...failed.slice(0, error ? 4 : 5).map((t) => `Failed: ${cut(t)}`),
+      ...(error ? [cut(error)] : []),
+    ];
+  }
+  return lines
+    .filter(
+      (l) => /\berror\b|ERR_PNPM|×/i.test(l) && !/ELIFECYCLE|Command failed with exit/.test(l),
+    )
+    .slice(0, 5)
+    .map(cut);
 }

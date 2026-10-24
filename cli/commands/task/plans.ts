@@ -1,3 +1,4 @@
+import { STAYING_LABEL } from "../../contracts/index.ts";
 import { findStack } from "../../lib/catalog.ts";
 import { copySetting, PLATFORM_ROOT } from "../../lib/config.ts";
 import { credential, loadCredentials } from "../../lib/credentials.ts";
@@ -5,7 +6,7 @@ import { ghRun, platformRepo } from "../../lib/github.ts";
 import { ok, type Result } from "../../lib/output.ts";
 import { readPlan } from "../../lib/plan.ts";
 import { findStatus } from "../../lib/task.ts";
-import { git, queue, rec, token } from "./context.ts";
+import { git, queue, rec } from "./context.ts";
 import { getComments } from "./issue.ts";
 
 /**
@@ -13,8 +14,8 @@ import { getComments } from "./issue.ts";
  * variables (your copy's settings) and secrets (the run's credentials) and a GitHub
  * token that may set a repo's variables (the task bot's Variables permission). Empty: all there.
  */
-export function publishNeeds(plan: string): string[] {
-  const stack = findStack(readPlan(plan).meta.stack);
+export function publishNeeds(plan: string, root = PLATFORM_ROOT): string[] {
+  const stack = findStack(readPlan(plan, root).meta.stack);
   const deploy = stack.kind === "app" ? stack.deploy : undefined;
   const creds = loadCredentials().values;
   const has = (name: string) => Boolean(credential(creds, name));
@@ -32,10 +33,10 @@ export function publishNeeds(plan: string): string[] {
           `\`${s}\`: a secret on the shipify repo (docs/setup.md, "Publishing new projects from a task")`,
       ),
   ];
-  // Listing the shipify repo's variables needs the same permission as setting a new repo's.
-  if (
-    ghRun(["api", `repos/${platformRepo()}/actions/variables?per_page=1`], { token: token() }).code
-  )
+  // Listing the shipify repo's variables needs the same permission as setting a new repo's, asked
+  // with the token that sets them: the bot's (GH_TOKEN). The workflow's own token (the job's
+  // SHIPIFY_ISSUES_TOKEN) has no Variables permission at all, so it always said this was missing.
+  if (ghRun(["api", `repos/${platformRepo()}/actions/variables?per_page=1`]).code)
     missing.push(
       'Variables: Read and write for the task bot (the GitHub App): its settings, then accept it on the install (docs/setup.md, "Tasks")',
     );
@@ -70,6 +71,10 @@ export async function taskPlans(before: string, after: string): Promise<Result> 
   for (const i of open) {
     const s = findStatus(getComments(i.number)).state;
     if (s.plan && ids.includes(s.plan)) {
+      // A run that stays on the task holds its turn (ADR 0057): its label off, the stay leaves
+      // within seconds, rather than after its quiet minutes, and the build runs next (#528).
+      if (i.labels.some((l) => l.name === STAYING_LABEL))
+        rec().removeLabel(i.number, STAYING_LABEL);
       // Its repo and keys first, on GitHub's machines; that job then starts the build on a box.
       const d = queue().dispatch("task.yml", { issue: String(i.number), job: "github" });
       started.push(d.ok ? `#${i.number}` : `#${i.number} (not started: ${d.error})`);

@@ -74,6 +74,9 @@ belongs to the authors named there.
     vendored here.
 - **`security-and-hardening`'s description** is one "Use when …" line of 196 characters, not its
   578 (2026-10-15): every run that gets skills reads it.
+- **`test-driven-development`:** its "In Shipify" note adds that a test makes what it reads, never
+  the owner's own files, which a release's check doesn't have; and it has a `scenarios.md`
+  (2026-10-24).
 - **Everything else:** unchanged.
 
 **Adding or updating one** ([writing-skills](writing-skills/SKILL.md) has the whole way):

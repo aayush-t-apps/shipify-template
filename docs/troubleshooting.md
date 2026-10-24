@@ -18,8 +18,8 @@ Find what you see, check the middle column, then fix it. Three things cover most
 | a sibling task's PR merged first, and this one's is behind | nothing: its next run (`continue`, or any comment) refreshes the branch with `ship refresh` | if the reply says a file conflicts, the agent fixes it and refreshes again; say what to keep if it asks |
 | "ok" did nothing | was a question waiting (not a PR to merge, or a list for `yes`)? | a lone `ok` answers a question; after a PR or a list it's a thanks (a 👍). Say more words to carry on, or tap Yes (or say `yes`) for a list |
 | a task labelled `stuck` (Stopped in the chats) | its last run's log | its run ended before it finished (the box restarted, the run broke off), or your words waited with no run. Fix what the log shows, if anything, then `continue`, or close it |
-| your `yes` did nothing | it must be the whole comment, unedited, on GitHub, after the list, within a day, with no edit to the task since | say `yes` again on its own; any other words plan again |
-| "only works on GitHub" | `yes`, `start over`, `preview`, `publish`, `go` and the Operate form are GitHub's | say it as a comment on the task there |
+| a run "lost communication with the server" | `pnpm ship box health <user@host>`: `up` and, on a Pi, `started` | `up` shorter than the time since the run broke: the box restarted. `started from power-on` means the power was off, cut or dropped (a brownout): check the supply (on a Pi 4, the official 5.1 V / 3 A one), power a USB disk from a powered hub, or add a UPS. Then `continue` |
+| your `yes` did nothing | it must be the whole message, unedited, after the list, within a day, with no edit to the task since; a list over 3,000 characters takes its `yes` on GitHub | say `yes` again on its own; any other words plan again |
 | a form answer is wrong | the reply names it | edit the issue (**⋯ → Edit**): that starts it again |
 | the agent's login expired | the reply | `claude setup-token`, then `gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/shipify` |
 | a run with pi or OpenCode fails on its key (no key, or a 401) | the reply's error; Status & setup's Agents and models: "no <gateway> key"? | `pnpm ship add <its gateway> --yes` (`openrouter`, or `vercel-ai-gateway` for the `-vercel` agents; `--new` for a new key) |
@@ -83,24 +83,37 @@ chat, the file store and the notifications' key ([channels.md](channels.md#the-w
 | no switch on an iPhone | Safari shows notifications only to a Home Screen app | Safari's **Share → Add to Home Screen**, open Shipify from there, then turn it on |
 | none since a new key (`--new`) | each device subscribes again when it next opens the chat | open the chat on each device once |
 | a tap on one opens the sign-in, then the list | Access's session had ended, and its sign-in drops the thread's address | open the thread from the list; a longer session on the "shipify status" application helps |
+| "Can't reach GitHub · retrying" | nothing: the edge serves its last good copy and the page tries again by itself ([channels.md](channels.md#the-web-chat)). Long or often? [githubstatus.com](https://www.githubstatus.com), and the edge's logs (`page.refused`, or `page.served` "last good copy", each with GitHub's status) | it goes away by itself. A message that didn't go is sent again by itself; **Retry** sends it now |
+| "Your sign-in ended" often | Access's session for the chat (24 hours unless you set it) | Zero Trust → Access → Applications → "shipify status" → **Session Duration**, for example 1 month |
 
 ## Boxes
 
 | You see | Check | Fix |
 |---|---|---|
 | a box reported offline | a restart is back within 4 minutes, so it's real: `pnpm ship box list` | Cockpit, or `ssh` in and `sudo systemctl status shipify-box-<name>` ([box-setup.md](box-setup.md#looking-after-it)) |
-| "no sandbox" in `box list` | the box's setup | `pnpm ship box add <user@host> --manage --yes`, while no task runs |
+| "no sandbox" in `box list` | the box's setup | while no task runs, set it up again: on the box, its `here.sh` command again; from a PC, `pnpm ship box add <user@host> --manage --yes` |
+| "had a task killed for memory" (the status task, `box health`) | `pnpm ship box health <user@host>`, or Cockpit's overview: its swap, and the most each slot used | swap: none → set it up again (its `here.sh` command, or `box add`), which turns zram on; with swap, fewer slots (`--slots N`) ([box-setup.md](box-setup.md#adding-a-box-or-a-slot)) |
+| `box add` (or `here.sh`) says none of its slots is online | on the box: `sudo systemctl status shipify-box-<name>` | what it says; then the same command again. A slot GitHub deleted (`box remove`, or 14 days off) registers again by itself (setup 9) |
+| "the agents can reach your network and the tailnet: their rules aren't loaded" | on the box: `sudo systemctl status shipify-agents-net` | the same command again; the box takes no task runs until the wall holds ([box-setup.md](box-setup.md#the-agents-own-user)) |
+| an agent's task needs a service on your network (a NAS, homepi) | by design, no agent reaches a private address (setup 9) | reach it through something public (GitHub, a deploy), or a tool the box runs outside the agent ([security.md](security.md#the-agents-sandbox)) |
+| tests time out only when several tasks run at once | the box's cores (`box health`'s load) against its slots | fewer slots, or another box; `bash box/load-test.sh <app folder> 1 3 4` shows where it holds ([box-setup.md](box-setup.md#adding-a-box-or-a-slot)) |
 | `here.sh` says "Stopped: …" | the line after it names the cause: the OS, root, memory, disk, GitHub out of reach, no terminal, the code declined or expired | do what it says, then run it again: it changed nothing, or carries on ([box-setup.md](box-setup.md#anywhere-with-one-command)) |
 | `here.sh`'s link gives 404 | the template is private, or has no release with `here.sh` yet | make it public and release ([releases.md](releases.md#a-release)); meanwhile, from a PC, `pnpm ship box add <user@host>` |
+| `here.sh` says "unknown option --manage" (or `--replace`, `--purge`) | the release it came from is older than the option | release Shipify (`shipify: release`), then the same command again: `latest` takes the new one |
+| a release says "The check failed on the files to publish" | the failing tests it names, and the first error | fix it in a PR (a task on shipify), then `shipify: release` again; `continue` would fail the same way. A test that reads your own plans, recipes or checks fails only here: it makes its own instead ([releases.md](releases.md#a-release)) |
 | "… is public: a box serves only a private copy" | your copy's visibility | make it private (Settings → General → Danger Zone): only the template is public |
 | a Docker box says "This box isn't registered yet" | it waits for `register` | `docker compose run --rm box register` (or `docker run -it … register`), then start it again ([box-setup.md](box-setup.md#with-docker)) |
 | `register` says the sandbox isn't right, in Docker Desktop | Docker's own kernel (`ptrace_scope`) | use a Linux host (a VM, a NAS, a Pi): the box takes no tasks without the sandbox |
 | "Another container runs this box" | two containers on one volume | stop the other one; one volume is one box |
 | a release says "Not published: …" | the file and what's in it: one of your words, a tailnet's name, or a key | add the word to `SHIPIFY_PRIVATE_WORDS`, or fix the file in a PR, then release again |
 | doctor says the sandbox isn't right | the wall it names | `box add` again; it sets up and checks the sandbox |
-| "runner too old" | GitHub stops sending jobs 30 days after a newer runner | re-add the box: `pnpm ship box add <box> --manage --yes` |
+| "… can write /run/docker.sock, a root container socket" | the agent is in the `docker` group, or Docker's or Podman's root socket is open to it | `sudo gpasswd -d shipify-agent-<k> docker`, or `sudo systemctl disable --now podman.socket`; then `box add` again ([box-setup.md](box-setup.md#containers-the-lab)) |
+| an agent's `docker` (Podman) won't start a container | on the box, as that slot's agent with a run's names: `cd /srv/shipify-agent-<k> && sudo -u shipify-agent-<k> env -i PATH=/usr/bin:/bin HOME=/tmp XDG_DATA_HOME=$PWD/data XDG_RUNTIME_DIR=$PWD/runtime CONTAINERS_CONF_OVERRIDE=/etc/containers/shipify-agents.conf podman info` | "no subuid ranges" or "open …shipify-agents.conf": `box add` again (setup 8). "short-name did not resolve": the registries file is missing, `box add` again. A pull refused with "toomanyrequests": Docker Hub's limit (100 pulls in 6 hours per address), wait ([box-setup.md](box-setup.md#containers-the-lab)) |
+| `box add` says "containers: not run, the image didn't pull" | the box reaches Docker Hub (`curl -sI https://registry-1.docker.io/v2/`) | nothing breaks: the box keeps its label, and the next `box add` checks again |
+| `box add` says "the containers didn't install" | the line above it: no Ubuntu universe, or a package that would remove another | `sudo add-apt-repository universe`, then `box add` again; a machine with Docker of its own keeps it, and agents use `podman` |
+| "runner too old" | GitHub stops sending jobs 30 days after a newer runner | set the box up again: on it, its `here.sh` command; from a PC, `pnpm ship box add <box> --manage --yes` |
 | this PC's box goes offline when you close WSL | WSL stops when idle | the `.wslconfig` idle timeouts ([box-setup.md](box-setup.md#this-pc)) |
-| `box add` can't connect, or the name is taken | it says why and prints the fix | `ssh-keygen -R <address>`, `ssh-copy-id`, `ssh-add`; `--replace` after a reinstall |
+| `box add` can't connect, or the name is taken | it says why and prints the fix | `ssh-keygen -R <address>`, `ssh-copy-id`, `ssh-add`; `--replace` after a reinstall (`here.sh` takes it too) |
 | `ship doctor` says the kernel is 39-bit | the Pi's OS | Ubuntu Server 24.04 LTS, not Raspberry Pi OS |
 | a full disk | `pnpm ship box health <user@host>` | run its clean-up: Actions → watch → `cleanup`, with the box's name |
 | "The run's agent step failed: … didn't install" | the box reaches npm; its disk (`pnpm ship box health`) | `continue`: the next run that picks the agent installs it again ([agents.md](agents.md#on-a-box)) |
@@ -211,6 +224,10 @@ chat, the file store and the notifications' key ([channels.md](channels.md#the-w
   `app.ts` as `export const scheduled`, never in `index.ts`.
 - A status task that's missing (deleted, or its label removed) is simply opened again by the next
   writer (or the watch), with an empty record. Nothing depends on its number.
+- GitHub's list of issues by label can leave an issue out for a while, with no error: for about
+  an hour it left the status task out on and off, and 15 new ones were opened. So a new status
+  task opens only when a second look finds none too, and the next run that writes the record closes
+  any other open one ([watch.md](watch.md#the-status-task-and-its-record)).
 - A runner hands its folder's `.env` to every job: that's how a slot tells a run its box
   (`SHIPIFY_BOX`), the box's folder and the machine's one tool cache (ADR 0020). The runner reads
   it when it starts, so a changed `.env` needs a restart (box setup does it).

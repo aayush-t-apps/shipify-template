@@ -8,7 +8,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NO_APP, setFormProjects } from "../cli/lib/forms.ts";
-import { isYours, keptForm, productFiles, templateForm, versionOf } from "../cli/lib/template.ts";
+import {
+  checkFailures,
+  isYours,
+  keptForm,
+  productFiles,
+  templateForm,
+  versionOf,
+} from "../cli/lib/template.ts";
 
 // GitHub, as the release and the update ask it, answered from the bare repos on disk.
 const world = vi.hoisted(() => ({
@@ -112,7 +119,11 @@ const filesOn = (repo: string, ref = "main") =>
   git(world.dir, "--git-dir", bare(repo), "ls-tree", "-r", "--name-only", ref).split("\n");
 
 const TEMPLATE = "o/shipify-template";
-const deps = (root: string, check = () => true, scan = (_dir: string): string[] => []) => ({
+const deps = (
+  root: string,
+  check = (_dir: string): string[] => [],
+  scan = (_dir: string): string[] => [],
+) => ({
   root,
   remote: (repo: string) => bare(repo),
   check,
@@ -210,6 +221,34 @@ describe("what's yours and what's Shipify's (lib/template.ts)", () => {
   it("reads a release's version from its tag", () => {
     expect(versionOf("v0.1.1")).toBe("0.1.1");
     expect(versionOf("v1")).toBeUndefined();
+  });
+
+  it("names what failed from a check's output: each failing test and its first error (#564)", () => {
+    // vitest 5's own output, colours and all.
+    const tests = [
+      " \x1b[31m❯\x1b[39m tests/task.test.ts \x1b[2m(130 tests | 1 failed)\x1b[22m",
+      "\x1b[31m     × asks the bot's own token\x1b[39m",
+      "\x1b[31m⎯⎯⎯⎯⎯⎯⎯\x1b[39m\x1b[1m\x1b[41m Failed Tests 1 \x1b[49m\x1b[22m",
+      "",
+      "\x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m tests/task.test.ts\x1b[2m > \x1b[22mpublishing\x1b[2m > \x1b[22masks the bot's own token",
+      "\x1b[31m\x1b[1mError\x1b[22m: No plan at plans/links.plan.md.\x1b[39m",
+      "\x1b[36m \x1b[2m❯\x1b[22m cli/lib/plan.ts:\x1b[2m59:29\x1b[22m\x1b[39m",
+      " ELIFECYCLE  Test failed. See above for more details.",
+    ].join("\n");
+    expect(checkFailures(tests)).toEqual([
+      "Failed: tests/task.test.ts > publishing > asks the bot's own token",
+      "Error: No plan at plans/links.plan.md.",
+    ]);
+    // Before the tests: the types (or the format, the lint, the install), never pnpm's own noise.
+    const types = [
+      "> tsc --noEmit && tsc --noEmit -p edge",
+      "cli/x.ts(12,3): error TS2345: Argument of type 'string' is not assignable.",
+      " ELIFECYCLE  Command failed with exit code 2.",
+    ].join("\n");
+    expect(checkFailures(types)).toEqual([
+      "cli/x.ts(12,3): error TS2345: Argument of type 'string' is not assignable.",
+    ]);
+    expect(checkFailures("")).toEqual([]);
   });
 });
 
@@ -311,14 +350,17 @@ describe("a release: ship template (shipify: release)", () => {
     expect(onGitHub("o/shipify", "package.json")).toContain('"version": "0.2.0"');
   });
 
-  it("publishes and records nothing when the check fails", () => {
+  it("publishes and records nothing when the check fails, and names what failed", () => {
     const root = source();
     const r = () =>
       templateRelease(
         { repo: TEMPLATE, yes: true },
-        deps(root, () => false),
+        deps(root, () => ["Failed: tests/a.test.ts > b", "Error: No plan at plans/x.plan.md."]),
       );
-    expect(r).toThrow("The check failed on the files to publish");
+    // The details on the lines after the first: a reply in a chat, with no log in view, shows them.
+    expect(r).toThrow(
+      "The check failed on the files to publish: nothing was published or recorded. Fix it here in a PR, then release again.\nFailed: tests/a.test.ts > b\nError: No plan at plans/x.plan.md.",
+    );
     expect(existsSync(bare(TEMPLATE))).toBe(false);
     expect(git(world.dir, "--git-dir", bare("o/shipify"), "log", "--format=%s", "main")).toBe(
       "start",
@@ -382,6 +424,31 @@ describe("a release: ship template (shipify: release)", () => {
     expect(() => templateRelease({ repo: TEMPLATE, yes: true, inJob: true }, deps(root))).toThrow(
       "its first release makes it, from your PC once",
     );
+  });
+
+  it("in a chat, a stopped release names what failed, and never says `continue` (#564)", async () => {
+    const { opProblem } = await import("../cli/kernel/github-job.ts");
+    const { renderProblem } = await import("../cli/contracts/index.ts");
+    const { ShipError } = await import("../cli/lib/output.ts");
+    const root = source();
+    let stopped: unknown;
+    try {
+      templateRelease(
+        { repo: TEMPLATE, yes: true },
+        deps(root, () => ["Failed: tests/a.test.ts > b", "Error: No plan at plans/x.plan.md."]),
+      );
+    } catch (e) {
+      stopped = e;
+    }
+    const said = renderProblem(opProblem(stopped, "release"));
+    expect(said).toContain("**The check failed on the files to publish: nothing was published");
+    expect(said).toContain("Failed: tests/a.test.ts > b\nError: No plan at plans/x.plan.md.");
+    expect(said).toContain("then ask for the release again: `continue` would stop the same way");
+    expect(said).not.toContain("(above)");
+    expect(said).not.toContain("Reply `continue`");
+    // Anything else is unexpected, and `continue` may help.
+    for (const e of [new Error("socket hang up"), new ShipError("Couldn't push")])
+      expect(renderProblem(opProblem(e, "release"))).toContain("Reply `continue` to try again");
   });
 });
 

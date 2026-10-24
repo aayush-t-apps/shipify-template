@@ -111,13 +111,15 @@ const HELP = `ship: plan, build, ship and maintain Shipify projects (apps and pa
   Tasks and boxes (docs/tasks.md)
   sync [<id>]                               clone and index the org's projects on this machine
   forms [--yes]                             keep the task forms' project lists current (a PR)
-  box add [<user@host>] [--name ..] [--slots N] [--manage] [--replace] [--yes]   make a box: a Pi or VPS
-                                            over SSH, or this PC with no target (the same setup)
-                                            (Ubuntu Server 24.04 LTS or newer; a new box has a slot per 2 GB)
-                                            (--slots: tasks at once, 1-4)
-                                            (--manage: Tailscale + Cockpit, to manage it from a browser)
+  box add [<user@host>] [--name ..] [--slots N] [--manage] [--replace] [--yes]   make a box: a Pi, laptop
+                                            or VPS over SSH, or this PC with no target (the same setup)
+                                            (Ubuntu Server 24.04 LTS or newer; a new box has a slot per core, as memory fits)
+                                            (--slots: tasks at once, 1-9)
+                                            (--manage: Tailscale + Cockpit, to manage it from a browser;
+                                             on this machine, a box you keep, which never sleeps)
                                             (--container: in the box's Docker image, which docker run … register runs)
-  box list | box remove <name> [--yes]      the boxes, online or not
+  box list | box remove <name> [--purge] [--yes]   the boxes, online or not; one gone
+                                            (--purge, on the machine itself: Shipify off it too)
   box status | start | stop | restart [<name>|--name ..] [--yes]   this machine's box (start, stop: sudo)
   box logs [<name>] [-f] | box peek [-f]    its log, and what the agent is doing now (-f, --follow: keep reading)
   box health [<user@host>]                  disk, memory, temperature, updates, services: here or over SSH
@@ -194,6 +196,7 @@ async function main(argv: string[]): Promise<Result> {
       manage: { type: "boolean", default: false },
       container: { type: "boolean", default: false },
       replace: { type: "boolean", default: false },
+      purge: { type: "boolean", default: false },
       slots: { type: "string" },
       code: { type: "string" },
       new: { type: "boolean", default: false },
@@ -316,7 +319,7 @@ async function main(argv: string[]): Promise<Result> {
           yes: values.yes,
         });
       if (a1 === "list") return boxList();
-      if (a1 === "remove") return boxRemove(need(a2, "<name>"), values.yes);
+      if (a1 === "remove") return boxRemove(need(a2, "<name>"), values.yes, values.purge);
       if (a1 === "status") return boxStatus(values.name ?? a2);
       if (a1 === "start") return boxStart(values.name ?? a2);
       if (a1 === "stop" || a1 === "restart") return boxStop(a1, values.name ?? a2, values.yes);

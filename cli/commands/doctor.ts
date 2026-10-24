@@ -350,7 +350,7 @@ export function setupCheck(
     ok: have >= want,
     detail: have >= want ? `version ${have}` : `version ${have}; the repo's is ${want}`,
     blocking: false,
-    fix: "from your PC, when no task is running: pnpm ship box add <this box's SSH address> (it asks for sudo once)",
+    fix: "when no task is running: on the box, its here.sh command again; or from a PC, pnpm ship box add <its SSH address> --manage (it asks for sudo once)",
   };
 }
 
@@ -420,8 +420,8 @@ export function sandboxCheck(
     ok: !problems.length,
     detail: problems.length
       ? problems.join("; ")
-      : `${agents}: can't read the runner's folders, its environment or another slot's runs, and get their login on a pipe only`,
-    fix: "from your PC, when no task runs: pnpm ship box add <this box's SSH address> --manage (it asks for sudo once)",
+      : `${agents}: can't read the runner's folders, its environment or another slot's runs, nor write a root container socket, and get their login on a pipe only`,
+    fix: "when no task runs: on the box, its here.sh command again; or from a PC, pnpm ship box add <its SSH address> --manage (it asks for sudo once)",
   };
 }
 

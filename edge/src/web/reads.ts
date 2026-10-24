@@ -7,7 +7,6 @@
 import {
   AFTER_CLOSE_MS,
   acknowledgement,
-  asked,
   NEEDS_YOU_LABEL,
   pickIn,
   readFrom,
@@ -333,9 +332,8 @@ function message(gh: GitHub, owner: string | undefined, c: Comment & { id: numbe
             ...(reply.question ? { question: reply.question } : {}),
             ...(reply.choices?.length ? { choices: reply.choices } : {}),
             links: reply.links,
-            // Its buttons, as every chat has them; GitHub's own words as links there.
+            // Its buttons, as every chat has them.
             buttons: replyButtons(reply, md).rows.flat(),
-            github: asked(md).github,
           },
         }
       : {}),

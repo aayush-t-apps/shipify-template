@@ -61,9 +61,25 @@ const when = (t: Date) =>
 const THROTTLED = "/sys/devices/platform/soc/soc:firmware/get_throttled";
 const THROTTLE_BITS = ["under-voltage", "frequency capped", "throttled", "soft temperature limit"];
 
+/** A Raspberry Pi's reset status at boot (the firmware's PM_RSTS), 4 bytes big-endian. */
+const RSTS = "/proc/device-tree/chosen/bootloader/rsts";
+/** PM_RSTS's power-on reset bit (HADPOR): the power was off, cut or dropped too low. */
+const POWER_ON = 0x1000;
+
 /**
- * The system, uptime, load, memory and swap, disk, temperature and throttling (where the board has
- * them), a pending restart, waiting updates, the box's services, and its slots' memory.
+ * How the box last started, from its reset status: from power-on (a cut or a brownout restarts a
+ * box this way too), or a restart. Undefined when the board has none, or it doesn't read.
+ */
+function startedBy(rsts: string | undefined): string | undefined {
+  const bytes = [...(rsts ?? "")].map((c) => c.charCodeAt(0));
+  if (bytes.length !== 4 || bytes.some((b) => b > 0xff)) return undefined;
+  const value = bytes.reduce((v, b) => v * 256 + b, 0);
+  return value & POWER_ON ? "from power-on: the power was off, cut or dropped" : "by a restart";
+}
+
+/**
+ * The system, how it last started, uptime, load, memory and swap, disk, temperature and throttling
+ * (where the board has them), a pending restart, waiting updates, the box's services, and its slots' memory.
  */
 export function boxFacts(given: Partial<BoxIo> = {}, now = Date.now()): Fact[] {
   const { read, exec, changed } = { ...machine, ...given };
@@ -88,6 +104,8 @@ export function boxFacts(given: Partial<BoxIo> = {}, now = Date.now()): Fact[] {
   ];
   const board = read("/proc/device-tree/model")?.replace(/\0/g, "").trim();
   if (board) facts.push({ name: "board", value: board });
+  const started = startedBy(read(RSTS));
+  if (started) facts.push({ name: "started", value: started });
   facts.push(
     { name: "up", value: duration(uptime()) },
     {

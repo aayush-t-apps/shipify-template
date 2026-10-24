@@ -109,5 +109,76 @@ describe("box/here.sh: before it changes anything", () => {
     expect(runIt(UBUNTU("24.04"), "--slots", "two").out).toContain(
       "--slots is a whole number from 1",
     );
+    // setup.sh takes 1 to 9: refused here, before the login and the clone.
+    expect(runIt(UBUNTU("24.04"), "--slots", "12").out).toContain(
+      "--slots is a whole number from 1 to 9.",
+    );
+  });
+
+  it("--manage makes a box you keep: passed to box add, and refused with --remove or --container", () => {
+    expect(runIt(UBUNTU("24.04"), "--help").out).toContain("--manage");
+    expect(text).toContain('[ "$MANAGE" = 1 ] && args+=(--manage)');
+    // The plan run and the --yes run take the same args, so the plan shows what --yes does. A plan
+    // that can't go ahead stops it there: nothing is asked.
+    expect(text).toContain(
+      'ship "${args[@]}" || die "nothing changed: box add can\'t go ahead (above), and names the fix."',
+    );
+    expect(text).toContain('ship "${args[@]}" --yes </dev/tty');
+    const remove = runIt(UBUNTU("24.04"), "--manage", "--remove");
+    expect(remove.out).toContain("--manage is for adding a box");
+    const container = runIt(UBUNTU("24.04"), "--manage", "--container");
+    expect(container.out).toContain("--manage isn't for a box in Docker");
+    // Before anything: the OS isn't even looked at.
+    expect(remove.out).not.toContain("Looking at this machine");
+    expect([remove.left, container.left]).toEqual([[], []]);
+  });
+
+  it("stops at an option with no value, naming it, where it once stopped without a word", () => {
+    for (const args of [["--copy"], ["--name"], ["--slots"], ["--copy", "--manage"]]) {
+      const r = runIt(UBUNTU("24.04"), ...args);
+      expect(r.code, args.join(" ")).toBe(1);
+      expect(r.out).toContain(`${args[0]} needs a value: ${args[0]} <value>.`);
+    }
+  });
+
+  it("--replace goes to box add; --purge only with --remove, to box remove (setup 9)", () => {
+    expect(runIt(UBUNTU("24.04"), "--help").out).toContain("--replace");
+    expect(text).toContain('[ "$REPLACE" = 1 ] && args+=(--replace)');
+    expect(text).toContain("args+=(--purge)");
+    expect(runIt(UBUNTU("24.04"), "--purge").out).toContain("--purge goes with --remove");
+    expect(runIt(UBUNTU("24.04"), "--replace", "--remove").out).toContain(
+      "--replace is for adding a box",
+    );
+    expect(runIt(UBUNTU("24.04"), "--remove", "--purge", "--container").out).toContain(
+      "--purge isn't for a box in Docker",
+    );
+  });
+
+  /** One of here.sh's functions, with `ask` answering `answer`. */
+  const yesTo = (answer: string) => {
+    const fn = /^yes_to\(\) \{\n[\s\S]*?\n\}$/m.exec(text)?.[0] ?? "";
+    return spawnSync(
+      "bash",
+      ["-c", `ask() { printf '%s' "$ANSWER"; }\n${fn}\nyes_to "Go" && echo yes || echo no`],
+      { encoding: "utf8", env: { PATH: process.env.PATH, ANSWER: answer } },
+    ).stdout.trim();
+  };
+
+  it("takes yes in any case, as a phone's keyboard writes it, and anything else as no", () => {
+    for (const a of ["yes", "Yes", "YES", "y", "Y"]) expect(yesTo(a), a).toBe("yes");
+    for (const a of ["no", "", "yes please", "N"]) expect(yesTo(a), a).toBe("no");
+    // Every yes it asks goes through it: yes_to's is the only answer read as a case.
+    expect(text.match(/case "\$\(ask /g)).toHaveLength(1);
+    expect(text.match(/yes_to "/g)?.length).toBe(3);
+  });
+
+  it("offers the private Shipify copy you manage, an organization's too, as the default", () => {
+    expect(text).toContain(
+      'select(.name == "shipify" and .private and .permissions.admin) | .full_name',
+    );
+    // Only one such copy is a default; else <you>/shipify.
+    expect(text).toContain(
+      '[ "$(printf \'%s\\n\' "$mine" | grep -c /)" = 1 ] || mine="$LOGIN/shipify"',
+    );
   });
 });

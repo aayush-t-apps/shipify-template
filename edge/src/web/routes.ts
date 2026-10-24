@@ -27,7 +27,7 @@ import {
   poolMatching,
 } from "../../../cli/contracts/index.ts";
 import { accessTokenOk } from "../access.ts";
-import { cached } from "../cache.ts";
+import { cached, stale } from "../cache.ts";
 import { channelOf } from "../channels/index.ts";
 import { writtenTo } from "../chat.ts";
 import { doorIn, listOf } from "../door-in.ts";
@@ -66,6 +66,25 @@ import * as shapes from "./shapes.ts";
 export const BASE = "/admin/chat";
 /** How long a read is kept for every tab and phone: polling stays cheap. */
 const KEEP_MS = 5_000;
+
+/**
+ * A read the page polls (the list, a thread), kept KEEP_MS. When GitHub can't be read (on its
+ * second try too), the last good answer this instance has, marked `stale`: the page says it's
+ * retrying, not that something broke. None kept: the error, as before.
+ */
+async function polled<T>(key: string, fn: () => Promise<T>, deps: Deps) {
+  try {
+    return await cached(key, KEEP_MS, fn, deps.now());
+  } catch (e) {
+    const had = e instanceof GitHubError ? stale<T>(key) : undefined;
+    if (!had) throw e;
+    logOf(deps, "web").warn("page.served", {
+      what: "last good copy",
+      status: e instanceof GitHubError ? e.status : 0,
+    });
+    return { ...had, stale: true as const };
+  }
+}
 
 const PAGE_HEADERS = {
   "cache-control": "private, no-cache",
@@ -258,11 +277,10 @@ async function get(
     return tagged(
       req,
       shapes.List.parse(
-        await cached(
+        await polled(
           `web:list:${repo}:${page}:${closed}`,
-          KEEP_MS,
           () => list(env, deps, Number(page), closed),
-          now,
+          deps,
         ),
       ),
     );
@@ -275,11 +293,10 @@ async function get(
     const older = url.searchParams.get("page") ?? "";
     if (older && !/^[1-9]\d{0,4}$/.test(older))
       return problem(400, "That page doesn't read.", "Reload the page.");
-    const t = await cached(
+    const t = await polled(
       `web:task:${repo}:${arg}:${since ?? ""}:${older}`,
-      KEEP_MS,
       () => thread(env, deps, s, Number(arg), since, older ? Number(older) : undefined),
-      now,
+      deps,
     );
     if (!t) return problem(404, `There's no task #${arg}.`, "Check the number.");
     return tagged(req, shapes.Thread.parse(t));

@@ -8,6 +8,7 @@
 import {
   cpSync,
   type Dirent,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -26,6 +27,7 @@ import { ghRun, platformRepo } from "../lib/github.ts";
 import { ok, type Result, ShipError } from "../lib/output.ts";
 import { canScan, secretFindings } from "../lib/secret-scan.ts";
 import {
+  checkFailures,
   isYours,
   keptForm,
   privateWords,
@@ -92,8 +94,11 @@ export interface ReleaseDeps {
   root: string;
   /** A repo's git address. */
   remote: (repo: string) => string;
-  /** The full check on the files to publish, in their folder: as the template's CI runs it. */
-  check: (dir: string) => boolean;
+  /**
+   * The full check on the files to publish, in their folder: as the template's CI runs it. What
+   * failed, a line each (checkFailures); [] when it passed.
+   */
+  check: (dir: string) => string[];
   /** A release's files, unpacked into `into`, read with the template's key. */
   download: (repo: string, tag: string, into: string, token?: string) => boolean;
   /** The secret scan on the files to publish: what it found, each `file:line (rule)`; [] clean. */
@@ -103,9 +108,23 @@ export interface ReleaseDeps {
 export const releaseDeps = (): ReleaseDeps => ({
   root: PLATFORM_ROOT,
   remote: (repo) => `https://github.com/${repo}.git`,
-  check: (dir) =>
-    run("pnpm", ["install", "--frozen-lockfile", "--prefer-offline"], { cwd: dir, show: true })
-      .code === 0 && run("pnpm", ["verify"], { cwd: dir, show: true }).code === 0,
+  check: (dir) => {
+    // Each step shown as it runs, and kept beside the folder: a reply in a chat names what
+    // failed, since the log isn't in view there.
+    const log = join(dir, "..", "check.log");
+    const step = (args: string[]) =>
+      run("bash", ["-o", "pipefail", "-c", '"$@" 2>&1 | tee -a "$CHECK_LOG"', "check", ...args], {
+        cwd: dir,
+        show: true,
+        env: { CHECK_LOG: log },
+      }).code;
+    const code =
+      step(["pnpm", "install", "--frozen-lockfile", "--prefer-offline"]) ||
+      step(["pnpm", "verify"]);
+    if (code === 0) return [];
+    const said = checkFailures(existsSync(log) ? readFileSync(log, "utf8") : "");
+    return said.length ? said : [`exit code ${code}`];
+  },
   download: (repo, tag, into, token) => {
     const tgz = join(into, "..", "release.tgz");
     const got = run("sh", ["-c", `gh api "repos/${repo}/tarball/${tag}" > "${tgz}"`], {
@@ -297,9 +316,11 @@ export function templateRelease(
     git(tree, "add", "-A");
     must(git(tree, "commit", "-q", "-m", `Shipify ${next}`), "Couldn't make the release's commit");
     // Checked as the template's CI checks it: nothing leaves before this passes.
-    if (!deps.check(tree))
+    // What failed goes on the lines after the first: a reply shows them as its details.
+    const failed = deps.check(tree);
+    if (failed.length)
       throw new ShipError(
-        `The check failed on the files to publish (above): nothing was published or recorded. Fix it here in a PR, then release again.`,
+        `The check failed on the files to publish: nothing was published or recorded. Fix it here in a PR, then release again.\n${failed.join("\n")}`,
         "blocked",
       );
     // Recorded here first, in a worktree of main: a release stopped after this carries on from it

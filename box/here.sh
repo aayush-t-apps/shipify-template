@@ -7,15 +7,20 @@
 #   1. looks first: Ubuntu 24.04 LTS or newer (x64 or arm64), not root, sudo, memory, disk, GitHub
 #   2. your approval: a code from GitHub you enter on your phone (github.com/login/device), or a
 #      token you paste (--token). The login lives in a folder this script deletes when it ends
-#   3. your copy (asked, `<you>/shipify` by default): you manage its runners, and it's private
+#   3. your copy (asked; by default the private Shipify copy you manage, else `<you>/shipify`): you
+#      manage its runners, and it's private
 #   4. your copy's own `ship box add` on this machine, from a clone in that folder, with Node 22 and
 #      pnpm put there too: the plan first, then your yes. sudo asks for your password once
 #   5. always, even on an error or Ctrl-C: the folder deleted, with the login, the clone and the
 #      tools in it, and the link to revoke the approval on GitHub
 # After it the box holds no key: each job brings its own (ADR 0031).
+# --manage, for a machine you keep as a box (a laptop, a spare PC): it never sleeps, and gets
+# Tailscale, Cockpit and a firewall, as `box add --manage` over SSH. Its SSH settings stay.
+# --replace takes the place of a machine that had the same box name (this one, reinstalled).
+# --remove takes the box away; with --purge, Shipify off this machine too (box/remove.sh).
 #
-#   bash here.sh [--remove] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]
-#   curl … | bash -s -- --remove      (options after `bash -s --` when piped)
+#   bash here.sh [--manage] [--replace] [--remove [--purge]] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]
+#   curl … | bash -s -- --manage      (options after `bash -s --` when piped)
 # In the box's Docker image (ADR 0056), `docker run -it … register` runs it with --container: as the
 # container's root, with the image's own gh and Node, and `box add --container`.
 #
@@ -42,6 +47,15 @@ ask() {
   printf '%s%s: ' "$1" "${2:+ [$2]}" >/dev/tty
   IFS= read -r answer </dev/tty || answer=""
   printf '%s' "${answer:-${2:-}}"
+}
+
+# A yes from the terminal, in any case ("Yes", as a phone's keyboard writes it): $1 the question.
+# Anything else is no.
+yes_to() {
+  case "$(ask "$1? yes or no" no | tr '[:upper:]' '[:lower:]')" in
+    y | yes) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # A secret from the terminal, never shown.
@@ -72,8 +86,8 @@ cleanup() {
 }
 
 usage() {
-  sed -n '2,23p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
-  printf 'bash here.sh [--remove] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]\n'
+  sed -n '2,28p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+  printf 'bash here.sh [--manage] [--replace] [--remove [--purge]] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]\n'
 }
 
 # ---------------------------------------------------------------- 1. looks first
@@ -200,7 +214,13 @@ login() {
 # ---------------------------------------------------------------- 3. your copy
 
 copy() {
-  [ -n "$COPY" ] || COPY=$(ask "Your Shipify copy" "$LOGIN/shipify")
+  # The default: the one private repo named shipify you manage (yours, or an organization's), else
+  # <you>/shipify.
+  local mine
+  mine=$(gh api "user/repos?per_page=100" --paginate \
+    --jq '.[] | select(.name == "shipify" and .private and .permissions.admin) | .full_name' 2>/dev/null || true)
+  [ "$(printf '%s\n' "$mine" | grep -c /)" = 1 ] || mine="$LOGIN/shipify"
+  [ -n "$COPY" ] || COPY=$(ask "Your Shipify copy" "$mine")
   [[ "$COPY" =~ ^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$ ]] || die "\"$COPY\" isn't owner/name."
   local facts admin priv
   facts=$(gh api "repos/$COPY" --jq '"\(.permissions.admin) \(.private)"' 2>/dev/null) ||
@@ -234,13 +254,13 @@ add() {
   [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die "\"$NAME\" isn't a box name: small letters, digits and -."
   local args=(box add --name "$NAME")
   [ -n "$SLOTS" ] && args+=(--slots "$SLOTS")
+  [ "$MANAGE" = 1 ] && args+=(--manage)
   [ "$CONTAINER" = 1 ] && args+=(--container)
+  [ "$REPLACE" = 1 ] && args+=(--replace)
   say "The plan"
-  ship "${args[@]}" || true
-  case "$(ask "Make this machine the box $NAME? yes or no" no)" in
-    y | yes) ;;
-    *) die "nothing changed: you said no." ;;
-  esac
+  # A plan that can't go ahead (a name another machine has) says why: nothing is asked then.
+  ship "${args[@]}" || die "nothing changed: box add can't go ahead (above), and names the fix."
+  yes_to "Make this machine the box $NAME" || die "nothing changed: you said no."
   ship "${args[@]}" --yes </dev/tty || die "box add stopped (above): it names the fix. Running this again carries on."
   if [ "$CONTAINER" = 1 ]; then
     say "Registered: $NAME. Start it, and it runs after every reboot:"
@@ -256,32 +276,62 @@ remove() {
   default=$(hostname -s)
   [ "$CONTAINER" = 1 ] && default=docker
   [ -n "$NAME" ] || NAME=$(ask "The box to remove" "$default")
-  case "$(ask "Remove the box $NAME (its slots on GitHub, its services here)? yes or no" no)" in
-    y | yes) ;;
-    *) die "nothing changed: you said no." ;;
-  esac
-  ship box remove "$NAME" --yes </dev/tty || die "box remove stopped (above)."
-  say "$NAME is removed. Delete the machine too, if it was only a box."
+  local args=(box remove "$NAME")
+  if [ "$PURGE" = 1 ]; then
+    args+=(--purge)
+    yes_to "Remove the box $NAME (its slots on GitHub, its services here), and take Shipify off this machine (its users, folders and rules)" ||
+      die "nothing changed: you said no."
+  else
+    yes_to "Remove the box $NAME (its slots on GitHub, its services here)" || die "nothing changed: you said no."
+  fi
+  ship "${args[@]}" --yes </dev/tty || die "box remove stopped (above). Running this again carries on."
+  if [ "$PURGE" = 1 ]; then
+    say "$NAME is removed, and Shipify is off this machine."
+  else
+    say "$NAME is removed. To take Shipify off this machine too: the same command with --remove --purge."
+  fi
 }
 
 main() {
-  REMOVE=0 TOKEN=0 CONTAINER=0 COPY="" NAME="" SLOTS="" ARCH="" LOGIN=""
+  REMOVE=0 PURGE=0 REPLACE=0 TOKEN=0 CONTAINER=0 MANAGE=0 COPY="" NAME="" SLOTS="" ARCH="" LOGIN=""
+  # value <option> <its value…>: the value given, or a stop that names the option.
+  value() {
+    if [ $# -lt 2 ] || [ -z "$2" ] || [ "${2#--}" != "$2" ]; then die "$1 needs a value: $1 <value>."; fi
+    printf '%s' "$2"
+  }
   while [ $# -gt 0 ]; do
     case "$1" in
       --remove) REMOVE=1 ;;
+      --purge) PURGE=1 ;;
+      --replace) REPLACE=1 ;;
+      --manage) MANAGE=1 ;;
       --token) TOKEN=1 ;;
       --container) CONTAINER=1 ;;
-      --copy) COPY=${2:-} && shift ;;
-      --name) NAME=${2:-} && shift ;;
+      # Each on its own line: a failed value stops it here, as `set -e` does nothing in a `&&` list.
+      --copy)
+        COPY=$(value "$@")
+        shift
+        ;;
+      --name)
+        NAME=$(value "$@")
+        shift
+        ;;
       --slots)
-        SLOTS=${2:-} && shift
-        [[ "$SLOTS" =~ ^[1-9][0-9]*$ ]] || die "--slots is a whole number from 1."
+        SLOTS=$(value "$@")
+        shift
+        [[ "$SLOTS" =~ ^[1-9]$ ]] || die "--slots is a whole number from 1 to 9."
         ;;
       -h | --help) usage && exit 0 ;;
       *) die "unknown option $1" "$(usage)" ;;
     esac
     shift
   done
+  # Refused before the login and the clone, as box add would refuse them.
+  if [ "$MANAGE" = 1 ] && [ "$REMOVE" = 1 ]; then die "--manage is for adding a box, not removing one."; fi
+  if [ "$MANAGE" = 1 ] && [ "$CONTAINER" = 1 ]; then die "--manage isn't for a box in Docker: its host keeps the machine."; fi
+  if [ "$PURGE" = 1 ] && [ "$REMOVE" != 1 ]; then die "--purge goes with --remove: it takes Shipify off this machine as the box goes."; fi
+  if [ "$PURGE" = 1 ] && [ "$CONTAINER" = 1 ]; then die "--purge isn't for a box in Docker: remove its volume instead (docker volume rm)."; fi
+  if [ "$REPLACE" = 1 ] && [ "$REMOVE" = 1 ]; then die "--replace is for adding a box, not removing one."; fi
   preflight
   WORK=$(mktemp -d)
   chmod 700 "$WORK"
@@ -293,6 +343,9 @@ main() {
   # What the tools write for themselves (Node's cache, npm's) goes in the folder too.
   mkdir -p "$WORK/tmp"
   export TMPDIR="$WORK/tmp"
+  # Every download tried again, and stopped when it stalls (curl reads CURL_HOME's .curlrc).
+  printf '%s\n' "retry = 3" "retry-delay = 5" "connect-timeout = 30" "speed-limit = 1000" "speed-time = 60" > "$WORK/.curlrc"
+  export CURL_HOME="$WORK"
   tools
   login
   copy

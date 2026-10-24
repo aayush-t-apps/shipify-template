@@ -274,6 +274,8 @@ async function read(
       status = { ...status, labels: status.labels.filter((l) => !lost.includes(l)) };
     }
   }
+  // A list can leave an issue out for a while, with no error: one empty answer isn't enough.
+  if (!status) status = await statusTask(gh);
   if (!status) {
     // A new Shipify: the status task the due runs keep, opened so there's a bell to ring.
     const made = await gh.json<{ number: number }>("POST", `repos/${gh.repo}/issues`, {

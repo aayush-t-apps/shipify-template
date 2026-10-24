@@ -62,6 +62,8 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
   `~/.local/share` link there), so packages, pnpm and a test browser download once per slot. Only
   that slot's agent can reach them; pnpm checks its store's files before it uses them; the weekly
   clean-up trims what no run has read in 30 days. A task's work, home and files never outlive it.
+  Its containers' images are kept in `data/containers` for at most a week
+  ([What a box keeps between runs](#what-a-box-keeps-between-runs)).
 - **A fresh folder per run:** `/srv/shipify-agent-<k>/run-<id>/`:
 
   | Folder | Holds |
@@ -130,14 +132,34 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
   - another slot's runs (each slot's folder is 2710, its own);
   - on WSL, Windows: its drives and its programs, which `/etc/wsl.conf` closes
     ([box-setup.md](box-setup.md#this-pc));
+  - any private network (box setup 9): your home network (the router, a camera, a NAS, another
+    box), the tailnet and a cloud's metadata address. A table of its own in nftables rejects what
+    the agent's user, or an ID of its containers' range, sends there; DNS alone stays open. The
+    setup proves it before the slots get their label ([box-setup.md](box-setup.md#the-agents-own-user));
+  - a root container socket (`/run/docker.sock`, `/run/podman/podman.sock`) or the docker group:
+    either would give it the box, so it can write to neither;
   - the machine's tools in `/opt/shipify`: it reads and runs them, and changes none.
+- **Containers, its own** (box setup 8, ADR 0064): `docker run` and `docker compose` are rootless
+  Podman as the agent's own user, in a user namespace it owns, with a range of 65,536 IDs of its
+  own (`/etc/subuid`). No Docker Engine, no root daemon, no socket. A container reaches only what
+  its agent reaches (the network, its slot's folder), and gets no key the agent doesn't pass it.
+  **The one limit set aside:** inside that namespace the agent is root, so it reaches more of the
+  kernel's code (mounts, network namespaces, firewall rules there); a kernel bug there could give
+  it the box. It could already do this before, through `aa-exec` and one of Ubuntu's own AppArmor
+  profiles, so this isn't a new reach, and Ubuntu's limit on user namespaces was never a wall here.
+  What defends it is the kernel's security updates, installed each day with a restart at 04:30
+  when one needs it. A stronger wall (gVisor, a VM per run) is for later, if a run ever needs it.
 - **Nothing outlives its run:** after it thinks, and at its time limit, every process of its user
-  is killed and checked gone before any step with a write key starts. It can't use cron or at.
+  is killed, and checked gone (its range's too: its containers' processes) before any step with a
+  write key starts. It can't use cron or at. Its containers' records, volumes and networks go when
+  the slot's next run starts.
 - **A check** (`checks/<name>.mjs`, a repeat's script) runs the same way: as the agent's user, with
   no keys, for a minute at most.
 - **Proven, then labelled:** `box add` checks every wall before it gives the slots the `sandbox`
-  label, which run jobs need. `ship doctor` checks again in each box's weekly clean-up, and
-  `pnpm ship selftest sandbox` reads that from the status task.
+  label, which run jobs need. With Podman, that includes a container run as one agent the whole
+  way: the box's kill must leave no process of the agent or its range. `ship doctor` checks again
+  in each box's weekly clean-up (the socket wall too), and `pnpm ship selftest sandbox` reads that
+  from the status task.
 - **Every box is set up this way,** this PC's too (`box add` with no target): one script, one
   sandbox, and the same check before the label (ADR 0047). On this PC, its SSH settings and network
   are left as they are.
@@ -192,8 +214,8 @@ Three rules keep that as safe as your own account:
   secrets, and has no webhook.
 
 What's left: its agent still has the web in reach, as every talk and work run does, to send out
-what it read (the agents' firewall is on the [roadmap](roadmap.md)). Its login isn't: it's on a
-pipe, out of its commands' reach.
+what it read (it reaches no private network since box setup 9; a list of allowed internet hosts is
+on the [roadmap](roadmap.md)). Its login isn't: it's on a pipe, out of its commands' reach.
 
 ## Write keys come after the agent
 
@@ -215,7 +237,8 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
   check ran, or it read repos outside your account. `readOutside` is their sum. After any of it, a
   tool's reads too, the notes the run proposes wait for your `yes` and its reply's images are
   inert.
-  Its network is otherwise open until the agent's firewall ([roadmap.md](roadmap.md)).
+  Its network is otherwise the internet's, with no private network (box setup 9), until a list of
+  allowed hosts ([roadmap.md](roadmap.md)).
 - **A form fixes its target:** each act call names the argument that says what it changes
   (`args.<call>.target`: Notion's `parent` and `page`), and the tool contract refuses a form that
   doesn't fix it, so no form writes wherever a capped string points.
@@ -226,6 +249,9 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
   above). So the rule is one: the record's token may be in a runner's process while its agent
   runs, and never in the agent's; a write token, an act key, a files token or a channel's key never
   in either, minted only after the agent.
+- **A stay's answer that needs a key** (ADR 0062): the stay's step ends with it decided, and its
+  outputs come from the same fixed lists as decide's. Only then do the steps after it mint those
+  keys, the same mints as decide's, and apply it: **stay → mint → apply**, its agent done.
 - **`tests/workflows.test.ts`** holds `task.yml` to this: in think and a stay, the record's token
   only as `SHIPIFY_ISSUES_TOKEN`, no write token, act key or channel key, and write tokens only
   after the agent.
@@ -289,16 +315,25 @@ pages, a tool's answers and anyone else's text are data, never a command
   description of them: once (the box removes any copy in the agent's words), last and whole in
   every chat. A list over 3,000 characters is approved only on GitHub, since a chat can't show it
   whole.
-- **From a chat:** `start over`, `preview`, `publish`, `go` and the Operate form work on GitHub
-  only: they act on code or deploy it.
+- **From a chat: one flow, one rule** (ADR 0049, 2026-10-18). Every word, task and release works
+  the same from a chat as on GitHub. Two things happen only on GitHub, where your GitHub sign-in
+  (and its two-factor) says it's you: a PR's merge (code reaches `main`, and production, only
+  through it), and the operations that change the live app at once with no merge: taking an app
+  down, bringing it back and a rollback. From a chat those three run nothing; the reply links the
+  Operate form, and a chat's `continue` on one doesn't run it again. What a chat can start, and
+  why that's enough:
+  - `go` and `publish` start only what you merged (a change doc, a plan): the merge approved it.
+  - `preview` deploys an open PR to its own preview, with no runtime keys; `start over` closes a
+    PR (its commits stay on GitHub) and starts a new branch. Neither reaches `main`.
+  - A release opens a PR that only your merge deploys.
 - **What you accept:** whoever holds your Telegram account, your Access sign-in or your Cloudflare
   account (the edge holds the door's key) can approve a list. A list is calls to your tools only:
   today Notion, on the pages connected to the write integration: creating pages, setting
   properties, and replacing a page's whole body (`update_page` with `content`, whose list line
   says so), which deletes its old text blocks. It never deletes a page: subpages and
   sub-databases are kept, and a page with a block holding others is refused. Notion keeps page
-  history, so a replaced body can be brought back there. They could already start runs as you,
-  and still can't merge, deploy or run an operation. So turn on Telegram's password (Settings →
+  history, so a replaced body can be brought back there. They can start runs and a release as you
+  (above), and still can't merge a PR or take an app down, bring it back or roll it back. So turn on Telegram's password (Settings →
   Privacy and Security → Two-Step Verification), and keep the Access sign-in to your own email.
 - **A routine's form:** a page someone else wrote that a routine reads (a shared page, a web clip)
   could steer what it writes, but only within its form: its one target, its caps, its `max`. Keep
@@ -320,8 +355,8 @@ then each copy.
 - **The template holds no key and no one's data:** Shipify's own files, never a copy's plans,
   recipes, checks, app lists, settings or secrets. A release checks every file it publishes
   (`pnpm verify`) before anything leaves.
-- **A release starts on GitHub only** (`shipify: release`), as every operation does; the first one,
-  which makes the template's repo, only from your PC.
+- **A release starts from a task** (`shipify: release`), on GitHub or from a chat, as every
+  operation does; the first one, which makes the template's repo, only from your PC.
 - **An update is a PR,** on its copy, by its bot, showing every line it changes. Nothing merges by
   itself, and a closed one stays closed.
 - **Its keys:** the bot's, one hour, for that copy's branch and PR (its workflow files too); a
@@ -341,7 +376,9 @@ then each copy.
 - **The one command** (`here.sh`, box-setup.md) installs nothing it hasn't checked: gh's and
   Node's downloads against their checksums. Your approval is a GitHub code you enter on your
   phone. The login lives in a folder it deletes on every exit, and it prints where to revoke it.
-  A start-up script can't run it: it needs your terminal.
+  A start-up script can't run it: it needs your terminal. With `--manage` it adds the firewall
+  and Tailscale as `box add --manage` does, and leaves the machine's SSH settings as they are,
+  since you set it up there and not over SSH: SSH by key only comes from a `box add` over SSH.
 
 ## The edge: the door and the watch
 
@@ -459,18 +496,23 @@ Nothing secret:
 | `/opt/shipify/tool/shipify-app/<commit>` | read-only copies of Shipify, each with its CLI built as one file and no packages installed: what every step and the agent start (the three newest, and any a run is on) |
 | the pnpm store, checkouts | code and packages |
 | each slot's last run folder | the agent's clone and sessions, until that slot's next run (or 8 hours, by the weekly clean-up). Its token went in as a header and is kept nowhere |
+| each slot's containers' images | `data/containers`: the images its runs pulled, for at most a week (the weekly clean-up removes them all). A run's containers, volumes and networks go at the slot's next run |
 
 - **A job's tokens** live in its processes' memory and expire within the hour.
 - **On GitHub's machines instead:** CI and deploys, a merged plan's repo, settings and keys
   (`prepare`), and operations. They run from `main`, with no agent.
-- **The box itself:** SSH by key only, a firewall with `--manage`, automatic security updates, and
-  a runner user (`shipify`) with no sudo but the one rule ([box-setup.md](box-setup.md)).
+- **The box itself:** SSH by key only, a firewall with `--manage`, no private network for the
+  agents and their containers (setup 9), automatic security updates, and a runner user
+  (`shipify`) with no sudo but the one rule ([box-setup.md](box-setup.md)).
 
 **Left for later, by choice:**
 - the run's mint steps hold the bot App's key on the box while they run (never in the agent's
   step); minting off the box would close that;
-- the agents' network is open (npm, the agent's API or gateway, GitHub); a firewall for their
-  users is for later;
+- the agents reach the whole internet (npm, the agent's API or gateway, GitHub, and the rest),
+  though no private network (setup 9); a list of allowed hosts is for later, and would cover their
+  containers too;
+- an agent is root inside a user namespace of its own (its containers, ADR 0064): the kernel's
+  updates defend it; gVisor as Podman's runtime, or a VM per run, would be a stronger wall;
 - shipify's own `main` isn't protected (free private repos can't be).
 
 ## Every project's pipeline

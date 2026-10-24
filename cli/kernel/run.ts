@@ -18,7 +18,7 @@ import {
 import { basename, join } from "node:path";
 import { filesDir, queue, rec, thisRun, workspace } from "../commands/task/context.ts";
 import { followDeploy } from "../commands/task/deploys.ts";
-import { freeFile, laterAttachments, taskAttachments } from "../commands/task/files.ts";
+import { fileHash, freeFile, laterAttachments, taskAttachments } from "../commands/task/files.ts";
 import { LOGIN } from "../contracts/accounts.ts";
 import {
   asProblem,
@@ -33,7 +33,7 @@ import {
 } from "../contracts/index.ts";
 import { accountOf } from "../lib/accounts.ts";
 import { installAgent } from "../lib/agent-install.ts";
-import { defaultAgent as defaultAgentOf, loginOf } from "../lib/agents.ts";
+import { loginOf } from "../lib/agents.ts";
 import { callsSoFar } from "../lib/exec.ts";
 import { ghRun, platformRepo, readsSeen, repoOfPr } from "../lib/github.ts";
 import { onBox } from "../lib/sandbox.ts";
@@ -42,9 +42,16 @@ import type { RecordWrite } from "../lib/plugins/record.ts";
 import { repoFor } from "../lib/projects-on-github.ts";
 import type { RunDetails } from "../lib/runs.ts";
 import { PLATFORM, type TaskState } from "../lib/task.ts";
-import { defaultAgent, executors, taskChoice } from "./agent.ts";
+import { executors, taskAgent } from "./agent.ts";
 import { apply } from "./apply.ts";
-import { afterThink, cursorOf, plan as decidePlan, stillWaiting } from "./decide.ts";
+import {
+  afterThink,
+  cursorOf,
+  plan as decidePlan,
+  lateStop,
+  sharedBefore,
+  stillWaiting,
+} from "./decide.ts";
 import { doorFile, outward } from "./door.ts";
 import { githubJob } from "./github-job.ts";
 import { listOf } from "./instant.ts";
@@ -59,10 +66,19 @@ import {
   type TaskRecord,
   textHash,
 } from "./snapshot.ts";
-import { boxAnswer, givesWay, sameTurn, stay, stayMinutes, staysAfter, type Turn } from "./stay.ts";
+import {
+  ends,
+  givesWay,
+  needsMint,
+  stay,
+  stayMinutes,
+  staysAfter,
+  stayUntil,
+  type Turn,
+  takes,
+} from "./stay.ts";
 import { finish, think as runThink, type ThinkOut } from "./think.ts";
 import type { Decided, Plan, Said, Snapshot, ThinkMeta, Trigger, Write } from "./types.ts";
-import { wordOf } from "./words.ts";
 
 const dir = (n: number) => join(workspace(), ".tasks", String(n));
 const file = (n: number, name: string) => join(dir(n), `${name}.json`);
@@ -212,12 +228,8 @@ export async function runTask(n: number): Promise<Result> {
  */
 export function agentOf(p: Plan): { agent: string; login: string } {
   if (p.do !== "think" || profileOf(p) === "check") return { agent: "", login: "" };
-  const all = executors();
-  // An agent executors.json doesn't have (SHIPIFY_AGENT mistyped): its default is installed, and
-  // think says what's wrong, as it always has.
-  const named = taskChoice(p.state).agent ?? defaultAgent();
-  const agent = all[named] ? named : defaultAgentOf(all, "");
-  return { agent, login: loginOf(all[agent])?.secret ?? "" };
+  const agent = taskAgent(p.state);
+  return { agent, login: loginOf(executors()[agent])?.secret ?? "" };
 }
 
 /** The run's profile for task.yml: a check alone needs no agent on the box; one the agent follows
@@ -364,6 +376,8 @@ export async function runThinkStep(
   n: number,
   stay: {
     resume?: string;
+    /** What the resumed session had counted when its last ask ended: this turn counts only what's new. */
+    used?: ThinkMeta["used"];
     minutes?: number;
     record?: TaskRecord;
     /** Each read of your words since plan's, newest last: a stay's decide takes the newest. */
@@ -421,9 +435,9 @@ export async function runThinkStep(
     },
     // What the run's model takes, from its gateway's public catalog.
     look: async (url) => listOf(url),
+    // A stay's turn: its session, and what that had counted (`used`), so the turn counts only what
+    // it adds (an agent that counts from the session's start).
     ...resume,
-    // A stay's turn counts only what its session adds (an agent that counts from its start).
-    ...(resume.resume ? { used: load<ThinkOut>(n, "think")?.meta?.used } : {}),
     // The files on words it takes in before it answers, fetched as the first ones were.
     fetch: async (said) => [
       ...(await chatFiles(
@@ -500,7 +514,16 @@ function decided(
     );
     // What the box makes anyway (a note, a command's answer, a `use` reply) goes first.
     if (p.writes?.length) d.writes = [...p.writes, ...d.writes];
+    // A file shared before, unchanged, is linked: no upload, so no files key.
+    const out = t?.out;
+    if (out)
+      sharedBefore(d, (name) => {
+        const f = join(out, basename(name));
+        return existsSync(f) ? fileHash(f) : undefined;
+      });
     d.needs = { ...needsOf(d.writes, d.state), ...d.needs };
+    // A stay's turn: a `stop` alone that came as it answered is read with this answer.
+    if (heard) lateStop(d, heard);
     // Your words since its last read (its checks ran meanwhile): one more read, said in the reply.
     try {
       stillWaiting(d, heard ?? saidSince(n, new Date(Date.parse(s.now) - 60_000).toISOString()));
@@ -508,6 +531,24 @@ function decided(
   }
   save(n, "decided", d);
   return { s, p, d, ...(meta ? { meta } : {}) };
+}
+
+/**
+ * What task.yml mints for a decided result, as step outputs: decide's, and a stay's turn that
+ * ends with a result to apply (ADR 0062). Only task.yml's steps mint, after the agent is done.
+ */
+function mints(s: Snapshot, d: Decided) {
+  const repo = d.needs.repo ? repoFor(d.needs.repo, s.repos) : "";
+  output("repo", repo.split("/")[1] ?? "", REPO);
+  // The repo's account, when it's another of yours (ADR 0045): its write token is the repos App's.
+  output("account", accountOf(repo) ?? "", ACCOUNT);
+  output("act", d.needs.act ?? "");
+  output("workflows", d.needs.workflows ? "write" : "");
+  output("files", d.writes.some((w) => w.w === "reply" && w.files?.length) ? "yes" : "");
+  // Its only push keeps a question's commits (ADR 0041): its write token may fail to mint, and the
+  // question is still posted (the push, without it, only logged).
+  const pushes = d.writes.filter((w) => w.w === "push");
+  output("keep", pushes.length && pushes.every((w) => w.open === false && w.quiet) ? "quiet" : "");
 }
 
 export async function runDecide(n: number): Promise<Result> {
@@ -523,17 +564,7 @@ export async function runDecide(n: number): Promise<Result> {
     save(n, "decided", d);
   }
   output("stay", stays ? "yes" : "");
-  const repo = d.needs.repo ? repoFor(d.needs.repo, s.repos) : "";
-  output("repo", repo.split("/")[1] ?? "", REPO);
-  // The repo's account, when it's another of yours (ADR 0045): its write token is the repos App's.
-  output("account", accountOf(repo) ?? "", ACCOUNT);
-  output("act", d.needs.act ?? "");
-  output("workflows", d.needs.workflows ? "write" : "");
-  output("files", d.writes.some((w) => w.w === "reply" && w.files?.length) ? "yes" : "");
-  // Its only push keeps a question's commits (ADR 0041): its write token may fail to mint, and the
-  // question is still posted (the push, without it, only logged).
-  const pushes = d.writes.filter((w) => w.w === "push");
-  output("keep", pushes.length && pushes.every((w) => w.open === false && w.quiet) ? "quiet" : "");
+  mints(s, d);
   return {
     command: "run decide",
     status: "succeeded",
@@ -595,15 +626,18 @@ export async function runAgentStep(n: number): Promise<Result> {
 }
 
 /**
- * A run that stays (ADR 0057): after its answer, the run reads its task for a few quiet minutes
- * and answers your plain words itself, each turn as a run does (plan, think in the same session,
- * decide, apply), so the next answer starts in seconds. Words plan would choose differently, and a
- * result that needs a token minted after the agent, go to a normal run.
+ * A run that stays (ADR 0057, ADR 0063): after its answer, the run reads its task for a few quiet
+ * minutes and does with your words what a normal run would, each turn as a run does (plan, think in
+ * the same session, decide, apply), so the next answer starts in seconds. Only what needs another
+ * agent, a fresh clone or the task's text read again goes to a normal run; a result that needs a
+ * token minted after the agent ends the stay, and its job's next steps mint and apply it (ADR 0062).
  */
 export async function runStay(n: number): Promise<Result> {
   const saved = load<{ s: Snapshot; p: Plan }>(n, "plan");
   const first = saved?.p;
+  // The session and what it had counted, kept here: each turn's plan clears the last think's file.
   let session = load<ThinkOut>(n, "think")?.meta?.session;
+  let used = load<ThinkOut>(n, "think")?.meta?.used;
   if (!saved || first?.do !== "think" || !session)
     return { command: "run stay", status: "skipped", summary: `task #${n}: nothing to stay for` };
   const log = logger({ task: n, step: "stay" }, (l) => process.stderr.write(`${l}\n`));
@@ -631,12 +665,13 @@ export async function runStay(n: number): Promise<Result> {
       if (r.comments) waits = saidOf(n, r.comments, saved.s.statusId).some(yours);
       return waits;
     },
-    task(): "open" | "closed" | "edited" {
+    task(): "open" | "closed" | "edited" | "unlabelled" {
       const r = rec().issueIfChanged(n, tags.issue);
       tags.issue = r.tag;
       if (!r.issue) return "open";
       if (r.issue.state === "closed") return "closed";
-      return textHash(r.issue) === text ? "open" : "edited";
+      if (textHash(r.issue) !== text) return "edited";
+      return r.issue.labels.some((l) => l.name === STAYING_LABEL) ? "open" : "unlabelled";
     },
     waiting() {
       const r = queue().waitingFor(mayTake, tags.queue);
@@ -656,48 +691,53 @@ export async function runStay(n: number): Promise<Result> {
       clock.lap("plan");
       const words = s.said.filter(yours);
       after = Math.max(after, ...s.said.map((c) => c.id));
-      // A fixed word (`stop`, `continue`, `start over`…) is a normal run's, as without a stay.
-      if (words.some((c) => wordOf(c.text))) return "handover";
       // Words that aren't yours, or only a setting, leave nothing to do.
-      if (p.do === "nothing" || !words.length) return "nothing";
-      // The box's own answer, the pick unchanged (a `use` you're already on, a thanks): posted here.
-      if (boxAnswer(first, p)) {
-        await marked(n, s, p);
-        decided(n);
-        const applied = await runApply(n, record);
-        if (applied.status === "failed") throw new ShipError(applied.summary);
-        return "answered";
-      }
-      if (!sameTurn(first, p)) return "handover";
+      if (p.do === "nothing" || !words.length || (p.do === "box" && !p.writes.length))
+        return "nothing";
+      // What a normal run would do, done here (ADR 0063): plan's choice, a fixed word's too.
+      if (!takes(first, p)) return "handover";
       await marked(n, s, p);
       clock.lap("marks");
       // One read of the task a turn, and one of your words as it answers (ADR 0057): decide takes
       // that newest, apply the turn's. Words after it are the next turn's, which the stay answers.
       let heard: Said[] | undefined;
-      await runThinkStep(n, {
-        resume: session,
-        minutes,
-        record,
-        heard: (said) => {
-          heard = said;
-        },
-      });
-      clock.lap("think");
+      if (p.do === "think") {
+        await runThinkStep(n, {
+          resume: session,
+          used,
+          minutes,
+          record,
+          heard: (said) => {
+            heard = said;
+          },
+        });
+        clock.lap("think");
+      }
       const got = decided(n, heard);
       clock.lap("decide");
       if (!got) return "handover";
       const { d, meta } = got;
-      // A result that needs a token only a normal run mints (a push, a call, files): that run's.
-      if (d.needs.repo || d.needs.act || d.needs.workflows) return "handover";
-      if (d.writes.some((w) => w.w === "reply" && w.files?.length)) return "handover";
+      // What this answer read (words it took in, your `stop`) is no news after it.
+      after = Math.max(after, d.state.seen);
+      // A result that needs a token minted after the agent (a push, a call, files, your `yes` to a
+      // list), ADR 0062: the stay ends with it decided, and the job's own steps mint and apply it.
+      if (needsMint(d)) {
+        mints(s, d);
+        output("apply", "yes");
+        process.stderr.write(`  · ${clock.line()}\n`);
+        return "apply";
+      }
       // Its reply refused, and the problem too: the step fails, and its failure step tells you.
       const applied = await runApply(n, record);
       if (applied.status === "failed") throw new ShipError(applied.summary);
       clock.lap("apply");
       // Where a turn's time went, in the run's log (ADR 0057): each phase, and apply's calls.
       process.stderr.write(`  · ${clock.line()}\n`);
+      // A box answer leaves the session as it was.
+      if (p.do === "box") return ends(d) ? "left" : "answered";
       session = meta?.session ?? session;
-      // A write a stay never follows (a run started for work, a close): it answered, then leaves.
+      used = meta?.used ?? used;
+      // A write a stay never follows (a run started, a close): it answered, then leaves.
       return staysAfter(s, p, d, meta, 1) ? "answered" : "left";
     },
     leave: () => rec().removeLabel(n, STAYING_LABEL),
@@ -707,7 +747,9 @@ export async function runStay(n: number): Promise<Result> {
       if (!d.ok) log.warn("run.stay.handover", { what: d.error });
     },
   };
-  const done = await stay(io, stayMinutes(process.env.SHIPIFY_STAY));
+  // Its job's clock, from when plan read the task: the stay's only bound besides its quiet minutes.
+  const until = stayUntil(Date.parse(saved.s.now));
+  const done = await stay(io, stayMinutes(process.env.SHIPIFY_STAY), until);
   // What its reads came to, and the run it gave way to, for a look in the run's log.
   log.info("run.stay.left", {
     answered: done.answered,

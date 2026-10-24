@@ -18,6 +18,11 @@ Write the test first. Watch it fail. Write minimal code to pass.
 when it changes what gets built, finish `needs-you` with one question; otherwise choose, say why
 in your reply, and carry on (`playbooks/task.md`).
 
+**A test makes what it reads.** A plan, a recipe or a check that a test needs, it writes in a
+temporary folder of its own: never the owner's `plans/`, `recipes/` or `checks/`, nor a file
+only this machine has. A release checks the files without them, so such a test passes on the PR
+and fails the release, even when it's green everywhere else.
+
 ## When to Use
 
 **Always:**

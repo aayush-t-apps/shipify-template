@@ -22,13 +22,16 @@ import { sandboxCheck } from "../cli/commands/doctor.ts";
 import {
   agentUser,
   asAgent,
+  CONTAINERS_CONF,
   cleanRuns,
   cleanStaleRuns,
+  containerEnv,
   give,
   killAll,
   listOut,
   onBox,
   prepareRun,
+  pruneContainers,
   readOut,
   runPaths,
   type SandboxIo,
@@ -84,6 +87,17 @@ const command = (c: Call) => {
   const i = c.args.indexOf("shipify-agent");
   return i < 0 ? c.args : c.args.slice(i + 4);
 };
+
+/** killAll's check that nothing of the agent's, nor of its range, is left (as the runner). */
+const isLeftCheck = (c: Call) => c.cmd === "/bin/sh" && c.args[2] === "left";
+
+/** The names a call gave the agent, from env -i's arguments. */
+const namesOf = (c: Call) =>
+  Object.fromEntries(
+    c.args
+      .slice(c.args.indexOf("-i") + 1, c.args.indexOf("/bin/sh"))
+      .map((kv) => [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)]),
+  );
 
 /** Every value of every call, for "this never shows up anywhere" checks. */
 const everything = (calls: Call[]) =>
@@ -159,6 +173,25 @@ describe("the sandbox: who runs where", () => {
     });
     for (const bad of ["", "../x", "a/b", "-rf", "x".repeat(65)])
       expect(() => runPaths(1, bad)).toThrow(/run id/);
+  });
+
+  it("gives every agent command the names Podman keeps, the same at every run (ADR 0064)", () => {
+    const run = runPaths(2, "123456-1");
+    // The slot's kept folders by their real paths, never through the run's home: Podman records
+    // its paths at its first use and reuses them.
+    expect(run.env).toMatchObject({
+      XDG_DATA_HOME: "/srv/shipify-agent-2/data",
+      XDG_RUNTIME_DIR: "/srv/shipify-agent-2/runtime",
+      CONTAINERS_CONF_OVERRIDE: CONTAINERS_CONF,
+    });
+    expect(CONTAINERS_CONF).toBe("/etc/containers/shipify-agents.conf");
+    expect(containerEnv(3, "/x")).toEqual({
+      XDG_DATA_HOME: "/x/shipify-agent-3/data",
+      XDG_RUNTIME_DIR: "/x/shipify-agent-3/runtime",
+      CONTAINERS_CONF_OVERRIDE: CONTAINERS_CONF,
+    });
+    // An agent may be handed them.
+    expect(() => sudoArgs(2, ["true"], { cwd: run.work, env: run.env })).not.toThrow();
   });
 });
 
@@ -338,7 +371,7 @@ describe("the sandbox: a command as the agent", () => {
   it("at its time limit, kills every process of the agent's and ends with 124", async () => {
     let release: (code: number) => void = () => {};
     const io = fakeIo((c) => {
-      if (c.cmd === "pgrep") return { code: 1 };
+      if (isLeftCheck(c)) return { code: 1 };
       // The agent's processes die: the command it was running ends.
       if (c.args.includes("kill")) release(137);
       return {};
@@ -430,28 +463,57 @@ describe("the sandbox: a command as the agent", () => {
 describe("the sandbox: killing and cleaning", () => {
   it("kills as the agent, and checks nothing is left", () => {
     const io = fakeIo((c) =>
-      c.cmd === "pgrep" ? { code: 1 } : { code: 1, stderr: "kill: (-1) - No such process" },
+      isLeftCheck(c) ? { code: 1 } : { code: 1, stderr: "kill: (-1) - No such process" },
     );
     expect(killAll(2, io)).toBe(true);
-    expect(io.calls.map((c) => [c.cmd, ...c.args])).toEqual([
-      ["sudo", "-n", "-u", "shipify-agent-2", "--", "kill", "-KILL", "-1"],
-      ["pgrep", "-u", "shipify-agent-2"],
+    const [kill, left] = io.calls;
+    expect([kill?.cmd, ...(kill?.args ?? [])]).toEqual([
+      "sudo",
+      "-n",
+      "-u",
+      "shipify-agent-2",
+      "--",
+      "kill",
+      "-KILL",
+      "-1",
     ]);
+    // The check, as the runner itself (no sudo), for that agent.
+    expect(left && isLeftCheck(left)).toBe(true);
+    expect(left?.args.at(-1)).toBe("shipify-agent-2");
+    expect(io.calls).toHaveLength(2);
     // Something survived the first time: killed again.
-    let left = 2;
-    const again = fakeIo((c) => (c.cmd === "pgrep" ? { code: left-- > 0 ? 0 : 1 } : {}));
+    let survivors = 2;
+    const again = fakeIo((c) => (isLeftCheck(c) ? { code: survivors-- > 0 ? 0 : 1 } : {}));
     expect(killAll(1, again)).toBe(true);
-    expect(again.calls.filter((c) => c.cmd === "pgrep")).toHaveLength(3);
+    expect(again.calls.filter(isLeftCheck)).toHaveLength(3);
     // sudo refused (no rule, or no such user): not done, and said so.
     const refused = fakeIo(() => ({ code: 1, stderr: "sudo: a password is required" }));
     expect(killAll(1, refused)).toBe(false);
-    // A process that never goes: not done.
-    expect(
-      killAll(
-        1,
-        fakeIo((c) => (c.cmd === "pgrep" ? { code: 0 } : {})),
-      ),
-    ).toBe(false);
+    // A process that never goes, or a check that can't tell: not done.
+    for (const code of [0, 2])
+      expect(
+        killAll(
+          1,
+          fakeIo((c) => (isLeftCheck(c) ? { code } : {})),
+        ),
+      ).toBe(false);
+  });
+
+  it("checks the agent's range too: its containers' processes run as IDs of it (ADR 0064)", () => {
+    const io = fakeIo((c) => (isLeftCheck(c) ? { code: 1 } : {}));
+    killAll(1, io);
+    const script = io.calls.find(isLeftCheck)?.args[1] ?? "";
+    // One read of the process list, and the agent's range from /etc/subuid.
+    expect(script).toContain("ps -A -o uid=");
+    expect(script).toContain("/etc/subuid");
+    expect(script.match(/\bps\b/g)).toHaveLength(1);
+    // Run for real, as this user: this process is one of its own, so something is left; a user
+    // that doesn't exist can't be told about.
+    const me = spawnSync("id", ["-un"], { encoding: "utf8" }).stdout.trim();
+    const run = (user: string) =>
+      spawnSync("/bin/sh", ["-c", script, "left", user], { encoding: "utf8" }).status;
+    expect(run(me)).toBe(0);
+    expect(run("shipify-no-such-user")).toBe(2);
   });
 
   it("removes a slot's old runs as its agent, counting them; nothing where there's no slot folder", () => {
@@ -488,6 +550,21 @@ describe("the sandbox: killing and cleaning", () => {
     });
   });
 
+  it("removes what a container wrote under its own IDs through podman unshare, with Podman's names (ADR 0064)", () => {
+    const root = mkdtempSync(join(tmpdir(), "srv-"));
+    mkdirSync(join(root, "shipify-agent-1"));
+    const io = fakeIo(() => ({}), root);
+    cleanRuns(1, 0, io);
+    const [call] = io.calls;
+    const rm = command(call as Call).at(-4) ?? "";
+    // Plain rm first; only what it couldn't remove goes through podman unshare, where the agent is
+    // root over its range; a folder still there is an error.
+    expect(rm).toContain('rm -rf -- "$d" 2>/dev/null');
+    expect(rm).toContain('podman unshare rm -rf -- "$d"');
+    expect(rm.indexOf("rm -rf")).toBeLessThan(rm.indexOf("podman unshare"));
+    expect(namesOf(call as Call)).toMatchObject(containerEnv(1, root));
+  });
+
   it("cleans every slot's leftovers on this machine, and nothing where there's no sandbox", () => {
     const root = mkdtempSync(join(tmpdir(), "srv-"));
     expect(
@@ -509,16 +586,57 @@ describe("the sandbox: killing and cleaning", () => {
     });
   });
 
+  it("trims the kept caches, never inside the containers' store, which Podman prunes (ADR 0064)", () => {
+    const root = mkdtempSync(join(tmpdir(), "srv-"));
+    mkdirSync(join(root, "shipify-agent-1"));
+    const io = fakeIo(() => ({}), root);
+    cleanStaleRuns(STALE_RUN_MS, io);
+    const trim = io.calls.map((c) => command(c)).find((c) => c[0] === "/bin/sh")?.[2] ?? "";
+    expect(trim).toContain("-atime +30");
+    expect(trim.match(/! -path "data\/containers\/\*"/g)).toHaveLength(2);
+    expect(trim).toContain('! -path "data/containers"');
+  });
+
+  it("prunes each slot's containers' store weekly, as its agent: every image, and what an unclean stop left", () => {
+    const root = mkdtempSync(join(tmpdir(), "srv-"));
+    for (const d of ["shipify-agent-1", "shipify-agent-2"]) mkdirSync(join(root, d));
+    const io = fakeIo(
+      (c) =>
+        c.args.includes("shipify-agent-2")
+          ? { code: 1, stderr: "Error: something\n" }
+          : { stdout: "pruned\n" },
+      root,
+    );
+    expect(pruneContainers(io)).toEqual({
+      pruned: 1,
+      failed: ["shipify-agent-2: Error: something"],
+    });
+    const [call] = io.calls;
+    expect(call?.args.slice(0, 3)).toEqual(["-n", "-u", "shipify-agent-1"]);
+    expect(call?.args[call.args.indexOf("shipify-agent") + 1]).toBe(join(root, "shipify-agent-1"));
+    const script = command(call as Call)[2] ?? "";
+    // Only where the slot has a store; reset as after a restart; every image, then the leftovers.
+    expect(script).toContain("[ -d data/containers ]");
+    expect(script).toContain("podman system prune --all --force --volumes");
+    expect(script).toContain("podman system prune --external --force");
+    expect(script.indexOf("--all")).toBeLessThan(script.indexOf("--external"));
+    expect(namesOf(call as Call)).toMatchObject(containerEnv(1, root));
+    // A slot whose agent has no store, or no Podman: nothing said, nothing failed.
+    expect(pruneContainers(fakeIo(() => ({}), root))).toEqual({ pruned: 0, failed: [] });
+  });
+
   it("prepares a run: what's left of the slot's agent killed, its earlier runs gone, fresh folders", () => {
     const root = mkdtempSync(join(tmpdir(), "srv-"));
     mkdirSync(join(root, "shipify-agent-2"));
-    const io = fakeIo((c) => (c.cmd === "pgrep" ? { code: 1 } : {}), root);
+    const io = fakeIo((c) => (isLeftCheck(c) ? { code: 1 } : {}), root);
     const run = prepareRun(2, "77-1", io);
     expect(run.dir).toBe(join(root, "shipify-agent-2", "run-77-1"));
-    const [kill, pgrep, clean, make] = io.calls;
+    const [kill, left, clean, make] = io.calls;
     expect(kill?.args).toContain("kill");
-    expect(pgrep?.cmd).toBe("pgrep");
+    expect(left && isLeftCheck(left)).toBe(true);
     expect(command(clean as Call)[0]).toBe("find");
+    // Nothing of Podman's ran (the script said nothing): no second kill.
+    expect(io.calls).toHaveLength(4);
     const script = command(make as Call);
     expect(script.slice(0, 2)).toEqual(["/bin/sh", "-c"]);
     expect(script[2]).toContain('mkdir -m 2710 -- "$1"');
@@ -534,6 +652,38 @@ describe("the sandbox: killing and cleaning", () => {
     // sudo refused: no run.
     const refused = fakeIo(() => ({ code: 1, stderr: "sudo: a password is required" }), root);
     expect(() => prepareRun(2, "78", refused)).toThrow(/Couldn't stop/);
+  });
+
+  it("starts a run as after a restart for Podman: runtime/ emptied, the last run's containers pruned only when it used them (ADR 0064)", () => {
+    const root = mkdtempSync(join(tmpdir(), "srv-"));
+    mkdirSync(join(root, "shipify-agent-1"));
+    // The reset says it ran Podman: the agent's processes are killed and checked again after it.
+    const io = fakeIo(
+      (c) =>
+        isLeftCheck(c)
+          ? { code: 1 }
+          : command(c).at(-2) === "prepare"
+            ? { stdout: "podman\n" }
+            : {},
+      root,
+    );
+    prepareRun(1, "80-1", io);
+    const make = io.calls.find((c) => command(c).at(-2) === "prepare") as Call;
+    const script = command(make)[2] ?? "";
+    // Before the run's folder, with Podman's names: runtime/ emptied, and only when Podman left
+    // state there (runtime/libpod), one prune of the containers, pods, volumes and networks (the
+    // images stay), with the pause process it starts stopped and runtime/ emptied again.
+    expect(script.indexOf("fresh")).toBeLessThan(script.indexOf('mkdir -m 2710 -- "$1"'));
+    expect(script).toContain("[ -d runtime/libpod ]");
+    expect(script).toContain("podman system prune --force --volumes");
+    expect(script).not.toContain("prune --all");
+    expect(script).toContain("kill -KILL -1");
+    expect(namesOf(make)).toMatchObject(containerEnv(1, root));
+    const after = io.calls.slice(io.calls.indexOf(make) + 1);
+    expect(after.map((c) => (isLeftCheck(c) ? "left" : command(c).slice(-3).join(" ")))).toEqual([
+      "kill -KILL -1",
+      "left",
+    ]);
   });
 
   it("gives the agent its files as the agent, on stdin, only inside its run's folder", () => {
@@ -654,12 +804,14 @@ describe("doctor: the sandbox check", () => {
       ["shipify-agent-1", "/srv/shipify-agent-2"],
       ["shipify-agent-1", "/proc/4242/environ"],
       ["shipify-agent-1", "windows"],
+      ["shipify-agent-1", "sockets"],
       ["shipify-agent-1", "login"],
       ["shipify-agent-2", home],
       ["shipify-agent-2", join(dir, "_work")],
       ["shipify-agent-2", "/srv/shipify-agent-1"],
       ["shipify-agent-2", "/proc/4242/environ"],
       ["shipify-agent-2", "windows"],
+      ["shipify-agent-2", "sockets"],
       ["shipify-agent-2", "login"],
     ]);
     // The login probe gets a dummy login, through the wrapper as a run's does, and again on its
@@ -702,6 +854,27 @@ describe("doctor: the sandbox check", () => {
     expect(c?.detail).toContain(
       "shipify-agent-1 can reach Windows: Windows programs (interop), /mnt/c (WSL: close it in /etc/wsl.conf",
     );
+  });
+
+  it("gives no sandbox while an agent can write to a root container socket (ADR 0064)", () => {
+    const { home, dir } = box();
+    const io = fakeIo((c) => {
+      if (c.cmd === "id") return {};
+      const cmd = command(c);
+      if (cmd.at(-1) === "sockets") return { stdout: "/run/docker.sock\n" };
+      if (cmd.at(-1) === "login") return { stdout: WALLED };
+      return { code: cmd[0] === "true" ? 0 : 1 };
+    });
+    const c = sandboxCheck({ user: "shipify", home, boxDir: dir, inJob: false, io });
+    expect(c).toMatchObject({ ok: false });
+    expect(c?.detail).toBe(
+      "shipify-agent-1 can write /run/docker.sock, a root container socket (the docker group, or Docker's or Podman's root socket, gives the box: docs/security.md#the-agents-sandbox)",
+    );
+    // The probe: Docker's socket and Podman's root one, each written only by whom it lets in.
+    const probe = io.calls.find((x) => command(x).at(-1) === "sockets");
+    const script = command(probe as Call)[2] ?? "";
+    expect(script).toContain("/run/docker.sock /run/podman/podman.sock");
+    expect(script).toContain('[ -w "$s" ]');
   });
 
   it("says what's open, each with the fix", () => {
@@ -762,7 +935,7 @@ describe("the sandbox's own scripts, run for real (as this user, without the sud
     ...fakeIo(() => ({}), root),
     root,
     run(cmd, args, opts) {
-      if (cmd === "pgrep") return { code: 1, stdout: "", stderr: "" };
+      if (cmd === "/bin/sh" && args[2] === "left") return { code: 1, stdout: "", stderr: "" };
       if (args.includes("kill"))
         return { code: 1, stdout: "", stderr: "kill: (-1) - No such process" };
       const argv = cmd === "sudo" ? args.slice(4) : [cmd, ...args];
@@ -806,11 +979,21 @@ describe("the sandbox's own scripts, run for real (as this user, without the sud
     // Its caches are the slot's: what a run downloads is there for the next, its work isn't.
     writeFileSync(join(run.home, ".cache", "pkg"), "downloaded once");
     writeFileSync(join(run.work, "change"), "this run's");
+    // What a tool left in runtime/ goes at the next run's start. (Never Podman's own state here:
+    // with it, the reset stops every process of the agent's, which in this test is this user.)
+    expect(mode(join(slot, "runtime")) & 0o777).toBe(0o700);
+    writeFileSync(join(slot, "runtime", "a-socket"), "");
+    mkdirSync(join(slot, "runtime", "locked"));
+    chmodSync(join(slot, "runtime", "locked"), 0o500);
     const next = prepareRun(1, "43-1", io);
     expect(readFileSync(join(next.home, ".cache", "pkg"), "utf8")).toBe("downloaded once");
     expect(existsSync(join(next.home, ".local", "share"))).toBe(true);
     expect(existsSync(join(next.work, "change"))).toBe(false);
     expect(existsSync(run.dir)).toBe(false);
+    expect(readdirSync(join(slot, "runtime"))).toEqual([]);
+    expect(mode(join(slot, "runtime")) & 0o777).toBe(0o700);
+    // The data the run's home links to is the slot's, as XDG_DATA_HOME names it.
+    expect(realpathSync(join(next.home, ".local", "share"))).toBe(next.env.XDG_DATA_HOME);
   });
 
   it("proves a login's walls for real: the dummy reaches the probe on a pipe, once, in no environment", () => {

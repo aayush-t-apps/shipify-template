@@ -63,6 +63,8 @@ export const List = z.object({
   page: z.number().int().min(1),
   /** Whether there's an older page. */
   more: z.boolean(),
+  /** GitHub couldn't be read just now: this is the last good answer (the page retries). */
+  stale: z.literal(true).optional(),
 });
 
 /** A file in a message: shown by the edge when it keeps it (`src`), else its name alone. */
@@ -94,8 +96,6 @@ export const ReplySeen = z.object({
   links: z.array(z.tuple([z.string(), z.string()])),
   /** Its buttons, as every chat has them (contracts' replyButtons): each sends its words. */
   buttons: z.array(z.object({ label: z.string(), words: z.string() })),
-  /** The fixed words it names that count only on GitHub: said there. */
-  github: z.array(z.string()),
 });
 
 export const Msg = z.object({
@@ -149,6 +149,8 @@ export const Thread = z.object({
   page: z.number().int().min(1).optional(),
   /** Whether the task takes words from the chat (yours, not a PR, the status task, a page…). */
   writable: z.boolean(),
+  /** GitHub couldn't be read just now: this is the last good answer (the page retries). */
+  stale: z.literal(true).optional(),
 });
 
 export const Menu = z.object({

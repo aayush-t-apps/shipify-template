@@ -103,7 +103,7 @@ export async function api(p, body) {
     });
   if (r.status === 304) return null;
   const j = await r.json().catch(() => null);
-  if (!r.ok || !j || j.error) throw fail(j);
+  if (!r.ok || !j || j.error) throw Object.assign(fail(j), { status: r.status });
   if (!body) tags[p] = r.headers.get("etag") || "";
   return j;
 }

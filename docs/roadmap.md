@@ -21,9 +21,10 @@ pipeline (ADR 0048).
    - **Token minting off the box:** the run's mint steps hold the bot App's key on the box while
      they run (never in the agent's step). Minting on GitHub's machines and handing the box only
      the narrow tokens closes that.
-   - **A firewall for the agents' users** (talk and work runs; a read run has no command or web to
-     reach out with, ADR 0044): their network is open today (npm, the agent's API,
-     GitHub).
+   - **A list of allowed hosts for the agents' users** (talk and work runs; a read run has no
+     command or web to reach out with, ADR 0044): since box setup 9 they reach no private network
+     (your home network, the tailnet, a metadata address), and the rest of the internet is open
+     (npm, the agent's API, GitHub, any site).
    - **`ship task <n>` on the PC:** a task's status and its last runs, with links to their logs.
    - **A container image for boxes.**
 4. **Chat channels beyond Telegram** (Discord, email), each one channel in `edge/` with its
@@ -40,7 +41,8 @@ pipeline (ADR 0048).
    - **Each agent's numbers side by side:** tokens, cost and time per agent from the runs' details.
 6. **After ADR 0044 (any GitHub repo, built):**
    - **Partial clones for change runs on very large repos,** once a run's key can outlive its hour.
-   - **pi's grep and find in a read run:** they need `rg` and `fd`, which a box doesn't have.
+   - **pi's grep and find in a read run:** they need `rg` and `fd`, and a box has only `fd`
+     (from setup 7).
 7. **After ADR 0045 (any account, built),** in the order of [the road](product.md#the-road):
    - **Verified commits:** apply makes the run's commit through GitHub's API, so it's signed, for
      repos whose `main` requires signed commits.
@@ -93,6 +95,21 @@ Found walking [getting-started.md](getting-started.md) from nothing. Each is sma
    tools and each slot's caches, so growth shows on the status task week by week.
 2. **The drive's writes as a health fact:** read from `/sys/block/<dev>/stat`. A USB thumb drive
    takes about 12 GB of writes a day here; [box-setup.md](box-setup.md) already asks for an SSD.
+
+## After the lab (ADR 0064, containers on every box)
+
+Each only if you ask, and each its own design:
+1. **A `lab` repo** for experiments that keep running for days (one Compose folder each), run by
+   you on the box; today nothing an agent starts outlives its turn.
+2. **The agents' list of allowed hosts** (above), which then covers their containers too, as the
+   private-network wall of setup 9 does.
+3. **A shared, read-only image store,** filled by the runner, if each slot's own copy fills the disk.
+4. **A registry login or a mirror,** if Docker Hub's limit (100 pulls in 6 hours per address) is
+   reached.
+5. **A stronger wall for a run:** gVisor as Podman's runtime, or a VM per run (where KVM is).
+6. **docker-compose v2 over Podman's socket,** if real compose files need more than podman-compose.
+7. **A tool that reaches homelab** (its status, a photo), read-only, over Tailscale. Its calls run
+   outside the agent's user: since setup 9 no agent reaches the tailnet.
 
 ## Faster and cheaper runs
 

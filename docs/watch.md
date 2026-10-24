@@ -60,7 +60,22 @@ of them by hand: Actions → watch → Run workflow.
 The issue labelled `shipify-status` (open or closed): pin it and subscribe. Its body starts with
 the record, `<!-- shipify-status {…} -->` (`"v": 2`), then shows the same to you: the last due run
 and the next time, each box's health and clean-up, failing apps or channels, "Coming up", recent
-events. The runs write it; the watch only reads it. The shapes, in `cli/contracts/watch.ts`:
+events. The runs write it; the watch only reads it.
+
+**Which one it is:** the door and the runs find it by one rule (`pickStatusIssue`): of the issues
+with the label, an open one first (the one that holds the record, then the oldest); with none
+open, the newest closed one that holds the record. They list the open ones, and all of them only
+when no open one holds the record. A list can leave an issue out for a while with no error, so
+neither opens a new one until a second look finds none too. Any other open one (a list that missed
+the real one) is closed and unpinned by the next run that writes the record, and said under Recent.
+Closing a status issue starts no run.
+
+**A new one:** open an issue with the `shipify-status` label (any title and text) and pin it. The
+door rings a due run on it within a few minutes, and that run moves the record there from the
+newest closed one ("The record moved here from #n" under Recent). The door opens one itself only
+when there's none at all.
+
+The shapes, in `cli/contracts/watch.ts`:
 
 | Shape | Lives in | Holds |
 |---|---|---|

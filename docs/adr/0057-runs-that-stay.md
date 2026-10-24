@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #421) and built; see [As built](#as-built-2026-10-15)
+status: accepted (merged #421) and built; see [As built](#as-built-2026-10-15); amended by 0062 (a result that needs a token is applied in the stay's job, not handed over) and 0063 (one rule: a stay does what a normal run would)
 date: 2026-10-15
 amends: 0037 (its option 2, kept small: after a run answers, it keeps reading its task for a few minutes and answers your next words in the same session), 0031 (a run may answer more than once; every answer is still decided and applied as one), 0051 (the run job names no `checkout` or `setup-node`: the box's Node, and Shipify's files fetched only when the box has no copy of the commit)
 ---
@@ -430,3 +430,45 @@ chats you'd rather not keep on GitHub. The design and its edge cases are in task
   and the gate took only "answer", so your answer to every question started cold. It now takes a
   question that waits on nothing else, by decide's own rule (`questionWaits`: no list for your
   `yes`, no PR open); a list or a PR still goes to a normal run.
+
+## Addendum: no cap of its own (2026-10-18, task #520)
+
+- **What changed:** the stay's 45-minute total (`STAY_MINUTES`) and its turns' 55-minute clock
+  (`STAY_LAST_MINUTES`) are gone. `SHIPIFY_STAY` (quiet minutes, 20, `0` for off) is the one setting,
+  with no top value. The only other bound is the job's own limit: the stay knows it (`JOB_MINUTES`,
+  held equal to task.yml's `timeout-minutes` by a test), counts it from when plan read the task,
+  gives each turn what's left, and starts no turn with less than 5 minutes left.
+- **Why it's safe:** the cap guarded a token's hour, but the stay's record reads and writes (your
+  words, its reply, its label) use the job's token, which lasts the job. Only the agent's own
+  read-only keys (`gh`, the repos App, a tool) end an hour after they're minted: past that, its own
+  reads fail and it says so, the same trade-off a long work run takes (ADR 0059). Giving way, the
+  quiet minutes, a close, an edit and the handover are as before.
+- **The job's sum:** task.yml's limit (460) still covers think, the deploy follow and setup
+  (353 + 30 + 15); a stay takes what's left, at least about an hour after the longest think.
+
+## Addendum: `stop` keeps the session (2026-10-18, task #527)
+
+- **What went wrong (#526):** a stay's turn listed an unchanged file again, so its answer needed the
+  files key and the stay ended (ADR 0062). Your `stop`, sent during that turn, was then handed to a
+  new run, which took a slot only to say "Nothing was working by then". Your next words started a
+  cold run too. Every fixed word went to a normal run, `stop` with them.
+- **What changed:**
+  - `stop` is the stay's own (`forARun`): with no turn working, plan's own answer ("nothing to stop")
+    is the box's, which the stay posts and keeps staying. Other fixed words still hand over.
+  - A turn that's working stops at your `stop` as a run does (read every minute), says "Stopped",
+    and stays: `staysAfter` takes a stop you asked for, never one the agent came to by itself (a
+    crash, its clock, your plan's limit). A run you stop stays the same way.
+  - A `stop` alone that came as a turn answered (its last read) is read with that answer, which
+    says so (`lateStop`): no run for it alone.
+  - After each turn, what its answer read is no news to the stay's last read. A `stop` that comes
+    in the second between a turn's last read and the stay leaving still goes to a run: left unread,
+    the watch would say it waited unanswered.
+  - An unchanged file isn't uploaded again (ADR 0062's addendum), so it no longer ends a stay.
+  - **A stay leaves when its label is taken off (#528).** A merged plan's build is a run of the same
+    task, so it waited behind the stay for its quiet minutes. Your next words then replaced it in
+    the queue (one waits per task, ADR 0040). The plans-merged step now takes `staying` off the
+    task, and the stay sees that on its next look (every 15 s, on the read it already makes) and
+    leaves. A run that finds a merged plan whose build never started starts it once (the task's
+    `prepared`), so a build replaced in the queue is never lost.
+- **Replaces** the sweep's "Every fixed word (`stop`, …) goes to a normal run" and the edge case
+  "`stop`: the turn stops as today, and the stay leaves".

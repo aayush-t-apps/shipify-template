@@ -7,8 +7,10 @@
 //   its status task  the record the due run writes (cli/contracts/watch.ts: RecordSeen)
 // Every value is checked before it's used; a list that doesn't read is nobody, never everybody.
 import {
+  holdsRecord,
   type PageSeen,
   parseAccounts,
+  pickStatusIssue,
   type RecordSeen,
   readRecordSeen,
   useDefaultAgent,
@@ -305,14 +307,26 @@ export interface StatusTask {
   record?: RecordSeen;
 }
 
-/** The status task (labelled shipify-status, open or closed), and its record. */
+/**
+ * The status task (labelled shipify-status, open or closed), and its record: by the runs' own rule
+ * (pickStatusIssue). The open ones, oldest first; all of them only when no open one holds the record.
+ */
 export async function statusTask(gh: GitHub): Promise<StatusTask | undefined> {
-  const list = await gh.json<
-    { number: number; body?: string | null; pull_request?: unknown; labels?: { name: string }[] }[]
-  >("GET", `repos/${gh.repo}/issues?labels=${STATUS_LABEL}&state=all&per_page=5`);
-  const issues = list.filter((i) => !i.pull_request);
-  const found =
-    issues.find((i) => readRecordSeen(i.body)) ?? issues.sort((a, b) => a.number - b.number)[0];
+  const list = (state: "open" | "all") =>
+    gh.json<
+      {
+        number: number;
+        state?: string;
+        body?: string | null;
+        pull_request?: unknown;
+        labels?: { name: string }[];
+      }[]
+    >(
+      "GET",
+      `repos/${gh.repo}/issues?labels=${STATUS_LABEL}&state=${state}&sort=created&direction=asc&per_page=100`,
+    );
+  const open = pickStatusIssue(await list("open"));
+  const found = holdsRecord(open) ? open : (pickStatusIssue(await list("all")) ?? open);
   if (!found) return undefined;
   const record = readRecordSeen(found.body);
   return {

@@ -165,6 +165,40 @@ describe("due", () => {
     expect(s?.title).toBe("Shipify status");
     expect(s?.labels).toContain("watch:due");
   });
+
+  it("opens no status task on one empty list: it looks again first", async () => {
+    const f = world(k);
+    const s = status(f, { watch: {} });
+    f.w.listsMiss = 2; // the open ones, then all of them
+    await run(f);
+    expect(f.w.issues.filter((i) => i.labels.includes("shipify-status"))).toEqual([s]);
+    expect(s.labels).toContain("watch:due");
+  });
+
+  it("rings an open one, the one that holds the record, then the oldest: never a stray new one", async () => {
+    const f = world(k);
+    const old = status(f, { watch: {} });
+    old.state = "closed";
+    const kept = status(f, { watch: {} });
+    const stray = f.issue({ title: "Shipify status", labels: ["shipify-status"], body: "x" });
+    const late = status(f, { watch: {} });
+    await run(f);
+    expect(kept.labels).toContain("watch:due");
+    for (const i of [old, stray, late]) expect(i.labels).not.toContain("watch:due");
+    // All closed: the newest of those that hold the record, the last one in use.
+    const g = world(k);
+    const a = status(g, { watch: {} });
+    const b = status(g, { watch: {} });
+    a.state = b.state = "closed";
+    await run(g);
+    expect(b.labels).toContain("watch:due");
+    expect(a.labels).not.toContain("watch:due");
+    // A new one you opened: rung at once, for its first due run to move the record there.
+    const mine = g.issue({ title: "Shipify status", labels: ["shipify-status"], body: "" });
+    g.later(11 * MIN);
+    await run(g);
+    expect(mine.labels).toContain("watch:due");
+  });
 });
 
 describe("pin", () => {

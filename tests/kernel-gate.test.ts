@@ -578,14 +578,22 @@ describe("an agent that stops before its answer keeps its work (ADR 0035)", () =
   it("your `stop` while it works: everything of its stopped, its work kept, the stop named", async () => {
     remote({ "shipify.json": manifest, Makefile: MAKEFILE });
     process.env.FAKE_WORK = "slow";
+    // Your `stop` comes once its work is there (its commit, then its edit): on a busy box the agent
+    // can take longer than a read's interval to start, and a stop before any work keeps nothing.
+    const worked = () => existsSync(join(dir, "place", "work", "draft.txt"));
     let reads = 0;
-    const later = () => (reads++ ? [you(7, "Also make it blue"), you(8, "stop")] : []);
+    let stopAt = 0;
+    const later = () => {
+      reads++;
+      if (!stopAt && reads > 1 && worked()) stopAt = reads;
+      return stopAt ? [you(7, "Also make it blue"), you(8, "stop")] : [];
+    };
     const began = Date.now();
     const { out, result, keep } = await run(snap(), { later, everyMs: 300 });
-    // Stopped at the first read while it worked (after the one as it started), long before its own
-    // 20 seconds were up.
+    // Stopped at the read that said it, long before its own 20 seconds were up.
     expect(Date.now() - began).toBeLessThan(15_000);
-    expect(reads).toBe(2);
+    expect(stopAt).toBeGreaterThan(1);
+    expect(reads).toBe(stopAt);
     expect(result).toBeUndefined();
     expect(out.meta).toMatchObject({ stopped: { why: "asked", comment: 8 }, commits: true });
     // A stopped run asks its agent nothing more.

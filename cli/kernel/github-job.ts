@@ -12,10 +12,10 @@ import { prepareRepo, repoSpecFromPlan } from "../commands/project.ts";
 import { templateRelease } from "../commands/template.ts";
 import { timeZone } from "../commands/task/context.ts";
 import { publishNeeds, wouldStop } from "../commands/task/plans.ts";
-import { problem, renderProblem } from "../contracts/index.ts";
+import { type Problem, problem, renderProblem } from "../contracts/index.ts";
 import { run } from "../lib/exec.ts";
 import { gh, platformRepo, repoOfPr, withToken } from "../lib/github.ts";
-import { ok, type Result } from "../lib/output.ts";
+import { ok, type Result, ShipError } from "../lib/output.ts";
 import { gitConfig, keyFor } from "../lib/clones.ts";
 import { repoFor } from "../lib/projects-on-github.ts";
 import { tryStatusIssue } from "../lib/status-issue.ts";
@@ -35,9 +35,10 @@ export async function githubJob(s: Snapshot, p: Extract<Plan, { do: "github" }>)
   ) => writes.push({ w: "reply", kind, state, text, step, occasion: s.run.id });
 
   if (p.job === "prepare" && st.pending.prepare) {
-    // publish (GitHub only) makes them again, on purpose.
+    // `publish` (or `go`) makes them again, on purpose.
     const plan = st.pending.prepare.plan;
     st.pending.prepare = undefined;
+    st.prepared = plan;
     const missing = publishNeeds(plan);
     let stop = missing;
     if (!stop.length)
@@ -73,7 +74,8 @@ export async function githubJob(s: Snapshot, p: Extract<Plan, { do: "github" }>)
     try {
       if (op === "release" && id === platformRepo().split("/")[1]) {
         // Shipify itself (docs/releases.md): checked, its version recorded on main, its own files
-        // published to the template, with the bot's keys. Started on GitHub, as every operation.
+        // published to the template, with the bot's keys. Run on GitHub's machines, as every
+        // operation.
         const r = templateRelease({ yes: true, inJob: true, bump });
         st.phase = r.status === "succeeded" || r.status === "skipped" ? "done" : "failed";
         say(
@@ -146,7 +148,7 @@ export async function githubJob(s: Snapshot, p: Extract<Plan, { do: "github" }>)
         writes.push({ w: "close", reason: "completed" });
       }
     } catch (e) {
-      const pr = problem("unexpected", { first_line: (e as Error).message });
+      const pr = opProblem(e, op);
       st.phase = "failed";
       writes.push({
         w: "reply",
@@ -201,6 +203,20 @@ export async function githubJob(s: Snapshot, p: Extract<Plan, { do: "github" }>)
 
   await apply(s, st, writes, { ...outward(), tokens: {} });
   return ok("run github", `task #${s.n}: ${p.job}`);
+}
+
+/**
+ * An operation that stopped, as its reply says it. A blocked one (a release whose check failed)
+ * needs a fix before it can pass, which its own words name: never `continue`, which would only
+ * stop the same way. Its lines after the first are the details (what failed). Anything else is
+ * unexpected.
+ */
+export function opProblem(e: unknown, op: string): Problem {
+  if (!(e instanceof ShipError && e.status === "blocked"))
+    return problem("unexpected", { first_line: (e as Error)?.message ?? String(e) });
+  const [first = "", ...rest] = e.message.split("\n");
+  const why = rest.join("\n").trim();
+  return problem("op-blocked", { first_line: first, op }, why ? { why } : {});
 }
 
 /**

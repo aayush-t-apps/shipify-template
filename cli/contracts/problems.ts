@@ -106,10 +106,6 @@ export const CATALOGUE = {
     what: "The form has a wrong answer: {answer}",
     fix: "Edit the issue to fix it; that starts it.",
   },
-  "not-allowed-here": {
-    what: "`{word}` only works on GitHub.",
-    fix: "Say it as a comment on the task there.",
-  },
   "no-such-task": {
     what: "There's no task #{task} to carry on.",
     fix: "Reply to one of my messages, or start with the right number.",
@@ -149,6 +145,10 @@ export const CATALOGUE = {
   "reply-unsent": {
     what: "#{task} has a reply you may have missed here.",
     fix: "Open it on GitHub.",
+  },
+  "op-blocked": {
+    what: "{first_line}",
+    fix: "Do what it says first, then ask for the {op} again: `continue` would stop the same way.",
   },
   "step-failed": {
     what: "The run's {step} step failed: {error}",

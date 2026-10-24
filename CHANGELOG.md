@@ -7,6 +7,180 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-10-24
+
+### Added
+
+- **The lab: containers on every box (box setup 8, ADR 0064, task #555).** An agent can run
+  `docker run …` and `docker compose up` in a task: a test that needs a database, a repo tried
+  with its own services, a theory tested with real ones. It's rootless Podman as each slot's own
+  agent user, with a range of 65,536 IDs of its own: no Docker Engine, no root daemon, no `docker`
+  group and no socket (setup turns off the root one Ubuntu's package starts). A container stops
+  with the box's kill at each turn's end, and the kill's check now covers the agent's range; its
+  records, volumes and networks go at the slot's next run, which empties Podman's state as a
+  restart would. Images stay per slot for at most a week: the weekly clean-up prunes them while no
+  other slot is busy, and its 30-day trim leaves the store alone. A box without Ubuntu's normal
+  updates gets them (Podman's fix for stopping containers is only there). Setup never removes a
+  package, keeps a machine's own Docker, and never fails over the lab: without it the box works as
+  before. A new wall, at setup and in `ship doctor`: no agent can write to a root container socket.
+  Setup also runs a container as one agent the whole way and proves the kill leaves nothing. A box
+  in Docker skips the lab. Run `box add` again to bring a box to setup 8.
+- **Box setup 9: the agents reach no private network, and a setup that holds up (task #565).**
+  - **A new wall:** an agent and its containers reach the internet as the work needs, and no
+    private address: not your home network (the router, a camera, another box), not the tailnet,
+    nor a cloud's metadata address. A table of its own in nftables, for each agent's user and its
+    containers' range of IDs, loaded at every start; DNS stays open, and your own rules, ufw's and
+    Tailscale's stay as they are. The sandbox check proves it before the slots get their label.
+  - **Right after a first boot:** every apt waits up to 20 minutes for Ubuntu's own updates, in
+    what setup runs too (a stack's fix, the runner's dependencies, Tailscale's installer), and
+    apt's lists are tried again. A run cut off mid-install is finished first, so it's always safe
+    to run again. Downloads are tried again and stop when they stall.
+  - **The progress line of the updates can't stop the setup any more.** On a fresh install its
+    log has no such line yet, and the whole setup stopped there with no message.
+  - **The updates waiting now come after the slots register,** so a long first update never
+    outlasts the registration tokens' hour; `--manage` comes last, once the sandbox checks out,
+    and Tailscale's sign-in waits 15 minutes at most.
+  - **A slot GitHub deleted** (after `box remove`, or 14 days off) registers again, instead of
+    looking live and taking no job.
+  - **`box add` is done only when it is:** it fails, saying why, when a slot lacks the sandbox
+    label or none is online after a minute; with some online, it says how many.
+  - **Cockpit** listens on the machine alone from its first start, restarts only when its
+    settings change (so the setup runs from its own terminal), comes without NetworkManager (which
+    would take a laptop's Wi-Fi from Ubuntu Server's settings), and takes its updates from
+    backports.
+  - **A box you keep** swaps the installer's swap file (`/swap.img`) for swap in memory by itself.
+  - **`box remove --purge`, and `here.sh --remove --purge`:** Shipify off the machine in one
+    command (`box/remove.sh`), which checks nothing is left; the machine's own Tailscale, Cockpit,
+    firewall and updates stay.
+  - **`here.sh`:** `--replace` (a reinstalled machine), `--purge`, a "Yes" in any case, an option
+    with no value named instead of a silent stop, a plan that can't go ahead stops before it asks,
+    and the default copy is the private `shipify` repo you manage, an organization's too.
+  - **No PC needed:** the box guide has one path for a laptop with only your phone, and every fix
+    names the box's own command as well as the PC's.
+  Run `box add` (or the box's `here.sh` command) again to bring a box to setup 9.
+
+### Changed
+
+- **A box you keep, from one command (task #555).** `curl … here.sh | bash -s -- --manage` sets a
+  laptop or a spare PC up on the machine itself as a box set up over SSH is: it never sleeps, and
+  gets Tailscale, Cockpit and the firewall. Only its SSH settings stay as they are, since you're at
+  the machine. `pnpm ship box add --manage` with no target does the same (it was refused); without
+  `--manage`, this PC keeps its own power settings, as before. Not on WSL, nor in Docker.
+  `docs/box-setup.md` has the way with no PC, and another box over Tailscale as the PC.
+- **One rule for a stay (ADR 0063, task #533).** A stay does with your words what a normal run
+  would do, in the same job and session. A new model or effort (`use opus high`) keeps the session.
+  `continue` carries on in it; `no`, `resume`, `stop repeating`, `reopen`, `close` and `publish`
+  are answered by the stay; your `yes` to a list is decided there and made by its own job, with no
+  new run. Only another agent, repo or account, `start over`, `go` or an edit goes to a normal run.
+  Security is unchanged: no write key while an agent runs, and a stay never pushes.
+- **A stay has one setting (ADR 0057).** `SHIPIFY_STAY` (quiet minutes, 20, `0` for off) is all
+  there is: the 45-minute total and the 55-minute turn clock are gone. A stay keeps answering while
+  your words come, until its job's own limit, and gives each turn what's left of it. Its reads and
+  replies use the job's token, which lasts the job; past an hour only the agent's own GitHub reads
+  fail, as in a long work run.
+- **Shipify says who it is.** Every run's prompt opens with a few lines that every agent shares:
+  the owner's personal assistant, not only a coder, brief and direct, saying what's uncertain and
+  stating its limits. Your notebook's notes on tone win over it.
+
+### Fixed
+
+- **`shipify: release` passes its check again (task #565, #564).** One test read your own plan
+  (`plans/links.plan.md`), which a release takes out before it checks the files it publishes: the
+  release failed the same way every time, and nothing was published. The test makes its own plan
+  in a temporary folder, and the test-driven-development skill says a test never reads your own
+  files. A failed release now names each failing test and its first error in its reply, where
+  "(above)" pointed at a log the chat doesn't show, and never says `continue`, which would only
+  fail the same way: fix it in a PR, then release again.
+- **Box setup 7: one setup and one slot rule for every box (task #555).** A Pi, a laptop, a spare
+  PC and a VPS are set up the same way. A box never sleeps: the lid does nothing and the sleep
+  states are masked (no laptop check; on a Pi or a VPS nothing changes; this PC keeps its own). An
+  automatic update never restarts a slot mid-task (a needrestart rule for `shipify-box-*`). Every
+  box gets `shellcheck`, `fd` and `sqlite3`, in a step of their own: when they can't install (no
+  Ubuntu universe) or sleep can't be masked, the setup goes on and says so. A new box gets a slot
+  per core, no more than its memory fits, 1 to 9 (it stopped at 4, from memory only): a Pi 4 stays
+  at 3, a 32 GB laptop with 8 threads gets 8. `--slots` above 9, which setup refused after
+  registering, is refused before anything happens, by `box add` and by `here.sh` (before its
+  login). `docs/box-setup.md` is one guide for any machine, with moving a box in one go and taking
+  Shipify off a machine you keep (its users, folders and tools; `box remove` points there).
+  Run `box add` again to bring a box to setup 7; `ship doctor` names one that's older.
+- **`main`'s checks pass again (task #555).** Setup 8's container check had a loop counter it
+  never used, which shellcheck flags (SC2034), so `main`'s CI failed after the lab merged and no
+  release could go out. The script is unchanged in what it does.
+- **CI on main after box setup 7 (task #555).** A test of `ship doctor`'s setup check still
+  expected setup 6, so CI failed on main after the merge. The test now reads the version from
+  `box/setup.sh`, so a new setup version needs no change there.
+- **zod 4.6.7 (GHSA-mrhx-c7xc-m3w5, #556).** GitHub raised this advisory to high on 23 Oct, and
+  the dependency audit stopped CI on main at zod 4.6.5: validating a very large collection with
+  limits could use up all memory. 4.6.7 has the fix.
+- **One "Shipify status" issue, not 15 (#556).** For about an hour GitHub's list left the status
+  issue out on and off, with no error, and the door and the runs each opened a new one. Both now
+  find it by one rule (an open one, the one that holds the record, then the oldest; with none
+  open, the newest closed one that holds the record), open a new one only when a second look finds
+  none too, and the next run that writes the record closes and unpins any other open one, said
+  under Recent. A status issue you open takes the record over from the newest closed one.
+- **A reply never shares the box's own files (ADR 0063, #532).** An agent that named its
+  `handoff.md` in `files` uploaded it with every answer, and the key that needs ended the stay. The
+  box now drops `handoff.md`, `result.json` and its other own files from `files`.
+- **A stay's question on a project needs no push (ADR 0063).** Its turn sent the run's earlier
+  commits again, as its clone didn't know they were pushed, so it needed the repo's key and the
+  stay ended. A turn now sends only its own commits.
+- **`stop` keeps the session (ADR 0057, task #527).** A stay gave every `stop` to a new run, which
+  only said "nothing to stop", and your next words then started cold. Now the stay answers `stop`
+  itself: a turn that's working stops and says "Stopped"; with none working, it says there was
+  nothing to stop; one that came as a turn answered is said in that answer. A run you stop stays
+  too. Either way your next words carry on in the same session. `continue`, `start over` and the
+  other fixed words still go to a run.
+- **A file shared before isn't uploaded again (ADR 0062).** An answer that listed the same file
+  again, unchanged, uploaded it again, and the key that needs ended the stay. Now the task's status
+  keeps each shared file's hash and link (the newest 20), and the reply links the copy already
+  there, as "… (unchanged)". A new or changed file is uploaded as before.
+- **A merged plan's build starts, and `go` works from your chat (ADR 0049, ADR 0057, #528).** You
+  merged a plan while the run that made it still stayed on the task. Its build waited behind the
+  stay, and your next message replaced it in the queue, so nothing was built. In the chat `go` was
+  refused ("only works on GitHub"), and on GitHub it asked for a change doc a plan doesn't have.
+  Now:
+  - The merge takes the stay's label off, and the stay leaves within seconds.
+  - A run that finds a merged plan whose build never started starts it, once.
+  - `go` on a new project's task is its `publish`.
+- **One flow, one rule (ADR 0049).** Every word, task and release works the same from GitHub or
+  any chat. Only a PR's merge, and what changes the live app at once, are GitHub's. `go`,
+  `publish`, `preview` and `start over` work from a chat (and are buttons there), and an operation
+  is a task's title in the Operate form's words (`spotter: release`, `spotter: take it down`,
+  `spotter: bring it back`, `spotter: roll back production`). Taking an app down, bringing it back
+  and a rollback start (and run again) only on GitHub: from a chat nothing runs, and the reply
+  links the Operate form. A list too long for a chat to show whole is still approved on GitHub.
+- **Publishing a merged plan no longer says the bot lacks Variables when it has it.** The check
+  asked with the workflow's own token, which can never read variables, so every `publish` stopped
+  with "Variables: Read and write for the task bot". It now asks with the bot's token, the one
+  that sets them.
+- **Box health says how a Raspberry Pi last started.** `started` reads the firmware's reset status:
+  "from power-on" when the power was off, cut or dropped (a brownout), else "by a restart". A run
+  that "lost communication" with a box that started from power-on points to its power supply, not
+  to Shipify (`troubleshooting.md`).
+- **The web chat rides out a moment GitHub isn't read (#527).** One failed read showed a red
+  "Couldn't read GitHub just now" until a later one worked, and a message that didn't go waited
+  for your Retry. Now the edge tries a read once more, then serves the list or the thread from its
+  last good copy. The page's timed polls stay quiet and slow down; after about a minute a calm
+  "Can't reach GitHub · retrying" shows, and goes by itself. A message not sent goes again by
+  itself (same id, so never twice), up to three times and when you're back online. The
+  troubleshooting page says how to make Access's sign-in last longer.
+- **A stay's reply counts its own turn (ADR 0057).** Each turn's plan cleared the last think's
+  file, and with it what the session had counted, so a stay's run details showed the whole
+  session's tokens and cost ("58M in" for a 20-second answer). The stay now keeps that count, as
+  it keeps the session.
+- **Docs say the one flow everywhere.** The `not-allowed-here` problem's row, the "only works on
+  GitHub" row and "the Operate form on GitHub" are gone from tasks, troubleshooting and getting
+  started; operations are named by their titles from any channel.
+- **A stay's answer that needs a key is posted, not lost (ADR 0062).** When a stay's answer had
+  files, an approved tool call, a push or a workflow file, the stay started a new run, which had
+  none of its work and thought again from the start. Now the stay ends with the answer decided, and
+  the same job mints exactly those keys and posts it. No new run, nothing thought twice, and still
+  no write key while an agent runs.
+- **The docs say simply how slots share a box (ADR 0061).** `box-setup.md` explains the cores'
+  turns, memory given when asked, swap and zram, and each slot's count; the glossary has zram, and
+  a slot is "a worker in a pool", not a core; the troubleshooting page says what to do when a slot
+  had a task killed for memory, or tests time out only when several run at once.
+
 ## [0.1.12] - 2026-10-17
 
 ### Changed

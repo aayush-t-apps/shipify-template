@@ -482,7 +482,8 @@ jobs:
 
       # A run that stays (ADR 0057): after its answer, for SHIPIFY_STAY quiet minutes (20), it answers
       # your plain words itself, in the same agent session, while `staying` makes task.yml start no
-      # run for them; anything else it hands to a normal run. Its own read-only tokens, minted now,
+      # run for them; words plan would choose differently it hands to a normal run, and an answer
+      # that needs a write key to the steps after it (ADR 0062). Its own read-only tokens, minted now,
       # cover what its run's did: every project, as a talk run's agent token does.
       - name: A read-only token for the stay (every project; one hour)
         id: stay_token
@@ -531,6 +532,72 @@ jobs:
           SHIPIFY_NOTION_READ: ${{ secrets.SHIPIFY_NOTION_READ }}
           SHIPIFY_STAY: ${{ vars.SHIPIFY_STAY }}
         run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run stay "$ISSUE"
+
+      # A stay's last answer that needs a token minted after the agent (a push or PR, a tool call,
+      # a workflow file, files; ADR 0062): the stay ended with it decided, and these steps mint
+      # exactly what it named, as decide's do, and apply it. No new run, nothing thought again.
+      - name: A read-only token for the stay's apply (every project; one hour)
+        id: stay_apply_token
+        if: steps.stay.outputs.apply == 'yes' && vars.SHIPIFY_BOT_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+          permission-metadata: read
+          permission-pull-requests: read
+          permission-issues: read
+          permission-statuses: read
+          permission-actions: read
+      - name: A write token for the one repo the stay's answer changes
+        id: stay_write
+        if: steps.stay.outputs.apply == 'yes' && steps.stay.outputs.repo != '' && steps.stay.outputs.account == '' && vars.SHIPIFY_BOT_CLIENT_ID != ''
+        continue-on-error: ${{ steps.stay.outputs.keep == 'quiet' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.stay.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-metadata: read
+          permission-workflows: ${{ steps.stay.outputs.workflows == 'write' && 'write' || '' }}
+      - name: A write token for the one repo the stay's answer changes, on its other account (the repos App)
+        id: stay_write_account
+        if: steps.stay.outputs.apply == 'yes' && steps.stay.outputs.repo != '' && steps.stay.outputs.account != '' && vars.SHIPIFY_REPOS_CLIENT_ID != ''
+        continue-on-error: ${{ steps.stay.outputs.keep == 'quiet' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_REPOS_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_REPOS_KEY }}
+          owner: ${{ steps.stay.outputs.account }}
+          repositories: ${{ steps.stay.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-metadata: read
+      - name: A token for shipify's files branch, for the stay's answer
+        id: stay_files
+        if: steps.stay.outputs.apply == 'yes' && steps.stay.outputs.files == 'yes' && vars.SHIPIFY_BOT_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-metadata: read
+      - name: Apply the stay's answer (as apply does)
+        if: steps.stay.outcome == 'success' && steps.stay.outputs.apply == 'yes'
+        env:
+          SHIPIFY_ISSUES_TOKEN: ${{ github.token }}
+          SHIPIFY_READ_TOKEN: ${{ steps.stay_apply_token.outputs.token }}
+          GH_TOKEN: ${{ steps.stay_apply_token.outputs.token }}
+          SHIPIFY_WRITE_TOKEN: ${{ steps.stay_write.outputs.token || steps.stay_write_account.outputs.token }}
+          SHIPIFY_FILES_TOKEN: ${{ steps.stay_files.outputs.token }}
+          SHIPIFY_NOTION_WRITE: ${{ steps.stay.outputs.act == 'notion' && secrets.SHIPIFY_NOTION_WRITE || '' }}
+        run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run apply "$ISSUE"
       # However the job ends (a crash, a cancel, its clock): your next words are never skipped.
       - name: Its stay's label off, however the job ends
         if: always() && steps.decide.outputs.stay == 'yes'

@@ -176,6 +176,33 @@ export function readRecordSeen(body: string | null | undefined): RecordSeen | un
   }
 }
 
+/** An issue labelled shipify-status, as a list of issues gives it. */
+export interface StatusCandidate {
+  number: number;
+  state?: string;
+  body?: string | null;
+  pull_request?: unknown;
+}
+
+/** Whether an issue holds the record, so a lookup of open ones is enough. */
+export const holdsRecord = (i: StatusCandidate | undefined) =>
+  Boolean(i && (i.body ?? "").startsWith(STATUS_MARK));
+
+/**
+ * The status task, one rule for the door and the runs (docs/watch.md): an open one first, the one
+ * that holds the record, then the oldest, so a stray new one never takes over. With none open,
+ * the newest closed one that holds the record: the last one in use.
+ */
+export function pickStatusIssue<T extends StatusCandidate>(list: T[]): T | undefined {
+  const closed = (i: T) => i.state === "closed";
+  const rank = (i: T) => (closed(i) ? 2 : 0) + (holdsRecord(i) ? 0 : 1);
+  return list
+    .filter((i) => !i.pull_request)
+    .sort(
+      (a, b) => rank(a) - rank(b) || (closed(a) ? b.number - a.number : a.number - b.number),
+    )[0];
+}
+
 // ---------------------------------------------------------------- findings
 
 /** What the watch saw change, for the alert run. Boxes, apps and channels are changes from the record. */

@@ -41,6 +41,16 @@ export const defaultAgent = () => defaultAgentOf(executors());
 export const taskChoice = (state: TaskState): Pick<Use, "agent" | "model" | "effort"> =>
   state.use ?? { agent: defaultAgent() };
 
+/**
+ * The agent a task's runs think with: its pick's, else the default. One executors.json doesn't have
+ * (SHIPIFY_AGENT mistyped) is the default's, and think says what's wrong, as it always has.
+ */
+export function taskAgent(state: TaskState): string {
+  const all = executors();
+  const named = taskChoice(state).agent ?? defaultAgent();
+  return all[named] ? named : defaultAgentOf(all, "");
+}
+
 /** The model and effort for this agent, from the task's `use` lines, or the agent's Auto. */
 export const choiceFor = (executorId: string, use: { model?: string; effort?: string }): Choice =>
   choose(executorId, executors()[executorId], use);

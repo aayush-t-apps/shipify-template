@@ -212,6 +212,37 @@ describe("the page", () => {
     }
   });
 
+  // GitHub not read for a moment: a poll stays quiet and slows down, a calm line comes after a
+  // minute or on the edge's last good copy, and a message not sent goes again by itself, same id.
+  it.skipIf(!have)("rides out a moment GitHub isn't read, and sends again by itself", async () => {
+    const { api } = await import(join(ROOT, dir, "compose.js"));
+    vi.stubGlobal("fetch", async () => ({
+      type: "basic",
+      status: 503,
+      ok: false,
+      json: async () => ({
+        error: "Couldn't read GitHub just now.",
+        fix: "Try again in a minute.",
+      }),
+      headers: new Headers(),
+    }));
+    try {
+      await expect(api("list")).rejects.toMatchObject({ status: 503, off: false });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const js = readFileSync(join(ROOT, dir, "app.js"), "utf8");
+    expect(js).toContain(`const DOWN = "Can't reach GitHub · retrying";`);
+    expect(js).toMatch(
+      /else if \(quiet\) \{\s*R\.down \|\|= Date\.now\(\);\s*if \(Date\.now\(\) - R\.down > 6e4\)/,
+    );
+    expect(js).toContain("if (R.down) next = Math.min(6e4, 5e3 * 2 ** R.miss++);");
+    expect(js).toMatch(
+      /const late = e\.off \|\| e\.status === 503;[\s\S]{0,80}if \(late && p\.again <= 3\) setTimeout\(\(\) => p\.st === "fail" && sendIt\(p\)/,
+    );
+    expect(js).toMatch(/addEventListener\("online", \(\) => \{\s*again\(\);/);
+  });
+
   describe.skipIf(!have)("its service worker (ADR 0050)", () => {
     const SCOPE = "https://shipify.example.com/admin/chat/";
     /** sw.js in a worker of its own: its events fired by hand, what it did kept. */

@@ -234,7 +234,14 @@ if (process.env.FAKE_FINAL) {
     join(out, `${next ? "next" : resumed ? "catchup" : "first"}-final-argv.json`),
     JSON.stringify(process.argv.slice(2)),
   );
+  // Its counts, as Claude Code gives them: the session's totals, each ask adding 10k in and 1k out.
+  const asks = join(out, "asks");
+  const k = (existsSync(asks) && resumed ? Number(readFileSync(asks, "utf8")) : 0) + 1;
+  writeFileSync(asks, String(k));
+  const modelUsage = {
+    "claude-sonnet-5-5": { inputTokens: 10_000 * k, outputTokens: 1_000 * k },
+  };
   process.stdout.write(
-    `${JSON.stringify({ type: "result", subtype: "success", num_turns: 1, structured_output: JSON.parse(process.env.FAKE_FINAL) })}\n`,
+    `${JSON.stringify({ type: "result", subtype: "success", num_turns: 1, modelUsage, total_cost_usd: 0.1 * k, structured_output: JSON.parse(process.env.FAKE_FINAL) })}\n`,
   );
 }

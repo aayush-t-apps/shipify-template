@@ -3,16 +3,13 @@
 // a chat or the box reads is held here to the one definition.
 import { describe, expect, it } from "vitest";
 import {
-  acceptedFrom,
   asked,
   CHAT_WORDS,
-  GITHUB_WORDS,
   PICKER,
   REMINDER,
   type ReplyLine,
   replyButtons,
   WORDS,
-  type Word,
   wordOf,
   listCodeOf,
 } from "../cli/contracts/index.ts";
@@ -32,31 +29,26 @@ const reply = (over: Partial<ReplyLine> = {}) =>
   }) as ReplyLine;
 
 describe("the fixed words, defined once", () => {
-  it("are the box's own, and every chat's list is made from them", () => {
+  it("are the box's own, and every chat's list is made from them: one list, the same everywhere", () => {
     expect(BOX_WORDS).toBe(WORDS);
-    for (const w of CHAT_WORDS) {
-      const word = wordOf(w);
-      expect(word, w).toBeDefined();
-      expect(acceptedFrom(word as Word, false), w).toBe(true);
-    }
-    for (const w of GITHUB_WORDS) {
-      expect(wordOf(w), w).toBe(w);
-      expect(acceptedFrom(w as Word, false), w).toBe(false);
-    }
-    const all = new Set<string>([...CHAT_WORDS, ...GITHUB_WORDS]);
-    for (const w of Object.keys(WORDS)) expect(all.has(w), w).toBe(true);
+    for (const w of CHAT_WORDS) expect(wordOf(w), w).toBeDefined();
+    for (const w of Object.keys(WORDS)) expect(CHAT_WORDS, w).toContain(w);
+    // No word is GitHub's alone (ADR 0049, 2026-10-18): only a PR's merge is.
+    for (const d of Object.values(WORDS)) expect(Object.keys(d).sort()).not.toContain("where");
   });
 
   it("a reply asks for the ones it names in backticks, and nothing else", () => {
-    expect(asked("Reply `continue` after 14:30, or `close` it. Say `start over`.")).toEqual({
-      say: ["continue", "close"],
-      github: ["start over"],
-    });
+    expect(asked("Reply `continue` after 14:30, or `close` it. Say `start over`.")).toEqual([
+      "continue",
+      "start over",
+      "close",
+    ]);
     // A list's `yes` and `no` are said from anywhere, but only its own buttons send them.
-    expect(asked("Say `yes` or `no` to the list.")).toEqual({ say: [], github: [] });
-    expect(asked("Merge it, then say `Go`.")).toEqual({ say: [], github: ["go"] });
-    expect(asked("Closed. Write again to carry it on, or say `reopen`.").say).toEqual(["reopen"]);
-    expect(asked("Continue? `use opus high` or `pnpm ship go`")).toEqual({ say: [], github: [] });
+    expect(asked("Say `yes` or `no` to the list.")).toEqual([]);
+    expect(asked("Merge it, then say `Go`.")).toEqual(["go"]);
+    expect(asked("Then say `preview`.")).toEqual(["preview"]);
+    expect(asked("Closed. Write again to carry it on, or say `reopen`.")).toEqual(["reopen"]);
+    expect(asked("Continue? `use opus high` or `pnpm ship go`")).toEqual([]);
   });
 
   it("the door acts on `close` and `reopen` alone, after a leading #n, as the box reads them", () => {
@@ -72,9 +64,6 @@ describe("the fixed words, defined once", () => {
 
   it("`yes` is a chat word too (ADR 0049), alone or with the code of the list it approves", () => {
     expect(CHAT_WORDS).toContain("yes");
-    expect(acceptedFrom("yes", false)).toBe(true);
-    for (const go of ["go", "publish", "preview", "start over"])
-      expect(acceptedFrom(go as Word, false), go).toBe(false);
     for (const text of ["yes", "Yes.", "yes 1a2b3c4d", " YES 1A2B3C4D! "])
       expect(wordOf(text), text).toBe("yes");
     expect(listCodeOf("yes")).toBeUndefined();
@@ -94,18 +83,20 @@ describe("a reply's buttons, one list for every chat", () => {
         { label: "Teal", words: "Teal" },
         { label: "My own", words: "My own" },
       ],
-      [{ label: "Continue", words: "continue" }],
+      [
+        { label: "Continue", words: "continue" },
+        { label: "Start over", words: "start over" },
+      ],
     ]);
     // A question always asks: a chat opens its reply box when none of its buttons fit.
     expect(b.asks).toBe(true);
-    for (const row of b.rows) for (const x of row) expect(GITHUB_WORDS).not.toContain(x.words);
-    // An agent's quick answer that is a word only GitHub takes is never a button: it stays text.
-    // Nor is a "Yes" or a "No": tapped later, it would answer a list.
+    // Every fixed word is a button where the agent offers it, as it works from a chat too. Never a
+    // "Yes" or a "No": tapped later, it would answer a list.
     const go = replyButtons(
-      reply({ kind: "needs-you", question: "Ready?", choices: ["Go", "Preview first", "Yes"] }),
+      reply({ kind: "needs-you", question: "Ready?", choices: ["Preview", "Go", "Yes"] }),
       "",
     );
-    expect(go.rows.flat().map((x) => x.words)).toEqual(["Preview first"]);
+    expect(go.rows.flat().map((x) => x.words)).toEqual(["Preview", "Go"]);
     const no = replyButtons(reply({ kind: "needs-you", question: "Sure?", choices: ["No"] }), "");
     expect(no.rows).toEqual([]);
   });

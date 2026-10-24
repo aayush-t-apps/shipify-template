@@ -356,3 +356,27 @@ Built in one PR on task #317, as planned, with these details settled:
   sub-databases are kept, and a page with a block holding others is refused before anything
   changes), Notion keeps page history, and the call's list line says "replaces the page's whole
   body" (the tool's `args.<call>.warn` in `tools.json`). `docs/security.md` says so.
+
+## Addendum: one flow, one rule (2026-10-18, task #527)
+
+- **What went wrong (#528):** the owner merged a plan and said `go` in the web chat. The box said
+  "`go` only works on GitHub". On GitHub, `go` said "Merge the change doc's PR first", since a
+  plan isn't a change doc. Only `publish` worked, and nothing said so. Two classes of words (and
+  operations "only from GitHub") made the owner learn where each one works.
+- **Decided, by the owner:** every fixed word, task and release works the same from GitHub or any
+  chat. Only two things are GitHub's: a PR's merge, the only way code reaches `main` and
+  production, and the operations that change the live app at once (below). `Where`,
+  `acceptedFrom`, the `not-allowed-here` problem and the web chat's "Say … on GitHub" links are
+  gone. An operation is also typed as a task's title in the Operate form's own words
+  (`spotter: release`, `spotter: take it down`).
+- **Why it holds:** `go` and `publish` start only what a merge approved; `preview` and `start over`
+  never reach `main`; a release opens a PR. A list's `yes`, which a chat already gave, weighs more.
+- **Production at once stays on GitHub:** taking an app down, bringing it back and a rollback
+  change the live app at once, with no merge to stop them, so they start only on GitHub, where the
+  owner's GitHub sign-in says it's them. From a chat they run nothing: the reply links the Operate
+  form, and a door's task closes. A chat's `continue` on one started on GitHub doesn't run it
+  again. One named set holds the three (`AT_ONCE`, `cli/lib/task.ts`), not a per-word table.
+- **Kept:** a list too long for a chat to show whole is approved on GitHub, where it's seen whole:
+  that's about seeing what you approve, not where you are.
+- **The rule, in one line:** a merge, and anything that changes production at once, happen on
+  GitHub; all else from any channel.

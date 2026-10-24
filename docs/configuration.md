@@ -192,7 +192,7 @@ gateway's key), never in its environment ([agents.md](agents.md)).
 checkout's test port) and `E2E_BASE_URL` (tests against a deployed URL).
 
 **For `box/setup.sh`:** `SHIPIFY_MANAGE=1` (`box add --manage`) adds Tailscale, Cockpit and the
-firewall.
+firewall, and on the machine itself (`SHIPIFY_HERE=1`) keeps it awake as any box.
 
 ## Make it yours
 

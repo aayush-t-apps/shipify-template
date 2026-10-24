@@ -420,8 +420,8 @@ describe("who's who, and the answers in words", () => {
     const text = helpText();
     expect(text).toContain(loadIntents().help.guide[0]);
     expect(text).toContain("An edited message isn't read again: send a new one.");
-    expect(text).toContain("Words on a task: yes, no, continue");
-    expect(text).toContain("on GitHub only: start over, preview, publish, go");
+    expect(text).toContain("Words on a task, the same from GitHub or a chat: yes, no, continue");
+    expect(text).toContain("Only on GitHub: a PR's merge, and taking an app down");
     expect(text).toContain("/ping:");
     for (const c of CHATS) expect(text).toContain(`/${c.chat}:`);
   });

@@ -201,11 +201,13 @@ const commands = (): [string, string][] => [
   ...INSTANT,
 ];
 
+/** What happens only on GitHub (ADR 0049): a merge, and what changes the live app at once. */
+const ON_GITHUB =
+  "Only on GitHub: a PR's merge, and taking an app down, bringing it back or rolling it back.";
+
 /** How to use a chat: intents.json's help, then the words a task takes, from the one list. */
 export function helpGuide(): string[] {
-  const where = (w: "anywhere" | "github") =>
-    Object.entries(WORDS).flatMap(([k, d]) => (d.where === w ? [k] : []));
-  const words = `Words on a task: ${[...where("anywhere"), "use <model>"].join(", ")}; on GitHub only: ${where("github").join(", ")}.`;
+  const words = `Words on a task, the same from GitHub or a chat: ${[...Object.keys(WORDS), "use <model>"].join(", ")}. ${ON_GITHUB}`;
   return [...intents.help.guide, words];
 }
 

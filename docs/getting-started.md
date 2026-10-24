@@ -100,7 +100,7 @@ the chat closed ([channels.md](channels.md#notifications)).
 | a note it keeps in mind | `remember: …` |
 | a reminder or a regular job | `repeat: every Monday at 9, …`, or the Repeat form |
 | to watch a value | `shipify: a check that tells me when <x> changes` → its PR (`checks/<name>.mjs`) → merge → `repeat: every hour, check <name>` |
-| release, take down, bring back, roll back | the Operate form on GitHub |
+| release, take down, bring back, roll back | `<app>: release` from any channel; `<app>: take it down` (or `bring it back`, `roll back production`) only on GitHub, as a task's title or the Operate form, since they change the live app at once |
 | to see what's going on | the status page (the edge's `/admin/status`, after `pnpm ship door page --yes`); the web chat's list and Status & setup; `/ping` and `/apps` from any channel; the status task on GitHub |
 | an automation to keep | a recipe: say "turn on the daily brief recipe", or a file in `recipes/` in a PR ([recipes.md](recipes.md)) |
 | to fix something that failed | its reply names the one thing to do |

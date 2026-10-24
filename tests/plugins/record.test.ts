@@ -390,7 +390,7 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
     expect(queue.waitingFor(["shipify-box", "box-vps"]).waiting).toBe(false);
   });
 
-  it("opens an issue, and pins it without failing when it can't", () => {
+  it("opens an issue, and pins and unpins it without failing when it can't", () => {
     const { record } = make();
     const made = record.createIssue({
       title: "Shipify status",
@@ -399,6 +399,7 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
     });
     expect(made.number).toBeGreaterThan(0);
     expect(() => record.pin(made)).not.toThrow();
+    expect(() => record.unpin(made)).not.toThrow();
   });
 
   it("reacts and reads rendered HTML without failing a round", () => {

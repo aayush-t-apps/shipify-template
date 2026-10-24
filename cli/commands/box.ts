@@ -28,20 +28,25 @@ export const boxLabel = (name: string) => `box-${name}`;
 const labelsOf = (name: string) => `${BOX_LABEL},${boxLabel(name)}`;
 /**
  * Slots (ADR 0020): slot 1 is the runner named after the box, in the box's folder; slot k is the
- * runner `<box>-<k>`, in `<folder>/slot-<k>`. A new box gets slotsFor its memory (DEFAULT_SLOTS
- * when it doesn't say); `--slots` changes it, with no cap: past what the box suggests, it warns
- * (ADR 0061).
+ * runner `<box>-<k>`, in `<folder>/slot-<k>`. A new box gets slotsFor its memory and cores
+ * (DEFAULT_SLOTS when it doesn't say); `--slots` changes it, up to MAX_SLOTS (setup.sh's limit):
+ * past what the box suggests, it warns (ADR 0061).
  */
-export const MAX_SLOTS = 4;
+export const MAX_SLOTS = 9;
 export const DEFAULT_SLOTS = 2;
 /**
- * A new Pi or VPS's slots, from its memory (MemTotal, in KiB): 1 GiB for the system, then one
- * per 2 GiB (a busy slot needs about 1.6 GB: its checks 1.0, its agent 0.4, its runner 0.2; ADR
- * 0061's load test), 1 to MAX_SLOTS. 4 GB gives 1, 6 GB 2, a Pi's 8 GB 3, 12 GB and up 4.
+ * Any box's slots, one rule for a Pi, a laptop or a VPS: no more than its cores (past them, checks
+ * that overlap only slow each other down), and no more than its memory (MemTotal, in KiB) fits:
+ * 1 GiB for the system, then one per 2 GiB (a busy slot needs about 1.6 GB: its checks 1.0, its
+ * agent 0.4, its runner 0.2; ADR 0061's load test). 1 to MAX_SLOTS; an unknown (0) leaves the
+ * other to decide. A Pi's 8 GB and 4 cores give 3, 32 GB and 8 cores 8, 64 GB and 16 cores 9.
  */
 const GIB = 1024 * 1024;
-export const slotsFor = (memKiB: number) =>
-  Math.min(MAX_SLOTS, Math.max(1, Math.floor((memKiB - GIB) / (2 * GIB))));
+export function slotsFor(memKiB: number, cores: number): number {
+  const memory = memKiB > 0 ? Math.floor((memKiB - GIB) / (2 * GIB)) : MAX_SLOTS;
+  const cpu = cores > 0 ? cores : MAX_SLOTS;
+  return Math.min(MAX_SLOTS, Math.max(1, Math.min(memory, cpu)));
+}
 /**
  * The one OS a Pi or VPS runs (docs/box-setup.md): Ubuntu, an LTS from 24.04 on, from
  * os-release's `$ID $VERSION_ID`. Raspberry Pi OS (`debian`) is out: its kernel's 39-bit
@@ -62,19 +67,17 @@ export const slotOf = (box: string, runner: string): number => slotOfRunner(runn
 function parseSlots(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 1)
-    throw new ShipError("--slots is a whole number from 1.", "blocked");
+  if (!Number.isInteger(n) || n < 1 || n > MAX_SLOTS)
+    throw new ShipError(`--slots is a whole number from 1 to ${MAX_SLOTS}.`, "blocked");
   return n;
 }
 
 /**
- * The warning for more slots than a box suggests (ADR 0061): more than its memory fits (2 GB a
- * slot, uncapped), or more than its cores, where checks that overlap slow each other down. Nothing
- * is refused.
+ * The warning for more slots than a box suggests (slotsFor, ADR 0061): more than its memory fits,
+ * or more than its cores, where checks that overlap slow each other down. Nothing is refused.
  */
 function slotsWarning(slots: number, memKiB: number, cores: number): string | undefined {
-  const memory = memKiB > 0 ? Math.max(1, Math.floor((memKiB - GIB) / (2 * GIB))) : slots;
-  const suggests = Math.min(memory, cores > 0 ? cores : slots);
+  const suggests = slotsFor(memKiB, cores);
   if (slots <= suggests) return undefined;
   const gb = memKiB > 0 ? `${(memKiB / 1024 / 1024).toFixed(1)} GB` : "its memory";
   return `${slots} slots on ${gb}${cores > 0 ? ` and ${cores} cores` : ""}: more than it suggests (${suggests}), so tasks whose checks overlap get slower, and one that runs short of memory may be killed; \`pnpm ship doctor\` shows if a slot did`;
@@ -357,6 +360,34 @@ const thisPc = (): Machine => ({
   asRoot: (args) => run("sudo", args, { inherit: true }),
 });
 
+/**
+ * A script of box/ run as root on the machine: it and its files go in a folder of its own there
+ * (mktemp -d: 0700, a name nobody could have made first), each on stdin, so nothing is on a command
+ * line and no other user, an agent's included, can read or swap them. `bash <script> <files…>`, in
+ * this terminal (sudo asks for your password); the folder goes after.
+ */
+function rootScript(m: Machine, script: string, files: [name: string, body: string][]): RunResult {
+  const made = m.sh("mktemp -d");
+  const tmp = made.stdout.trim();
+  if (made.code !== 0 || !/^\/[\w./-]+$/.test(tmp))
+    throw new ShipError(
+      `Couldn't make a folder for the setup on ${m.label}: ${made.stderr.trim()}`,
+    );
+  const put = (file: string, body: string) =>
+    m.sh(`umask 077 && cat > ${file}`, body.endsWith("\n") ? body : `${body}\n`);
+  const all: [string, string][] = [
+    [script, readFileSync(join(PLATFORM_ROOT, "box", script), "utf8")],
+    ...files,
+  ];
+  if (all.some(([name, body]) => put(`${tmp}/${name}`, body).code !== 0)) {
+    m.sh(`rm -rf ${tmp}`);
+    throw new ShipError(`Couldn't send the setup files to ${m.label}.`);
+  }
+  const r = m.asRoot(["bash", ...all.map(([name]) => `${tmp}/${name}`)]);
+  m.sh(`rm -rf ${tmp}`);
+  return r;
+}
+
 // ---------------------------------------------------------------- add: a Pi, a VPS, or this PC
 
 /** The address, user and key ssh would use for a target (an alias in ~/.ssh/config, or user@host). */
@@ -413,11 +444,6 @@ export function boxAdd(
       "--container is the container's own setup: docker run … register runs it (docs/box-setup.md).",
       "blocked",
     );
-  if (target === undefined && opts.manage)
-    throw new ShipError(
-      "--manage is for a machine you reach over SSH (Tailscale, Cockpit and a firewall): this PC's box needs none of them.",
-      "blocked",
-    );
   if (target === undefined && process.platform !== "linux")
     throw new ShipError(
       "A box runs Linux: on Windows, inside WSL (Ubuntu, with systemd on).",
@@ -435,6 +461,13 @@ export function boxAdd(
   if (m.here && !opts.container && m.sh("test -d /run/systemd/system").code !== 0)
     throw new ShipError(
       "systemd isn't running on this PC: on WSL, add [boot] systemd=true to /etc/wsl.conf, run wsl --shutdown in Windows, open Ubuntu again, then run this again.",
+      "blocked",
+    );
+  // --manage here makes this machine a box you keep (a laptop, a spare PC), as over SSH. WSL is a
+  // PC in Windows, which runs its power and network: its box needs none of it.
+  if (m.here && opts.manage && m.sh("grep -qi microsoft /proc/version && echo wsl").stdout.trim())
+    throw new ShipError(
+      "--manage isn't for WSL: Windows runs that machine's power and network. Run box add without it.",
       "blocked",
     );
   const repo = platformRepo();
@@ -464,19 +497,20 @@ export function boxAdd(
     );
   const all = runners(repo);
   const have = slotsOf(all, name);
-  // What --slots says, else what the box has, else what its memory fits.
+  // What --slots says, else what the box has, else what its memory and cores fit.
   const asked = parseSlots(opts.slots);
   // A container sees the host's memory: its own limit (docker run --memory), when it has one.
   const capKiB = Math.floor(Number(limit) / 1024);
   const memKiB = capKiB > 0 ? Math.min(Number(mem), capKiB) : Number(mem);
-  const fits = memKiB > 0 ? slotsFor(memKiB) : DEFAULT_SLOTS;
+  const cores = Number(nproc) > 0 ? Number(nproc) : 0;
+  const fits = memKiB > 0 ? slotsFor(memKiB, cores) : DEFAULT_SLOTS;
   const slots = asked ?? (have.length || fits);
   const why =
     asked || have.length || !(memKiB > 0)
       ? ""
-      : ` (what its ${(memKiB / 1024 / 1024).toFixed(1)} GB of memory fits)`;
+      : ` (what its ${(memKiB / 1024 / 1024).toFixed(1)} GB of memory${cores ? ` and ${cores} cores fit` : " fits"})`;
   checkSlotNames(all, name, slots);
-  const tooMany = slotsWarning(slots, memKiB, Number(nproc));
+  const tooMany = slotsWarning(slots, memKiB, cores);
   // One name, one machine: a second machine with the same hostname would silently take over the
   // first one's runners. Running box add again on the same machine is fine (it has the service).
   if (!opts.replace && have.length) {
@@ -503,7 +537,12 @@ export function boxAdd(
     m.here
       ? `run box/setup.sh on this PC, from a folder of its own (made by mktemp -d), with sudo (${os ?? "?"}, ${machine})`
       : `copy box/setup.sh to ${m.label} (into a folder of its own, made by mktemp -d) and run it with sudo (${os ?? "?"}, ${machine})`,
-    "it installs git, make, gh, Node and what each stack's doctor checks need",
+    "it installs git, make, gh, Node, shellcheck, fd, sqlite3 and what each stack's doctor checks need",
+    ...(opts.container
+      ? []
+      : [
+          `automatic updates never restart a slot mid-task (needrestart)${m.here && !opts.manage ? "; this PC's power settings stay as they are (--manage: a box you keep, which never sleeps)" : ", and the box never sleeps: the lid does nothing, and sleep is off"}`,
+        ]),
     `it creates the user "shipify" (no sudo; its home 0700, only its own) and runs ${slots} slot(s)${why}, one task at a time each: the GitHub runners ${slotNumbers(
       slots,
     )
@@ -515,20 +554,29 @@ export function boxAdd(
     ...(opts.container
       ? []
       : [
-          "on a box with no swap of its own, swap in memory (zram, ADR 0061): half its memory, compressed, so tasks that overlap slow down instead of having a test killed; a box with swap (WSL, a swap file) keeps its own",
+          `on a box with no swap of its own, swap in memory (zram, ADR 0061): half its memory, compressed, so tasks that overlap slow down instead of having a test killed; a box with swap (WSL, a swap file) keeps its own${m.here && !opts.manage ? "" : ", but Ubuntu's installer's swap file on the disk (/swap.img) goes for it"}`,
         ]),
     `the sandbox (setup 5): one user per slot for its agent (${agents}), each with its own folder in /srv; one sudo rule, /etc/sudoers.d/shipify-agents, lets the runner run commands as them and no one else (installed only once visudo accepts it)`,
-    `then a check that the runner starts each agent without a password, and no agent can read the runner's folders, its environment or another slot's runs (on WSL, nor open Windows' drives or start Windows programs: it prints the fix for /etc/wsl.conf); once it passes, the label "${SANDBOX_LABEL}" on each slot, so task runs can go to them`,
+    ...(opts.container
+      ? []
+      : [
+          "containers for each slot's agent (ADR 0064): rootless Podman, with docker and docker compose, as the agent's own user with a range of IDs of its own; no Docker Engine, no docker group and no root socket. Ubuntu's normal updates are added where they're missing. A container stops when the agent's turn ends",
+          "the agents' network (setup 9): out to the internet as the work needs, never to a private network (your home network, the tailnet, a cloud's metadata address), their containers included; a table of its own in nftables, loaded at every start (shipify-agents-net), with your own rules left as they are",
+          "the updates waiting now, once the slots are registered (a few minutes on a fresh install)",
+        ]),
+    `then a check that the runner starts each agent without a password, and no agent can read the runner's folders, its environment or another slot's runs, nor write to a root container socket, nor reach a private network (on WSL, nor open Windows' drives or start Windows programs: it prints the fix for /etc/wsl.conf), and that a container's processes go with the box's kill; once it passes, the label "${SANDBOX_LABEL}" on each slot, so task runs can go to them`,
     ...have
       .filter((r) => slotOf(name, r.name) > slots)
       .map((r) => `it removes the slot "${r.name}": its service, its folder and its registration`),
     `the one-hour registration tokens go${m.here ? "" : " over SSH"} into a file only the setup reads, never printed, and are deleted after use`,
     m.here
-      ? "this PC's SSH settings and network stay as they are"
+      ? opts.manage
+        ? "this machine's SSH settings stay as they are: you set it up on the machine, not over SSH"
+        : "this PC's SSH settings and network stay as they are"
       : "SSH takes keys only (no passwords, no root), once your account there has a key: the change is checked first, and left out if sshd doesn't accept it",
     ...(opts.manage
       ? [
-          "--manage: Tailscale (installed, and signed in at a link it prints, if it isn't yet), and Cockpit, which listens on the machine itself only and is shared with your own devices by tailscale serve",
+          "--manage, last, once the sandbox checks out: Tailscale (installed, and signed in at a link it prints within 15 minutes, if it isn't yet), and Cockpit, which listens on the machine itself only and is shared with your own devices by tailscale serve (without NetworkManager, which would take a laptop's Wi-Fi)",
           "--manage: a firewall, once Tailscale is up: in through Tailscale, and SSH from the machine's own network; out as before. Rules are added, never reset (undo: sudo ufw disable)",
         ]
       : []),
@@ -553,19 +601,8 @@ export function boxAdd(
       `${busy.map((r) => r.name).join(", ")} is running a task: run this again when it's done (pnpm ship box list).`,
       "blocked",
     );
-  const prep = stackPrep();
-  // A folder of its own there (mktemp -d: 0700, a name nobody could have made first), so no other
-  // user on the machine, an agent's included, can read or swap the setup's files.
-  const made = m.sh("mktemp -d");
-  const tmp = made.stdout.trim();
-  if (made.code !== 0 || !/^\/[\w./-]+$/.test(tmp))
-    throw new ShipError(
-      `Couldn't make a folder for the setup on ${m.label}: ${made.stderr.trim()}`,
-    );
-  // Every file goes in on stdin, the script too: nothing is on a command line.
-  const put = (file: string, body: string) =>
-    m.sh(`umask 077 && cat > ${file}`, body.endsWith("\n") ? body : `${body}\n`);
-  // One registration token per slot: a slot that's already registered leaves its token unused.
+  // One registration token per slot: a slot that's already registered leaves its token unused. The
+  // slots GitHub has, so setup registers again one it deleted (removed, or 14 days off).
   const env = [
     `RUNNER_URL=https://github.com/${repo}`,
     `RUNNER_NAME=${name}`,
@@ -574,37 +611,30 @@ export function boxAdd(
     `RUNNER_TOKENS="${slotNumbers(slots)
       .map(() => registrationToken(repo))
       .join(" ")}"`,
+    `RUNNER_REGISTERED="${have.map((r) => slotOf(name, r.name)).join(" ")}"`,
     ...(opts.manage ? ["SHIPIFY_MANAGE=1"] : []),
     ...(m.here ? ["SHIPIFY_HERE=1"] : []),
     ...(opts.container ? ["SHIPIFY_CONTAINER=1"] : []),
   ].join("\n");
   // One definition for every slot: setup.sh fills in each slot's name and folder.
   const unit = boxUnit({ name: "@SLOT_NAME@", dir: "@SLOT_DIR@" });
-  if (
-    put(`${tmp}/setup.sh`, readFileSync(join(PLATFORM_ROOT, "box", "setup.sh"), "utf8")).code !==
-      0 ||
-    put(`${tmp}/box.env`, env).code !== 0 ||
-    put(`${tmp}/prep.tsv`, prep).code !== 0 ||
-    put(`${tmp}/box.service`, unit).code !== 0
-  ) {
-    m.sh(`rm -rf ${tmp}`);
-    throw new ShipError(`Couldn't send the setup files to ${m.label}.`);
-  }
-  const r = m.asRoot([
-    "bash",
-    `${tmp}/setup.sh`,
-    `${tmp}/box.env`,
-    `${tmp}/prep.tsv`,
-    `${tmp}/box.service`,
+  const r = rootScript(m, "setup.sh", [
+    ["box.env", env],
+    ["prep.tsv", stackPrep()],
+    ["box.service", unit],
   ]);
-  m.sh(`rm -rf ${tmp}`);
   if (r.code !== 0)
     throw new ShipError(
       `The setup on ${m.label} failed (see above), so its slots have no sandbox label and take no task runs. It's safe to run again.`,
     );
   dropSlots(repo, name, slots);
-  // Its sandbox checked out (setup.sh's last step): task runs can go to its slots.
+  // Its sandbox checked out (setup.sh's last step): task runs can go to its slots. Each of them,
+  // or it isn't done.
   const labelled = labelSandbox(repo, name);
+  if (labelled < slots)
+    throw new ShipError(
+      `The setup passed, but only ${labelled} of ${slots} slot(s) have the sandbox label on GitHub, so the rest take no task runs. Run the same command again.`,
+    );
   // In a container, its slots start with the container's own run, not now.
   if (opts.container)
     return ok(
@@ -616,13 +646,18 @@ export function boxAdd(
         ],
       },
     );
-  // A slot's runner takes a few seconds to reach GitHub after its service starts: wait for them.
+  // A slot's runner takes a few seconds to reach GitHub after its service starts: wait for them, a
+  // minute at most. With none online, the box takes no task: said plainly, never "done".
   let online = 0;
-  for (let tries = 0; tries < 6; tries++) {
+  for (let tries = 0; tries < 12; tries++) {
     online = slotsOf(runners(repo), name).filter((x) => x.status === "online").length;
     if (online >= slots) break;
     run("sleep", ["5"]);
   }
+  if (!online)
+    throw new ShipError(
+      `${m.label} is set up as the box "${name}", but none of its ${slots} slot(s) is online on GitHub after a minute, so it takes no task. On it, \`sudo systemctl status ${unitName(name)}\` says why; then run the same command again.`,
+    );
   // Its console (Cockpit, through Tailscale), for `box list`. Not signed in to
   // Tailscale yet: the next `box add --manage` records it.
   let web: string | undefined;
@@ -640,7 +675,9 @@ export function boxAdd(
   }
   return ok(
     "box add",
-    `${m.label} is the box "${name}", ${online} of ${slots} slot(s) online, ${labelled} with the sandbox label`,
+    online < slots
+      ? `${m.label} is the box "${name}", with the sandbox label on its ${slots} slot(s), but only ${online} online so far: the rest may take a minute more (/ping in your chat shows them)`
+      : `${m.label} is the box "${name}", ${online} of ${slots} slot(s) online, ${labelled} with the sandbox label`,
     {
       data: web ? `  Console (Cockpit): ${web}` : undefined,
       checks: readiness(repo),
@@ -893,7 +930,12 @@ export function boxList(): Result {
   });
 }
 
-export function boxRemove(name: string, yes: boolean): Result {
+/**
+ * A box gone: its slots off GitHub, and its services stopped when it's this machine's. With
+ * `purge`, on the machine itself, Shipify off it too (box/remove.sh): what setup made for the box,
+ * and nothing of the machine's own.
+ */
+export function boxRemove(name: string, yes: boolean, purge = false): Result {
   const repo = platformRepo();
   const all = runners(repo);
   const found = slotsOf(all, name);
@@ -901,6 +943,11 @@ export function boxRemove(name: string, yes: boolean): Result {
   const here = slotsHere().filter((n) => slotOf(name, n) > 0);
   if (!found.length && !here.length)
     throw new ShipError(`No box called ${name}. See: pnpm ship box list`, "blocked");
+  if (purge && !here.length)
+    throw new ShipError(
+      `--purge takes Shipify off this machine, and "${name}" isn't its box: run it on that machine (here.sh --remove --purge).`,
+      "blocked",
+    );
   const units = (found.length ? found.map((r) => r.name) : [name]).map((n) => `shipify-box-${n}`);
   const planned = [
     ...found.map((r) => `remove the runner "${r.name}" from ${repo}`),
@@ -909,23 +956,42 @@ export function boxRemove(name: string, yes: boolean): Result {
           `stop its services here, so they stop restarting: sudo systemctl disable --now (asks for your password)`,
         ]
       : []),
+    ...(purge
+      ? [
+          "then take Shipify off this machine (box/remove.sh, with sudo): the slots' services, the users shipify and shipify-agent-<k> with their ID ranges and folders (the containers' images too), the sudo rule, the update rule for the slots, the agents' network rules and /opt/shipify",
+          "what stays, the machine's own: security updates, SSH by key only, zram, never sleeping, Tailscale, Cockpit and the firewall, and the tools it installed (docs/box-setup.md has how to take those off)",
+        ]
+      : []),
   ];
   // A Pi or VPS keeps its services until they're stopped on the machine itself.
   const onMachine = here.length
-    ? []
+    ? purge
+      ? []
+      : [
+          `to take Shipify off this machine too (its users, folders and rules): pnpm ship box remove ${name} --purge --yes`,
+        ]
     : [
         `on the machine, so its services stop restarting: sudo systemctl disable --now ${units.join(" ")}`,
+        `to take Shipify off it fully (its users, folders and rules), on it: here.sh --remove --purge (docs/box-setup.md, "Taking Shipify off a machine")`,
       ];
   if (!yes)
     return {
       command: "box remove",
       status: "requires-approval",
-      summary: `would remove the box "${name}"`,
+      summary: `would remove the box "${name}"${purge ? ", and take Shipify off this machine" : ""}`,
       plannedActions: planned,
-      nextSteps: [`pnpm ship box remove ${name} --yes`, ...onMachine],
+      nextSteps: [`pnpm ship box remove ${name}${purge ? " --purge" : ""} --yes`, ...onMachine],
     };
   if (here.length) services(["disable", "--now"], here);
   for (const r of found) gh(["api", "-X", "DELETE", `repos/${repo}/actions/runners/${r.id}`]);
   setConsole(repo, name, undefined);
-  return ok("box remove", `removed "${name}"`, { nextSteps: onMachine });
+  if (purge && rootScript(thisPc(), "remove.sh", []).code !== 0)
+    throw new ShipError(
+      `"${name}" is off GitHub, but taking Shipify off this machine stopped (see above). It's safe to run again: pnpm ship box remove ${name} --purge --yes, or here.sh --remove --purge.`,
+    );
+  return ok(
+    "box remove",
+    purge ? `removed "${name}", and Shipify is off this machine` : `removed "${name}"`,
+    { nextSteps: onMachine },
+  );
 }

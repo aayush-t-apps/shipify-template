@@ -198,7 +198,9 @@ async function sandbox(): Promise<Check[]> {
         : `no sandbox line in its clean-up (${run.html_url})`,
       ...(line?.includes("✓")
         ? {}
-        : { fix: `pnpm ship box add <${box}'s SSH address> --manage --yes (box setup 5)` }),
+        : {
+            fix: `on ${box}, its here.sh command again; or from a PC, pnpm ship box add <${box}'s SSH address> --manage --yes (box setup 5)`,
+          }),
     });
   }
   return checks;

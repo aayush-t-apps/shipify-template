@@ -26,7 +26,7 @@ try {
   Object.assign(S, JSON.parse(localStorage.getItem(KEY) || "{}"));
 } catch {}
 /** @type {Record<string, any>} */
-const R = { pend: {}, n: 0, tk: 0, busy: 0, turned: {}, drafts: {}, gone: {} };
+const R = { pend: {}, n: 0, tk: 0, busy: 0, turned: {}, drafts: {}, gone: {}, old: {}, miss: 0 };
 const keep = () => {
   S.seen = S.seen.slice(-30);
   for (const n in S.threads) if (!S.seen.includes(+n)) delete S.threads[n];
@@ -85,16 +85,33 @@ const signin = () => {
   bar("in", "Your sign-in ended: tap to sign in again", reload);
 };
 // The bar at the top moves only while you wait: a poll for what's on screen already is quiet.
+// GitHub not read just now: a poll says nothing and tries again, slower each time (tick); after a
+// minute, or on the edge's last good copy (`stale`), a calm line says so. A read you waited for
+// that failed says why, and the next good read takes it away.
+const DOWN = "Can't reach GitHub · retrying";
 async function get(p, b, quiet = false) {
   if (!quiet && !R.busy++) document.body.classList.add("busy");
   try {
     const j = await api(p, b);
-    bar("off");
+    if (j) R.old[p] = j.stale;
+    if (R.old[p]) R.down ||= Date.now();
+    else R.down = 0;
+    bar("off", R.old[p] && DOWN);
+    if (!b && R.readErr) {
+      R.readErr = false;
+      bar("err");
+    }
     return j;
   } catch (e) {
     if (e.signin) signin();
-    else if (e.off) bar("off", OFF);
-    else bar("err", why(e), () => bar("err"));
+    else if (quiet) {
+      R.down ||= Date.now();
+      if (Date.now() - R.down > 6e4) bar("off", e.off ? OFF : DOWN);
+    } else if (e.off) bar("off", OFF);
+    else {
+      bar("err", why(e), () => bar("err"));
+      R.readErr = !b;
+    }
     throw e;
   } finally {
     if (!quiet && !--R.busy) document.body.classList.remove("busy");
@@ -673,8 +690,7 @@ function quickWords(T, r) {
     .map((b) =>
       btn(b.label, () => tap(b.words), answers.includes(b.words) ? ".btn.answer" : ".btn"),
     );
-  const gh = (r.github || []).map((w) => ext(T.url, `Say ${w} on GitHub`, ".btn"));
-  return (here.length || gh.length) && h("p.links.quick", here, gh);
+  return here.length && h("p.links.quick", here);
 }
 
 // A new chat's starters, each filling the box you write in.
@@ -853,9 +869,19 @@ async function sendIt(p) {
   } catch (e) {
     Object.assign(p, { st: "fail", err: why(e) });
     if (e.off) bar("off", OFF);
+    // Not sent for want of a line (offline, or GitHub not reached: nothing was saved): sent again
+    // by itself, with the same id (so never twice), at most three times, and when you're online
+    // again. Retry stays.
+    const late = e.off || e.status === 503;
+    if (late) p.again = (p.again || 0) + 1;
+    if (late && p.again <= 3) setTimeout(() => p.st === "fail" && sendIt(p), 5e3 * 2 ** p.again);
   }
   redraw();
 }
+const again = () => {
+  for (const L of Object.values(R.pend))
+    for (const p of L) if (p.st === "fail" && p.again <= 3) sendIt(p);
+};
 
 async function page(title, p, draw, top = no) {
   const body = h("div.stack", R[p] ? draw(R[p]) : ph());
@@ -1319,6 +1345,9 @@ async function tick() {
     ]);
     const run = S.threads[R.n] && runOf(S.threads[R.n].task);
     next = run ? 5e3 : wait ? 1e4 : 3e4;
+    // GitHub not read: 5s, 10s, 20s, 40s, then each minute.
+    if (R.down) next = Math.min(6e4, 5e3 * 2 ** R.miss++);
+    else R.miss = 0;
   } catch (e) {
     oops(e);
   }
@@ -1379,7 +1408,10 @@ $("#view").onclose = () => history.state?.view && history.back();
 addEventListener("popstate", () => $("#view").open && $("#view").close());
 addEventListener("hashchange", route);
 document.onvisibilitychange = wake;
-addEventListener("online", tick);
+addEventListener("online", () => {
+  again();
+  tick();
+});
 addEventListener("offline", () => bar("off", OFF));
 // The menu (agents, models, commands, repos): what's kept draws at once; a newer one is put in
 // where it shows, never by drawing the page again (what you're typing stays).

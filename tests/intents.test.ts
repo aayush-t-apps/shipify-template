@@ -110,28 +110,20 @@ describe("intents.json: what anyone can ask, written once", () => {
     }
   });
 
-  it("/help and the chat's table say each word where it works, as WORDS does", () => {
-    const anywhere = [
-      ...Object.entries(WORDS)
-        .filter(([, w]) => w.where === "anywhere")
-        .map(([k]) => k),
-      "use <model>",
-    ].sort();
-    const github = Object.entries(WORDS)
-      .filter(([, w]) => w.where === "github")
-      .map(([k]) => k)
-      .sort();
+  it("/help and the chat's table say every word, the same everywhere, as WORDS does", () => {
+    const anywhere = [...Object.keys(WORDS), "use <model>"].sort();
     // Made from the one list, never typed twice.
-    const line = helpGuide().find((l) => l.startsWith("Words on a task:")) ?? "";
-    const [, here = "", there = ""] =
-      /^Words on a task: (.*); on GitHub only: (.*)\.$/.exec(line) ?? [];
+    const line = helpGuide().find((l) => l.startsWith("Words on a task")) ?? "";
+    const [, here = ""] =
+      /^Words on a task, the same from GitHub or a chat: (.*)\. Only on GitHub: a PR's merge, and taking an app down, bringing it back or rolling it back\.$/.exec(
+        line,
+      ) ?? [];
     const words = (l: string) =>
       l
         .split(",")
         .map((w) => w.trim())
         .sort();
     expect(words(here)).toEqual(anywhere);
-    expect(words(there)).toEqual(github);
     const chat = readFileSync(join(ROOT, "docs/channels.md"), "utf8");
     const row = chat.split("\n").find((l) => l.includes("a reply that's a fixed word")) ?? "";
     expect(
@@ -191,7 +183,7 @@ describe("intents.json: what anyone can ask, written once", () => {
       expect(helpText()).toContain(own);
   });
 
-  it("chat commands are unique, and operations have none (they start only from GitHub)", () => {
+  it("chat commands are unique, and operations have none (a task's title says one)", () => {
     const chats = Object.values(intents.intents).flatMap((i) => (i.chat ? [i.chat] : []));
     expect(new Set(chats).size).toBe(chats.length);
     expect(intents.intents.operate?.chat).toBeUndefined();

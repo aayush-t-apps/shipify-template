@@ -2,9 +2,10 @@
 // that shows bodies asks for `full+json`, so a body comes with its raw text (hidden lines and all)
 // and GitHub's own rendering (`body_html`); a listing asks for the raw text alone, a lighter answer.
 // Each carries the ETag of its last answer: unchanged is a 304, which costs none of the App's 5,000
-// calls an hour. The answers are kept per isolate.
+// calls an hour. The answers are kept per isolate. A read GitHub didn't answer (no answer, a 5xx) is
+// tried once more: a moment's hiccup isn't shown to you.
 import type { Deps, Env } from "../env.ts";
-import { GitHubError, installationToken } from "../github.ts";
+import { BudgetSpent, GitHubError, installationToken } from "../github.ts";
 
 const API = "https://api.github.com";
 /** Answers kept for their ETags, at most this many (the oldest go first). */
@@ -21,8 +22,17 @@ export async function read<T>(
   env: Env,
   deps: Pick<Deps, "fetch" | "now">,
   path: string,
-  { html = true } = {},
-) {
+  opts: { html?: boolean } = {},
+): Promise<T> {
+  try {
+    return await once<T>(env, deps, path, opts);
+  } catch (e) {
+    if (!(e instanceof GitHubError) || (e.status !== 0 && e.status < 500)) throw e;
+    return once<T>(env, deps, path, opts);
+  }
+}
+
+async function once<T>(env: Env, deps: Pick<Deps, "fetch" | "now">, path: string, { html = true }) {
   const token = await installationToken(env, deps);
   const key = `${env.GITHUB_REPO}:${html ? "" : "raw:"}${path}`;
   const last = seen.get(key);
@@ -38,7 +48,8 @@ export async function read<T>(
       },
       signal: AbortSignal.timeout(5_000),
     });
-  } catch {
+  } catch (e) {
+    if (e instanceof BudgetSpent) throw e;
     throw new GitHubError(0, `GET ${path}`);
   }
   if (res.status === 304 && last) return last.data as T;

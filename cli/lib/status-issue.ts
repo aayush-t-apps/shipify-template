@@ -11,9 +11,9 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { Problem } from "../contracts/problems.ts";
-import { MOST_REPOS, REPO_NAME } from "../contracts/watch.ts";
+import { holdsRecord, MOST_REPOS, pickStatusIssue, REPO_NAME } from "../contracts/watch.ts";
 import { githubRecord, postComment } from "./github.ts";
-import type { TaskRecord } from "./plugins/record.ts";
+import type { RecordIssue, TaskRecord } from "./plugins/record.ts";
 import { formatWhen } from "./repeat.ts";
 
 export const STATUS_LABEL = {
@@ -517,16 +517,34 @@ export function renderStatusIssue(s: StatusIssueState, timeZone: string): string
 
 // ---------------------------------------------------------------- on GitHub
 
-/** The status issue on the record (plugins/record.ts), open or closed: found by its label. */
-const findStatusIssue = (record: TaskRecord) =>
-  record
-    .issues({ labels: [STATUS_LABEL.name], state: "all" })
-    .find((i) => !i.pull_request && (i.body ?? "").startsWith(MARK));
+/**
+ * The status issue on the record (plugins/record.ts), by the door's own rule (pickStatusIssue): the
+ * open ones, and all of them only when no open one holds the record. With it, where its record is
+ * (its own, or the newest closed one's when it has none yet: one you or the door opened, which
+ * takes the record over), and the other open ones.
+ */
+function findStatusIssue(record: TaskRecord): {
+  found?: RecordIssue;
+  from?: RecordIssue;
+  others: RecordIssue[];
+} {
+  const labels = [STATUS_LABEL.name];
+  const open = record.issues({ labels, state: "open" });
+  const pick = pickStatusIssue(open);
+  const all = holdsRecord(pick) ? [] : record.issues({ labels, state: "all" });
+  const found = holdsRecord(pick) ? pick : (pickStatusIssue(all) ?? pick);
+  const from = holdsRecord(found) ? found : pickStatusIssue(all.filter(holdsRecord));
+  return {
+    found,
+    from,
+    others: open.filter((i) => !i.pull_request && i.number !== found?.number),
+  };
+}
 
 /** What the status issue holds now, without changing it. */
 export function readStatusIssue(opts: { timeoutMs?: number } = {}): StatusIssueState {
   return parseStatusIssue(
-    findStatusIssue(githubRecord({ timeoutMs: opts.timeoutMs }))?.body ?? null,
+    findStatusIssue(githubRecord({ timeoutMs: opts.timeoutMs })).from?.body ?? null,
   );
 }
 
@@ -534,16 +552,40 @@ export function readStatusIssue(opts: { timeoutMs?: number } = {}): StatusIssueS
  * Change the status issue: find it (open or closed) or open it, apply `change` to what it holds
  * now, and write it back. `change` may return a comment to post. Read just before writing, so two
  * writers (a due run and a clean-up) rarely meet; the later one wins if they do, and the next due
- * run writes the whole schedule again.
+ * run writes the whole schedule again. A new one (yours, or the door's) takes the record over from
+ * the newest closed one. Any other open status issue (a list that left this one out for a while)
+ * is closed, unpinned and said under Recent.
  */
 export function updateStatusIssue(
   change: (s: StatusIssueState) => string | undefined,
-  opts: { timeZone: string; timeoutMs?: number },
+  opts: { timeZone: string; timeoutMs?: number; record?: TaskRecord },
 ): { issue?: number; comment?: number } {
-  const record = githubRecord({ timeoutMs: opts.timeoutMs });
-  const found = findStatusIssue(record);
-  const state = parseStatusIssue(found?.body ?? null);
+  const record = opts.record ?? githubRecord({ timeoutMs: opts.timeoutMs });
+  let looked = findStatusIssue(record);
+  // A list can leave an issue out for a while, with no error: one empty answer isn't enough.
+  if (!looked.found) looked = findStatusIssue(record);
+  const { found, from, others } = looked;
+  const state = parseStatusIssue(from?.body ?? null);
+  if (found && from && from.number !== found.number)
+    addEvent(state, `The record moved here from #${from.number}`);
   const alert = change(state) || undefined;
+  const closed = others.filter((i) => {
+    try {
+      record.updateIssue(i.number, { state: "closed", state_reason: "not_planned" });
+    } catch {
+      return false;
+    }
+    record.unpin(i);
+    return true;
+  });
+  if (found && closed.length)
+    addEvent(
+      state,
+      `Closed ${closed.length === 1 ? "another status issue" : `${closed.length} other status issues`} (${closed
+        .slice(0, 20)
+        .map((i) => `#${i.number}`)
+        .join(", ")}${closed.length > 20 ? ", …" : ""}): the record is #${found.number}`,
+    );
   const body = renderStatusIssue(state, opts.timeZone);
   let number = found?.number;
   if (found) record.updateIssue(found.number, { body });

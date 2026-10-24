@@ -28,7 +28,7 @@ import { readKeyDates } from "../lib/key-dates.ts";
 import { ok, type Result } from "../lib/output.ts";
 import { readPeople } from "../lib/people.ts";
 import type { RunRow } from "../lib/runs.ts";
-import { cleanStaleRuns } from "../lib/sandbox.ts";
+import { cleanStaleRuns, pruneContainers } from "../lib/sandbox.ts";
 import {
   addEvent,
   applyFindings,
@@ -250,11 +250,13 @@ export async function watchCleanup(boxArg?: string): Promise<Result> {
   const at = new Date().toISOString();
   const t = cleanUpTasks();
   const runs = cleanStaleRuns();
-  // On a box, its shared tools kept to the agents' pinned versions and two Node versions, only
-  // while no other slot runs (a run in flight keeps what it uses).
+  // On a box, its shared tools kept to the agents' pinned versions and two Node versions, and each
+  // slot's containers' images pruned (ADR 0064), only while no other slot runs (a run in flight
+  // keeps what it uses).
   const onBox = Boolean(process.env.RUNNER_TOOL_CACHE);
   const idle = onBox && !otherSlotBusy();
   const tidied = idle ? tryOr(() => tidyTools(loadExecutors()), [] as string[]) : [];
+  const images = idle ? pruneContainers() : { pruned: 0, failed: [] as string[] };
   // A notebook page nearly full is said.
   const full = tryOr(() => nearlyFull(readNotebook()), [] as string[]);
   const door = await doorAnswers();
@@ -265,7 +267,7 @@ export async function watchCleanup(boxArg?: string): Promise<Result> {
     detail: c.detail,
     fix: c.fix,
   }));
-  const agents = `${runs.removed ? `, ${runs.removed} old agent run folder(s) removed` : ""}${runs.failed.length ? `; couldn't clean ${runs.failed.join(", ")}` : ""}${tidied.length ? `, old tools removed (${tidied.join(", ")})` : ""}${onBox && !idle ? "; tools left as they are (another slot is busy)" : ""}`;
+  const agents = `${runs.removed ? `, ${runs.removed} old agent run folder(s) removed` : ""}${runs.failed.length ? `; couldn't clean ${runs.failed.join(", ")}` : ""}${tidied.length ? `, old tools removed (${tidied.join(", ")})` : ""}${images.pruned ? `, containers' images removed (${images.pruned} slot(s))` : ""}${images.failed.length ? `; couldn't prune containers of ${images.failed.join(", ")}` : ""}${onBox && !idle ? "; tools and images left as they are (another slot is busy)" : ""}`;
   const summary = `${t.folders} task folder(s) removed${agents}${full.length ? `; notebook pages nearly full, to split: ${full.join(", ")}` : ""}${door ? `; ${door}` : ""}`;
   const posted = updateStatusIssue(
     (s) => {

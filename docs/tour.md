@@ -185,7 +185,7 @@ You write `new: a tip calculator`.
    starts the task's `github` job.
 3. **Prepare,** on GitHub's machines: `ship run github` makes the repo, its settings, variables and
    secrets (`github-job.ts`, `cli/commands/task/plans.ts`). A missing key stops it and is named;
-   `publish` (GitHub only) starts it again. Then it dispatches the build.
+   `publish` (or `go`, from GitHub or a chat) starts it again. Then it dispatches the build.
 4. **The build:** a work run in a clone of the new, empty repo. The agent follows
    `playbooks/build-app.md` from the stack's files, runs `make verify`, and asks for a PR of kind
    `publish`. Apply makes the first push to the new repo's `main`, with a token for that one repo.

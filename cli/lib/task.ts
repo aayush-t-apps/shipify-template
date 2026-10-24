@@ -49,6 +49,12 @@ export const LANES = ["tweak", "feature", "big"] as const;
 
 export const OPS = ["release", "down", "up", "rollback"] as const;
 export type Op = (typeof OPS)[number];
+/**
+ * The operations that change the live app at once, with no merge: they start only on GitHub, where
+ * your GitHub sign-in says it's you (ADR 0049). A release opens a PR that only your merge deploys,
+ * so it starts from any chat.
+ */
+export const AT_ONCE: readonly Op[] = ["down", "up", "rollback"];
 
 export interface TaskTitle {
   kind: "app" | "new" | "question" | "remember" | "forget" | "op" | "none";
@@ -153,6 +159,9 @@ export function parseTitle(title: string): TaskTitle {
     const bump = release[1]?.toLowerCase() as TaskTitle["bump"];
     return { kind: "op", project: name, ask, op: "release", ...(bump ? { bump } : {}) };
   }
+  // The Operate form's own words, typed anywhere (one flow, ADR 0049): `spotter: take it down`.
+  const action = ACTIONS[ask.toLowerCase().replace(/[.!]+$/, "")];
+  if (action) return { kind: "op", project: name, ask, op: action };
   return { kind: "app", project: name, ask };
 }
 
@@ -336,6 +345,9 @@ export const TaskState = z.object({
   failed: z.object({ at: z.string(), problem: Problem }).optional(),
   /** The merged plan whose repo and keys were made, so a replay doesn't make them again. */
   built: z.string().optional(),
+  /** The merged plan whose repo and keys were tried: a run starts a merged plan's build by itself
+   * once; after that (it stopped and said why), `publish` or `go` does. */
+  prepared: z.string().optional(),
   run: z.string().optional(),
   updated: z.string().optional(),
   /** An answered task closes by itself at this time, unless the owner says more first. */
@@ -359,6 +371,9 @@ export const TaskState = z.object({
     .optional(),
   /** The newest reply, so the status comment links it. */
   reply: z.number().optional(),
+  /** The files its replies shared, by name: each one's hash and link, so one listed again unchanged
+   * is linked, not uploaded again. The newest SHARED_KEPT names. */
+  shared: z.record(z.string(), z.object({ hash: z.string(), url: z.string() })).optional(),
   /** The newest run in full, the last runs as rows, and how many there have been (ADR 0017). */
   last: RunDetails.optional(),
   runs: z.array(RunRow).optional(),

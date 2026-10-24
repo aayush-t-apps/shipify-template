@@ -28,8 +28,8 @@ does. The template doesn't change.
 When you want others to have what's piled up, a week's changes or six months':
 
 - **On GitHub:** a task titled `shipify: release` (`shipify: release minor` or
-  `shipify: release major` for a bigger step). Like every operation it starts on GitHub only; from
-  a chat, the reply links there.
+  `shipify: release major` for a bigger step), on GitHub or as a new task from any chat, like every
+  operation.
 - **Or from this PC:** `pnpm ship template` shows the plan, `pnpm ship template --yes` does it
   (`--bump minor` or `--bump major` for a bigger step; patch by default).
 
@@ -47,8 +47,11 @@ It works from main as GitHub has it, in folders of its own, and:
      found stops it, named by file, and nothing is published. It needs the scan: a machine where
      it can't run publishes nothing.
 3. **Checks them** as the template's CI will: `pnpm install`, then `pnpm verify`, on exactly the
-   files to publish. If that fails, nothing is published or recorded: fix it in a PR, then release
-   again.
+   files to publish, without your plans, recipes and checks. If that fails, nothing is published
+   or recorded, and the reply names each failing test and its first error (the run's log has the
+   rest): fix it in a PR, then release again. `continue` would only fail the same way. So a test
+   never reads your own files: it makes what it needs in a temporary folder
+   (`skills/test-driven-development`).
 4. **Records the version** on your main: `package.json` (its version, and the template's name:
    below) and `CHANGELOG.md`, one commit, "Shipify 0.x.y" (Unreleased becomes that version). Your
    CI tags it.
