@@ -27,6 +27,9 @@
 # containers start (and what setup 8 and 9 left there is mended); each slot's container store is
 # checked; no agent reaches this machine's SSH or Cockpit on 127.0.0.1. When containers don't work,
 # the setup ends with exit 3 and says why: the box works and gets its label, and box add says so.
+# Setup 11: each slot's folder is 2711, so a container never takes its setgid away; the agents'
+# network rules leave the machine's own packets alone (a ping's reply, IPv6's neighbour discovery),
+# and let the agents reach no IPv6 address but ::1 (a home network's IPv6 addresses are public).
 # A check at the end proves it; `ship box add` then labels the slots `sandbox`, for run jobs.
 # Running it again updates Node to the newest 22.x, and adds or removes slots to match
 # RUNNER_SLOTS.
@@ -46,7 +49,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=10
+SETUP_VERSION=11
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -314,8 +317,11 @@ chmod 0755 "$TOOL_DIR"
 
 # The agents' own users (setup 5, ADR 0031): slot k's agent runs as shipify-agent-<k>, a system
 # user with no password and no login shell. Its runs go in /srv/shipify-agent-<k>, its own, with
-# group shipify and setgid (2710): the runner can pass through to a run's out/ folder, which it
-# reads, and no other user can enter. No cron or at jobs: nothing an agent starts outlives its run.
+# group shipify and setgid (2711): the runner can pass through to a run's out/ folder, which it
+# reads; other users can pass through but never list it, and each folder in it is closed to them.
+# Not 2710 (setup 11): Podman gives the folders above its own the x bits they lack, as the agent,
+# who isn't in the group, so Linux took the setgid away, and the slot's next out/ wasn't the
+# runner's. No cron or at jobs: nothing an agent starts outlives its run.
 # A new one gets a range of IDs of its own from shadow (setup 8): its containers' users.
 AGENT_ROOT=/srv
 agent_user() { echo "shipify-agent-$1"; }
@@ -344,9 +350,9 @@ for k in $(seq 1 "$RUNNER_SLOTS"); do
     useradd --system --user-group --no-create-home --add-subids-for-system --home-dir "$AGENT_ROOT/$u" --shell /usr/sbin/nologin "$u"
   # Never in the runner's group: out/ folders are the runner's to read, through that group.
   gpasswd -d "$u" shipify >/dev/null 2>&1 || true
-  install -d -o "$u" -g shipify -m 2710 "$AGENT_ROOT/$u"
+  install -d -o "$u" -g shipify -m 2711 "$AGENT_ROOT/$u"
   chown "$u:shipify" "$AGENT_ROOT/$u"
-  chmod 2710 "$AGENT_ROOT/$u"
+  chmod 2711 "$AGENT_ROOT/$u"
   agent_dirs "$u" "$AGENT_ROOT/$u"
   for deny in /etc/cron.deny /etc/at.deny; do
     grep -qx "$u" "$deny" 2>/dev/null || echo "$u" >> "$deny"
@@ -748,7 +754,13 @@ firewall() {
 # before the network is up. DNS stays open, as a resolver on your network may answer it. Your own
 # rules, ufw's and Tailscale's stay as they are. On the machine itself (setup 10), its SSH (22) and
 # Cockpit (9090) are closed to them: each asks for your password, which an agent could keep
-# guessing. What a container publishes on 127.0.0.1 stays theirs to reach.
+# guessing. What a container publishes on 127.0.0.1 stays theirs to reach. IPv6 (setup 11): no
+# address but ::1, since a home network's are public (the ISP's prefix, which changes). Refused at
+# once (setup 11): a TCP connection gets a reset, so a program says "refused" and goes on to IPv4
+# with no wait; with only an ICMP error, a connection waited for its first retry. Only what an
+# agent's own sockets send goes through its chain: the machine's own packets (a ping's reply,
+# IPv6's neighbour discovery, that ICMP error) have no user, a rule that names users never matches
+# them, and they fell through to a reject.
 AGENTS_NET=/etc/shipify/agents-net.nft
 AGENTS_NET_UNIT=shipify-agents-net.service
 # agent_ids: each agent's user ID and the range of IDs its containers use, as nft reads them.
@@ -771,12 +783,18 @@ delete table inet shipify_agents
 table inet shipify_agents {
   chain out {
     type filter hook output priority filter; policy accept;
-    meta skuid != { $1 } accept
+    meta skuid { $1 } jump agents
+  }
+  chain agents {
     meta l4proto { tcp, udp } th dport 53 accept
-    ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } reject with icmpx admin-prohibited
-    ip6 daddr { fc00::/7, fe80::/10 } reject with icmpx admin-prohibited
-    ip daddr 127.0.0.0/8 tcp dport { 22, 9090 } reject with tcp reset
-    ip6 daddr ::1 tcp dport { 22, 9090 } reject with tcp reset
+    ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } goto refuse
+    ip daddr 127.0.0.0/8 tcp dport { 22, 9090 } goto refuse
+    ip6 daddr ::1 tcp dport { 22, 9090 } goto refuse
+    ip6 daddr != ::1 goto refuse
+  }
+  chain refuse {
+    meta l4proto tcp reject with tcp reset
+    reject with icmpx admin-prohibited
   }
 }
 NFT
@@ -798,7 +816,7 @@ else
   if put_file "$WORK/$AGENTS_NET_UNIT" "/etc/systemd/system/$AGENTS_NET_UNIT"; then systemctl daemon-reload; fi
   systemctl enable -q "$AGENTS_NET_UNIT"
   if systemctl restart "$AGENTS_NET_UNIT"; then
-    echo "  on: no agent, nor its containers, reaches your network, the tailnet, a metadata address, or this machine's SSH and Cockpit"
+    echo "  on: no agent, nor its containers, reaches your network, the tailnet, a metadata address, an IPv6 address, or this machine's SSH and Cockpit"
   else
     echo "  ✗ the agents' network rules didn't load (above: sudo systemctl status $AGENTS_NET_UNIT)"
   fi
@@ -973,14 +991,16 @@ if [ "$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)" -lt 1 ]; 
   echo "  ✗ an agent's commands can read its memory: put kernel.yama.ptrace_scope = 1 in /etc/sysctl.d/10-ptrace.conf, then sudo sysctl --system"
   walls=""
 fi
-# The agents' network (setup 9): its rules loaded, and a listener on this machine's own private
-# address, which root reaches and no agent does (as any private address is).
+# The agents' network (setup 9): its rules loaded, and a listener on this machine's own addresses,
+# its private IPv4 one and (setup 11) an IPv6 one, which root reaches and no agent does.
 # private_ip: this machine's first private IPv4 address, if it has one (a VPS may have none).
 private_ip() {
   ip -4 -o addr show scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1] }' |
     grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.)' |
     head -n 1 || true
 }
+# own_ip6: this machine's first IPv6 address but ::1 and link-local ones, if it has one.
+own_ip6() { ip -6 -o addr show scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1] }' | head -n 1 || true; }
 # reaches <user> <address> <port>: a TCP connection there within 5 seconds, as the user ("": root).
 reaches() {
   local as=()
@@ -992,23 +1012,26 @@ if [ -z "$CONTAINER" ]; then
   if ! nft list table inet shipify_agents >/dev/null 2>&1; then
     echo "  ✗ the agents can reach your network and the tailnet: their rules aren't loaded (sudo systemctl status $AGENTS_NET_UNIT)"
     walls=""
-  elif ip=$(private_ip) && [ -n "$ip" ]; then
-    node -e 'const s = require("net").createServer((c) => c.end()); s.listen(0, process.argv[1], () => console.log(s.address().port))' \
-      "$ip" >"$WORK/net.port" 2>/dev/null &
+  elif ips=$(printf '%s\n' "$(private_ip)" "$(own_ip6)" | grep .); then
+    # On all of the machine's addresses, IPv4 and IPv6, as a program listens by default.
+    node -e 'const s = require("net").createServer((c) => c.end()); s.listen(0, () => console.log(s.address().port))' \
+      >"$WORK/net.port" 2>/dev/null &
     probe=$!
     for _ in $(seq 1 30); do [ ! -s "$WORK/net.port" ] || break; sleep 0.2; done
     port=$(cat "$WORK/net.port" 2>/dev/null || true)
-    if [ -n "$port" ] && reaches "" "$ip" "$port"; then
-      for k in $(seq 1 "$RUNNER_SLOTS"); do
-        u=$(agent_user "$k")
-        if reaches "$u" "$ip" "$port"; then
-          echo "  ✗ $u can reach $ip, a private network's address"
-          walls=""
-        fi
-      done
-    else
-      echo "  the agents' network: its rules are loaded; not tried (nothing could listen on $ip)"
-    fi
+    for ip in $ips; do
+      if [ -n "$port" ] && reaches "" "$ip" "$port"; then
+        for k in $(seq 1 "$RUNNER_SLOTS"); do
+          u=$(agent_user "$k")
+          if reaches "$u" "$ip" "$port"; then
+            echo "  ✗ $u can reach $ip, this machine's own address on your network"
+            walls=""
+          fi
+        done
+      else
+        echo "  the agents' network: its rules are loaded; not tried on $ip (nothing could listen there)"
+      fi
+    done
     kill "$probe" 2>/dev/null || true
     wait "$probe" 2>/dev/null || true
   fi

@@ -19,3 +19,11 @@
   and checks the rest: the test failed there, twice, and nothing was published.
 - **Done well:** the test writes its own plan in a temporary folder and passes that folder to the
   code, so it passes with or without the owner's files.
+
+### 2. The suite ran twice on a small box
+- **Ask:** a fix on shipify, in a task on homepi (a Pi 4).
+- **Without it:** the agent ran the full `make verify` (17.5 minutes), then the box ran the same
+  check before the PR (16 minutes): half an hour of checks for one PR, and the second found
+  nothing new.
+- **Done well:** the agent runs the test files its change touches, and the quick checks, then
+  leaves `make verify` to the box, which runs it right after and gives a round to fix a failure.

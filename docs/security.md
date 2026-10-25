@@ -129,13 +129,16 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
   - the runner's home, `/home/shipify` (0700): its runners, jobs' folders, logins and caches;
   - anything the runner writes (its services run with `UMask=0077`);
   - a runner process's environment (`/proc/<pid>/environ`), where the job's tokens are;
-  - another slot's runs (each slot's folder is 2710, its own);
+  - another slot's runs (each slot's folder is 2711, its own: another user can pass through it,
+    never list it or enter a folder in it);
   - on WSL, Windows: its drives and its programs, which `/etc/wsl.conf` closes
     ([box-setup.md](box-setup.md#this-pc));
   - any private network (box setup 9): your home network (the router, a camera, a NAS, another
-    box), the tailnet and a cloud's metadata address. A table of its own in nftables rejects what
-    the agent's user, or an ID of its containers' range, sends there; DNS alone stays open. The
-    setup proves it before the slots get their label ([box-setup.md](box-setup.md#the-agents-own-user));
+    box), the tailnet and a cloud's metadata address; and every IPv6 address but `::1` (box setup
+    11), since a home network's IPv6 addresses are public. A table of its own in nftables refuses
+    what the agent's user, or an ID of its containers' range, sends there; DNS alone stays open.
+    The setup proves it, over IPv4 and IPv6, before the slots get their label
+    ([box-setup.md](box-setup.md#the-agents-own-user));
   - the box's own SSH and Cockpit on `127.0.0.1` and `::1` (ports 22 and 9090, box setup 10), where
     an agent could keep guessing your password. Another service of yours on the box's `127.0.0.1`
     is open to it: keep a password on it;

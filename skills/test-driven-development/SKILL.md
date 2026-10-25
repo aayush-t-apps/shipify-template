@@ -197,7 +197,9 @@ green run of the test you wrote is not a green suite. Before you call
 the change done, run the project's test command (`make test` in a
 Shipify project, `make verify` in shipify; elsewhere bare `pytest`,
 `npm test`, `cargo test` — whatever the repo uses) even when your task
-named only one test file. A scope statement in your task bounds the
+named only one test file. In a Shipify task, the box runs that command
+right after you, and gives you a round to fix what fails: leave it to the
+box, and run the files your change touches. A scope statement in your task bounds the
 deliverable, not your verification. Any failure that run shows —
 including one you didn't cause — goes in your report by name; a red
 test you watched scroll past and didn't mention is a report falsified

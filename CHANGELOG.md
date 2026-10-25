@@ -7,6 +7,36 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-10-25
+
+### Fixed
+
+- **Box setup 11: the last container and IPv6 gaps (task #565).**
+  - **A container broke its slot's next run:** Podman gave the slot folder the x bits it lacked,
+    as the agent, so Linux dropped its setgid (2710 became 0711), and the runner couldn't read the
+    next run's `out/`. Slot folders are 2711 now, and a run's start refuses, with the fix, if one
+    lost its setgid.
+  - **Agents reached the home network over IPv6:** its addresses are public, so the rule's
+    private ranges missed them. Agents now reach no IPv6 address but `::1`, and the setup proves
+    it. A refused TCP connection gets a reset, so programs go on to IPv4 at once.
+  - **The rule hit the box's own packets** (a ping's reply, IPv6's neighbour discovery, the ICMP
+    error that ends a refused connection): only the agents' own packets go through it now.
+  Run the box's `here.sh` command again to bring a box to setup 11.
+
+### Added
+
+- **The weekly lessons recipe** (`recipes/examples/weekly-lessons.md`): every Monday, a run
+  gathers the "Lesson for `<skill>`" lines of the last 14 days' replies that no skill holds yet,
+  and asks for one PR that puts them into their skills. You only merge it; with none, it stays
+  quiet. With it on, a reply's lesson line no longer asks you to start a task.
+
+### Changed
+
+- **One full check per work run, not two:** the agent runs the tests its change touches, and
+  leaves `make verify` to the box, which runs it right after, with a round to fix what fails. On a
+  Pi this saves up to about 16 minutes a run.
+- **A new disk (an SSD), or a fresh OS:** six steps in `docs/box-setup.md`, with only a phone.
+
 ## [0.1.15] - 2026-10-25
 
 ### Fixed

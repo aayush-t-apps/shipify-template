@@ -43,8 +43,8 @@ notebook in its prompt. Details: [security.md](security.md).
 - **A question:** reads the web and the tools' look calls, and clones a project's or repo's code
   itself, read-only, when the question needs it; answers. The repos a task names with `look at`
   are cloned for it first, into `read/`.
-- **A change:** works in its clone of the project, runs `make verify`, commits, and asks for a PR
-  in its result. Another of your repos (no `shipify.json`) it changes its own way, as the repo's
+- **A change:** works in its clone of the project, runs the tests its change touches, commits, and
+  asks for a PR in its result; the box runs `make verify` before the PR opens. Another of your repos (no `shipify.json`) it changes its own way, as the repo's
   docs say, and the repo's CI checks the PR (ADR 0044).
 - **A read run** (the read profile, ADR 0044: a task that reads a repo outside your account): it
   reads files in `read/`, your files and Shipify's copy, and nothing else: no command, no web, no

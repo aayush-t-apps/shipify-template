@@ -646,6 +646,9 @@ describe("the sandbox: killing and cleaning", () => {
     const script = command(make as Call);
     expect(script.slice(0, 2)).toEqual(["/bin/sh", "-c"]);
     expect(script[2]).toContain('mkdir -m 2710 -- "$1"');
+    // Refused when the run folder didn't take the slot folder's group (its setgid gone): the
+    // runner couldn't read out/ (box setup 11).
+    expect(script[2]).toContain('[ "$(stat -c %g -- "$1")" = "$(stat -c %g .)" ] ||');
     expect(script[2]).toContain("mkdir -m 700 home config tmp work read in");
     // The slot's kept caches, under the agent's home: downloads once per slot, not per run. A test
     // browser too: Playwright's own place is ~/.cache (ADR 0041), with no folder shared between slots.

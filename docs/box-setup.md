@@ -53,8 +53,9 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
 
 **Run it again** for anything: to update the box's setup, to finish one that stopped, or to fix
 what `ship doctor` names. It carries on from what's done, and mends what an older setup left
-(setup 10: the agents' folders that kept containers from starting). Run it while no task runs:
-`box add` refuses while a slot is busy.
+(setup 10: the agents' folders that kept containers from starting; setup 11: the slot folders a
+container changed, and the agents' IPv6). Run it while no task runs: `box add` refuses while a
+slot is busy. A new disk or a fresh OS: [A new disk (an SSD), or a fresh OS](#a-new-disk-an-ssd-or-a-fresh-os).
 
 **It never says done when something isn't:** the setup ends with a line that says what's left
 ("Done, except containers: …"), and `box add` ends with the same, and the fix.
@@ -298,7 +299,7 @@ its phone app with the same login.
   turn on HTTPS certificates in Tailscale's admin page (DNS). If you miss it, the box works anyway:
   run the same command again.
 - **Reinstalling:** the name looks taken, so add `--replace` (`here.sh` takes it too), and delete
-  the old machine in Tailscale.
+  the old machine in Tailscale ([A new disk, or a fresh OS](#a-new-disk-an-ssd-or-a-fresh-os)).
 
 ### 5. Check it
 
@@ -381,7 +382,7 @@ reaches the runner's keys or changes what the runner runs next.
 
 | | The runner (`shipify`) | Slot k's agent (`shipify-agent-<k>`) |
 |---|---|---|
-| Its folders | `/home/shipify` (0700): the runners, jobs' folders, logins, caches | `/srv/shipify-agent-<k>` (2710): its runs; the runner may only pass through to a run's `out/` |
+| Its folders | `/home/shipify` (0700): the runners, jobs' folders, logins, caches | `/srv/shipify-agent-<k>` (2711): its runs; the runner may only pass through to a run's `out/`, and other users can pass through but never list it or enter a folder in it |
 | What it writes | for itself alone (`UMask=0077`) | in its run's folder |
 | Its keys | the job's tokens, in processes the agent can't read | only what a run hands it on stdin: a read-only token and the tools' look keys, and its login, which goes on a pipe (fd 3), never in its environment |
 | sudo | one rule: run commands as its slots' agents | none |
@@ -411,7 +412,10 @@ reaches the runner's keys or changes what the runner runs next.
 - **Each run, a fresh folder,** `/srv/shipify-agent-<k>/run-<id>/`: its own clone of the latest
   code, home and work, gone before the next run ([security.md](security.md#the-agents-sandbox)).
   Only its `out/` has the runner's group (`shipify`): the rest is the agent's alone, its group too,
-  so a container can chown a folder there (a database's image does at its start).
+  so a container can chown a folder there (a database's image does at its start). That group comes
+  from the slot folder's setgid, so a run's start refuses, and names the fix, when it's gone: the
+  runner couldn't read the run's answer. The slot folder is 2711, not 2710 (setup 11): Podman gives
+  the folders above its own the x bits they lack, as the agent, and Linux then drops the setgid.
 - **Kept per slot:** `/srv/shipify-agent-<k>/cache` and `data` (the agent's `~/.cache` and
   `~/.local/share`), so tools download once per slot, not once per run: pnpm, the
   project's packages, a test browser, its containers' images (`data/containers`). The weekly
@@ -430,13 +434,22 @@ reaches the runner's keys or changes what the runner runs next.
 - **Its network: the internet, never a private network** (setup 9). An agent and its containers
   reach what the work needs (GitHub, npm, the agent's API), and no private address: not your home
   network (the router, a camera, a NAS, homepi), not the tailnet, nor a cloud's metadata address
-  (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `169.254/16`, `fc00::/7`, `fe80::/10`). DNS stays
-  open, since a resolver on your network may answer it. It's a table of its own in nftables
-  (`/etc/shipify/agents-net.nft`), for each agent's user and the IDs of its range, loaded at every
-  start by `shipify-agents-net.service`, before the network is up. Your own rules, ufw's and
-  Tailscale's stay as they are. The setup's check proves it: a listener on the box's own private
-  address, which root reaches and no agent does. The rest of the internet stays open: a list of
-  allowed hosts is for later ([roadmap.md](roadmap.md)).
+  (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `169.254/16`).
+  - **No IPv6 address but `::1`** (setup 11): a home network's IPv6 addresses are public (the
+    ISP's prefix, which changes), so no list of private ones holds. The internet stays open over
+    IPv4.
+  - **Refused at once:** a TCP connection gets a reset, so a program says "refused" and goes on to
+    IPv4 with no wait; anything else gets an ICMP error.
+  - **DNS stays open,** since a resolver on your network may answer it.
+  - **Only the agents' own packets:** it's a table of its own in nftables
+    (`/etc/shipify/agents-net.nft`), for each agent's user and the IDs of its range, loaded at
+    every start by `shipify-agents-net.service`, before the network is up. The machine's own
+    packets have no user (a ping's reply, IPv6's neighbour discovery) and never go through it:
+    setups 9 and 10 rejected those too. Your own rules, ufw's and Tailscale's stay as they are.
+  - **Proved at setup:** a listener on the box's own addresses (its private IPv4 one, and an IPv6
+    one), which root reaches and no agent does.
+  - The rest of the internet stays open: a list of allowed hosts is for later
+    ([roadmap.md](roadmap.md)).
 - **Nor the box's own SSH and Cockpit** (setup 10): ports 22 and 9090 on `127.0.0.1` and `::1`
   are closed to the agents, in the same table. Each asks for your password, which an agent could
   keep guessing. A port a container publishes on `127.0.0.1` stays the agent's to reach. Another
@@ -586,6 +599,7 @@ the box when the run ends.
 - **Update its setup** (when doctor says it's older), while no task runs: on the box, its
   `here.sh` command again; from a PC, `pnpm ship box add <user@host> --manage --yes`.
 - **Start over,** when running it again doesn't fix something: [Starting over](#starting-over).
+- **A new disk (an SSD), or a fresh OS:** [six steps](#a-new-disk-an-ssd-or-a-fresh-os).
 - **Remove it:** [Taking Shipify off a machine](#taking-shipify-off-a-machine), or write a fresh
   OS.
 - **Lost or stolen:** [security.md](security.md#if-something-leaks-or-a-box-is-lost).
@@ -608,8 +622,50 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
   firewall), and anything else of yours on it. The slots' caches and images download again.
 - **It refuses** while a slot runs a task, and on a machine that is another box.
 - **If it stops,** the same command carries on: a purge that stopped is finished first.
-- **Still wrong after it?** Write the OS fresh (Ubuntu Server 24.04 LTS), then the same command
-  without `--fresh`, with `--replace`.
+- **Still wrong after it?** Write the OS fresh: [below](#a-new-disk-an-ssd-or-a-fresh-os).
+
+## A new disk (an SSD), or a fresh OS
+
+A box keeps nothing that isn't on GitHub, so a new disk is a fresh OS and the same one command.
+About 30 minutes, with only your phone; tasks wait in the queue meanwhile. **The new disk starts
+empty:** anything else of yours on the machine (a homelab's files and settings) is yours to copy
+across. Keep the old disk as it is: you can read it later.
+
+1. **Before:** wait until no task runs (`/ping`). In Tailscale's admin page, delete the old
+   machine, so the new one gets the same name and Cockpit keeps its address.
+2. **Write Ubuntu Server 24.04 LTS (64-bit) on the new disk:**
+   - **From a PC:** Raspberry Pi Imager, as in [step 1](#1-write-the-os-on-the-pc), with the same
+     hostname as before.
+   - **On a Pi, with no PC:** plug the new disk into its other blue USB port, and, over SSH:
+     ```sh
+     lsblk -d -o NAME,SIZE,MODEL   # the new disk, by its size and model: for example sdb
+     curl -fLO https://cdimage.ubuntu.com/releases/24.04/release/ubuntu-24.04.5-preinstalled-server-arm64+raspi.img.xz
+     curl -fsSL https://cdimage.ubuntu.com/releases/24.04/release/SHA256SUMS | sha256sum -c --ignore-missing   # says OK
+     xzcat ubuntu-24.04.5-preinstalled-server-arm64+raspi.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+     sudo poweroff
+     ```
+     `sdX` is the new disk's name: `dd` erases the disk you name, so check it twice (never the one
+     the Pi runs from). A newer 24.04.x image works the same.
+3. **Start from it:** the old disk out, the new one in a blue USB 3 port, power on. Plug the old
+   disk in again only once the Pi has started: both carry the same labels, and a Pi can start from
+   either. (A Pi that started from an SD card before: [step 2](#2-start-it).)
+4. **Sign in** from your phone: `ssh-keygen -R <address>` (the machine's key changed), then
+   `ssh <user>@<address>`. With the image from the Pi, the user is `ubuntu` and the password
+   `ubuntu`, and it asks for a new one at once; then `sudo hostnamectl set-hostname <name>`.
+5. **The box again, in one command:**
+   ```sh
+   curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/here.sh | bash -s -- --manage --replace --copy <owner>/shipify --name <name>
+   ```
+   `--replace` takes the old disk's place, with the same name and slots. Approve the code on your
+   phone, say `yes`, give the password once, and sign in to Tailscale at the link it prints.
+6. **Check it:** Tailscale's admin page → the machine → **Disable key expiry**; then `/ping`, and
+   a task that runs a container.
+
+**Which SSD:** a USB 3 SSD, or a SATA SSD in a USB 3 case, on a Pi 4; most work, and a few USB
+cases don't ([tested ones](https://www.jeffgeerling.com/blog/2020/fastest-usb-storage-options-raspberry-pi/)).
+It's for wear more than speed: a USB stick wears out under an OS that writes all day, and a Pi's
+tests wait on its cores, not its disk. A Pi 5 takes an NVMe SSD too, and published benchmarks put
+it at 2 to 3 times a Pi 4's speed.
 
 ## Taking Shipify off a machine
 

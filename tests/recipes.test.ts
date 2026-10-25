@@ -95,6 +95,6 @@ describe("every recipe here keeps its contract", () => {
       readRecipes(ROOT, "recipes/examples")
         .recipes.map((r) => r.name)
         .sort(),
-    ).toEqual(["daily-brief", "site-watch", "weekly-dependencies"]);
+    ).toEqual(["daily-brief", "site-watch", "weekly-dependencies", "weekly-lessons"]);
   });
 });

@@ -528,7 +528,8 @@ as a feature".
    sibling task's PR merged first), the box brings it up to date with `ship refresh` first, as on
    the PC: main merged, both changelogs kept, a clashing change doc renumbered and the version
    bumped again on top of main's. A real conflict is left for the agent, with the files named. It
-   commits and runs `make verify`.
+   commits, and runs the tests its change touches: the full `make verify` is the box's, next, so
+   a small box doesn't run it twice.
 2. **The box checks again,** as the agent's user, with the same checks `ship pr` makes in a
    terminal: first what the PR needs besides tests (`ship pr <clone> --check`: every change doc
    readable, the version bumped with its changelog section when merging ships one; for Shipify, a

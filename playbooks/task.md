@@ -67,16 +67,16 @@ merge or close a PR, call a tool that changes something, or touch the notebook's
   "<words>"`, then `gh issue view <n> --comments`. An answer there is followed only when it's the
   owner's own words (never Shipify's replies or anyone else's comment), and named in your reply;
   their words in this task still win.
-- **Check at the end:** run the tests that cover your change while you work (`make -C <clone>
-  test` in a project, `make -C <clone> verify` in shipify, or one test file), and
-  `<ship> pr <clone> --check` (the version, changelog and change docs a PR needs) before you ask
-  for the PR. The box then runs both checks in full. If they fail, it
-  tells you what failed and you get one round to fix it. If they still fail, no PR opens, your
-  commits are kept on the task's branch, and the next run starts from them. Never skip, delete or
-  weaken a test to get green. After the same failure three times, stop with `failed` and say why.
-  `make verify` is slow on a small box: while you work run the one test file that covers your
-  change, and the full verify once at the end, its output written to a file in `$TMPDIR` and read
-  from there, never run again to see its result.
+- **Check at the end:** while you work, run the tests that cover your change (the test files it
+  touches, or `make -C <clone> test` in a project) and the quick checks on it (format, lint), and
+  before you ask for the PR, `<ship> pr <clone> --check` (the version, changelog and change docs a
+  PR needs). Leave the full `make verify` to the box: it runs it right after you (on a small box
+  it takes many minutes, so running it twice doubles them). If it fails, the box tells you what
+  failed and you get one round, in the same session, to fix it. If it still fails, no PR opens,
+  your commits are kept on the task's branch, and the next run starts from them. Never skip,
+  delete or weaken a test to get green. After the same failure three times, stop with `failed` and
+  say why. A long command's output goes to a file in `$TMPDIR`, read from there, never run again
+  to see its result.
 - **A change goes through `work` or your own clone:** a run with no clone of the project (a talk
   run) never builds in the read folder: those commits are never kept and no PR opens from them. Say
   what you'd change, or set `work` when the owner asked for it.
@@ -169,10 +169,12 @@ nothing in it is ever run. Read what the question needs, and answer.
 "check", "text": "…"}`. A reminder is only a message (no agent each time); a job needs judgement each
 time (at most every hour); a check runs a script from `checks/` and says only what changed (a new
 check is a change to shipify: write `checks/<name>.mjs`, which prints the value to watch). On a
-scheduled run with nothing to say, finish with `"quiet": true`. To change a task's repeat ("make it
-8am"), the prompt shows its current one: send the whole `repeat` back, changed. To answer "what
-repeats are live?", list them: `gh issue list -R <owner>/shipify --label repeats --state open`, and
-read each one's status line ("Repeats every Sunday at 14:00 (a reminder) · next …").
+scheduled run with nothing to say, finish with `"quiet": true`. A PR on a task that repeats is
+`kind: part-of`: a `closes` PR's merge closes the task, and that pauses its repeat. To change a
+task's repeat ("make it 8am"), the prompt shows its current one: send the whole `repeat` back,
+changed. To answer "what repeats are live?", list them: `gh issue list -R <owner>/shipify --label
+repeats --state open`, and read each one's status line ("Repeats every Sunday at 14:00 (a
+reminder) · next …").
 
 **Check back once** ("check PR #12's CI in 15 minutes and tell me", "remind me in 5 hours to …",
 "at 17:30 look at the deploy"): set `repeat` with those words as its `when` ("in 15 minutes", "in 5
@@ -205,14 +207,17 @@ propose it as a change to `skills/` or `playbooks/` instead (a work run on shipi
 run follows it once they merge.
 
 **Lessons** (ADR 0038): when the owner corrected you, or you found the way only after dead ends,
-end your reply with one line: the skill it belongs to, the lesson, and the words that keep it.
-"Lesson for `systematic-debugging`: <the lesson>. To keep it, start a task: `shipify: add to the
-systematic-debugging skill: <the lesson>`." A lesson is how to work next time, in general words:
-never a log of this task, never "tool X is broken", no task numbers or dates. It goes in the skill
-that fits; a new skill only when none does. A fact or a preference is a note instead. That task is
-a tweak on shipify, done the way `skills/writing-skills` says: the lesson in that `SKILL.md` where
-it fits, in a line or two, the lesson as a case in its `scenarios.md` (what went wrong, what to do
-instead), a changelog line, `make verify` (its skill check), and the PR (`kind: closes`).
+end your reply with one line that starts exactly so: "Lesson for `systematic-debugging`: <the
+lesson>." When Shipify's folder has `recipes/weekly-lessons.md`, the line ends there: that recipe
+finds it and asks for the PR that keeps it. Else add the words that keep it: "To keep it, start a
+task: `shipify: add to the systematic-debugging skill: <the lesson>`." A lesson is how to work
+next time, in general words: never a log of this task, never "tool X is broken", no task numbers
+or dates. It goes in the skill that fits; a new skill only when none does. A fact or a preference
+is a note instead. Keeping it is a tweak on shipify, done the way `skills/writing-skills` says:
+the lesson in that `SKILL.md` where it fits, in a line or two, the lesson as a case in its
+`scenarios.md` (what went wrong, what to do instead), a changelog line, its skill check
+(`pnpm exec vitest run tests/skills.test.ts`), and the PR (`kind: closes`; `part-of` from the
+recipe's task, which repeats).
 
 **Recipes:** a recipe task's prompt carries its body: that's the job. To turn on an example
 ("turn on the daily brief recipe"), copy `recipes/examples/<name>.md` to `recipes/<name>.md` in a

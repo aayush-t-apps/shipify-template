@@ -13,8 +13,9 @@
 // own rootless Podman's, its store in data/containers and its state while it runs in runtime/, both
 // by paths that never change, as Podman records them at its first use; runtime/ is emptied at each
 // run's start, so to Podman each run starts as after a restart.
-// The slot's folder is the agent's, with group shipify and setgid (2710): the runner can pass
-// through to a run's out/ (2750), and no other user, another slot's agent included, can enter it.
+// The slot's folder is the agent's, with group shipify and setgid (2711, box setup 11): the runner
+// can pass through to a run's out/ (2750), and no other user, another slot's agent included, can
+// list it or enter a folder in it.
 // Below a run's folder only out/ keeps that group: the rest is the agent's alone (prepareRun).
 //
 // Nothing secret goes on a command line or into the agent's environment by accident: every command
@@ -662,6 +663,9 @@ export function prepareRun(slot: number, runId: string, io: SandboxIo = REAL_IO)
     // agent's user namespace, so Podman's store in data/ couldn't mount (setups 8 and 9).
     `chmod g-s -- ${KEPT.join(" ")}`,
     'mkdir -m 2710 -- "$1"',
+    // It takes the slot folder's group by its setgid, and out/ with it: the runner reads out/
+    // through that group. Without it, the run's answer and commits would be lost.
+    `[ "$(stat -c %g -- "$1")" = "$(stat -c %g .)" ] || { echo "${run.user}'s folder lost its setgid, so the box couldn't read this run's answer: run the box's setup again (or once: sudo chmod 2711 ${slotRoot(slot, io.root)})" >&2; exit 1; }`,
     'cd -- "$1"',
     "mkdir -m 2750 out",
     // Then nothing else takes the runner's group, which has no ID in the agent's user namespace:

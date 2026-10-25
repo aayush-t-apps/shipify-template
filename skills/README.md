@@ -29,10 +29,12 @@ unquoted line with a colon in it isn't, and pi skips that skill), its `name` is 
 has its `scenarios.md`.
 
 **Lessons:** when you correct an agent, or it finds the way after dead ends, its reply names the
-skill and the lesson in one line, with the words to keep it (`shipify: add to the <skill> skill:
-…`). That task changes the skill in a PR you merge, and adds the lesson as a case in its
-`scenarios.md`: a lesson is never written by an agent alone, so a page it read can't plant one
-that every later run follows.
+skill and the lesson in one line ("Lesson for `<skill>`: …"). The weekly lessons recipe
+(`recipes/weekly-lessons.md`) gathers them every Monday and asks for one PR that keeps them; with
+it off, the line also gives the words to keep it (`shipify: add to the <skill> skill: …`). That PR
+changes the skill and adds the lesson as a case in its `scenarios.md`, and you merge it: a lesson
+is never written by an agent alone, so a page it read can't plant one that every later run
+follows.
 
 | Skill | Use it when | From | License |
 |---|---|---|---|

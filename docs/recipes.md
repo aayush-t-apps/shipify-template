@@ -65,6 +65,7 @@ In [`recipes/examples/`](../recipes/examples/), not live until copied into `reci
 |---|---|
 | `daily-brief.md` | weekday mornings: what failed, what needs you, what's coming up; quiet when nothing's new |
 | `weekly-dependencies.md` | Mondays: what's outdated across your projects, as a list, with no changes made |
+| `weekly-lessons.md` | Mondays: the "Lesson for `<skill>`" lines of the last 14 days' replies that no skill holds yet, put into their skills by one PR for you to merge; quiet when there are none |
 | `site-watch.md` | hourly: `checks/example.mjs` first; the agent says what changed only when it did |
 
 To turn one on, say "turn on the daily brief recipe": a run copies it into `recipes/` as a PR, and

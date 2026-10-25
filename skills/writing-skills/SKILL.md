@@ -88,8 +88,9 @@ Three to five asks a list and a few cases are enough; each lesson adds a case.
 - **A vendored skill** (someone else's): a reputable source and a permissive license (MIT,
   Apache-2.0, CC-BY-4.0) kept in its folder, pinned to a commit in the README's table, and each
   change from the original listed there.
-- **A CHANGELOG line** under Unreleased, then `make verify`: the skill check reads the header, the
-  sizes, both tables and the scenarios.
+- **A CHANGELOG line** under Unreleased, then the skill check (`pnpm exec vitest run
+  tests/skills.test.ts`; in a task, the box's `make verify` runs it again): it reads the header,
+  the sizes, both tables and the scenarios.
 - **Say what it fixes:** the failure, and what the case did with the skill.
 - **The owner's merge approves it.** A skill is never changed by an agent alone, so a page a run
   read can't plant a rule that every later run follows.

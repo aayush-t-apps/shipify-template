@@ -22,8 +22,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 10, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=10$/m);
+  it("is version 11, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=11$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -144,7 +144,11 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
   it("walls the agents and their containers off every private network, and proves it (setup 9)", () => {
     // The table: each agent and its range, out to the internet and DNS, never a private address.
     const table = bash([agentsNet(), "agents_net '998, 100000-165535'"]).stdout;
-    expect(table).toContain("meta skuid != { 998, 100000-165535 } accept");
+    // Only their own sockets' packets go to their chain (setup 11): the machine's own have no
+    // user, and a rule naming users never matches them (a ping's reply, IPv6's neighbours).
+    expect(table).toMatch(
+      /policy accept;\n\s*meta skuid \{ 998, 100000-165535 \} jump agents\n\s*\}\n\s*chain agents \{\n/,
+    );
     expect(table).toContain("meta l4proto { tcp, udp } th dport 53 accept");
     for (const net of [
       "10.0.0.0/8",
@@ -152,10 +156,15 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
       "169.254.0.0/16",
       "172.16.0.0/12",
       "192.168.0.0/16",
-      "fc00::/7",
-      "fe80::/10",
     ])
       expect(table, net).toContain(net);
+    // No IPv6 address but ::1 (setup 11): a home network's are public.
+    expect(table).toContain("ip6 daddr != ::1 goto refuse");
+    // Refused at once: TCP with a reset (a program goes on to IPv4 with no wait), the rest with an
+    // ICMP error.
+    expect(table).toMatch(
+      /chain refuse \{\n\s*meta l4proto tcp reject with tcp reset\n\s*reject with icmpx admin-prohibited\n\s*\}/,
+    );
     // Made again whole each time, in one go; nothing else's rules flushed.
     expect(table).toMatch(
       /^table inet shipify_agents\ndelete table inet shipify_agents\ntable inet shipify_agents \{$/m,
@@ -180,10 +189,10 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
 
   it("closes this machine's SSH and Cockpit to the agents, never what their containers publish (setup 10)", () => {
     const table = bash([agentsNet(), "agents_net '998'"]).stdout;
-    expect(table).toContain("ip daddr 127.0.0.0/8 tcp dport { 22, 9090 } reject with tcp reset");
-    expect(table).toContain("ip6 daddr ::1 tcp dport { 22, 9090 } reject with tcp reset");
+    expect(table).toContain("ip daddr 127.0.0.0/8 tcp dport { 22, 9090 } goto refuse");
+    expect(table).toContain("ip6 daddr ::1 tcp dport { 22, 9090 } goto refuse");
     // Only those ports: a container's published port on 127.0.0.1 stays reachable.
-    expect(table).not.toMatch(/daddr (127\.0\.0\.0\/8|::1) (reject|drop)/);
+    expect(table).not.toMatch(/daddr (127\.0\.0\.0\/8|::1) (reject|drop|goto)/);
     // Proved where SSH listens: root reaches it, no agent does.
     const check = setup.slice(at('say "Checking the sandbox"'), at("# --manage last"));
     expect(check).toContain('reaches "" 127.0.0.1 22');
@@ -260,13 +269,14 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
       /useradd --system --user-group --no-create-home [^\n]*--home-dir "\$AGENT_ROOT\/\$u" --shell \/usr\/sbin\/nologin "\$u"/,
     );
     expect(code).toContain('gpasswd -d "$u" shipify');
-    expect(code).toContain('install -d -o "$u" -g shipify -m 2710 "$AGENT_ROOT/$u"');
+    // 2711 (setup 11): with 2710, Podman added the x bits as the agent, and Linux dropped the setgid.
+    expect(code).toContain('install -d -o "$u" -g shipify -m 2711 "$AGENT_ROOT/$u"');
     expect(code).toContain("/etc/cron.deny /etc/at.deny");
     expect(code).toContain('agent_user() { echo "shipify-agent-$1"; }');
     expect(code).toContain("AGENT_ROOT=/srv");
     // Its kept folders, each time, once its folder is right.
     expect(at('agent_dirs "$u" "$AGENT_ROOT/$u"')).toBeGreaterThan(
-      at('chmod 2710 "$AGENT_ROOT/$u"'),
+      at('chmod 2711 "$AGENT_ROOT/$u"'),
     );
   });
 
@@ -856,7 +866,7 @@ esac`),
     expect(calls).toContain("mktemp -d");
     // The script goes in on stdin, as every file does: nothing but ssh reaches the machine.
     expect(calls).toContain("umask 077 && cat > /tmp/tmp.Ab12/setup.sh");
-    expect(readFileSync(join(got, "setup.sh"), "utf8")).toContain("SETUP_VERSION=10");
+    expect(readFileSync(join(got, "setup.sh"), "utf8")).toContain("SETUP_VERSION=11");
     // The slots GitHub has, so setup registers again one it deleted.
     expect(readFileSync(join(got, "box.env"), "utf8")).toContain('RUNNER_REGISTERED="1 2"');
     expect(calls).toContain(
