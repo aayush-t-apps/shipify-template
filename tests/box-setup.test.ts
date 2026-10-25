@@ -607,16 +607,27 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(check).toContain("unshare cat /proc/self/uid_map");
     const lab = setup.slice(at("podman_as() {"), proof);
     for (const step of [
+      // The box's HOME for Podman (containerEnv): setup 10's was in the check's own folder, which its
+      // last step removed, and Podman stopped ("cannot resolve …").
+      'HOME="$s"',
       'XDG_DATA_HOME="$s/data" XDG_RUNTIME_DIR="$s/runtime"',
       'CONTAINERS_CONF_OVERRIDE="$CONTAINERS_CONF"',
       'pull -q "$CHECK_IMAGE"',
-      "--user 1000:1000",
+      // A folder laid out as a run's (prepareRun: only out/ keeps the slot folder's group), which
+      // the container gives to a user of its own and runs as, as a database's image does.
+      "mkdir -m 2750 run-setup-check/out && chmod g-s run-setup-check && mkdir -m 700",
+      '-v "$c/work/c:/w"',
+      "chown nobody:nobody /w && chmod 700 /w",
+      'su -s /bin/sh -c "touch /w/f && exec sleep 600" nobody',
+      "$((first + 65533))",
       "/proc/$pid/cgroup",
       'kill_agent "$u"',
       "system prune --force --volumes",
       "unshare rm -rf",
     ])
       expect(lab, step).toContain(step);
+    // What Podman said when it couldn't remove the folder, never hidden (setup 10 hid it).
+    expect(fn("lab_check")).toMatch(/✗ containers: the box can't remove[^\n]*lab_error/);
     // The kill reaches the agent's range too: a process that survives is a wall, so no label.
     expect(lab).toContain('walls=""');
     // Each slot's store, as its runs open it (setup 10): where setup 8 and 9 failed on a box.
@@ -633,6 +644,11 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     );
     writeFileSync(log, "one\nthe last\n");
     expect(bash([fn("lab_error"), `lab_error "${log}"`]).stdout.trim()).toBe("the last");
+    // A container's own words (podman logs), with no Error: line: its last line, never a warning.
+    writeFileSync(log, 'chown: /w: Operation not permitted\ntime="…" level=warning msg="dbus"\n');
+    expect(bash([fn("lab_error"), `lab_error "${log}"`]).stdout.trim()).toBe(
+      "chown: /w: Operation not permitted",
+    );
     expect(setup).not.toMatch(/tail -n 1 "\$WORK\/lab\.log"/);
     expect(check).not.toMatch(/✗ containers[^\n]*run box add again/);
   });
@@ -642,7 +658,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(end).toContain(
       'if [ -z "$CONTAINER" ] && [ "$lab_ok" != ok ] && [ "$lab_ok" != unproven ]; then',
     );
-    expect(end).toContain("Done, except containers: they don't start for the agents");
+    // What failed may be a container's start or the box's clean-up after one: the ✗ line says which.
+    expect(end).toContain("Done, except containers: their check failed (✗ above)");
     expect(end).toContain("Done, except containers: they didn't install");
     const exit = at('  exit 3\nfi\nsay "Done: ask');
     // The rest of the box is recorded first: it works, and gets its label.
@@ -874,7 +891,9 @@ esac`),
     const { sb, log } = machine(3);
     const r = ship(sb, "box", "add", "homepi", "--slots", "2", "--yes");
     expect(r.status).toBe("failed");
-    expect(r.summary).toContain("takes tasks, but containers don't work for its agents");
+    expect(r.summary).toContain(
+      "takes tasks, but its agents' containers failed the setup's check (above), so a task that needs one may fail",
+    );
     expect(r.summary).toContain('docs/troubleshooting.md, "Containers don\'t start"');
     // The rest of the box works: its slots get their label, so task runs go to them.
     expect(log()).toMatch(/runners\/1\/labels -f labels\[\]=sandbox/);

@@ -15,6 +15,7 @@
 // run's start, so to Podman each run starts as after a restart.
 // The slot's folder is the agent's, with group shipify and setgid (2710): the runner can pass
 // through to a run's out/ (2750), and no other user, another slot's agent included, can enter it.
+// Below a run's folder only out/ keeps that group: the rest is the agent's alone (prepareRun).
 //
 // Nothing secret goes on a command line or into the agent's environment by accident: every command
 // starts from an empty environment (`env -i`) with only the names given, and secrets (a read-only
@@ -78,10 +79,14 @@ export const slotRoot = (slot: number, root = AGENT_ROOT) => join(root, agentUse
 /**
  * The names Podman needs as slot k's agent (ADR 0064), the same at every run: its store under the
  * slot's data/ (by its real path, the folder a run's ~/.local/share links to), its state while it
- * runs in the slot's runtime/, and the agents' own settings.
+ * runs in the slot's runtime/, and the agents' own settings. And a HOME that is there: Podman stops
+ * at once without one ("cannot resolve /nonexistent"), so the box's own Podman commands (a run's
+ * start, cleanRuns, the weekly prune, doctor) get the slot's folder, the agent's home in
+ * /etc/passwd; Podman writes nothing in it. A run's own home takes its place in a run (runPaths).
  */
 export function containerEnv(slot: number, root = AGENT_ROOT): Record<string, string> {
   return {
+    HOME: slotRoot(slot, root),
     XDG_DATA_HOME: join(slotRoot(slot, root), "data"),
     XDG_RUNTIME_DIR: join(slotRoot(slot, root), "runtime"),
     CONTAINERS_CONF_OVERRIDE: CONTAINERS_CONF,
@@ -617,18 +622,19 @@ export function runPaths(slot: number, runId: string, root = AGENT_ROOT): AgentR
     in: at("in"),
     out: at("out"),
     env: {
+      ...containerEnv(slot, root),
       HOME: home,
       TMPDIR: at("tmp"),
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_CACHE_HOME: join(home, ".cache"),
-      ...containerEnv(slot, root),
     },
   };
 }
 
 /**
- * Makes the run's folder, as the agent: home, config, tmp, work, read and in only its own (0700), and
- * out/ the runner's to read (2750, group shipify). Any process left of the slot's agent is killed
+ * Makes the run's folder (0710, group shipify), as the agent: home, config, tmp, work, read and in
+ * only its own (0700, its group too), and out/ the runner's to read (2750, group shipify, the only
+ * folder that passes that group on). Any process left of the slot's agent is killed
  * first, its earlier runs removed, and what they left of Podman's (ADR 0064) too. Once per job.
  */
 export function prepareRun(slot: number, runId: string, io: SandboxIo = REAL_IO): AgentRun {
@@ -657,8 +663,12 @@ export function prepareRun(slot: number, runId: string, io: SandboxIo = REAL_IO)
     `chmod g-s -- ${KEPT.join(" ")}`,
     'mkdir -m 2710 -- "$1"',
     'cd -- "$1"',
-    "mkdir -m 700 home config tmp work read in",
     "mkdir -m 2750 out",
+    // Then nothing else takes the runner's group, which has no ID in the agent's user namespace:
+    // with it, a container couldn't chown a bind mount (a database's image does at its start), nor
+    // `podman unshare` remove what one wrote.
+    "chmod g-s .",
+    "mkdir -m 700 home config tmp work read in",
     "mkdir -m 700 home/.local",
     "ln -s ../../cache home/.cache",
     "ln -s ../../../data home/.local/share",
@@ -956,7 +966,6 @@ export function agentsNetProblems(io: SandboxIo = REAL_IO): string[] {
  * "Error:" line.
  */
 const CONTAINERS_PROBE = String.raw`command -v podman >/dev/null || exit 0
-export HOME="$PWD"
 [ -d "$XDG_RUNTIME_DIR" ] || mkdir -m 700 "$XDG_RUNTIME_DIR" 2>/dev/null
 err=$(podman info 2>&1 >/dev/null) && exit 0
 line=$(printf '%s\n' "$err" | grep -m 1 '^Error:' || printf '%s\n' "$err" | tail -n 1)

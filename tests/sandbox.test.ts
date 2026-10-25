@@ -186,11 +186,16 @@ describe("the sandbox: who runs where", () => {
       CONTAINERS_CONF_OVERRIDE: CONTAINERS_CONF,
     });
     expect(CONTAINERS_CONF).toBe("/etc/containers/shipify-agents.conf");
+    // A HOME that is there: Podman stops at once without one ("cannot resolve /nonexistent"), so
+    // the box's own Podman commands (a run's start, cleanRuns, the weekly prune, doctor) get the
+    // slot's folder, the agent's home in /etc/passwd. A run's own home takes its place in a run.
     expect(containerEnv(3, "/x")).toEqual({
+      HOME: "/x/shipify-agent-3",
       XDG_DATA_HOME: "/x/shipify-agent-3/data",
       XDG_RUNTIME_DIR: "/x/shipify-agent-3/runtime",
       CONTAINERS_CONF_OVERRIDE: CONTAINERS_CONF,
     });
+    expect(run.env.HOME).toBe(run.home);
     // An agent may be handed them.
     expect(() => sudoArgs(2, ["true"], { cwd: run.work, env: run.env })).not.toThrow();
   });
@@ -975,7 +980,10 @@ describe("doctor: the sandbox check", () => {
       ["shipify-agent-1", "/srv/shipify-agent-1/data"],
       ["shipify-agent-2", "/srv/shipify-agent-2/data"],
     ]);
-    expect(namesOf(probes[0] as Call).CONTAINERS_CONF_OVERRIDE).toBe(CONTAINERS_CONF);
+    expect(namesOf(probes[0] as Call)).toMatchObject({
+      HOME: "/srv/shipify-agent-1",
+      CONTAINERS_CONF_OVERRIDE: CONTAINERS_CONF,
+    });
     expect(containersCheck({ user: "shipify", home, boxDir: dir, io: fakeIo() })).toMatchObject({
       ok: true,
       detail: "shipify-agent-1, shipify-agent-2: their stores open",
@@ -1038,10 +1046,11 @@ describe("the sandbox's own scripts, run for real (as this user, without the sud
     const io = local(root);
     const run = prepareRun(1, "42-1", io);
     expect(existsSync(join(slot, "run-old"))).toBe(false);
-    expect(mode(run.dir)).toBe(0o2710);
-    // Only the agent's (each keeps the setgid bit it inherits, as Linux does).
-    for (const d of [run.home, run.config, run.work, run.in, join(run.dir, "tmp")])
-      expect(mode(d) & 0o777, d).toBe(0o700);
+    // Only out/ passes the runner's group on (setgid): with it, a container couldn't chown a bind
+    // mount (a database's image does), as the group has no ID in the agent's user namespace.
+    expect(mode(run.dir)).toBe(0o710);
+    for (const d of [run.home, run.config, run.work, run.read, run.in, join(run.dir, "tmp")])
+      expect(mode(d), d).toBe(0o700);
     expect(mode(run.out)).toBe(0o2750);
     expect(existsSync(join(slot, "shared"))).toBe(false);
     // Its files, given as the agent; the result taken back from out/.

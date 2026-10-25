@@ -829,52 +829,65 @@ kill_agent() {
 }
 # agent_sh <user> <script>: a script as the agent, in its folder.
 agent_sh() { sudo -u "$1" sh -c "cd -- \"\$1\" && $2" agent "$AGENT_ROOT/$1"; }
-# podman_as <user> <args…>: Podman as the agent, with a run's names, from its folder; its home and
-# temporary files in run-setup-check, which goes as a run does.
+# podman_as <user> <args…>: Podman as the agent, from its folder, with the names the box gives its
+# own Podman commands (cli/lib/sandbox.ts, containerEnv): HOME the agent's folder, which is there
+# all the way (Podman stops at once where HOME isn't: "cannot resolve …").
 podman_as() {
   local u=$1 s="$AGENT_ROOT/$1"
   shift
-  sudo -u "$u" env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 HOME="$s/run-setup-check/home" \
-    TMPDIR="$s/run-setup-check/tmp" XDG_DATA_HOME="$s/data" XDG_RUNTIME_DIR="$s/runtime" \
-    CONTAINERS_CONF_OVERRIDE="$CONTAINERS_CONF" sh -c 'cd -- "$1" && shift && exec podman "$@"' podman "$s" "$@"
+  sudo -u "$u" env -i PATH=/usr/local/bin:/usr/bin:/bin HOME="$s" USER="$u" LOGNAME="$u" LANG=C.UTF-8 \
+    XDG_DATA_HOME="$s/data" XDG_RUNTIME_DIR="$s/runtime" CONTAINERS_CONF_OVERRIDE="$CONTAINERS_CONF" \
+    sh -c 'cd -- "$1" && shift && exec podman "$@"' podman "$s" "$@"
 }
-# lab_error <log>: why Podman stopped, its "Error:" line (the last line may be a harmless warning,
-# as dbus's), else the log's last line.
+# lab_error <log>: why Podman, or a container, stopped: Podman's "Error:" line, else the last line
+# that isn't a warning (one after it may be harmless, as dbus's), else the log's last line.
 lab_error() {
-  grep -m 1 '^Error:' "$1" 2>/dev/null || tail -n 1 "$1"
+  grep -m 1 '^Error:' "$1" 2>/dev/null || grep -v ' level=warning ' "$1" 2>/dev/null | tail -n 1 | grep . ||
+    tail -n 1 "$1"
 }
-# lab_check <user>: the whole way on one slot. A container that writes into the run's folder as a
-# user of its own (an ID of the agent's range); the box's kill reaches it, and leaves nothing; a run
-# start's reset and prune leave no container; that folder goes as cleanRuns removes a run. Only a
-# process that survives the kill is a wall; the rest is said. Sets lab_ok="" when something's off,
-# and lab_ok=unproven when the image didn't pull (the network, not the box).
+# lab_check <user>: the whole way on one slot, in a folder laid out as a run's. A container gives
+# the folder it mounts from work/ to a user of its own (nobody: an ID of the agent's range), as a
+# database's image does at its start, and runs as it; the box's kill reaches it, and leaves
+# nothing; a run start's reset and prune leave no container; that folder goes as cleanRuns removes
+# a run. Only a process that survives the kill is a wall; the rest is said. Sets lab_ok="" when
+# something's off, and lab_ok=unproven when the image didn't pull (the network, not the box).
 lab_check() {
   local u=$1 s="$AGENT_ROOT/$1" c pid first said
   c="$s/run-setup-check"
+  # As prepareRun makes a run's (cli/lib/sandbox.ts): only out/ keeps the slot folder's group.
+  rm -rf "$c"
+  agent_sh "$u" 'mkdir -m 2710 run-setup-check && mkdir -m 2750 run-setup-check/out && chmod g-s run-setup-check && mkdir -m 700 run-setup-check/work run-setup-check/work/c'
   if ! podman_as "$u" pull -q "$CHECK_IMAGE" >"$WORK/lab.log" 2>&1; then
     echo "  containers: not run the whole way, the image didn't pull ($(lab_error "$WORK/lab.log")); the next box add tries again"
     [ -z "$lab_ok" ] || lab_ok=unproven
     return 0
   fi
-  if ! podman_as "$u" run -d --replace --name shipify-check --user 1000:1000 -v "$c/work:/w" "$CHECK_IMAGE" \
-    sh -c 'mkdir /w/c && touch /w/c/f && chmod 700 /w/c && exec sleep 600' >"$WORK/lab.log" 2>&1; then
+  if ! podman_as "$u" run -d --replace --name shipify-check -v "$c/work/c:/w" "$CHECK_IMAGE" \
+    sh -c 'chown nobody:nobody /w && chmod 700 /w && exec su -s /bin/sh -c "touch /w/f && exec sleep 600" nobody' \
+    >"$WORK/lab.log" 2>&1; then
     echo "  ✗ containers: one doesn't start as $u ($(lab_error "$WORK/lab.log")): docs/troubleshooting.md, \"Containers don't start\""
     lab_ok=""
     return 0
   fi
-  pid=$(podman_as "$u" inspect -f '{{.State.Pid}}' shipify-check 2>/dev/null || echo 0)
   for _ in $(seq 1 30); do [ ! -e "$c/work/c/f" ] || break; sleep 0.3; done
+  pid=$(podman_as "$u" inspect -f '{{.State.Pid}}' shipify-check 2>/dev/null || echo 0)
+  # nobody is 65534 in the container: the range's ID 65533 (the container's root is the agent).
   first=$(awk -F: -v n="$u" '$1 == n { print $2; exit }' /etc/subuid)
-  if [ "$(stat -c %u "/proc/$pid" 2>/dev/null)" != "$((first + 999))" ] || [ ! -e "$c/work/c/f" ]; then
+  if [ ! -e "$c/work/c/f" ]; then
+    podman_as "$u" logs shipify-check >"$WORK/lab.log" 2>&1 || true
+    echo "  ✗ containers: one can't give a folder of a run's to a user of its own, as a database's image does ($(lab_error "$WORK/lab.log"))"
+    lab_ok=""
+  elif [ "$(stat -c %u "/proc/$pid" 2>/dev/null)" != "$((first + 65533))" ]; then
     echo "  ✗ containers: the check's container didn't run as an ID of $u's range"
     lab_ok=""
-  fi
-  # Podman's group manager is cgroupfs with no delegation: a container stays in its agent's group,
-  # in a run the slot's (its memory counts there).
-  said=$(sudo -u "$u" cat /proc/self/cgroup)
-  if [ "$(cat "/proc/$pid/cgroup" 2>/dev/null)" != "$said" ]; then
-    echo "  containers: the check's container left its agent's group ($(cat "/proc/$pid/cgroup" 2>/dev/null)); its memory may not count in the slot's"
-    lab_ok=""
+  else
+    # Podman's group manager is cgroupfs with no delegation: a container stays in its agent's
+    # group, in a run the slot's (its memory counts there).
+    said=$(sudo -u "$u" cat /proc/self/cgroup)
+    if [ "$(cat "/proc/$pid/cgroup" 2>/dev/null)" != "$said" ]; then
+      echo "  containers: the check's container left its agent's group ($(cat "/proc/$pid/cgroup" 2>/dev/null)); its memory may not count in the slot's"
+      lab_ok=""
+    fi
   fi
   if ! kill_agent "$u"; then
     echo "  ✗ a container of $u's outlived the box's kill"
@@ -889,9 +902,9 @@ lab_check() {
   fi
   # cleanRuns: plain rm can't remove what the container wrote as its own user; podman unshare can.
   agent_sh "$u" 'chmod -R u+rwX run-setup-check 2>/dev/null; rm -rf run-setup-check 2>/dev/null; true'
-  [ ! -e "$c" ] || podman_as "$u" unshare rm -rf "$c" >/dev/null 2>&1 || true
+  [ ! -e "$c" ] || podman_as "$u" unshare rm -rf "$c" >"$WORK/lab.log" 2>&1 || true
   if [ -e "$c" ]; then
-    echo "  ✗ containers: a folder a container wrote as its own user didn't go through podman unshare"
+    echo "  ✗ containers: the box can't remove what a container wrote as its own user ($(lab_error "$WORK/lab.log")), so the slot's next run couldn't start"
     lab_ok=""
   fi
 }
@@ -936,7 +949,7 @@ if [ -z "$CONTAINER" ] && command -v podman >/dev/null; then
   lab_ok=ok
   for k in $(seq 1 "$RUNNER_SLOTS"); do
     u=$(agent_user "$k")
-    agent_sh "$u" 'mkdir -p -m 700 runtime run-setup-check/home run-setup-check/tmp run-setup-check/work && chmod 777 run-setup-check/work'
+    agent_sh "$u" 'mkdir -p -m 700 runtime'
     if ! podman_as "$u" unshare cat /proc/self/uid_map 2>"$WORK/lab.log" | awk 'NR > 1 && $3 >= 65536 { ok = 1 } END { exit !ok }'; then
       echo "  ✗ containers: $u's range of IDs doesn't work ($(lab_error "$WORK/lab.log")): docs/troubleshooting.md, \"Containers don't start\""
       lab_ok=""
@@ -951,7 +964,7 @@ if [ -z "$CONTAINER" ] && command -v podman >/dev/null; then
     agent_sh "$u" 'chmod -R u+rwX runtime run-setup-check 2>/dev/null; rm -rf runtime run-setup-check; mkdir -m 700 runtime' 2>/dev/null || true
     rm -rf "$AGENT_ROOT/$u/run-setup-check"
   done
-  [ "$lab_ok" != ok ] || echo "  containers: each agent's range and store work; a container ran, the box's kill stopped it, and nothing was left"
+  [ "$lab_ok" != ok ] || echo "  containers: each agent's range and store work; a container gave its folder to a user of its own and ran as it, the box's kill stopped it, and the box removed what it wrote"
   [ "$lab_ok" != unproven ] || echo "  containers: each agent's range and store work; no container ran yet (the image didn't pull)"
 fi
 # No command an agent runs can read the agent's memory, where its login is (on a pipe, never in its
@@ -1067,9 +1080,9 @@ if [ -z "$CONTAINER" ] && [ "$lab_ok" != ok ] && [ "$lab_ok" != unproven ]; then
   if [ "$lab_ok" = none ]; then
     say "Done, except containers: they didn't install (above)"
   else
-    say "Done, except containers: they don't start for the agents (✗ above)"
+    say "Done, except containers: their check failed (✗ above)"
   fi
-  echo "The box takes tasks; one that needs a container fails. Run the same command again; if it says the"
+  echo "The box takes tasks; one that needs a container may fail. Run the same command again; if it says the"
   echo "same, docs/troubleshooting.md (\"Containers don't start\") has the fix."
   exit 3
 fi

@@ -410,6 +410,8 @@ reaches the runner's keys or changes what the runner runs next.
   agent's own, in its slot's cache, downloaded once per slot (ADR 0041).
 - **Each run, a fresh folder,** `/srv/shipify-agent-<k>/run-<id>/`: its own clone of the latest
   code, home and work, gone before the next run ([security.md](security.md#the-agents-sandbox)).
+  Only its `out/` has the runner's group (`shipify`): the rest is the agent's alone, its group too,
+  so a container can chown a folder there (a database's image does at its start).
 - **Kept per slot:** `/srv/shipify-agent-<k>/cache` and `data` (the agent's `~/.cache` and
   `~/.local/share`), so tools download once per slot, not once per run: pnpm, the
   project's packages, a test browser, its containers' images (`data/containers`). The weekly
@@ -477,11 +479,13 @@ a theory. Nothing to set: `box add` installs it, the same on a Pi, a laptop, a s
   and take tasks; `box add` says what's left and the fix
   ([troubleshooting.md](troubleshooting.md#boxes)). A box in Docker skips it.
 - **The check, at setup:** on every slot, the agent's range works and its store opens (`podman
-  info`, as its runs do); on slot 1, the whole way, as a run does: a container writes into a folder
-  as a user of its own, the box's kill stops it and leaves no process of the agent or its range (a
-  wall: no label until it holds), a run start's prune leaves no container, and `podman unshare`
-  removes what the container wrote. A pull that fails (no network, Docker Hub's limit) is said, and
-  the setup ends as done.
+  info`, as its runs do); on slot 1, the whole way, as a run does, in a folder laid out as a run's:
+  a container gives the folder it mounts to a user of its own, as a database's image does, and
+  runs as it; the box's kill stops it and leaves no process of the agent or its range (a wall: no
+  label until it holds), a run start's prune leaves no container, and `podman unshare` removes what
+  the container wrote. Each step gives Podman the names the box gives its own Podman commands
+  (`HOME` the slot's folder: Podman stops at once without a `HOME` that is there). A pull that fails
+  (no network, Docker Hub's limit) is said, and the setup ends as done.
 - **And every week:** `ship doctor` (so the weekly clean-up, and "how is this box doing?") opens
   each slot's store as its agent, and names a slot whose containers don't start.
 

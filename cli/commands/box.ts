@@ -679,7 +679,7 @@ export function boxAdd(
   if (noContainers)
     return fail(
       "box add",
-      `${m.label} is the box "${name}" and takes tasks, but containers don't work for its agents (above), so a task that needs one fails. Run the same command again; if it says the same, docs/troubleshooting.md, "Containers don't start", has the fix.`,
+      `${m.label} is the box "${name}" and takes tasks, but its agents' containers failed the setup's check (above), so a task that needs one may fail. Run the same command again; if it says the same, docs/troubleshooting.md, "Containers don't start", has the fix.`,
       { data: web ? `  Console (Cockpit): ${web}` : undefined, checks: readiness(repo) },
     );
   return ok(

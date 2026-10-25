@@ -7,6 +7,23 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-10-25
+
+### Fixed
+
+- **Containers on a box, the rest of the way (box setup 10, task #565).** Setup 10 ended "Done,
+  except containers" on a box whose containers start: its check removed the folder its Podman had
+  as HOME, and Podman stops without one. Two faults a run would hit, fixed:
+  - **The box's own Podman commands never ran** (a run's start, the clean-up of earlier runs, the
+    weekly prune): they had `HOME=/nonexistent`. A run's containers stayed for the next, and a run
+    folder with a file a container wrote as its own user blocked the slot's next run. They now get
+    the slot's folder.
+  - **A database's image couldn't chown a bind mount in a run** (`Operation not permitted`): a
+    run's folders had the runner's group, which has no ID in the container. Only `out/` has it now.
+  - **The setup's check** uses the box's HOME and a run's folder layout, gives its folder to a
+    user of its own as a database's image does, and shows Podman's error when it fails.
+  After the release, run the box's `here.sh` command again: it ends "Done".
+
 ## [0.1.14] - 2026-10-25
 
 ### Fixed
