@@ -108,6 +108,14 @@ export async function menu(env: Env, deps: Deps, files: boolean): Promise<Menu> 
     ...models(),
     // "Change a repo" (ADR 0047): Shipify's own account's repos, as the record keeps them.
     repos: (record?.repos.names ?? []).slice(0, MOST_STARTERS),
+    // A project's page (ADR 0065): which are Shipify's projects, and their apps, from the same read.
+    projects: record?.repos.projects ?? [],
+    apps: (record?.apps ?? []).map((a) => ({
+      id: a.id,
+      url: a.url,
+      failing: Boolean(a.failing),
+      paused: Boolean(a.paused),
+    })),
     commands: [
       ...CHATS.map((c): [string, string] => [c.chat, c.says]),
       ...INSTANT.map(([c, says]): [string, string] => [c, says]),

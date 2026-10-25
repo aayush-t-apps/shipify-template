@@ -179,6 +179,8 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
       | { message_id: number; text: string; from: { is_bot: boolean } }
       | undefined,
     apps: {} as Record<string, Reply>,
+    /** How many times GitHub rendered Markdown (`POST /markdown`). */
+    rendered: 0,
     jwks: { keys: [k.jwk] } as { keys: unknown[] },
     runnerRelease: { tag_name: "v2.330.0", published_at: "2026-08-01T00:00:00Z" },
     calls: [] as string[],
@@ -468,6 +470,16 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
       if (w.variablesFail && url.pathname.endsWith("/actions/variables"))
         return new Response(null, { status: w.variablesFail });
       const raw = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+      // Markdown rendered as GitHub does it (HTML, not JSON), with a script it would never keep.
+      if (method === "POST" && url.pathname === "/markdown") {
+        w.rendered++;
+        const words = String(raw?.text ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;");
+        return new Response(`<h2>${raw?.mode}</h2><p>${words}</p><script>steal()</script>`, {
+          headers: { "content-type": "text/html" },
+        });
+      }
       reply = github(method, url, raw);
       // As GitHub does: a body's rendering comes only when it's asked for (`full+json`).
       const accept = new Headers(init.headers).get("accept") ?? "";

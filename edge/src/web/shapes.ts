@@ -3,6 +3,8 @@
 // what happened and what to do, never a status code to show.
 import { z } from "zod";
 import { PICK } from "../../../cli/contracts/index.ts";
+import { FILE_REF } from "../env.ts";
+import { DOC_KINDS } from "./docs.ts";
 
 const iso = z.string().max(40);
 const url = z.string().max(2_000);
@@ -183,6 +185,10 @@ export const Menu = z.object({
   /** What "Change a repo" offers, and the kinds a title names (ADR 0047): Shipify's own account's
    * repos, as the record keeps them. */
   repos: z.array(z.string()),
+  /** Those of them Shipify built (a shipify.json): a project's page links its spec and decisions. */
+  projects: z.array(z.string()),
+  /** The apps the watch looks at, from the same record: a project's page says if it's up. */
+  apps: z.array(z.object({ id: z.string(), url, failing: z.boolean(), paused: z.boolean() })),
   commands: z.array(z.tuple([z.string(), z.string()])),
   files: z.object({ on: z.boolean(), most: z.number(), bytes: z.number() }),
   /** Notifications (ADR 0050), when the edge has its key and a store: the key to subscribe with. */
@@ -279,6 +285,24 @@ export const Files = z.object({
 });
 
 /**
+ * A kept file, for the doc pane (`…/api/doc/<ref>`, ADR 0065): what it is, and its words to show.
+ * Markdown comes as GitHub's rendering, cleaned; a CSV as rows; other text as text; a PDF or a
+ * picture shows from the file itself. `cut`: only its start is here (Download has it all).
+ */
+export const Doc = z.object({
+  v: z.literal(1),
+  ref: z.string(),
+  name: z.string(),
+  type: z.string(),
+  size: z.number(),
+  kind: z.enum(DOC_KINDS),
+  html: z.string().optional(),
+  text: z.string().optional(),
+  rows: z.array(z.array(z.string())).optional(),
+  cut: z.literal(true).optional(),
+});
+
+/**
  * A device kept for notifications, for people: a short id (its address's SHA-256, 8 hex
  * characters), its push service ("Google"), and since when.
  */
@@ -364,6 +388,7 @@ export type Menu = z.infer<typeof Menu>;
 export type Repeats = z.infer<typeof Repeats>;
 export type Notebook = z.infer<typeof Notebook>;
 export type Files = z.infer<typeof Files>;
+export type Doc = z.infer<typeof Doc>;
 export type Setup = z.infer<typeof Setup>;
 export type Devices = z.infer<typeof Devices>;
 export type Sent = z.infer<typeof Sent>;
@@ -394,7 +419,8 @@ export const SendBody = z.object({
   files: z
     .array(
       z.object({
-        ref: z.string().regex(/^up-[a-z0-9]{16,40}$/),
+        // Yours, or a run's (the doc pane's Ask about this): any the store keeps.
+        ref: z.string().regex(FILE_REF),
         name: z.string().min(1).max(200),
         type: z.string().max(120),
         size: z.number().int().nonnegative(),

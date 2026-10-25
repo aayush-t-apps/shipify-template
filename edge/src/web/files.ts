@@ -1,8 +1,8 @@
 // The web chat's files (ADR 0036, "Files"): Workers KV, bound as FILES, each file kept 7 days with
 // its own metadata (name, type, size, task, who made it, when). Yours come from the page
 // (`up-<id>`); a run's, from its reply to a chat you wrote from (`run-<task>-<id>`), for the Files
-// page, which lists them when it opens. Only pictures are ever shown inline; anything else
-// downloads.
+// page, which lists them when it opens. Only pictures are shown inline, and a PDF in the doc pane;
+// anything else downloads.
 // Plain web code: KV is reached through the small shape in env.ts, so tests stand in for it.
 
 import { FILE_REF, KEEP_S, type Kv } from "../env.ts";
@@ -53,8 +53,16 @@ export async function has(kv: Kv, ref: string) {
   return Boolean(v);
 }
 
-/** A kept file, served safely: pictures inline, everything else as a download, never sniffed. */
-export async function serve(kv: Kv, ref: string, download = false): Promise<Response> {
+/** A PDF, by its type or its name: the doc pane shows it in the browser's own viewer. */
+const isPdf = (m: FileMeta) => safeType(m.type) === "application/pdf" || /\.pdf$/i.test(m.name);
+
+/**
+ * A kept file, served safely: pictures inline, everything else as a download, never sniffed. With
+ * `view`, a PDF shows inline for the doc pane (ADR 0065): as a PDF only (nosniff), framed only by
+ * the chat. It has no sandbox, which browsers' PDF viewers refuse to run in; a PDF's own scripts
+ * run in the viewer, never on the edge's page.
+ */
+export async function serve(kv: Kv, ref: string, download = false, view = false) {
   if (!FILE_REF.test(ref)) return json({ error: "not_found" }, 404);
   const { value, metadata } = await kv.getWithMetadata<FileMeta>(ref, "stream");
   if (!value || !metadata)
@@ -63,15 +71,16 @@ export async function serve(kv: Kv, ref: string, download = false): Promise<Resp
       410,
     );
   const type = safeType(metadata.type);
-  const inline = PICTURE.test(type) && !download;
+  const pdf = view && !download && isPdf(metadata);
+  const inline = (PICTURE.test(type) && !download) || pdf;
   return new Response(value, {
     headers: {
-      "content-type": inline ? type : "application/octet-stream",
+      "content-type": pdf ? "application/pdf" : inline ? type : "application/octet-stream",
       "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(safeName(metadata.name))}`,
       "content-length": String(metadata.size),
       "cache-control": "private, max-age=86400, immutable",
       "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; sandbox",
+      "content-security-policy": pdf ? "frame-ancestors 'self'" : "default-src 'none'; sandbox",
     },
   });
 }

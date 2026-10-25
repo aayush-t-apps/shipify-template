@@ -23,6 +23,10 @@
 # home network, the tailnet); it waits out Ubuntu's own updates after a first boot, finishes an
 # install a cut-off run left, and registers again a slot GitHub deleted; the updates waiting now
 # come once the slots are registered, and --manage once the sandbox checks out.
+# Setup 10: each slot's kept folders (cache, data) are its agent's own group, with no setgid, so its
+# containers start (and what setup 8 and 9 left there is mended); each slot's container store is
+# checked; no agent reaches this machine's SSH or Cockpit on 127.0.0.1. When containers don't work,
+# the setup ends with exit 3 and says why: the box works and gets its label, and box add says so.
 # A check at the end proves it; `ship box add` then labels the slots `sandbox`, for run jobs.
 # Running it again updates Node to the newest 22.x, and adds or removes slots to match
 # RUNNER_SLOTS.
@@ -42,7 +46,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=9
+SETUP_VERSION=10
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -315,6 +319,23 @@ chmod 0755 "$TOOL_DIR"
 # A new one gets a range of IDs of its own from shadow (setup 8): its containers' users.
 AGENT_ROOT=/srv
 agent_user() { echo "shipify-agent-$1"; }
+# agent_dirs <user> <slot folder>: the slot's kept folders (cache, data: cli/lib/sandbox.ts's KEPT)
+# the agent's own, its group too, with no setgid (setup 10). Made in the slot folder, they took its
+# group, shipify, by its setgid, and so did each folder in them: in the agent's user namespace that
+# group has no ID, and rootless Podman's store (data/containers) couldn't mount, so no container
+# started (setup 8 and 9). What they left is mended in place, the caches and images kept: only what
+# has the runner's group changes (a container's own files have IDs of the agent's range).
+agent_dirs() {
+  local u=$1 d
+  for d in "$2/cache" "$2/data"; do
+    install -d -o "$u" -g "$u" -m 0700 "$d"
+    find "$d" -xdev -group shipify -type d -exec chmod g-s {} +
+    find "$d" -xdev -group shipify -exec chgrp -h "$u" {} +
+    chown "$u:$u" "$d"
+    # 00700, not 700: a number with no leading 0 keeps a folder's setgid.
+    chmod 00700 "$d"
+  done
+}
 say "The agents' users: one per slot, each walled off from the runner and the other slots"
 install -d -m 0755 "$AGENT_ROOT"
 for k in $(seq 1 "$RUNNER_SLOTS"); do
@@ -326,6 +347,7 @@ for k in $(seq 1 "$RUNNER_SLOTS"); do
   install -d -o "$u" -g shipify -m 2710 "$AGENT_ROOT/$u"
   chown "$u:shipify" "$AGENT_ROOT/$u"
   chmod 2710 "$AGENT_ROOT/$u"
+  agent_dirs "$u" "$AGENT_ROOT/$u"
   for deny in /etc/cron.deny /etc/at.deny; do
     grep -qx "$u" "$deny" 2>/dev/null || echo "$u" >> "$deny"
   done
@@ -339,6 +361,8 @@ for dir in "$AGENT_ROOT"/shipify-agent-*; do
   [ "$k" -gt "$RUNNER_SLOTS" ] || continue
   u=$(agent_user "$k")
   echo "  $u goes, with its slot"
+  # As the agent first: that reaches its containers too, which run as IDs of its range.
+  sudo -u "$u" kill -KILL -1 2>/dev/null || true
   pkill -KILL -u "$u" 2>/dev/null || true
   # Its ID ranges first (every one it has), then the user.
   usermod --del-subuids 0-4294967294 --del-subgids 0-4294967294 "$u" 2>/dev/null || true
@@ -665,8 +689,11 @@ manage() {
   . /etc/os-release
   # Its updates page, without what it recommends: NetworkManager would take a laptop's Wi-Fi from
   # Ubuntu Server's own network settings.
-  apt_get install -y -q --no-install-recommends -t "${VERSION_CODENAME}-backports" cockpit cockpit-packagekit ||
-    apt_get install -y -q --no-install-recommends cockpit cockpit-packagekit
+  # From Ubuntu's backports (newer) where the box's sources have them (a Pi's image may not), else
+  # from its own release: never a "the value is invalid" error for a suite it doesn't have.
+  local from=()
+  [ -z "$(ubuntu_suite "${VERSION_CODENAME}-backports")" ] || from=(-t "${VERSION_CODENAME}-backports")
+  apt_get install -y -q --no-install-recommends "${from[@]}" cockpit cockpit-packagekit
   if ! tailscale status >/dev/null 2>&1; then
     echo "  Sign in at the link below, with the account your phone's Tailscale app uses (within 15 minutes):"
     tailscale up --ssh --timeout 15m
@@ -719,7 +746,9 @@ firewall() {
 # tailnet, nor a cloud's metadata address. A table of its own in nftables, for each agent's user
 # and the IDs of its range (its containers' users), loaded at every start by a service of its own,
 # before the network is up. DNS stays open, as a resolver on your network may answer it. Your own
-# rules, ufw's and Tailscale's stay as they are.
+# rules, ufw's and Tailscale's stay as they are. On the machine itself (setup 10), its SSH (22) and
+# Cockpit (9090) are closed to them: each asks for your password, which an agent could keep
+# guessing. What a container publishes on 127.0.0.1 stays theirs to reach.
 AGENTS_NET=/etc/shipify/agents-net.nft
 AGENTS_NET_UNIT=shipify-agents-net.service
 # agent_ids: each agent's user ID and the range of IDs its containers use, as nft reads them.
@@ -746,6 +775,8 @@ table inet shipify_agents {
     meta l4proto { tcp, udp } th dport 53 accept
     ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } reject with icmpx admin-prohibited
     ip6 daddr { fc00::/7, fe80::/10 } reject with icmpx admin-prohibited
+    ip daddr 127.0.0.0/8 tcp dport { 22, 9090 } reject with tcp reset
+    ip6 daddr ::1 tcp dport { 22, 9090 } reject with tcp reset
   }
 }
 NFT
@@ -767,7 +798,7 @@ else
   if put_file "$WORK/$AGENTS_NET_UNIT" "/etc/systemd/system/$AGENTS_NET_UNIT"; then systemctl daemon-reload; fi
   systemctl enable -q "$AGENTS_NET_UNIT"
   if systemctl restart "$AGENTS_NET_UNIT"; then
-    echo "  on: no agent, nor its containers, reaches your network, the tailnet or a metadata address"
+    echo "  on: no agent, nor its containers, reaches your network, the tailnet, a metadata address, or this machine's SSH and Cockpit"
   else
     echo "  ✗ the agents' network rules didn't load (above: sudo systemctl status $AGENTS_NET_UNIT)"
   fi
@@ -807,21 +838,27 @@ podman_as() {
     TMPDIR="$s/run-setup-check/tmp" XDG_DATA_HOME="$s/data" XDG_RUNTIME_DIR="$s/runtime" \
     CONTAINERS_CONF_OVERRIDE="$CONTAINERS_CONF" sh -c 'cd -- "$1" && shift && exec podman "$@"' podman "$s" "$@"
 }
+# lab_error <log>: why Podman stopped, its "Error:" line (the last line may be a harmless warning,
+# as dbus's), else the log's last line.
+lab_error() {
+  grep -m 1 '^Error:' "$1" 2>/dev/null || tail -n 1 "$1"
+}
 # lab_check <user>: the whole way on one slot. A container that writes into the run's folder as a
 # user of its own (an ID of the agent's range); the box's kill reaches it, and leaves nothing; a run
 # start's reset and prune leave no container; that folder goes as cleanRuns removes a run. Only a
-# process that survives the kill is a wall; the rest is said. Sets lab_ok="" when something's off.
+# process that survives the kill is a wall; the rest is said. Sets lab_ok="" when something's off,
+# and lab_ok=unproven when the image didn't pull (the network, not the box).
 lab_check() {
   local u=$1 s="$AGENT_ROOT/$1" c pid first said
   c="$s/run-setup-check"
   if ! podman_as "$u" pull -q "$CHECK_IMAGE" >"$WORK/lab.log" 2>&1; then
-    echo "  containers: not run, the image didn't pull ($(tail -n 1 "$WORK/lab.log")); the next box add tries again"
-    lab_ok=""
+    echo "  containers: not run the whole way, the image didn't pull ($(lab_error "$WORK/lab.log")); the next box add tries again"
+    [ -z "$lab_ok" ] || lab_ok=unproven
     return 0
   fi
   if ! podman_as "$u" run -d --replace --name shipify-check --user 1000:1000 -v "$c/work:/w" "$CHECK_IMAGE" \
     sh -c 'mkdir /w/c && touch /w/c/f && chmod 700 /w/c && exec sleep 600' >"$WORK/lab.log" 2>&1; then
-    echo "  ✗ containers: one doesn't start as $u ($(tail -n 1 "$WORK/lab.log")): docs/troubleshooting.md"
+    echo "  ✗ containers: one doesn't start as $u ($(lab_error "$WORK/lab.log")): docs/troubleshooting.md, \"Containers don't start\""
     lab_ok=""
     return 0
   fi
@@ -892,13 +929,20 @@ for k in $(seq 1 "$RUNNER_SLOTS"); do
 done
 # The lab, where Podman is: each agent's range works, and slot 1 the whole way (lab_check). Each
 # slot is left as a run start leaves it: nothing of its agent's running, runtime/ empty.
+# lab_ok: ok, unproven (no container ran: the image didn't pull), "" (they don't work), or none
+# (no Podman: the lab didn't install).
+lab_ok=none
 if [ -z "$CONTAINER" ] && command -v podman >/dev/null; then
   lab_ok=ok
   for k in $(seq 1 "$RUNNER_SLOTS"); do
     u=$(agent_user "$k")
-    agent_sh "$u" 'mkdir -p -m 700 data runtime run-setup-check/home run-setup-check/tmp run-setup-check/work && chmod 777 run-setup-check/work'
+    agent_sh "$u" 'mkdir -p -m 700 runtime run-setup-check/home run-setup-check/tmp run-setup-check/work && chmod 777 run-setup-check/work'
     if ! podman_as "$u" unshare cat /proc/self/uid_map 2>"$WORK/lab.log" | awk 'NR > 1 && $3 >= 65536 { ok = 1 } END { exit !ok }'; then
-      echo "  ✗ containers: $u's range of IDs doesn't work ($(tail -n 1 "$WORK/lab.log")): run box add again"
+      echo "  ✗ containers: $u's range of IDs doesn't work ($(lab_error "$WORK/lab.log")): docs/troubleshooting.md, \"Containers don't start\""
+      lab_ok=""
+    # Its store, as every run of the slot opens it: where setup 8 and 9 failed.
+    elif ! podman_as "$u" info >/dev/null 2>"$WORK/lab.log"; then
+      echo "  ✗ containers: $u's store doesn't open ($(lab_error "$WORK/lab.log")): docs/troubleshooting.md, \"Containers don't start\""
       lab_ok=""
     elif [ "$k" = 1 ]; then
       lab_check "$u"
@@ -907,7 +951,8 @@ if [ -z "$CONTAINER" ] && command -v podman >/dev/null; then
     agent_sh "$u" 'chmod -R u+rwX runtime run-setup-check 2>/dev/null; rm -rf runtime run-setup-check; mkdir -m 700 runtime' 2>/dev/null || true
     rm -rf "$AGENT_ROOT/$u/run-setup-check"
   done
-  [ -z "$lab_ok" ] || echo "  containers: each agent's range works; a container ran, the box's kill stopped it, and nothing was left"
+  [ "$lab_ok" != ok ] || echo "  containers: each agent's range and store work; a container ran, the box's kill stopped it, and nothing was left"
+  [ "$lab_ok" != unproven ] || echo "  containers: each agent's range and store work; no container ran yet (the image didn't pull)"
 fi
 # No command an agent runs can read the agent's memory, where its login is (on a pipe, never in its
 # environment): the kernel lets a process read only its own children's (Ubuntu's own setting).
@@ -953,6 +998,16 @@ if [ -z "$CONTAINER" ]; then
     fi
     kill "$probe" 2>/dev/null || true
     wait "$probe" 2>/dev/null || true
+  fi
+  # This machine's SSH (setup 10), where it listens: root reaches it, no agent does.
+  if nft list table inet shipify_agents >/dev/null 2>&1 && reaches "" 127.0.0.1 22; then
+    for k in $(seq 1 "$RUNNER_SLOTS"); do
+      u=$(agent_user "$k")
+      if reaches "$u" 127.0.0.1 22; then
+        echo "  ✗ $u can reach this machine's SSH (127.0.0.1:22)"
+        walls=""
+      fi
+    done
   fi
 fi
 # On WSL (this PC, in Windows), two more walls, which are Windows' settings, so yours to set: no
@@ -1005,5 +1060,17 @@ if [ "${SHIPIFY_MANAGE:-}" = 1 ]; then
   managed=$?
   set -e
   [ "$managed" = 0 ] || echo "  The management part stopped (see above). The box works; run the same command again, with --manage."
+fi
+# Never "done" when containers don't work: exit 3, which box add reads (the box works, and its slots
+# get their label, but a task that needs a container can't run). A box in Docker makes none.
+if [ -z "$CONTAINER" ] && [ "$lab_ok" != ok ] && [ "$lab_ok" != unproven ]; then
+  if [ "$lab_ok" = none ]; then
+    say "Done, except containers: they didn't install (above)"
+  else
+    say "Done, except containers: they don't start for the agents (✗ above)"
+  fi
+  echo "The box takes tasks; one that needs a container fails. Run the same command again; if it says the"
+  echo "same, docs/troubleshooting.md (\"Containers don't start\") has the fix."
+  exit 3
 fi
 say "Done: ask \"how is this box doing?\" (a task, or the bot) to check it"

@@ -501,6 +501,103 @@ describe("files the chat keeps", () => {
     expect((await t.call(`/admin/chat/api/file/${png.ref}`)).status).toBe(410);
   });
 
+  // The doc pane (ADR 0065): a PDF in the browser's own viewer, which refuses a sandbox; framed only
+  // by the chat, never sniffed. Without ?view=1, or as a download, it's the download it always was.
+  it("a PDF shows inline for the doc pane, only with ?view=1; nothing else does", async () => {
+    const t = setUp();
+    const pdf = await (await t.upload("plan.pdf", "application/pdf", "%PDF-1.7")).json();
+    const html = await (await t.upload("page.pdf.html", "text/html", "<script>x</script>")).json();
+    const v = await t.call(`/admin/chat/api/file/${pdf.ref}?view=1`);
+    expect(v.headers.get("content-type")).toBe("application/pdf");
+    expect(v.headers.get("content-disposition")).toMatch(/^inline/);
+    expect(v.headers.get("content-security-policy")).toBe("frame-ancestors 'self'");
+    expect(v.headers.get("x-content-type-options")).toBe("nosniff");
+    for (const path of [`${pdf.ref}`, `${pdf.ref}?view=1&download=1`, `${html.ref}?view=1`]) {
+      const r = await t.call(`/admin/chat/api/file/${path}`);
+      expect(r.headers.get("content-type"), path).toBe("application/octet-stream");
+      expect(r.headers.get("content-disposition"), path).toMatch(/^attachment/);
+      expect(r.headers.get("content-security-policy"), path).toBe("default-src 'none'; sandbox");
+    }
+  });
+
+  it("a doc for the pane: Markdown rendered by GitHub and cleaned, once a file; a CSV as rows", async () => {
+    const t = setUp();
+    const md = await (await t.upload("notes.md", "text/markdown", "# Plan\n<b>bold</b>")).json();
+    const doc = (ref: string) => t.call(`/admin/chat/api/doc/${ref}`);
+    const a = await (await doc(md.ref)).json();
+    expect(a).toMatchObject({ v: 1, name: "notes.md", kind: "md", size: 18 });
+    expect(a.html).toContain("<h2>markdown</h2>");
+    expect(a.html).toContain("# Plan");
+    expect(a.html).not.toContain("script");
+    expect(a.html).not.toContain("steal");
+    // A file never changes: rendered once, and the page's copy unchanged is a 304.
+    const again = await t.call(`/admin/chat/api/doc/${md.ref}`, {
+      headers: { "if-none-match": (await doc(md.ref)).headers.get("etag") ?? "" },
+    });
+    expect(again.status).toBe(304);
+    expect(t.f.w.rendered).toBe(1);
+    const csv = await (
+      await t.upload("costs.csv", "text/csv", 'item,cost\n"a, b",1\n"say ""hi""",2\r\n')
+    ).json();
+    expect((await (await doc(csv.ref)).json()).rows).toEqual([
+      ["item", "cost"],
+      ["a, b", "1"],
+      ['say "hi"', "2"],
+    ]);
+    const txt = await (await t.upload("run.log", "text/plain", "line 1\nline 2")).json();
+    expect(await (await doc(txt.ref)).json()).toMatchObject({
+      kind: "text",
+      text: "line 1\nline 2",
+    });
+    const pdf = await (await t.upload("a.pdf", "application/pdf", "%PDF")).json();
+    const p = await (await doc(pdf.ref)).json();
+    expect(p).toMatchObject({ kind: "pdf" });
+    expect(p.text ?? p.html ?? p.rows).toBeUndefined();
+    expect((await doc("up-0123456789abcdef0123")).status).toBe(410);
+    expect((await doc("..%2Fetc")).status).toBe(410);
+  });
+
+  it("a doc GitHub can't render just now shows as text, and renders on the next look", async () => {
+    const t = setUp();
+    const md = await (await t.upload("notes.md", "text/markdown", "# Plan")).json();
+    t.f.w.githubDown = true;
+    const a = await (await t.call(`/admin/chat/api/doc/${md.ref}`)).json();
+    expect(a).toMatchObject({ kind: "text", text: "# Plan" });
+    t.f.w.githubDown = false;
+    const b = await (await t.call(`/admin/chat/api/doc/${md.ref}`)).json();
+    expect(b.kind).toBe("md");
+  });
+
+  it("Ask about this: a run's file the store keeps goes with your words, as yours do", async () => {
+    const t = setUp();
+    const ref = "run-7-0123456789abcdef0123";
+    await t.store.kv.put(ref, new TextEncoder().encode("made").buffer as ArrayBuffer, {
+      metadata: {
+        name: "out.md",
+        type: "text/markdown",
+        size: 4,
+        by: "run",
+        at: t.f.w.at,
+        task: 7,
+      },
+    });
+    const sent = await t.post("/admin/chat/api/send", {
+      id: "askabout01",
+      words: "what does this say?",
+      files: [{ ref, name: "out.md", type: "text/markdown", size: 4 }],
+    });
+    expect(sent.status).toBe(200);
+    const files = readFrom(t.f.w.issues[0]?.body)?.files ?? [];
+    expect(files.map((f) => f.ref)).toEqual([`web:${ref}`]);
+    // Only a ref the store could keep: never a path or another chat's.
+    const bad = await t.post("/admin/chat/api/send", {
+      id: "askabout02",
+      words: "x",
+      files: [{ ref: "telegram:123", name: "a", type: "", size: 1 }],
+    });
+    expect(bad.status).toBe(400);
+  });
+
   it("over 10 MB is refused at the edge", async () => {
     const t = setUp();
     const res = await t.upload(
@@ -1187,6 +1284,8 @@ describe("what the page reads", () => {
         at: "2026-10-04T11:00:00Z",
         text: `event ${i}`,
       })),
+      apps: [{ id: "links", url: "https://links.example.com", failing: "2026-10-04T11:00:00Z" }],
+      repos: { names: ["links", "notes"], projects: ["links"] },
     };
     t.f.issue({
       title: "Shipify status",
@@ -1210,6 +1309,13 @@ describe("what the page reads", () => {
       "event 4",
     ]);
     expect(JSON.stringify(setup)).not.toContain("javascript:");
+    // A project's page (ADR 0065) reads its repos and apps from the menu: the same record.
+    const menu = await (await t.call("/admin/chat/api/menu")).json();
+    expect(menu).toMatchObject({
+      repos: ["links", "notes"],
+      projects: ["links"],
+      apps: [{ id: "links", url: "https://links.example.com", failing: true, paused: false }],
+    });
   });
 });
 

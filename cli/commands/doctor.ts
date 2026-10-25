@@ -21,7 +21,14 @@ import { ghRun, platformRepo } from "../lib/github.ts";
 import { type Check, ok, type Result } from "../lib/output.ts";
 import { sourceControl } from "../lib/providers.ts";
 import { stale } from "../lib/settings.ts";
-import { agentUser, REAL_IO, type SandboxIo, sandboxProblems } from "../lib/sandbox.ts";
+import {
+  agentsNetProblems,
+  agentUser,
+  containersProblems,
+  REAL_IO,
+  type SandboxIo,
+  sandboxProblems,
+} from "../lib/sandbox.ts";
 import { loadTools, readTools, toolChecks } from "../lib/tools.ts";
 import { watchState } from "../lib/watch.ts";
 import { DISK_FLOOR_BYTES } from "../lib/clones.ts";
@@ -150,6 +157,8 @@ export async function doctor(opts: { yes?: boolean } = {}): Promise<Result> {
   if (setup) checks.push(setup);
   const sandbox = sandboxCheck();
   if (sandbox) checks.push(sandbox);
+  const containers = containersCheck();
+  if (containers) checks.push(containers);
   checks.push(watchCheck());
   checks.push(...toolKeyChecks());
   checks.push({
@@ -414,6 +423,7 @@ export function sandboxCheck(
       opts.io ?? REAL_IO,
     ),
   );
+  problems.push(...agentsNetProblems(opts.io ?? REAL_IO));
   const agents = slots.map(agentUser).join(", ");
   return {
     name: "sandbox: each slot's agent is walled off (box setup 5)",
@@ -422,6 +432,30 @@ export function sandboxCheck(
       ? problems.join("; ")
       : `${agents}: can't read the runner's folders, its environment or another slot's runs, nor write a root container socket, and get their login on a pipe only`,
     fix: "when no task runs: on the box, its here.sh command again; or from a PC, pnpm ship box add <its SSH address> --manage (it asks for sudo once)",
+  };
+}
+
+/**
+ * The agents' containers (box setup 8 and 10, ADR 0064): on a box that box/setup.sh set up (as the
+ * user "shipify"), each slot's agent opens its container store, as its runs do. Not a wall: a box
+ * whose containers don't work takes every task but one that needs a container.
+ */
+export function containersCheck(
+  opts: { user?: string; home?: string; boxDir?: string; io?: SandboxIo } = {},
+): Check | undefined {
+  const user = opts.user ?? userInfo().username;
+  if (user !== "shipify") return undefined;
+  const boxDir = "boxDir" in opts ? opts.boxDir : process.env.SHIPIFY_BOX_DIR;
+  const slots = boxSlots(boxDir ?? join(opts.home ?? homedir(), "runner"));
+  const problems = containersProblems(slots, opts.io ?? REAL_IO);
+  return {
+    name: "containers: each slot's agent runs them (box setup 10)",
+    ok: !problems.length,
+    detail: problems.length
+      ? problems.join("; ")
+      : `${slots.map(agentUser).join(", ")}: their stores open`,
+    blocking: false,
+    fix: 'when no task runs: on the box, its here.sh command again; if it says the same, docs/troubleshooting.md, "Containers don\'t start"',
   };
 }
 

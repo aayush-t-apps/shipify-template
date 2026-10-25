@@ -185,7 +185,7 @@ const NONE = { models: [], commands: [], files: {} };
 
 /**
  * The box you write in; `o.send(body, previews, note)` takes over once it's sent.
- * @param {{menu:any, task?:number, model?:string, words?:string, root:any, send:Function, label?:Function, fill?:Function, stop?:Function|false, state?:Function}} o
+ * @param {{menu:any, task?:number, model?:string, words?:string, root:any, send:Function, label?:Function, fill?:Function, attach?:Function, stop?:Function|false, state?:Function}} o
  */
 export function composer(o) {
   // The menu as it is now: a newer one comes in place (`o.menu`), the box kept as it is.
@@ -370,6 +370,13 @@ export function composer(o) {
     Object.assign(ta, { value: w }).focus();
     ta.oninput();
     if (file && m().files.on) pick.click();
+  };
+  // A file the chat keeps (the doc pane's Ask about this): it goes as it is, nothing to upload.
+  o.attach = (f) => {
+    if (files.length < m().files.most && !files.some((x) => x.ref === f.ref))
+      files.push({ ...f, abort() {} });
+    draw();
+    ta.focus();
   };
   // Files shared from another app (sw.js), as if picked, once the menu says files are on.
   o.add = (l) => held.push(...l) && state();

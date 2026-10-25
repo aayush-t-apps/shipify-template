@@ -7,7 +7,9 @@
 //   GET  …/api/list[?closed=1][&page=]|menu|repeats|notebook|files|setup     what the page shows
 //   GET  …/api/models?agent=<id>&q=<word>  an agent's gateway searched for models (the chip)
 //   GET  …/api/task/<n>[?since=|?page=]   a thread (a task, or a PR to review)
-//   GET  …/api/file/<ref>          a file the chat keeps: pictures inline, the rest downloads
+//   GET  …/api/file/<ref>[?view=1] a file the chat keeps: pictures inline (a PDF too, to view), the
+//                                  rest downloads
+//   GET  …/api/doc/<ref>           a kept file for the doc pane: Markdown rendered, a CSV's rows
 //   GET  …/api/sent/<chat>:<id>    a file you sent from another chat (Telegram's), the same way
 //   POST …/api/file                one file into the store (7 days); back comes its ref
 //   POST …/api/send                words, a `use` line and files, into the door
@@ -58,6 +60,7 @@ import {
   safeType,
   serve,
 } from "./files.ts";
+import { docOf } from "./docs.ts";
 import { type RepeatAnswers, repeatProblems, repeatWords } from "./forms.ts";
 import { fileSrc, list, notebook, repeats, thread } from "./reads.ts";
 import { ADD, devicesSeen, menu, pushKey, setup } from "./setup.ts";
@@ -333,7 +336,14 @@ async function get(
   }
   if (route === "file" && arg) {
     if (!kv) return problem(404, "Files aren't set up.", `Run ${ADD} on your PC.`);
-    return serve(kv, arg, url.searchParams.get("download") === "1");
+    const q = url.searchParams;
+    return serve(kv, arg, q.get("download") === "1", q.get("view") === "1");
+  }
+  if (route === "doc" && arg) {
+    if (!kv) return problem(404, "Files aren't set up.", `Run ${ADD} on your PC.`);
+    const d = await docOf(env, deps, kv, arg);
+    if (!d) return problem(410, "That file is gone (files are kept 7 days).", "Send it again.");
+    return tagged(req, shapes.Doc.parse(d));
   }
   return problem(404, "Not here.", "Reload the page.");
 }

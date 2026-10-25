@@ -427,7 +427,7 @@ The listed models are a few of hundreds. The rest are found by a word, on any ch
 - **Its network** (box setup 9): the internet, as the work needs, and no private network: not your
   home network, the tailnet or a metadata address, for the agent and its containers alike
   ([box-setup.md](box-setup.md#the-agents-own-user)). A container's published port on `127.0.0.1`
-  stays the agent's to reach.
+  stays the agent's to reach; the box's own SSH and Cockpit there don't (setup 10).
 
 ## Run details
 

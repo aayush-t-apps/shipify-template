@@ -17,9 +17,11 @@
 # --manage, for a machine you keep as a box (a laptop, a spare PC): it never sleeps, and gets
 # Tailscale, Cockpit and a firewall, as `box add --manage` over SSH. Its SSH settings stay.
 # --replace takes the place of a machine that had the same box name (this one, reinstalled).
+# --fresh starts over on this machine: Shipify off it first (box remove --purge), then set up again,
+# with the same slots, in one go.
 # --remove takes the box away; with --purge, Shipify off this machine too (box/remove.sh).
 #
-#   bash here.sh [--manage] [--replace] [--remove [--purge]] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]
+#   bash here.sh [--manage] [--replace | --fresh] [--remove [--purge]] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]
 #   curl … | bash -s -- --manage      (options after `bash -s --` when piped)
 # In the box's Docker image (ADR 0056), `docker run -it … register` runs it with --container: as the
 # container's root, with the image's own gh and Node, and `box add --container`.
@@ -86,8 +88,8 @@ cleanup() {
 }
 
 usage() {
-  sed -n '2,28p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
-  printf 'bash here.sh [--manage] [--replace] [--remove [--purge]] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]\n'
+  sed -n '2,30p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+  printf 'bash here.sh [--manage] [--replace | --fresh] [--remove [--purge]] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]\n'
 }
 
 # ---------------------------------------------------------------- 1. looks first
@@ -257,11 +259,26 @@ add() {
   [ "$MANAGE" = 1 ] && args+=(--manage)
   [ "$CONTAINER" = 1 ] && args+=(--container)
   [ "$REPLACE" = 1 ] && args+=(--replace)
+  if [ "$FRESH" = 1 ]; then
+    # The same slots as before, unless --slots says: the box's services here, slot 1 and -2 to -9.
+    local had
+    had=$(systemctl list-unit-files --no-legend "shipify-box-$NAME*" 2>/dev/null |
+      grep -cE "^shipify-box-$NAME(-[2-9])?\.service" || true)
+    [ -n "$SLOTS" ] || [ "$had" = 0 ] || args+=(--slots "$had")
+    say "Starting over: first, Shipify off this machine"
+    ship box remove "$NAME" --purge || die "nothing changed: box remove can't go ahead (above), and names the fix."
+  fi
   say "The plan"
   # A plan that can't go ahead (a name another machine has) says why: nothing is asked then.
   ship "${args[@]}" || die "nothing changed: box add can't go ahead (above), and names the fix."
-  yes_to "Make this machine the box $NAME" || die "nothing changed: you said no."
-  ship "${args[@]}" --yes </dev/tty || die "box add stopped (above): it names the fix. Running this again carries on."
+  if [ "$FRESH" = 1 ]; then
+    yes_to "Take Shipify off this machine, then make it the box $NAME again" || die "nothing changed: you said no."
+    ship box remove "$NAME" --purge --yes </dev/tty ||
+      die "box remove stopped (above). Running this again carries on."
+  else
+    yes_to "Make this machine the box $NAME" || die "nothing changed: you said no."
+  fi
+  ship "${args[@]}" --yes </dev/tty || die "box add didn't finish (above): it says what's left, and the fix. Running this again carries on."
   if [ "$CONTAINER" = 1 ]; then
     say "Registered: $NAME. Start it, and it runs after every reboot:"
     note "docker compose up -d   (or: docker run -d --name shipify-box --restart unless-stopped -v shipify-box:/home/shipify <image>)"
@@ -293,7 +310,7 @@ remove() {
 }
 
 main() {
-  REMOVE=0 PURGE=0 REPLACE=0 TOKEN=0 CONTAINER=0 MANAGE=0 COPY="" NAME="" SLOTS="" ARCH="" LOGIN=""
+  REMOVE=0 PURGE=0 REPLACE=0 FRESH=0 TOKEN=0 CONTAINER=0 MANAGE=0 COPY="" NAME="" SLOTS="" ARCH="" LOGIN=""
   # value <option> <its value…>: the value given, or a stop that names the option.
   value() {
     if [ $# -lt 2 ] || [ -z "$2" ] || [ "${2#--}" != "$2" ]; then die "$1 needs a value: $1 <value>."; fi
@@ -304,6 +321,7 @@ main() {
       --remove) REMOVE=1 ;;
       --purge) PURGE=1 ;;
       --replace) REPLACE=1 ;;
+      --fresh) FRESH=1 ;;
       --manage) MANAGE=1 ;;
       --token) TOKEN=1 ;;
       --container) CONTAINER=1 ;;
@@ -332,6 +350,9 @@ main() {
   if [ "$PURGE" = 1 ] && [ "$REMOVE" != 1 ]; then die "--purge goes with --remove: it takes Shipify off this machine as the box goes."; fi
   if [ "$PURGE" = 1 ] && [ "$CONTAINER" = 1 ]; then die "--purge isn't for a box in Docker: remove its volume instead (docker volume rm)."; fi
   if [ "$REPLACE" = 1 ] && [ "$REMOVE" = 1 ]; then die "--replace is for adding a box, not removing one."; fi
+  if [ "$FRESH" = 1 ] && [ "$REMOVE" = 1 ]; then die "--fresh sets the box up again: for taking it away, --remove --purge alone."; fi
+  if [ "$FRESH" = 1 ] && [ "$REPLACE" = 1 ]; then die "--fresh starts over on this machine's own box; --replace takes another machine's place: pick one."; fi
+  if [ "$FRESH" = 1 ] && [ "$CONTAINER" = 1 ]; then die "--fresh isn't for a box in Docker: remove its volume, then register again."; fi
   preflight
   WORK=$(mktemp -d)
   chmod 700 "$WORK"

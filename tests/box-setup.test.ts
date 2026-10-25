@@ -22,8 +22,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 9, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=9$/m);
+  it("is version 10, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=10$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -178,6 +178,18 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(at("say \"The agents' network")).toBeGreaterThan(at("(lab)"));
   });
 
+  it("closes this machine's SSH and Cockpit to the agents, never what their containers publish (setup 10)", () => {
+    const table = bash([agentsNet(), "agents_net '998'"]).stdout;
+    expect(table).toContain("ip daddr 127.0.0.0/8 tcp dport { 22, 9090 } reject with tcp reset");
+    expect(table).toContain("ip6 daddr ::1 tcp dport { 22, 9090 } reject with tcp reset");
+    // Only those ports: a container's published port on 127.0.0.1 stays reachable.
+    expect(table).not.toMatch(/daddr (127\.0\.0\.0\/8|::1) (reject|drop)/);
+    // Proved where SSH listens: root reaches it, no agent does.
+    const check = setup.slice(at('say "Checking the sandbox"'), at("# --manage last"));
+    expect(check).toContain('reaches "" 127.0.0.1 22');
+    expect(check).toContain('if reaches "$u" 127.0.0.1 22; then');
+  });
+
   // GitHub's machines have nftables and sudo with no password: nft reads the table there.
   const nft = spawnSync("sudo", ["-n", "nft", "--version"]).status === 0;
   it.runIf(nft)("writes a table nft takes", () => {
@@ -195,9 +207,15 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(manage.indexOf("cockpit.socket.d/listen.conf")).toBeLessThan(
       manage.indexOf("apt_get install"),
     );
+    // From backports only where the box's sources have them (setup 10): never apt's "the value
+    // is invalid" error, and one install.
     expect(manage).toContain(
-      'apt_get install -y -q --no-install-recommends -t "${VERSION_CODENAME}-backports" cockpit cockpit-packagekit',
+      '[ -z "$(ubuntu_suite "${VERSION_CODENAME}-backports")" ] || from=(-t "${VERSION_CODENAME}-backports")',
     );
+    expect(manage).toContain(
+      'apt_get install -y -q --no-install-recommends "${from[@]}" cockpit cockpit-packagekit',
+    );
+    expect(manage.match(/apt_get install/g)).toHaveLength(1);
     expect(manage).toContain('if [ -n "$cockpit" ]; then');
     // put_file: in place only when it differs, and says so.
     const dir = sandbox().dir;
@@ -246,6 +264,56 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(code).toContain("/etc/cron.deny /etc/at.deny");
     expect(code).toContain('agent_user() { echo "shipify-agent-$1"; }');
     expect(code).toContain("AGENT_ROOT=/srv");
+    // Its kept folders, each time, once its folder is right.
+    expect(at('agent_dirs "$u" "$AGENT_ROOT/$u"')).toBeGreaterThan(
+      at('chmod 2710 "$AGENT_ROOT/$u"'),
+    );
+  });
+
+  it("makes each slot's kept folders its agent's own, with no setgid, and mends what setup 8 and 9 left (setup 10)", () => {
+    // Made in the slot folder (setgid, group shipify), they took that group, which has no ID in the
+    // agent's user namespace: Podman's store couldn't mount. A real run of agent_dirs, as this
+    // user, with a group of its own standing in for shipify.
+    const id = (flag: string) =>
+      spawnSync("id", [flag], { encoding: "utf8" }).stdout.trim().split(/\s+/);
+    const [user] = id("-un");
+    const [own] = id("-gn");
+    const body = fn("agent_dirs");
+    expect(body).toContain("-group shipify -type d -exec chmod g-s {} +");
+    expect(body).toContain('-group shipify -exec chgrp -h "$u" {} +');
+    expect(body).toContain('chmod 00700 "$d"');
+    // A user whose own group has its name (as each agent's), and another group: one a folder here
+    // takes already (in a box's run), or a second group of the user's (GitHub's machines).
+    const base = sandbox().dir;
+    mkdirSync(join(base, "probe"));
+    const inherited = spawnSync("stat", ["-c", "%G", join(base, "probe")], {
+      encoding: "utf8",
+    }).stdout.trim();
+    const other = inherited !== own ? inherited : id("-Gn").find((g) => g !== own);
+    if (!user || !other || own !== user) return;
+    const slot = join(base, "shipify-agent-1");
+    const mode = (p: string) =>
+      spawnSync("stat", ["-c", "%a %G", p], { encoding: "utf8" }).stdout.trim();
+    const r = bash([
+      // The slot folder, setgid with that group (a folder made here takes both already).
+      `mkdir "${slot}"`,
+      inherited === other ? "" : `chgrp ${other} "${slot}" && chmod g+s "${slot}"`,
+      // What setup 9 left: data/ and its store with the slot folder's group, and setgid.
+      `mkdir -m 700 "${slot}/data" && mkdir -p "${slot}/data/containers/storage" && touch "${slot}/data/containers/storage/x"`,
+      `ln -s nowhere "${slot}/data/link"`,
+      `[ "$(stat -c %G "${slot}/data/containers/storage")" = ${other} ] || { echo "no setgid group to mend" >&2; exit 1; }`,
+      fn("agent_dirs").replaceAll("shipify", other),
+      `agent_dirs ${user} "${slot}"`,
+      `agent_dirs ${user} "${slot}"`,
+    ]);
+    expect(r.status, r.stderr).toBe(0);
+    for (const d of ["cache", "data"]) expect(mode(join(slot, d)), d).toBe(`700 ${user}`);
+    expect(mode(join(slot, "data", "containers", "storage"))).toMatch(
+      new RegExp(`^7\\d\\d ${user}$`),
+    );
+    expect(mode(join(slot, "data", "containers", "storage", "x"))).toMatch(new RegExp(` ${user}$`));
+    // The slot folder itself keeps its group and setgid: out/ needs them.
+    expect(mode(slot)).toMatch(new RegExp(`^2\\d{3} ${other}$`));
   });
 
   it("installs the sudo rule only once visudo accepts it, and takes it out if sudo's whole configuration then fails", () => {
@@ -420,8 +488,13 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(step).toContain(
       'grep -q "^$u:" /etc/subgid || usermod --add-subgids "$first-$((first + 65535))" "$u"',
     );
-    // A slot that goes: its ranges, then its user.
+    // A slot that goes: its processes, its containers' too (a kill as the agent), its ranges, then
+    // its user.
     const gone = setup.slice(at("goes, with its slot"), at('say "One sudo rule'));
+    expect(gone.indexOf('sudo -u "$u" kill -KILL -1')).toBeGreaterThan(0);
+    expect(gone.indexOf('sudo -u "$u" kill -KILL -1')).toBeLessThan(
+      gone.indexOf("usermod --del-subuids"),
+    );
     expect(gone.indexOf("usermod --del-subuids")).toBeGreaterThan(0);
     expect(gone.indexOf("usermod --del-subuids")).toBeLessThan(gone.indexOf('userdel "$u"'));
     // next_ids: past every range in either file, and never below Ubuntu's SUB_UID_MIN.
@@ -546,6 +619,38 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
       expect(lab, step).toContain(step);
     // The kill reaches the agent's range too: a process that survives is a wall, so no label.
     expect(lab).toContain('walls=""');
+    // Each slot's store, as its runs open it (setup 10): where setup 8 and 9 failed on a box.
+    expect(check).toContain('elif ! podman_as "$u" info >/dev/null 2>"$WORK/lab.log"; then');
+    // Each failure says Podman's own error, never a warning that came after it, nor a fix that
+    // isn't one ("run box add again").
+    const log = join(sandbox().dir, "lab.log");
+    writeFileSync(
+      log,
+      'Error: failed to mount overlay for metacopy check with "" options: permission denied\ntime="…" level=warning msg="dbus: couldn\'t determine address of session bus"\n',
+    );
+    expect(bash([fn("lab_error"), `lab_error "${log}"`]).stdout.trim()).toBe(
+      'Error: failed to mount overlay for metacopy check with "" options: permission denied',
+    );
+    writeFileSync(log, "one\nthe last\n");
+    expect(bash([fn("lab_error"), `lab_error "${log}"`]).stdout.trim()).toBe("the last");
+    expect(setup).not.toMatch(/tail -n 1 "\$WORK\/lab\.log"/);
+    expect(check).not.toMatch(/✗ containers[^\n]*run box add again/);
+  });
+
+  it("never says done when containers don't work: exit 3, after --manage, which box add reads (setup 10)", () => {
+    const end = setup.slice(at("# --manage last"));
+    expect(end).toContain(
+      'if [ -z "$CONTAINER" ] && [ "$lab_ok" != ok ] && [ "$lab_ok" != unproven ]; then',
+    );
+    expect(end).toContain("Done, except containers: they don't start for the agents");
+    expect(end).toContain("Done, except containers: they didn't install");
+    const exit = at('  exit 3\nfi\nsay "Done: ask');
+    // The rest of the box is recorded first: it works, and gets its label.
+    expect(exit).toBeGreaterThan(at('echo "$SETUP_VERSION" > /home/shipify/.shipify-setup'));
+    expect(exit).toBeGreaterThan(at("(manage)"));
+    // An image that didn't pull is the network's, not the box's: the store's check still holds.
+    expect(fn("lab_check")).toContain('[ -z "$lab_ok" ] || lab_ok=unproven');
+    expect(setup).toContain("lab_ok=none");
     expect(setup).toContain("CHECK_IMAGE=docker.io/library/busybox:1.37");
     // left_of counts the agent's processes and its range's, from one read of the process list.
     expect(setup).toMatch(/^left_of\(\) \{/m);
@@ -699,7 +804,13 @@ esac`),
       { mode: 0o755 },
     );
     sb.env = { ...sb.env, PATH: `${bin}:${process.env.PATH}` };
-    return { sb, log: () => (existsSync(log) ? readFileSync(log, "utf8") : ""), got, units };
+    return {
+      sb,
+      log: () => (existsSync(log) ? readFileSync(log, "utf8") : ""),
+      got,
+      units,
+      runners,
+    };
   };
 
   it("--container is the container's own setup: never with a target, never outside a container", () => {
@@ -728,7 +839,7 @@ esac`),
     expect(calls).toContain("mktemp -d");
     // The script goes in on stdin, as every file does: nothing but ssh reaches the machine.
     expect(calls).toContain("umask 077 && cat > /tmp/tmp.Ab12/setup.sh");
-    expect(readFileSync(join(got, "setup.sh"), "utf8")).toContain("SETUP_VERSION=9");
+    expect(readFileSync(join(got, "setup.sh"), "utf8")).toContain("SETUP_VERSION=10");
     // The slots GitHub has, so setup registers again one it deleted.
     expect(readFileSync(join(got, "box.env"), "utf8")).toContain('RUNNER_REGISTERED="1 2"');
     expect(calls).toContain(
@@ -757,6 +868,16 @@ esac`),
     expect(r.summary).toContain("no sandbox label");
     expect(log()).not.toContain("/labels");
     expect(log()).toContain("rm -rf /tmp/tmp.Ab12");
+  });
+
+  it("labels the slots when only containers don't work (setup's exit 3), and says so plainly, never done (setup 10)", () => {
+    const { sb, log } = machine(3);
+    const r = ship(sb, "box", "add", "homepi", "--slots", "2", "--yes");
+    expect(r.status).toBe("failed");
+    expect(r.summary).toContain("takes tasks, but containers don't work for its agents");
+    expect(r.summary).toContain('docs/troubleshooting.md, "Containers don\'t start"');
+    // The rest of the box works: its slots get their label, so task runs go to them.
+    expect(log()).toMatch(/runners\/1\/labels -f labels\[\]=sandbox/);
   });
 
   it("is done only when every slot has the sandbox label and one is online, and says so plainly (setup 9)", () => {
@@ -830,6 +951,40 @@ esac`),
     const r = ship(sb, "box", "remove", "homepi", "--purge", "--yes");
     expect(r.status).toBe("blocked");
     expect(r.summary).toContain("--purge takes Shipify off this machine");
+  });
+
+  it("box remove --purge never while a slot runs a task, and clears what's left on a machine that is no box (setup 10)", () => {
+    const { sb, log, units, runners } = machine(0);
+    const all = JSON.parse(readFileSync(runners, "utf8")) as { runners: { busy: boolean }[] };
+    const [first] = all.runners;
+    if (first) first.busy = true;
+    writeFileSync(runners, JSON.stringify(all));
+    const busy = ship(sb, "box", "remove", "homepi", "--purge", "--yes");
+    expect(busy.status).toBe("blocked");
+    expect(busy.summary).toContain("homepi is running a task: run this again when it's done");
+    expect(log()).not.toContain("-X DELETE");
+    expect(log()).not.toContain("remove.sh");
+    // No box of that name on GitHub, and none here: what's left of Shipify goes (a purge that
+    // stopped, or here.sh --fresh on a machine set up before).
+    writeFileSync(runners, JSON.stringify({ runners: [] }));
+    writeFileSync(units, "");
+    const plan = ship(sb, "box", "remove", "homepi", "--purge");
+    expect(plan.status).toBe("requires-approval");
+    expect(plan.summary).toBe(
+      `no box "homepi" is here or on GitHub: would take what's left of Shipify off this machine`,
+    );
+    expect(plan.nextSteps).toEqual(["pnpm ship box remove homepi --purge --yes"]);
+    const r = ship(sb, "box", "remove", "homepi", "--purge", "--yes");
+    expect(r.status, r.summary).toBe("succeeded");
+    expect(r.summary).toBe(
+      'no box "homepi" was here or on GitHub, and Shipify is off this machine',
+    );
+    expect(log()).toContain("sudo bash /tmp/tmp.Ab12/remove.sh");
+    // Never on a machine that is another box, nor without --purge.
+    writeFileSync(units, "shipify-box-laptop.service enabled\n");
+    expect(ship(sb, "box", "remove", "homepi", "--purge", "--yes").status).toBe("blocked");
+    writeFileSync(units, "");
+    expect(ship(sb, "box", "remove", "homepi", "--yes").summary).toContain("No box called homepi");
   });
 
   it("shows the sandbox in its plan before anything happens", () => {
@@ -996,7 +1151,9 @@ describe("box/remove.sh: Shipify off a machine, the machine's own left (setup 9)
       "/etc/sudoers.d/shipify-agents /etc/needrestart/conf.d/50-shipify-box.conf",
     ])
       expect(code, step).toContain(step);
-    // An agent's ranges go before its user, its processes before both.
+    // An agent's ranges go before its user, its processes before both: its containers' too, which
+    // only a kill as the agent reaches (they run as IDs of its range).
+    expect(code.indexOf('sudo -u "$u" kill -KILL -1')).toBeLessThan(code.indexOf("pkill"));
     expect(code.indexOf("pkill")).toBeLessThan(code.indexOf("usermod --del-subuids"));
     expect(code.indexOf("usermod --del-subuids")).toBeLessThan(code.indexOf('userdel "$u"'));
     // Then it checks, and says what's left.

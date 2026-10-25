@@ -42,6 +42,9 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
 - `--manage` makes it a box you keep: it never sleeps, and gets Tailscale, Cockpit and a firewall
   ([below](#what-it-leaves-out-and---manage)).
 - `--replace` takes the place of a machine that had the same box name (this one, reinstalled).
+- `--fresh` starts over on this machine, in one go: Shipify off it first (as `--remove --purge`),
+  then the box set up again, with the same name and slots. Use it when running the command again
+  doesn't fix something ([below](#starting-over)).
 - `--remove` takes the box away; `--remove --purge` takes Shipify off the machine too
   ([below](#taking-shipify-off-a-machine)).
 - `--token` takes a fine-grained token instead of the code: your copy only, Administration and
@@ -49,7 +52,12 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
 - `--copy`, `--name` and `--slots` answer its questions ahead.
 
 **Run it again** for anything: to update the box's setup, to finish one that stopped, or to fix
-what `ship doctor` names. It carries on from what's done.
+what `ship doctor` names. It carries on from what's done, and mends what an older setup left
+(setup 10: the agents' folders that kept containers from starting). Run it while no task runs:
+`box add` refuses while a slot is busy.
+
+**It never says done when something isn't:** the setup ends with a line that says what's left
+("Done, except containers: …"), and `box add` ends with the same, and the fix.
 
 **To read it or pin it first:** each release lists `here.sh`'s SHA-256 in its notes.
 ```sh
@@ -406,12 +414,17 @@ reaches the runner's keys or changes what the runner runs next.
   `~/.local/share`), so tools download once per slot, not once per run: pnpm, the
   project's packages, a test browser, its containers' images (`data/containers`). The weekly
   clean-up trims what hasn't been read in 30 days, and leaves the images to Podman's prune.
+  Both are the agent's own, its group too, with no setgid (setup 10): with the slot folder's
+  group (`shipify`, which has no ID in the agent's user namespace), Podman's store couldn't mount.
+  A run's start that makes one again (it went missing) clears the setgid it takes from the slot
+  folder.
 - **The check, at setup and every week:** the runner starts each agent without a password, and no
   agent can read the runner's home, its jobs' folder (`_work`), a runner process's environment or
   another slot's runs, nor write to a root container socket, nor, on WSL, open a Windows drive or
   start a Windows program ([This PC](#this-pc)). At setup, also: no agent reaches a private
   network (below). `box add` adds the `sandbox` label only after it passes. `ship doctor` (so each
-  weekly clean-up) checks it again, plus the home's 0700 and the jobs' umask 0077.
+  weekly clean-up) checks it again, plus the home's 0700, the jobs' umask 0077, and that
+  `shipify-agents-net.service` loaded the network rule (below).
 - **Its network: the internet, never a private network** (setup 9). An agent and its containers
   reach what the work needs (GitHub, npm, the agent's API), and no private address: not your home
   network (the router, a camera, a NAS, homepi), not the tailnet, nor a cloud's metadata address
@@ -422,6 +435,11 @@ reaches the runner's keys or changes what the runner runs next.
   Tailscale's stay as they are. The setup's check proves it: a listener on the box's own private
   address, which root reaches and no agent does. The rest of the internet stays open: a list of
   allowed hosts is for later ([roadmap.md](roadmap.md)).
+- **Nor the box's own SSH and Cockpit** (setup 10): ports 22 and 9090 on `127.0.0.1` and `::1`
+  are closed to the agents, in the same table. Each asks for your password, which an agent could
+  keep guessing. A port a container publishes on `127.0.0.1` stays the agent's to reach. Another
+  service of yours on the box's `127.0.0.1` stays open to them: put it behind a password, or on a
+  port the agents can't reach.
 
 ## Containers: the lab
 
@@ -453,13 +471,19 @@ a theory. Nothing to set: `box add` installs it, the same on a Pi, a laptop, a s
 - **A machine with a Docker of its own** keeps it: setup installs no `docker` command there, and
   removes no package. Agents use `podman`, which takes the same commands.
 - **Your own Podman** on the box works as before, as your user, with your own range and settings.
-- **Never a reason for setup to fail:** when the packages can't install (no Ubuntu universe), the
-  step says so, and the box works without containers. A box in Docker skips it.
-- **The check, at setup:** on every slot, the agent's range works; on slot 1, the whole way, as a
-  run does: a container writes into a folder as a user of its own, the box's kill stops it and
-  leaves no process of the agent or its range (a wall: no label until it holds), a run start's
-  prune leaves no container, and `podman unshare` removes what the container wrote. A pull that
-  fails (no network, Docker Hub's limit) is said, and the box keeps its label.
+- **The box works without them, but never quietly:** when the packages can't install (no Ubuntu
+  universe) or a container doesn't start, the step says why (Podman's own `Error:` line), and the
+  setup ends with "Done, except containers" and exit 3. The slots still get their `sandbox` label
+  and take tasks; `box add` says what's left and the fix
+  ([troubleshooting.md](troubleshooting.md#boxes)). A box in Docker skips it.
+- **The check, at setup:** on every slot, the agent's range works and its store opens (`podman
+  info`, as its runs do); on slot 1, the whole way, as a run does: a container writes into a folder
+  as a user of its own, the box's kill stops it and leaves no process of the agent or its range (a
+  wall: no label until it holds), a run start's prune leaves no container, and `podman unshare`
+  removes what the container wrote. A pull that fails (no network, Docker Hub's limit) is said, and
+  the setup ends as done.
+- **And every week:** `ship doctor` (so the weekly clean-up, and "how is this box doing?") opens
+  each slot's store as its agent, and names a slot whose containers don't start.
 
 ## Adding a box or a slot
 
@@ -557,9 +581,31 @@ the box when the run ends.
   once; reply `continue` and any box carries it on.
 - **Update its setup** (when doctor says it's older), while no task runs: on the box, its
   `here.sh` command again; from a PC, `pnpm ship box add <user@host> --manage --yes`.
+- **Start over,** when running it again doesn't fix something: [Starting over](#starting-over).
 - **Remove it:** [Taking Shipify off a machine](#taking-shipify-off-a-machine), or write a fresh
   OS.
 - **Lost or stolen:** [security.md](security.md#if-something-leaks-or-a-box-is-lost).
+
+## Starting over
+
+A box is disposable: it keeps no task and no secret, so taking Shipify off it and setting it up
+again loses nothing that isn't on GitHub. Tasks that come meanwhile wait in the queue. On the box,
+while no task runs on it, one command (setup 10):
+
+```sh
+curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/here.sh | bash -s -- --fresh --manage --name <name>
+```
+
+- **What it does:** both plans first (the purge's, then the setup's), one yes, then Shipify off
+  the machine (its slots on GitHub, services, users, folders and rules, as `--remove --purge`),
+  then the box set up again, with the same name and as many slots as it had (`--slots` to change
+  it).
+- **What stays:** the machine's own (security updates, SSH, zram, Tailscale, Cockpit, the
+  firewall), and anything else of yours on it. The slots' caches and images download again.
+- **It refuses** while a slot runs a task, and on a machine that is another box.
+- **If it stops,** the same command carries on: a purge that stopped is finished first.
+- **Still wrong after it?** Write the OS fresh (Ubuntu Server 24.04 LTS), then the same command
+  without `--fresh`, with `--replace`.
 
 ## Taking Shipify off a machine
 

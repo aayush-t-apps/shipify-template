@@ -169,7 +169,60 @@ describe("box/here.sh: before it changes anything", () => {
     for (const a of ["no", "", "yes please", "N"]) expect(yesTo(a), a).toBe("no");
     // Every yes it asks goes through it: yes_to's is the only answer read as a case.
     expect(text.match(/case "\$\(ask /g)).toHaveLength(1);
-    expect(text.match(/yes_to "/g)?.length).toBe(3);
+    expect(text.match(/yes_to "/g)?.length).toBe(4);
+  });
+
+  it("--fresh starts over in one go: Shipify off this machine, then the box again, with its slots (setup 10)", () => {
+    expect(runIt(UBUNTU("24.04"), "--help").out).toContain("--fresh");
+    for (const [args, says] of [
+      [["--fresh", "--remove"], "--fresh sets the box up again"],
+      [["--fresh", "--replace"], "--fresh starts over on this machine's own box"],
+      [["--fresh", "--container"], "--fresh isn't for a box in Docker"],
+    ] as const) {
+      const r = runIt(UBUNTU("24.04"), ...args);
+      expect(r.code, args.join(" ")).toBe(1);
+      expect(r.out).toContain(says);
+      expect(r.out).not.toContain("Looking at this machine");
+    }
+    // add() for real, with ship, the answer and systemctl standing in: both plans, one yes, then
+    // the purge, then the box again with the slots it had.
+    const add = /^add\(\) \{\n[\s\S]*?\n\}$/m.exec(text)?.[0] ?? "";
+    const fresh = (slots: string, answer = "yes") =>
+      spawnSync(
+        "bash",
+        [
+          "-c",
+          [
+            "set -euo pipefail",
+            'say() { echo "== $*"; }',
+            'note() { echo "  $*"; }',
+            'die() { echo "Stopped: $1"; exit 1; }',
+            `ask() { printf '%s' "${answer}"; }`,
+            /^yes_to\(\) \{\n[\s\S]*?\n\}$/m.exec(text)?.[0] ?? "",
+            'ship() { echo "ship $*"; }',
+            "systemctl() { printf '%s\\n' 'shipify-box-homepi.service enabled enabled' 'shipify-box-homepi-2.service enabled enabled' 'shipify-box-homepi-3.service enabled enabled' 'shipify-box-homepi-lab.service enabled enabled'; }",
+            // No terminal here: ship's own stands in for it.
+            add.replaceAll(" </dev/tty", ""),
+            `FRESH=1 NAME=homepi SLOTS="${slots}" MANAGE=1 CONTAINER=0 REPLACE=0`,
+            "add",
+          ].join("\n"),
+        ],
+        { encoding: "utf8", env: { PATH: process.env.PATH } },
+      ).stdout;
+    const out = fresh("");
+    const ships = out.split("\n").filter((l) => l.startsWith("ship "));
+    expect(ships).toEqual([
+      "ship box remove homepi --purge",
+      "ship box add --name homepi --manage --slots 3",
+      "ship box remove homepi --purge --yes",
+      "ship box add --name homepi --manage --slots 3 --yes",
+    ]);
+    expect(out).toContain("Live: homepi takes the next task");
+    // --slots given wins; a no changes nothing.
+    expect(fresh("2")).toContain("ship box add --name homepi --slots 2 --manage --yes");
+    const no = fresh("", "no");
+    expect(no).toContain("Stopped: nothing changed: you said no.");
+    expect(no).not.toContain("--purge --yes");
   });
 
   it("offers the private Shipify copy you manage, an organization's too, as the default", () => {

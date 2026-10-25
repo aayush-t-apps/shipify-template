@@ -136,6 +136,9 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
     box), the tailnet and a cloud's metadata address. A table of its own in nftables rejects what
     the agent's user, or an ID of its containers' range, sends there; DNS alone stays open. The
     setup proves it before the slots get their label ([box-setup.md](box-setup.md#the-agents-own-user));
+  - the box's own SSH and Cockpit on `127.0.0.1` and `::1` (ports 22 and 9090, box setup 10), where
+    an agent could keep guessing your password. Another service of yours on the box's `127.0.0.1`
+    is open to it: keep a password on it;
   - a root container socket (`/run/docker.sock`, `/run/podman/podman.sock`) or the docker group:
     either would give it the box, so it can write to neither;
   - the machine's tools in `/opt/shipify`: it reads and runs them, and changes none.
@@ -466,6 +469,18 @@ The chat at `/admin/chat/` (ADR 0036) is the edge's first page with scripts, so 
   runs on the edge's address. At most 5 a message, 10 MB each, kept 7 days. A file you sent on
   Telegram is served the same way, fetched through the bot (10 MB at most) and kept nowhere; only
   behind the sign-in, and never with the door closed.
+- **The doc pane** (ADR 0065) adds two ways to see a file, and no new way in:
+  - **Markdown, a CSV, text:** the edge reads the file's first 200 KB and sends words, never the
+    file. Markdown is rendered by GitHub (`POST /markdown`, as the door App, which needs no
+    permission for it) and cleaned by `clean.ts`, the same two locks as a message. A CSV comes as
+    rows and text as text, which the page puts in as text, never as HTML.
+  - **A PDF** (`?view=1` only, and only a file whose type or name says PDF): served as
+    `application/pdf` with `nosniff`, so a browser reads it as a PDF and nothing else, and
+    `frame-ancestors 'self'`, so only the chat frames it. It has no sandbox CSP, because browsers'
+    PDF viewers refuse to run in one; a PDF's own scripts run in the viewer, apart from the page.
+    Every other file, and a PDF without `?view=1`, downloads as before.
+  - **Ask about this** sends a kept file's ref with your words (`up-…` or `run-<task>-…`, the
+    store's own shapes, checked as before): it must still be in the store.
 - **No secrets in the chat:** your words land on a GitHub task. The page warns before sending
   anything that looks like a key: use `pnpm ship add <tool>` on your PC instead.
 - **Notifications** (ADR 0050):

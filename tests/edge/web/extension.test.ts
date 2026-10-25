@@ -96,14 +96,29 @@ describe("the page", () => {
   // Its service worker (ADR 0050) loads on its own after the page, then is a 304: 2 KB of its own.
   // The notification's icon and badge (PNG, made from icon.svg) are fetched by the phone when one
   // shows, never by the page, so they live outside the sign-in (/note/): 8 KB of their own.
+  // Parts loaded the first time they're needed (ADR 0065), each with a budget of its own, so the
+  // page you open every day doesn't carry them: workspace.js and .css (a project's tabs and page,
+  // the doc pane, Files, Ctrl+K), 9 KB; setup.js (Status & setup), 5 KB. With Setup and Files moved
+  // out, and the list's projects in, the page went from 41.8 KB to 40.1.
+  const LAZY = { workspace: 9, setup: 5 };
   it.skipIf(!have)("is plain files of its own, under 42 KB as sent, its worker under 2 KB", () => {
     const list = files(dir);
     for (const want of ["index.html", "app.js", "compose.js", "app.css", "manifest.json", "sw.js"])
       expect(list).toContain(`${dir}/${want}`);
     const gz = (f: string) => gzipSync(readFileSync(join(ROOT, f))).length;
     const worker = `${dir}/sw.js`;
-    const sent = list.filter((f) => f !== worker).reduce((n, f) => n + gz(f), 0);
+    const part = (f: string) => /^(\w+)\./.exec(f.slice(dir.length + 1))?.[1] ?? "";
+    const lazy = (f: string) => part(f) in LAZY;
+    const sent = list.filter((f) => f !== worker && !lazy(f)).reduce((n, f) => n + gz(f), 0);
     expect(sent).toBeLessThan(42 * 1024);
+    for (const [k, kb] of Object.entries(LAZY)) {
+      const mine = list.filter((f) => part(f) === k);
+      expect(mine.length, k).toBeGreaterThan(0);
+      expect(
+        mine.reduce((n, f) => n + gz(f), 0),
+        k,
+      ).toBeLessThan(kb * 1024);
+    }
     expect(list.filter((f) => f.endsWith(".png"))).toEqual([]);
     const note = files("edge/public/note");
     expect(note.sort()).toEqual(["edge/public/note/badge.png", "edge/public/note/icon.png"]);
@@ -120,6 +135,30 @@ describe("the page", () => {
       params: { title: "title", text: "text", url: "url", files: [{ name: "files" }] },
     });
     expect(m.share_target.action.startsWith(m.scope)).toBe(true);
+  });
+
+  // The page names them only as it loads them: never in index.html, never imported at the top.
+  it.skipIf(!have)("loads its parts only when they're needed (ADR 0065)", () => {
+    const html = readFileSync(join(ROOT, dir, "index.html"), "utf8");
+    const js = readFileSync(join(ROOT, dir, "app.js"), "utf8");
+    for (const k of Object.keys(LAZY)) {
+      expect(html, k).not.toContain(`${k}.`);
+      expect(js, k).not.toMatch(new RegExp(`^import[^;]*${k}`, "m"));
+    }
+    expect(js).toContain("import(`./${k}.js`)");
+    expect(js).toContain('lazy("workspace")');
+    expect(js).toContain('lazy("setup")');
+    // Each takes what the page lends it, and nothing else of the page's.
+    for (const k of Object.keys(LAZY)) {
+      const part = readFileSync(join(ROOT, dir, `${k}.js`), "utf8");
+      expect(part, k).toMatch(/export (?:function|const) init\b/);
+      const from = [...part.matchAll(/from "(\.[^"]+)"/g)].map((m) => m[1]);
+      expect(from, k).toEqual(["./compose.js"]);
+    }
+    // What app.js asks of the workspace, it has.
+    const ws = readFileSync(join(ROOT, dir, "workspace.js"), "utf8");
+    for (const f of ["strip", "redraw", "project", "files", "doc", "quick", "pick"])
+      expect(ws, f).toMatch(new RegExp(`export (?:async )?function ${f}\\(`));
   });
 
   // ↻ (ADR 0049): left of New chat, and in a thread's and a page's header; a tap reads what's on

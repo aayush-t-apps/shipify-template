@@ -4,6 +4,7 @@
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  chownSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -18,7 +19,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { sandboxCheck } from "../cli/commands/doctor.ts";
+import { containersCheck, sandboxCheck } from "../cli/commands/doctor.ts";
 import {
   agentUser,
   asAgent,
@@ -926,6 +927,83 @@ describe("doctor: the sandbox check", () => {
     const home = mkdtempSync(join(tmpdir(), "home-"));
     expect(sandboxCheck({ user: "me", home, boxDir: undefined, io: machine() })).toBeUndefined();
     expect(sandboxCheck({ user: "me", home, boxDir: "/somewhere", io: machine() })).toBeUndefined();
+    expect(containersCheck({ user: "me", home, io: machine() })).toBeUndefined();
+  });
+
+  it("says when the agents' network rule isn't on, from the service that loads it (setup 9)", () => {
+    const { home, dir } = box();
+    const withUnit = (show: string) =>
+      sandboxCheck({
+        user: "shipify",
+        home,
+        boxDir: dir,
+        inJob: false,
+        io: fakeIo((c) => {
+          if (c.cmd === "systemctl") return { stdout: show };
+          if (c.cmd === "id") return {};
+          const cmd = command(c);
+          if (cmd.at(-1) === "login") return { stdout: WALLED };
+          return { code: cmd[0] === "true" ? 0 : 1 };
+        }),
+      });
+    const off = withUnit("LoadState=loaded\nActiveState=failed\n");
+    expect(off).toMatchObject({ ok: false });
+    expect(off?.detail).toBe(
+      "the agents' network rule isn't on (shipify-agents-net.service is failed), so they can reach your network and the tailnet (sudo systemctl status shipify-agents-net.service says why)",
+    );
+    expect(withUnit("ActiveState=active\nLoadState=loaded\n")).toMatchObject({ ok: true });
+    // No such service: a setup before 9 (its own check says so), or a box in Docker.
+    expect(withUnit("LoadState=not-found\nActiveState=inactive\n")).toMatchObject({ ok: true });
+  });
+
+  it("checks each slot's containers as its runs open them, with Podman's own reason (setup 10)", () => {
+    const { home, dir } = box({ slots: 2 });
+    const error =
+      'Error: failed to mount overlay for metacopy check with "" options: permission denied';
+    const io = fakeIo((c) =>
+      command(c).at(-1) === "containers" && c.args[2] === "shipify-agent-2"
+        ? { stdout: `${error}\n` }
+        : {},
+    );
+    const c = containersCheck({ user: "shipify", home, boxDir: dir, io });
+    expect(c).toMatchObject({ ok: false, blocking: false });
+    expect(c?.detail).toBe(`shipify-agent-2: ${error}`);
+    expect(c?.fix).toContain('docs/troubleshooting.md, "Containers don\'t start"');
+    // As each agent, in its folder, with the names its runs give Podman.
+    const probes = io.calls.filter((x) => command(x).at(-1) === "containers");
+    expect(probes.map((x) => [x.args[2], namesOf(x).XDG_DATA_HOME])).toEqual([
+      ["shipify-agent-1", "/srv/shipify-agent-1/data"],
+      ["shipify-agent-2", "/srv/shipify-agent-2/data"],
+    ]);
+    expect(namesOf(probes[0] as Call).CONTAINERS_CONF_OVERRIDE).toBe(CONTAINERS_CONF);
+    expect(containersCheck({ user: "shipify", home, boxDir: dir, io: fakeIo() })).toMatchObject({
+      ok: true,
+      detail: "shipify-agent-1, shipify-agent-2: their stores open",
+    });
+
+    // The probe itself, for real, with a stand-in podman: its Error line, never the warning after
+    // it; nothing when the store opens, or when there's no Podman (a box in Docker).
+    const script = command(probes[0] as Call)[2] ?? "";
+    const bin = mkdtempSync(join(tmpdir(), "bin-"));
+    const runtime = join(mkdtempSync(join(tmpdir(), "slot-")), "runtime");
+    // The stand-in first; with none, only its folder (a box may have a podman of its own).
+    const probe = (podman?: string) => {
+      if (podman) writeFileSync(join(bin, "podman"), podman, { mode: 0o755 });
+      return spawnSync("/bin/sh", ["-c", script, "containers"], {
+        cwd: bin,
+        encoding: "utf8",
+        env: { PATH: podman ? `${bin}:/usr/bin:/bin` : bin, XDG_RUNTIME_DIR: runtime },
+      }).stdout;
+    };
+    expect(probe()).toBe("");
+    expect(
+      probe(
+        `#!/bin/sh\necho '${error}' >&2\necho 'time="x" level=warning msg="dbus"' >&2\nexit 125\n`,
+      ),
+    ).toBe(`${error}\n`);
+    expect(existsSync(runtime)).toBe(true);
+    expect(probe("#!/bin/sh\nexit 0\n")).toBe("");
+    expect(probe("#!/bin/sh\nexit 125\n")).toBe("podman info failed\n");
   });
 });
 
@@ -994,6 +1072,23 @@ describe("the sandbox's own scripts, run for real (as this user, without the sud
     expect(mode(join(slot, "runtime")) & 0o777).toBe(0o700);
     // The data the run's home links to is the slot's, as XDG_DATA_HOME names it.
     expect(realpathSync(join(next.home, ".local", "share"))).toBe(next.env.XDG_DATA_HOME);
+  });
+
+  it("makes a missing kept folder without the slot folder's setgid, and mends one setup 8 or 9 left", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "srv-")));
+    const slot = join(root, "shipify-agent-1");
+    mkdirSync(slot);
+    // A group of this user's own, or Linux drops the setgid bit (the box's is shipify).
+    chownSync(slot, process.getuid?.() ?? -1, process.getgid?.() ?? -1);
+    chmodSync(slot, 0o2710);
+    // cache as setups 8 and 9 left it (setgid, by the slot folder's); data gone.
+    mkdirSync(join(slot, "cache"), 0o700);
+    expect(mode(join(slot, "cache")) & 0o2000).toBe(0o2000);
+    prepareRun(1, "44-1", local(root));
+    // Setgid there gives Podman's store a group its user namespace has no ID for: no overlay mount.
+    for (const d of ["cache", "data"]) expect(mode(join(slot, d)), d).toBe(0o700);
+    mkdirSync(join(slot, "data", "containers"));
+    expect(mode(join(slot, "data", "containers")) & 0o2000).toBe(0);
   });
 
   it("proves a login's walls for real: the dummy reaches the probe on a pipe, once, in no environment", () => {

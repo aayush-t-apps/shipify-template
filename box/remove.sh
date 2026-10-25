@@ -34,6 +34,8 @@ echo "  gone"
 
 say "The runner's and the agents' users, with their ID ranges, folders and processes"
 for u in $(getent passwd | cut -d: -f1 | grep -E '^shipify(-agent-[0-9]+)?$' || true); do
+  # As the user first: that reaches its containers too, which run as IDs of its range.
+  sudo -u "$u" kill -KILL -1 2>/dev/null || true
   pkill -KILL -u "$u" 2>/dev/null || true
   usermod --del-subuids 0-4294967294 --del-subgids 0-4294967294 "$u" 2>/dev/null || true
   if userdel "$u"; then echo "  $u: gone"; else echo "  ✗ $u stays (above)"; fi

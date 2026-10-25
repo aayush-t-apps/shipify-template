@@ -198,9 +198,39 @@ A chat window of Shipify's own at `<the edge>/admin/chat/`, made for your phone 
 Access sign-in as the status page (`/admin/status`): no users, no accounts. Whoever gets past that
 sign-in writes as you.
 
-**One screen** (ADR 0039): on a PC, your tasks and the open thread side by side; on a phone one at
-a time, with **Tasks, Repeats, Notebook, Files and Setup** as tabs at the foot
-(not in a thread). On a PC the same pages sit under the list.
+**One screen** (ADR 0039): on a PC, your tasks and the open thread side by side, and a doc you open
+beside them (ADR 0065); on a phone one at a time, with **Tasks, Repeats, Notebook, Files and Setup**
+as tabs at the foot (not in a thread). On a PC the same pages sit under the list.
+
+**Projects as workspaces** (ADR 0065): a task's project is the repo its title names (`shipify: …`,
+`links: …`, as **Change a repo** writes it); a task with none is **General**.
+- **The list by project:** under Open and Needs you, tasks sit in a group per project, each with
+  its name, what needs you (amber) and what's working (teal), folded open or shut with a tap (kept
+  in your browser; open while you search). One group alone is a plain list. ▦ beside a group opens
+  its page.
+- **Tabs:** a project's tasks you open sit as tabs over the thread, as in an editor: each with its
+  state's dot and title, **✕** to close it (the open one goes to its neighbour), and **+** for a new
+  chat in the project (it writes `links: `). The first tab is the project's page. Your open tabs
+  are kept per project in your browser (12 at most), nowhere else. On a phone they scroll sideways.
+- **A project's page** (`#/p/<repo>`): **New chat here**; its open tasks, its numbers (open, needs
+  you, working) and its app (up, failing or paused, from the watch's record); its docs: **In**
+  (what you sent on its tasks) and **Out** (what its runs made), the last 7 days', as Files keeps
+  them; and **Repo docs**, links to its spec, decisions (ADRs), changelog and README on GitHub
+  (Shipify's own: its tour, design, decisions, plans, roadmap and changelog). Those open on
+  GitHub: the door App can't read a repo's files.
+- **The doc pane:** a file you open (from a thread, a project's page or Files) shows beside the
+  thread on a PC, its width yours to drag (or the arrows on its edge), and the whole screen on a
+  phone. Markdown is rendered (by GitHub, then cleaned, as a message is), a CSV is a table, other
+  text is text, a picture is a picture (tap for full size), and a PDF shows in the browser's own
+  viewer; a browser with none (Chrome on a phone) offers **open it**, which the phone's viewer
+  takes. Only the first 200 KB shows; Download has all of it. **Ask about this** puts the file in
+  your next message, here or in a new chat, as if you had attached it (a run's file too). ✕ or
+  Back closes it; going to another task leaves it open.
+- **Ctrl+K** (⌘K) finds a project, a task or a doc by its name: the arrows move, Enter opens.
+  **Alt+1…9** picks a project's tab (1 is its page).
+- It reads nothing new: the list, the menu and Files' read (the project's page). The page you open
+  every day carries none of it: `workspace.js` loads the first time one is needed, as **Status &
+  setup**'s `setup.js` does.
 - **The list:** **Open** by default: the boxes (tap the line for Status & setup), then **For
   review** (shipify's open PRs, each with the task it's for), then what needs you, then what's
   running (its own row says "Working · 2m", "Queued", or "Waiting for a box" with none online; a
@@ -220,7 +250,7 @@ a time, with **Tasks, Repeats, Notebook, Files and Setup** as tabs at the foot
   the list when you open them too. Your own Close, Reopen, Pause or Resume moves the task at once,
   in every view, and it stays moved till GitHub's lists show it (they can lag a minute; five
   minutes at most). Under it, **filters**
-  with counts (a kind, a project, Repeats, your GitHub labels) keep one of them. **Older tasks**
+  with counts (a kind, Repeats, your GitHub labels) keep one of them; a project is its group. **Older tasks**
   reads 50 more. The list is put in again only when something in it changed (a run's clock ticking
   doesn't count), so a tap lands on the row it meant.
 - **A thread per task:** replies shown whole, a run line with its details one tap away, the reply's
@@ -316,9 +346,8 @@ a time, with **Tasks, Repeats, Notebook, Files and Setup** as tabs at the foot
   words the box reads.
 - **Notebook:** your notes. Add sends `remember …`, Remove sends `forget …`; the page reads again
   after each (a note a run writes, with no notebook page yet, shows once it's written).
-- **Files:** what was sent or made in the last 7 days. A file opens here, never in a new tab: a
-  picture full size, a short text file (`.md`, `.txt`, …) as plain text (never rendered), anything
-  else with a Download button. A thread's files open the same way.
+- **Files:** what was sent or made in the last 7 days, by project. A file opens here, never in a
+  new tab: in the doc pane (above). A thread's files open the same way.
 - **Back** has one rule: Tasks is under every page. A tab from Tasks is a step; from another page it
   takes that page's place. A thread, New chat and an open file each add one step, so Back closes
   them first.
@@ -379,7 +408,8 @@ edge's one Worker on Cloudflare's free plan, and GitHub is the record:
   A read of the list is at most three calls (the tasks, the runs going, the boxes) and a thread's
   is two (the task, its newest 100 messages), three past 100 (its first page too, for the run's
   Working line). Each carries an `ETag`, so an unchanged answer is a
-  304 that costs none of them.
+  304 that costs none of them. A Markdown file opened in the doc pane is one more, once a file
+  (GitHub renders it; the Worker keeps that a day).
 - **The Worker's memory:** each read for 5 seconds (the boxes for 30), so a burst asks once; and
   each message as the page shows it (its HTML cleaned), built once and again only when its
   comment is edited or a run reads it, so an open thread's refreshes stay well under the free
@@ -389,7 +419,8 @@ edge's one Worker on Cloudflare's free plan, and GitHub is the record:
   of 5 at most. Photos sent on Telegram aren't copied: Telegram keeps
   them, and the edge fetches one when you look.
 - **Your browser:** the list, the menu (models, projects) and the last 30 threads you opened, so
-  the page opens at once, offline too.
+  the page opens at once, offline too; and each project's open tabs, the groups you folded and the
+  doc pane's width.
 
 **Coming back to it** (another app, the phone asleep, the tab again): away, it asks for nothing.
 Back, it reads what's on screen at once (the list, the thread, or the page you're on, redrawn

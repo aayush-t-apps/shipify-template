@@ -7,6 +7,61 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-10-25
+
+### Fixed
+
+- **Box setup 10: containers start on every box, and a setup never says done when they don't
+  (task #565).** On a box set up by 8 or 9, every `docker run` failed ("failed to mount overlay
+  for metacopy check … permission denied"): each slot's `data` folder, where Podman keeps its
+  store, took the slot folder's group (`shipify`) by its setgid, and that group has no ID in the
+  agent's user namespace. Setup now makes each slot's `cache` and `data` the agent's own, its group
+  too, with no setgid, and mends what 8 and 9 left in place (the caches and images stay); a run's
+  start that makes a missing one again clears the setgid too. Run the
+  box's `here.sh` command again (or `box add`) to bring a box to setup 10.
+  - **Loud, and true:** each slot's store is checked (`podman info`, as its runs open it); a
+    failure shows Podman's own `Error:` line, never a warning after it, and a fix that is one. The
+    setup ends "Done, except containers" with exit 3: the slots still get their label and take
+    tasks, and `box add` (so `here.sh`) says what's left and the fix, never "Live".
+  - **`ship doctor`** (the weekly clean-up, "how is this box doing?") checks each slot's containers,
+    and that the service holding the agents' network rule loaded it.
+  - **A new wall:** no agent reaches the box's own SSH or Cockpit on `127.0.0.1` and `::1` (ports
+    22 and 9090), where it could keep guessing your password. Proved at setup. What a container
+    publishes on `127.0.0.1` stays reachable.
+  - **Starting over, in one command:** `here.sh --fresh` takes Shipify off the machine (as
+    `--remove --purge`), then sets the box up again with the same name and slots, after one yes.
+    `box remove --purge` refuses while a slot runs a task, and on a machine that is no box now, it
+    clears what a purge that stopped left.
+  - **Nothing outlives its slot:** a slot that goes, and a purge, kill as the agent first, which
+    reaches its containers too.
+  - **Quieter:** Cockpit comes from backports only where the box's apt sources have them, never
+    with apt's "the value is invalid" error.
+
+### Added
+
+- **Projects as workspaces in the web chat (ADR 0065, task #568).** A task's project is the repo
+  its title names (`shipify: …`, `links: …`); one with none is General.
+  - **The list by project:** a group each, folded open or shut, with what needs you and what's
+    working counted.
+  - **Tabs:** a project's tasks you open sit as tabs over the thread, with their state, ✕, and +
+    for a new chat in the project; kept per project in your browser.
+  - **A project's page:** its chats, its numbers and its app; its docs as In (what you sent) and
+    Out (what runs made); its repo's docs as links to GitHub.
+  - **A doc beside the chat:** a file opens in a pane next to the thread (the whole screen on a
+    phone), its width yours to drag. Markdown is rendered (by GitHub, then cleaned), a CSV is a
+    table, a PDF shows in the browser's own viewer (a phone's Chrome offers to open it). **Ask
+    about this** puts the file, a run's too, in your next message.
+  - **Ctrl+K** finds a project, a task or a doc; **Alt+1…9** picks a tab.
+  - Nothing new is stored or polled, and no new permission: the edge gains a read for the pane
+    (`…/api/doc/<ref>`, one GitHub call a Markdown file) and serves a PDF inline with `?view=1`.
+    Files groups by project.
+
+### Changed
+
+- **The web chat's page is lighter:** Status & setup (`setup.js`) and the new workspace parts
+  (`workspace.js`) load the first time they're needed, each with a budget of its own; the page
+  you open every day went from 41.8 KB to 40.1 KB as sent.
+
 ## [0.1.13] - 2026-10-24
 
 ### Added

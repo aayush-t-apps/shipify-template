@@ -652,6 +652,9 @@ export function prepareRun(slot: number, runId: string, io: SandboxIo = REAL_IO)
     "fresh",
     "set -e",
     `mkdir -p -m 700 -- ${KEPT.join(" ")}`,
+    // Not the slot folder's setgid, which mkdir passes on: its group (shipify) has no ID in the
+    // agent's user namespace, so Podman's store in data/ couldn't mount (setups 8 and 9).
+    `chmod g-s -- ${KEPT.join(" ")}`,
     'mkdir -m 2710 -- "$1"',
     'cd -- "$1"',
     "mkdir -m 700 home config tmp work read in",
@@ -921,6 +924,57 @@ export function sandboxProblems(
       problems.push(
         `${user}'s commands can read its memory, its login there: kernel.yama.ptrace_scope is ${scope}, not 1 (Ubuntu's: put kernel.yama.ptrace_scope = 1 in /etc/sysctl.d/10-ptrace.conf, then sudo sysctl --system)`,
       );
+  }
+  return problems;
+}
+
+/** The service that loads the agents' network rule at every start (box setup 9). */
+export const AGENTS_NET_UNIT = "shipify-agents-net.service";
+
+/**
+ * The agents' network rule (box setup 9): on, when its service is there. The runner can't read
+ * nftables (that needs root): the service that loads the rule says whether it did. A box without
+ * the service (a setup before 9, a box in Docker) has nothing to say here.
+ */
+export function agentsNetProblems(io: SandboxIo = REAL_IO): string[] {
+  const r = io.run("systemctl", ["show", "-p", "LoadState", "-p", "ActiveState", AGENTS_NET_UNIT], {
+    cwd: "/",
+    env: SPAWN_ENV,
+    timeoutMs: 30_000,
+  });
+  const value = (name: string) => new RegExp(`^${name}=(.*)$`, "m").exec(r.stdout)?.[1];
+  if (r.code !== 0 || value("LoadState") !== "loaded" || value("ActiveState") === "active")
+    return [];
+  return [
+    `the agents' network rule isn't on (${AGENTS_NET_UNIT} is ${value("ActiveState") || "unknown"}), so they can reach your network and the tailnet (sudo systemctl status ${AGENTS_NET_UNIT} says why)`,
+  ];
+}
+
+/**
+ * Whether the agent opens its container store as its runs do (box setup 10): `podman info`, with
+ * no image. Nothing when it does, or when there's no Podman (a box in Docker); else Podman's own
+ * "Error:" line.
+ */
+const CONTAINERS_PROBE = String.raw`command -v podman >/dev/null || exit 0
+export HOME="$PWD"
+[ -d "$XDG_RUNTIME_DIR" ] || mkdir -m 700 "$XDG_RUNTIME_DIR" 2>/dev/null
+err=$(podman info 2>&1 >/dev/null) && exit 0
+line=$(printf '%s\n' "$err" | grep -m 1 '^Error:' || printf '%s\n' "$err" | tail -n 1)
+[ -n "$line" ] || line="podman info failed"
+echo "$line"`;
+
+/** Each slot whose agent's containers don't start, with Podman's reason (ADR 0064). */
+export function containersProblems(slots: number[], io: SandboxIo = REAL_IO): string[] {
+  const problems: string[] = [];
+  for (const k of slots) {
+    const said = asAgentNow(
+      k,
+      ["/bin/sh", "-c", CONTAINERS_PROBE, "containers"],
+      { cwd: slotRoot(k, io.root), env: containerEnv(k, io.root), timeoutMs: 60_000 },
+      io,
+    );
+    const why = said.stdout.trim().split("\n")[0] || (said.code ? `exit ${said.code}` : "");
+    if (why) problems.push(`${agentUser(k)}: ${why}`);
   }
   return problems;
 }

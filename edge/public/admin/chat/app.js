@@ -7,9 +7,7 @@ import {
   composer,
   h,
   icon,
-  nm,
   pop,
-  pretty,
   said,
   repeatForm,
   set,
@@ -21,7 +19,7 @@ import {
 const KEY = "shipify-chat";
 const OFF = "Offline: showing what it last had";
 /** Kept in the browser. @type {Record<string, any>} */
-const S = { list: null, menu: null, threads: {}, seen: [], saw: {} };
+const S = { list: null, menu: null, threads: {}, seen: [], saw: {}, tabs: {}, fold: [] };
 try {
   Object.assign(S, JSON.parse(localStorage.getItem(KEY) || "{}"));
 } catch {}
@@ -196,6 +194,23 @@ const NAME = {
   recipe: "Recipe",
 };
 const named = (k) => NAME[k] || cap(k);
+// A task's project (ADR 0065): the repo its title names, Shipify's own too; none is General.
+const projOf = (t, k = kindIn(t.title)) => (k && !NAME[k] ? k : "");
+// Parts loaded the first time they're needed (ADR 0065), lent what they read here: workspace.js
+// (a project's tabs and page, the doc pane, Files, Ctrl+K) and setup.js (Status & setup).
+const M = {};
+const lazy = (k) => (f) => {
+  M[k] ||= import(`./${k}.js`).then(async (m) => {
+    const lent = { S, R, go, get, keep, start, bare, named, projOf, runs, ago, until, secs, to };
+    const ui = { page, what, meta, list, btn, view, ext, mark, dot, out, copy, quick, fresh };
+    await m.init({ ...lent, ...ui, ask, join, notify, sync });
+    return m;
+  });
+  return M[k].then(f).catch(oops);
+};
+const ws = lazy("workspace");
+// The tasks a run works on now, as the list shows them.
+const runs = () => new Set((S.list?.running || []).filter(goes).map((r) => r.n));
 // A run the list shows, till a reply comes after it began: what's left of it is its end, or a run
 // queued for words it already read (it finds nothing new). Your words after the reply, or any of
 // yours with no 👀 yet (sent as the reply was written), count again.
@@ -288,6 +303,43 @@ async function shut(on) {
   drawList();
 }
 
+// The list by project (ADR 0065): each group folds open and shut (open while you search) and
+// counts what needs you and what works; tasks with no project are General. One group alone is a
+// plain list.
+function groups(l, row, runs, q) {
+  const by = new Map();
+  for (const t of l) by.set(projOf(t), [...(by.get(projOf(t)) || []), t]);
+  if (by.size < 2) return h("ul.rows", l.map(row));
+  return [...by].map(([p, g]) => {
+    const shut = !q && S.fold.includes(p);
+    const n = (f, c, w, k = g.filter(f).length) => k > 0 && h(`small.${c}`, { title: w }, `${k}`);
+    const fold = btn(
+      [
+        icon("down"),
+        h("b", p ? named(p) : "General"),
+        n((t) => t.state === "needs-you", "n", "Needs you"),
+        n((t) => runs.has(t.n), "w", "Working"),
+      ],
+      () => {
+        S.fold = shut ? S.fold.filter((x) => x !== p) : [...S.fold, p];
+        keep();
+        drawList();
+      },
+      ".fold",
+    );
+    fold.ariaExpanded = String(!shut);
+    const page = {
+      href: `#/p/${encodeURIComponent(p)}`,
+      title: "Its page",
+      "aria-label": "Its page",
+    };
+    return [
+      h("div.proj", fold, p && h("a.icon", page, icon("app"))),
+      !shut && h("ul.rows", g.map(row)),
+    ];
+  });
+}
+
 // The list: what needs you first, then what runs; open repeats and recipes last. Open, Needs
 // you and Closed are one control; the filters under it (a kind, a project, your labels) count what
 // it shows. No call but for closed ones.
@@ -313,7 +365,9 @@ function drawList() {
   const me = all.find((t) => t.n === R.n);
   if (me && !(S.saw[me.n] > Date.parse(me.updated))) S.saw[me.n] = Date.parse(me.updated);
   const shown = all.filter((t) => !R.need || t.state === "needs-you");
-  const tagsOf = (t) => [every(t) ? "repeats" : kindOf(t), ...(t.labels || [])].filter(Boolean);
+  // A project is its group, not a filter.
+  const tagsOf = (t) =>
+    [every(t) ? "repeats" : !projOf(t) && kindOf(t), ...(t.labels || [])].filter(Boolean);
   const count = new Map();
   for (const t of shown) for (const k of new Set(tagsOf(t))) count.set(k, (count.get(k) || 0) + 1);
   if (!count.has(R.tag)) R.tag = "";
@@ -406,7 +460,12 @@ function drawList() {
     R.shut && !C
       ? ph()
       : [
-          h("ul.rows", rows.filter((t) => !late(t)).map(row)),
+          groups(
+            rows.filter((t) => !late(t)),
+            row,
+            runs,
+            q,
+          ),
           rest.length > 0 && [
             h("a.group", { href: "#/repeats" }, "Repeats", h("small", "Manage")),
             h("ul.rows", rest.map(row)),
@@ -421,6 +480,7 @@ function drawList() {
   if (key === R.key && $("#list").firstChild) return;
   R.key = key;
   $("#list").replaceChildren(...next.childNodes);
+  M.workspace?.then((m) => m.redraw());
 }
 
 const stub = (n) => ({ task: { n, title: "", prs: [] }, messages: [], writable: true, ph: n > 0 });
@@ -577,6 +637,12 @@ function drawThread(t) {
   if (flip) flip.ariaLabel = T.open ? "Close" : "Reopen";
   const title = n ? (T.pr ? `#${n} ${T.title}` : bare(T.title)) : "New chat";
   set(v.head, back(), h("div.title", h("h2", title), tags), refreshBtn(), flip, more);
+  // A project's task: its tabs above (ADR 0065).
+  const P = real && !T.pr && projOf(T);
+  if (P && v.p !== P) {
+    v.p = P;
+    ws((w) => R.v === v && w.strip(v.box, P, n));
+  }
   // A command's answer stays until the thread's newest message changes; a note, a minute.
   const live = (p) =>
     p.sys
@@ -636,6 +702,8 @@ function drawThread(t) {
       ? h("p.note", "Read it here. ", changes, " and the merge are on GitHub.")
       : h("p.note", "This task doesn't take words from here: ", ext(T.url, "open it on GitHub"));
     set(v.foot, v.pill, t.writable ? composer(v.co) : note);
+    if (R.ask && v.co.attach) v.co.attach(R.ask);
+    R.ask = 0;
   } else if (real && v.co && v.seen !== T.model) {
     // The task's model as GitHub has it, once it changes: a pick here stays till then.
     v.seen = v.co.model = T.model;
@@ -784,21 +852,14 @@ function view(...c) {
   $("#view").showModal();
   history.pushState({ view: 1 }, "");
 }
-// A file opens here, never in a new tab: a picture, a short text file as text, else a Download.
-const TEXT = /\.(md|txt|log|csv|json)$/i;
-async function see(f) {
-  const dl = h("a.btn", { href: f.src, download: f.name }, icon("file"), "Download");
-  if (IMG.test(f.type)) return view(pic(f.src, f.name));
-  const r = TEXT.test(f.name) && (f.size || 0) <= 200_000 && (await fetch(f.src).catch(no));
-  view(
-    h(
-      "div.doc",
-      h("b", f.name),
-      r?.ok ? h("pre", await r.text()) : meta(f.size && size(f.size)),
-      dl,
-    ),
-  );
-}
+// A file opens here, never in a new tab: in the doc pane, beside the thread (workspace.js).
+const see = (f) => ws((w) => w.doc(f));
+// Its Ask about this: the file goes with your next message, here or in a new chat.
+const ask = (f) => {
+  if (R.v?.co?.attach) return R.v.co.attach(f);
+  R.ask = f;
+  go("#/new");
+};
 
 // A ```mermaid block is drawn in /draw/, a sandboxed frame (Mermaid never runs here), and comes
 // back as SVG, shown as a picture (one runs no script). Its source stays if it doesn't draw.
@@ -1022,45 +1083,11 @@ const addNote = () => {
 const notebook = () =>
   page("Notebook", "notebook", (d) => [list(d.pages, note, "The notebook is empty.")], addNote);
 
-const kept = (f) => [
-  IMG.test(f.type) ? h("img.thumb", { src: f.src, alt: "", loading: "lazy" }) : icon("file"),
-  what(
-    btn(f.name, () => see(f), ".name"),
-    meta(size(f.size), f.by === "you" ? "by you" : "by a run", f.until && `goes ${until(f.until)}`),
-    f.task && [" · ", to(f.task)],
-  ),
-];
-const byAt = (a, b) => Date.parse(b.at) - Date.parse(a.at);
-const files = () =>
-  page("Files", "files", (d) => [list(d.files.sort(byAt), kept, "No files in the last 7 days.")]);
+// Files: every project's docs, sorted as a project's page sorts its own (workspace.js).
+const files = () => ws((w) => w.files());
 
-const cmd = (c) =>
-  h(
-    "span.cmd",
-    h("code", c),
-    btn("Copy", () => copy(c)),
-  );
-const sec = (t, k, body, ...how) =>
-  h("section.card", h("h3", icon(k), t), body, how.length > 0 && h("p.how", "To change it: ", how));
-const past = (t, a = ago(t)) => (a === "now" ? "just now" : `${a} ago`);
-const box = (b) => [
-  h("b", b.name),
-  mark(b.online, b.online ? "online" : "offline"),
-  meta(`${b.busy} of ${b.slots} busy`, b.at && `health read ${past(b.at)}`),
-  b.tasks.map((n) => to(n)),
-  b.console && ext(b.console, "Console", ".btn"),
-];
-const chat = (c) => [
-  h("b", c.name),
-  mark(c.ready, c.ready ? "ready" : "not set up"),
-  meta(`${c.people} ${c.people === 1 ? "person" : "people"}`),
-];
-const app = (a) => [
-  ext(a.url, a.id),
-  mark(!a.failing && !a.paused, a.paused ? "paused" : a.failing ? "failing" : "up"),
-  btn("Change…", () => start(`${a.id}: `)),
-];
-const chats = ["add telegram", "add webchat", "selftest webchat"].map((c) => `pnpm ship ${c}`);
+// Status & setup: setup.js, loaded when it opens.
+const setup = () => lazy("setup")((m) => m.setup());
 // Notifications (ADR 0050): sw.js shows them and takes shares. Sent again on opening if the
 // subscription or the edge's key changed.
 const SW = navigator.serviceWorker;
@@ -1100,197 +1127,10 @@ const sync = async () => {
   }
   R.mine = s && (await hex(s.endpoint));
 };
-// Setup's switch, and the devices notified, this one marked.
-const bell = (d) => {
-  const o = out();
-  const sw = h("input", { type: "checkbox", checked: !!S.note });
-  sw.onchange = () =>
-    notify(sw.checked)
-      .then(sync)
-      .then(fresh, (e) => {
-        sw.checked = !!S.note;
-        o.textContent = e.message;
-      });
-  const dev = (x) => [h("b", x.service), meta(past(x.since)), x.id === R.mine && meta("this one")];
-  const how = !S.menu?.notifications
-    ? ["Notifications aren't set up: ", cmd("pnpm ship add webchat --yes")]
-    : window.PushManager
-      ? h("label", sw, "Notifications on this device")
-      : navigator.standalone === false && "For notifications, open Shipify from the Home Screen";
-  return [h("p", how), o, list(d.devices || [], dev, "")];
-};
-const can = (l, a) => a.length > 0 && meta(`${l}: ${a.join(", ")}`);
-const tool = (t) => [
-  h("b", cap(t.id)),
-  t.about,
-  can("Looks at", t.look),
-  can("Changes after your yes", t.act),
-  can("Without asking", t.pre),
-];
-// A look at the box by a run, with Haiku: what Cockpit shows, in words, and what needs doing.
-const HEALTH =
-  "How is the box doing? Disk, memory, temperature, load, updates waiting and the runner's service: say what needs doing, if anything.";
-const health = async () => {
-  const s = await get("send", { id: uid(), words: HEALTH, use: "haiku", files: [] }).catch(no);
-  if (s?.task) go(`#/t/${s.task}`);
-};
-// Why the watch started a task's run, in plain words (the record says "started #160 (its job)").
-const WHY = {
-  "its job": "its repeat's time came",
-  "a reminder": "its reminder's time came",
-  "a check": "its check's time came",
-  "a quiet day": "a quiet day, so it closed",
-  "its deploy": "its deploy finished",
-  "its release": "its release PR was merged or closed",
-  "a new recipe": "a new recipe",
-  "its recipe changed": "its recipe changed",
-};
-const ev = (e) => {
-  const [, n, why] = /^started #(\d+) \((.+)\)$/.exec(e.text) || [];
-  const t = n && join(S.list?.tasks || [], R.closed?.tasks || []).find((x) => x.n === +n);
-  const name = to(n, t ? `#${n} ${bare(t.title)}` : `#${n}`);
-  return [n ? what(name, WHY[why] || why) : h("span.what", e.text), h("time", ago(e.at))];
-};
-// What the box's watch did by itself lately: each run it started, and why. Below the setup.
-const lately = (W) =>
-  sec("Started by the watch", "repeat", [
-    meta(
-      "Runs no one asked for: a repeat's time, a PR's checks, a deploy",
-      W.last && `last looked ${past(W.last)}`,
-      W.next && `next repeat ${until(W.next)}`,
-    ),
-    list(W.events, ev, "Nothing lately."),
-  ]);
-// Now: what needs a look (from the record and the boxes, read anyway), the parts in a word each,
-// and the way out to the status page, GitHub and each box's console.
-const daysTo = (d) => Math.ceil(-secs(d) / 86400);
-const now = (d) => {
-  const o = out();
-  const bad = [
-    d.door.closed && "The door is closed: nothing comes in or goes out",
-    ...d.boxes.filter((b) => !b.online).map((b) => `${b.name} is offline: tasks wait for it`),
-    ...d.apps.filter((a) => a.failing && !a.paused).map((a) => `${a.id} is failing`),
-    ...d.boxes.flatMap((b) => b.look.map((l) => `${b.name}: ${l}`)),
-  ].filter(Boolean);
-  const links = [
-    ext("/admin/status", "Status page", ".btn"),
-    ext(d.links.issues, "Tasks on GitHub", ".btn"),
-    ext(d.links.actions, "Runs", ".btn"),
-    d.boxes.map((b) => b.console && ext(b.console, `${b.name} console`, ".btn")),
-  ];
-  const b = d.boxes[0];
-  const k = [...d.keyDates].sort((x, y) => x.date.localeCompare(y.date))[0];
-  const tile = (l, v, w) => h("div.tile", h("small", l), h("b", v), w && h("small", w));
-  return h(
-    "div.strip",
-    h(
-      `section.card.now${bad.length ? ".bad" : ""}`,
-      h("h3", icon("pulse"), bad.length ? "Needs a look" : "All good"),
-      bad.map((w) => h("p", dot("needs-you", w))),
-      h(
-        "p.links",
-        links,
-        btn("Check now", () => quick(undefined, "/ping", o), ".btn"),
-      ),
-      o,
-    ),
-    tile(
-      "Box",
-      b ? b.name : "none yet",
-      b && `${b.online ? "online" : "offline"} · ${b.busy} of ${b.slots} busy`,
-    ),
-    tile("The door", d.door.closed ? "closed" : "open", d.door.version),
-    tile(
-      "Chats",
-      d.chats
-        .filter((c) => c.ready)
-        .map((c) => c.name)
-        .join(", ") || "none",
-      "",
-    ),
-    k && tile("Next key to renew", `${daysTo(k.date)} days`, k.name),
-  );
-};
-const setup = () =>
-  page("Status & setup", "setup", (d) => {
-    const vars = (v) => [ext(d.links.variables, v), " on GitHub "];
-    const D = d.door;
-    const door = h(
-      "p",
-      mark(!D.closed, D.closed ? "closed" : "open"),
-      ` ${D.version} · ${D.commit.slice(0, 7)}`,
-    );
-    const add = btn("Add a tool…", () => start("shipify: add a tool "));
-    // Agents and models: each with its login (a gateway's key, or its own), Auto, and its models.
-    const agent = (a) => {
-      const g = d.gateways.find((x) => x.id === a.gateway);
-      const own = d.keyDates.find((k) => k.name.toLowerCase() === `${a.id}'s login`);
-      // Its name and login on one line, then its Auto and efforts, then its models.
-      const login = g
-        ? mark(g.since, g.since ? `${g.id} key, set ${g.since}` : `no ${g.id} key`)
-        : mark(true, "its own login");
-      const effort = a.efforts[0] && `effort ${a.efforts[0]} to ${a.efforts.at(-1)}`;
-      return h(
-        "div.arow",
-        h(
-          "p.aname",
-          h("b", a.name || cap(a.id)),
-          a === d.agents[0] && h("span.tag", "default"),
-          login,
-          own && meta(`renew in ${daysTo(own.date)} days`),
-        ),
-        meta(`Auto: ${pretty(`${a.auto.model} ${a.auto.effort}`)}`, effort),
-        h(
-          "div.pills",
-          a.models.map((x) => h("span.chip", nm(x.id))),
-          g && meta(`and any other on ${g.id}`),
-        ),
-      );
-    };
-    const keys = d.gateways.filter((g) => !g.since).map((g) => cmd(`pnpm ship add ${g.id} --yes`));
-    const boxes = [list(d.boxes, box, "No box yet."), btn("Check its health", health, ".btn")];
-    // A key's days left, as a bar (its width set from script: the page takes no inline style).
-    const days = (k) => {
-      const fill = h("i");
-      fill.style.width = `${Math.min(100, Math.max(2, (daysTo(k.date) / 365) * 100))}%`;
-      return [h("div.what", h("b", k.name), h("span.bar", fill)), meta(`${daysTo(k.date)} days`)];
-    };
-    return [
-      now(d),
-      sec(
-        "Agents and models",
-        "spark",
-        h("div.agentlist", d.agents.map(agent)),
-        "the model picker, or a PR to executors.json",
-        ...keys,
-      ),
-      h(
-        "div.cards",
-        sec(
-          "Keys and dates",
-          "pin",
-          list(d.keyDates, days, "None set."),
-          vars("SHIPIFY_KEY_DATES"),
-        ),
-        sec(
-          "Tools",
-          "gear",
-          list(d.tools, tool, "None yet."),
-          add,
-          cmd("pnpm ship add <tool> --yes"),
-        ),
-        sec("Boxes", "box", boxes, cmd("pnpm ship box status"), " on the box"),
-        sec("Projects", "app", list(d.apps, app, "No projects yet."), "Change… starts a chat"),
-        sec("Chats", "chat", [list(d.chats, chat, ""), bell(d)], chats.map(cmd)),
-        sec("The door", "open", [door, D.repo], vars("SHIPIFY_DOOR"), cmd("pnpm ship door check")),
-        lately(d.watch),
-      ),
-    ];
-  });
-
 function route() {
   const [, p = "", n = ""] = location.hash.match(/^#\/(\w*)\/?(\d*)/) || [];
   R.n = p === "t" ? +n : 0;
+  R.proj = p === "p";
   // What you were writing in a task (or a new chat) waits there till you come back, as in a chat.
   const ta = R.v?.foot.querySelector("textarea");
   if (ta) R.drafts[R.v.n] = ta.value;
@@ -1302,7 +1142,8 @@ function route() {
     a.ariaCurrent = a.dataset.p === (p === "t" || p === "new" ? "" : p) ? "page" : null;
   $(".pop")?.remove();
   // Nothing picked is a new chat: its starters, ready to type in.
-  safe({ repeats, notebook, files, setup }[p] || thread);
+  const proj = () => ws((w) => w.project(decodeURIComponent(location.hash.slice(4))));
+  safe({ repeats, notebook, files, setup, p: proj }[p] || thread);
   safe(drawList);
   tick();
 }
@@ -1338,7 +1179,9 @@ async function tick() {
   try {
     const t = S.threads[R.n];
     const wait = (t?.task.open || t?.task.wakes) && !t.task.running && waits(t);
-    const listed = WIDE.matches || !document.body.classList.contains("in") || wait || R.woke;
+    // A project's page shows its tasks: the list is on screen there too.
+    const listed =
+      WIDE.matches || !document.body.classList.contains("in") || wait || R.woke || R.proj;
     await Promise.all([
       listed && get("list", undefined, !!S.list).then(gotList, no),
       R.n && pull(R.n).catch(gone),
@@ -1402,6 +1245,14 @@ $("#q").onkeydown = (e) => {
   const m = /^#(\d+)$/.exec(e.target.value.trim());
   if (e.key === "Enter" && m) go(`#/t/${m[1]}`);
 };
+// Ctrl+K (⌘K) finds a project, a task or a doc; Alt+1…9 picks a project's tab.
+addEventListener("keydown", (e) => {
+  const tab = e.altKey && /^Digit[1-9]$/.test(e.code) && $(".wtabs");
+  if ((e.ctrlKey || e.metaKey) && e.key === "k") ws((w) => w.quick());
+  else if (tab) ws((w) => w.pick(+e.code.slice(5)));
+  else return;
+  e.preventDefault();
+});
 $("#view").onclick = (e) =>
   (e.target === e.currentTarget || e.target.tagName === "IMG") && $("#view").close();
 $("#view").onclose = () => history.state?.view && history.back();

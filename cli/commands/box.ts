@@ -15,7 +15,7 @@ import { listStacks } from "../lib/catalog.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
 import { has, type RunResult, run } from "../lib/exec.ts";
 import { gh, ghJson, ghRun, platformRepo } from "../lib/github.ts";
-import { type Check, ok, type Result, ShipError } from "../lib/output.ts";
+import { type Check, fail, ok, type Result, ShipError } from "../lib/output.ts";
 import { sourceControl } from "../lib/providers.ts";
 import { SANDBOX_LABEL, slotOf as slotOfRunner } from "../lib/sandbox.ts";
 
@@ -560,8 +560,8 @@ export function boxAdd(
     ...(opts.container
       ? []
       : [
-          "containers for each slot's agent (ADR 0064): rootless Podman, with docker and docker compose, as the agent's own user with a range of IDs of its own; no Docker Engine, no docker group and no root socket. Ubuntu's normal updates are added where they're missing. A container stops when the agent's turn ends",
-          "the agents' network (setup 9): out to the internet as the work needs, never to a private network (your home network, the tailnet, a cloud's metadata address), their containers included; a table of its own in nftables, loaded at every start (shipify-agents-net), with your own rules left as they are",
+          "containers for each slot's agent (ADR 0064): rootless Podman, with docker and docker compose, as the agent's own user with a range of IDs of its own; no Docker Engine, no docker group and no root socket. Ubuntu's normal updates are added where they're missing. A container stops when the agent's turn ends. Each slot's store is checked; when containers don't work, it says why, and the box still takes tasks",
+          "the agents' network (setup 9): out to the internet as the work needs, never to a private network (your home network, the tailnet, a cloud's metadata address), nor this machine's SSH and Cockpit (setup 10), their containers included; a table of its own in nftables, loaded at every start (shipify-agents-net), with your own rules left as they are",
           "the updates waiting now, once the slots are registered (a few minutes on a fresh install)",
         ]),
     `then a check that the runner starts each agent without a password, and no agent can read the runner's folders, its environment or another slot's runs, nor write to a root container socket, nor reach a private network (on WSL, nor open Windows' drives or start Windows programs: it prints the fix for /etc/wsl.conf), and that a container's processes go with the box's kill; once it passes, the label "${SANDBOX_LABEL}" on each slot, so task runs can go to them`,
@@ -623,7 +623,10 @@ export function boxAdd(
     ["prep.tsv", stackPrep()],
     ["box.service", unit],
   ]);
-  if (r.code !== 0)
+  // Exit 3 (setup 10): the box works and its sandbox checked out, but its agents' containers don't.
+  // Its slots get their label all the same, and the result says so: never "done".
+  const noContainers = r.code === 3;
+  if (r.code !== 0 && !noContainers)
     throw new ShipError(
       `The setup on ${m.label} failed (see above), so its slots have no sandbox label and take no task runs. It's safe to run again.`,
     );
@@ -673,6 +676,12 @@ export function boxAdd(
       web = undefined;
     }
   }
+  if (noContainers)
+    return fail(
+      "box add",
+      `${m.label} is the box "${name}" and takes tasks, but containers don't work for its agents (above), so a task that needs one fails. Run the same command again; if it says the same, docs/troubleshooting.md, "Containers don't start", has the fix.`,
+      { data: web ? `  Console (Cockpit): ${web}` : undefined, checks: readiness(repo) },
+    );
   return ok(
     "box add",
     online < slots
@@ -940,10 +949,15 @@ export function boxRemove(name: string, yes: boolean, purge = false): Result {
   const all = runners(repo);
   const found = slotsOf(all, name);
   // Its services on this machine, when it's this machine's box: stopped here, with sudo.
-  const here = slotsHere().filter((n) => slotOf(name, n) > 0);
-  if (!found.length && !here.length)
+  const slotsHereNow = slotsHere();
+  const here = slotsHereNow.filter((n) => slotOf(name, n) > 0);
+  // A purge on a machine that is no box now (none of its services), with no such box on GitHub:
+  // what's left of Shipify here goes all the same (a purge that stopped, a start over: here.sh
+  // --fresh). Never on a machine that is another box.
+  const leftovers = purge && !found.length && !slotsHereNow.length;
+  if (!found.length && !here.length && !leftovers)
     throw new ShipError(`No box called ${name}. See: pnpm ship box list`, "blocked");
-  if (purge && !here.length)
+  if (purge && !here.length && !leftovers)
     throw new ShipError(
       `--purge takes Shipify off this machine, and "${name}" isn't its box: run it on that machine (here.sh --remove --purge).`,
       "blocked",
@@ -964,24 +978,35 @@ export function boxRemove(name: string, yes: boolean, purge = false): Result {
       : []),
   ];
   // A Pi or VPS keeps its services until they're stopped on the machine itself.
-  const onMachine = here.length
-    ? purge
-      ? []
+  const onMachine = leftovers
+    ? []
+    : here.length
+      ? purge
+        ? []
+        : [
+            `to take Shipify off this machine too (its users, folders and rules): pnpm ship box remove ${name} --purge --yes`,
+          ]
       : [
-          `to take Shipify off this machine too (its users, folders and rules): pnpm ship box remove ${name} --purge --yes`,
-        ]
-    : [
-        `on the machine, so its services stop restarting: sudo systemctl disable --now ${units.join(" ")}`,
-        `to take Shipify off it fully (its users, folders and rules), on it: here.sh --remove --purge (docs/box-setup.md, "Taking Shipify off a machine")`,
-      ];
+          `on the machine, so its services stop restarting: sudo systemctl disable --now ${units.join(" ")}`,
+          `to take Shipify off it fully (its users, folders and rules), on it: here.sh --remove --purge (docs/box-setup.md, "Taking Shipify off a machine")`,
+        ];
   if (!yes)
     return {
       command: "box remove",
       status: "requires-approval",
-      summary: `would remove the box "${name}"${purge ? ", and take Shipify off this machine" : ""}`,
+      summary: leftovers
+        ? `no box "${name}" is here or on GitHub: would take what's left of Shipify off this machine`
+        : `would remove the box "${name}"${purge ? ", and take Shipify off this machine" : ""}`,
       plannedActions: planned,
       nextSteps: [`pnpm ship box remove ${name}${purge ? " --purge" : ""} --yes`, ...onMachine],
     };
+  // A purge ends every run here: never while a slot runs a task.
+  const busy = found.filter((r) => r.busy);
+  if (purge && busy.length)
+    throw new ShipError(
+      `${busy.map((r) => r.name).join(", ")} is running a task: run this again when it's done (pnpm ship box list).`,
+      "blocked",
+    );
   if (here.length) services(["disable", "--now"], here);
   for (const r of found) gh(["api", "-X", "DELETE", `repos/${repo}/actions/runners/${r.id}`]);
   setConsole(repo, name, undefined);
@@ -991,7 +1016,11 @@ export function boxRemove(name: string, yes: boolean, purge = false): Result {
     );
   return ok(
     "box remove",
-    purge ? `removed "${name}", and Shipify is off this machine` : `removed "${name}"`,
+    leftovers
+      ? `no box "${name}" was here or on GitHub, and Shipify is off this machine`
+      : purge
+        ? `removed "${name}", and Shipify is off this machine`
+        : `removed "${name}"`,
     { nextSteps: onMachine },
   );
 }

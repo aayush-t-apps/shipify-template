@@ -195,15 +195,18 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
   application's path doesn't cover `/admin`, the edge answers 403 itself, so it fails closed:
   change the path to `admin/*`.
 - **The page:** `edge/public/admin/chat/` (plain HTML, CSS and JS, `// @ts-check`, no libraries, no
-  build step, about 120 KB, just under its 42 KB budget compressed, its service worker apart),
+  build step, about 120 KB, 40 KB of its 42 KB budget compressed, its service worker apart),
   served as the Worker's static assets with `run_worker_first`, so every file is behind the same
-  token check.
+  token check. Two parts load the first time they're needed, each with a budget of its own (ADR
+  0065): `workspace.js` and `workspace.css` (a project's tabs and page, the doc pane, Files,
+  Ctrl+K) and `setup.js` (Status & setup).
 - **Diagrams:** a `mermaid` code block is drawn in `/draw/` (`edge/public/draw/`), a static page
   with no data, outside the sign-in, shown in a sandboxed frame (`allow-scripts`, no same-origin).
   It loads Mermaid 11.17.2 from jsDelivr, pinned with its SRI hash, and hands back the SVG, which
   the chat shows as a picture (an `<img>` runs no script). Mermaid never runs in the chat itself.
 - **Its routes,** under `/admin/chat/api/`: `list`, `task/<n>`, `menu`, `repeats`, `notebook`,
-  `files`, `setup` and `file/<ref>` to read; `POST` `file`, `send`, `repeat` and `push` to write. A
+  `files`, `setup`, `file/<ref>` and `doc/<ref>` to read; `POST` `file`, `send`, `repeat` and `push`
+  to write. A
   `POST` must carry the edge's own `Origin` and `x-shipify-chat: 1`.
 - **Notifications** (ADR 0050): `POST …/api/push` with `{"on": <the browser's subscription>}` keeps
   a device (5 at most, a sixth replacing the oldest), `{"off": "<its address>"}` drops one; back
@@ -232,7 +235,9 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
 - **Files** live in Workers KV, bound as `FILES` (the deploy creates it; `edge/wrangler.jsonc` has
   no id), for 7 days. A run fetches one through `GET /door/file/web:<ref>`. Only PNG, JPEG, GIF and
   WebP show inline; anything else, HTML and SVG too, downloads
-  ([security.md](security.md#the-web-chat)). A file you sent on Telegram shows through
+  ([security.md](security.md#the-web-chat)). The doc pane (ADR 0065) reads one through
+  `…/api/doc/<ref>`: Markdown rendered by GitHub (`POST /markdown`, once a file, kept a day in the
+  Worker) and cleaned, a CSV as rows, text as text; a PDF shows from `…/api/file/<ref>?view=1`. A file you sent on Telegram shows through
   `…/api/sent/telegram:<id>`: the edge asks Telegram for it, as for a run, and keeps nothing; a
   picture shows inline only when its `from` line says it's one; with the door closed, none.
 - **The model picker and Status & setup** read `executors.json` and `tools.json`, built into the edge when it
