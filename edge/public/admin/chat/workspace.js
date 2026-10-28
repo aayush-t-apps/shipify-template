@@ -15,6 +15,7 @@ const WORD = {
   working: "Working",
   staying: "Staying",
   stuck: "Stopped",
+  waiting: "Waiting",
   open: "Open",
   closed: "Closed",
 };
@@ -109,6 +110,22 @@ export function strip(box, P, n) {
   const e = nav(P, n);
   box.prepend(e);
   e.querySelector(".on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+/**
+ * Tasks put in their projects' tabs, the oldest going past MOST (a split task's parts, from its Plan
+ * card, ADR 0066). A task with no project has none.
+ */
+export function tab(l) {
+  for (const t of l) {
+    const P = A.projOf(t);
+    if (!P) continue;
+    const T = tabsOf(P);
+    if (!T.includes(t.n)) T.push(t.n);
+    T.splice(0, T.length - MOST);
+  }
+  A.keep();
+  redraw();
 }
 
 /** ✕: the tab goes; the one open goes to its neighbour, or to the project's page. */

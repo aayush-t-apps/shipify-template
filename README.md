@@ -42,7 +42,7 @@ and rules).
 | to carry on | a reply to any of the task's messages | the next run reads it |
 | a change to a repo | `<repo>: what to change` (`acme/api: …` on another account) | a PR, made that repo's way; you merge |
 | to read any repo | `look at owner/name …` | an answer from its code |
-| a change in a tool (Notion) | ask, then tap Yes on the exact calls | the box makes exactly those calls |
+| a change in a tool (Notion, Drop) | ask, then tap Yes on the exact calls | the box makes exactly those calls |
 | a note it keeps in mind | `remember: …` | saved at once |
 | a reminder or a regular job | `repeat: every Monday at 9, …` | a reply each time |
 | a check-back, once | "check PR #12's CI in 15 minutes and tell me" | one reply, then it ends |
@@ -59,6 +59,7 @@ Paste screenshots or files, up to 5 a message. A few **fixed words** do one thin
 | | For | Start it | Stop it |
 |---|---|---|---|
 | **Task** | one job, now | words, or an issue | it closes when done |
+| **Sub-tasks** | one job of a few PRs, in order (across repos, an ADR's build) | "split it" on the task, your `yes`, then `go` ([tasks.md](docs/tasks.md#sub-tasks-one-task-a-few-prs)) | `stop`; it closes when every part is closed |
 | **Repeat** | a job on a schedule, or once later | `repeat: …`, or a time in your words | `stop repeating`, or close the task |
 | **Errand** | one job when a PR's checks end, it merges, or it's live | "when #12 …" on the task | it ends when it fires |
 | **Recipe** | a repeat kept as a reviewed file | `recipes/<name>.md` in a PR ([recipes.md](docs/recipes.md)) | remove the file |

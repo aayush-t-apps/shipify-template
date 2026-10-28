@@ -253,6 +253,17 @@ as tabs at the foot (not in a thread). On a PC the same pages sit under the list
   with counts (a kind, Repeats, your GitHub labels) keep one of them; a project is its group. **Older tasks**
   reads 50 more. The list is put in again only when something in it changed (a run's clock ticking
   doesn't count), so a tap lands on the row it meant.
+- **Sub-tasks** (ADR 0066, [tasks.md](tasks.md#sub-tasks-one-task-a-few-prs)): a split task's row
+  shows a thin bar and "2/4", its parts closed of all. Its open parts fold under it, in order ("3
+  open parts"), and each still shows in its own project's group. A part blocked by a task that's
+  still open is **Waiting**: a grey dash, not a dot (not the `waiting` label of an errand). A split
+  task's thread has a **Plan card** under its header: each part with its state, project, PR and
+  "waits for #C". **Start** on a ready part sends `go #n`, **Start all ready** sends `go`, **Stop**
+  (after `go`, with a confirm) sends `stop`, as a reply's buttons send words. **Open all as tabs**
+  puts the open parts in their projects' tabs. The plan is one GitHub read when the thread opens,
+  kept 60 s, so a tap shows in it within a minute; `plan.js` loads only for a split task. On a phone
+  the card is full width, rows 44 px, and folded until you tap it. A part's thread says "Part of
+  #N" under its title, a link to its parent, and "Waiting" when it waits.
 - **A thread per task:** replies shown whole, a run line with its details one tap away, the reply's
   buttons and question, files and pictures, photos you sent on Telegram too. Tap a picture to see
   it full size. Once your words are in, the header and the bottom say "Starting…" (or "Waiting for

@@ -21,6 +21,7 @@ import {
   readReply,
   renderProblem,
   replyLine,
+  STARTED_LABEL,
   type ToolResult,
 } from "../contracts/index.ts";
 import { accountOf } from "../lib/accounts.ts";
@@ -37,6 +38,7 @@ import { findStatus, inertImages, MAX_REPLY, safeMarkdown, type TaskState } from
 import { cursorOf, sharedNow } from "./decide.ts";
 import { replyKey } from "./keys.ts";
 import { makeCalls } from "./mcp-client.ts";
+import { openedText, SUB_TASK } from "./parts.ts";
 import { saidAs } from "./result.ts";
 import { type Person, replyTo, scheduledReply } from "./route.ts";
 import { taskReadOf } from "./snapshot.ts";
@@ -103,10 +105,10 @@ export async function apply(
    * status GitHub refuses never keeps a written reply from your chat; one it wasn't told of gets the
    * watch's notice.
    */
-  const tellDoor = async (id: number, made: string[]) =>
-    env.tellDoor?.(s.n, id, made).catch((e) => {
+  const tellDoor = async (id: number, made: string[], n = s.n) =>
+    env.tellDoor?.(n, id, made).catch((e) => {
       process.stderr.write(
-        `${JSON.stringify({ level: "warn", event: "door.out.failed", task: s.n, comment: id, what: maskSecrets(errorLine(e)) })}\n`,
+        `${JSON.stringify({ level: "warn", event: "door.out.failed", task: n, comment: id, what: maskSecrets(errorLine(e)) })}\n`,
       );
     });
   /** A write GitHub (or anything) refused, as its problem; in the run's log too, so its cause shows
@@ -194,7 +196,7 @@ export async function apply(
             `calls:${w.fingerprint}`,
             `the ${w.calls.length} approved call(s)`,
             async () => {
-              const done = await makeCalls(w.calls);
+              const done = await makeCalls(w.calls, process.env, st.shared);
               outcomes.push(
                 ...done.map(
                   (r: ToolResult, i: number) =>
@@ -214,6 +216,59 @@ export async function apply(
             },
           );
           break;
+        case "split":
+          // On your yes (ADR 0066): the parts opened as sub-issues, with their links; none starts.
+          await journal(
+            `split:${s.state.seen}:${s.run.id}`,
+            `opening the ${w.parts.length} sub-tasks`,
+            () => {
+              const made = rec().openParts(s.n, w.parts, SUB_TASK);
+              outcomes.push(openedText(w.parts, made));
+            },
+          );
+          break;
+        case "start":
+          // A part's run (ADR 0066): your `go` on its parent, or the part it waited for merged.
+          await journal(`start:${w.n}:${s.run.id}`, `starting #${w.n}`, () => {
+            const r = queue().dispatch("task.yml", { issue: String(w.n), job: "run" });
+            if (!r.ok) throw new Error(`#${w.n} couldn't start: ${r.error}`);
+          });
+          break;
+        case "tell": {
+          // On the parent (ADR 0066): to your default channels, as no chat asked for it. Its key
+          // names this run, so a run again writes it once; two parts closing at once may both.
+          const key = replyKey({ task: w.n, cursor: 0, body: w.text, step: w.step });
+          const to = replyTo({
+            kind: w.kind,
+            asked: [],
+            defaults: env.defaults,
+            owner: env.owner,
+            ownTask: true,
+          });
+          await journal(`tell:${w.n}:${w.step}:${s.run.id}`, `telling #${w.n}`, async () => {
+            const id = rec().comment(
+              w.n,
+              [
+                replyLine({
+                  v: 1,
+                  kind: w.kind,
+                  state: w.state,
+                  title: (s.family?.parent.title ?? `#${w.n}`).slice(0, 256),
+                  links: [],
+                  to,
+                  key,
+                }),
+                safeMarkdown(maskSecrets(w.text)),
+              ].join("\n\n"),
+            );
+            await tellDoor(id, [], w.n);
+            if (w.close) {
+              rec().updateIssue(w.n, { state: "closed", state_reason: "completed" });
+              rec().removeLabel(w.n, STARTED_LABEL);
+            }
+          });
+          break;
+        }
         case "coming-up":
           tryStatusIssue(
             (x) => {

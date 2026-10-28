@@ -3,7 +3,7 @@
 // open tasks and PRs, without their rendered bodies; the task runs; the runners), and an older page
 // of it, or of the closed ones, one; a thread two (the task or PR and its newest 100 comments; past
 // 100, its first page too, for the run's status comment) and one per PR of shipify's it names, at
-// most three.
+// most three; a split task's (ADR 0066) one GraphQL read more, for its parts, kept 60 s.
 import {
   AFTER_CLOSE_MS,
   acknowledgement,
@@ -13,14 +13,18 @@ import {
   readReply,
   readTaskSeen,
   replyButtons,
+  STARTED_LABEL,
+  STATE_LABELS,
   STAYING_LABEL,
   STUCK_LABEL,
+  SUB_TASK_LABEL,
   TASK_MARK,
   withoutLine,
   withUpcoming,
   withZone,
 } from "../../../cli/contracts/index.ts";
 import pkg from "../../../package.json" with { type: "json" };
+import { cached } from "../cache.ts";
 import { channelOf } from "../channels/index.ts";
 import type { Deps, Env } from "../env.ts";
 import { byDoor, byRun, type GitHub, github, RUN_WRITER } from "../github.ts";
@@ -43,6 +47,7 @@ import type {
   Msg,
   Notebook,
   Origin,
+  Part,
   Repeats,
   Running,
   State,
@@ -72,6 +77,9 @@ interface Issue {
   performed_via_github_app?: { id?: number } | null;
   pull_request?: { merged_at?: string | null } | null;
   reactions?: { eyes?: number };
+  /** GitHub's own counts, on every issue it answers (ADR 0066): its sub-issues, its open blockers. */
+  sub_issues_summary?: { total?: number; completed?: number } | null;
+  issue_dependencies_summary?: { blocked_by?: number } | null;
 }
 
 interface Comment {
@@ -108,6 +116,8 @@ const SAID = new Set([
   "repeats",
   "recipe",
   "waiting",
+  SUB_TASK_LABEL,
+  STARTED_LABEL,
 ]);
 /** A task's other labels (yours from GitHub, "failed", "deploying"): the list filters by them. */
 const tagsOf = (i: Issue) => labelsOf(i).filter((l) => !SAID.has(l));
@@ -135,8 +145,92 @@ function stateOf(i: Issue, running: boolean): State {
   // A run that stays after its answer (ADR 0057) is going, but waits for you: Working only while
   // a turn runs (the thread reads that from its status), else Staying (`staying`).
   if (running && !staying(i)) return "working";
+  // Blocked by a task still open (ADR 0066): Waiting, from GitHub's own count.
+  if ((i.issue_dependencies_summary?.blocked_by ?? 0) > 0) return "waiting";
   if (labels.includes(STUCK_LABEL)) return "stuck";
   return "open";
+}
+
+/** A part's parent (ADR 0066): its body's first line, `Part of #<n>`, on a task labelled so. */
+const parentOf = (i: Issue) =>
+  (labelsOf(i).includes(SUB_TASK_LABEL) &&
+    Number(/^Part of #(\d+)[ \t]*(?:\r?\n|$)/.exec(i.body ?? "")?.[1])) ||
+  undefined;
+
+/** A split task's parts, closed of all: GitHub's count, on the issue already. */
+const partsOf = (i: Issue) => {
+  const total = i.sub_issues_summary?.total ?? 0;
+  return total > 0 ? { done: i.sub_issues_summary?.completed ?? 0, total } : undefined;
+};
+
+/** Done, as a blocker: closed as completed. A dropped one (not planned) isn't. */
+const done = (x: { state: string; stateReason?: string | null }) =>
+  x.state === "CLOSED" && (x.stateReason ?? "COMPLETED") === "COMPLETED";
+
+interface PartNode {
+  number: number;
+  title: string;
+  state: string;
+  stateReason?: string | null;
+  labels?: { nodes?: { name: string }[] };
+  blockedBy?: { nodes?: { number: number; state: string; stateReason?: string | null }[] };
+  closedByPullRequestsReferences?: { nodes?: { number: number; url: string }[] };
+}
+
+const PLAN = `query($owner: String!, $name: String!, $n: Int!) {
+  repository(owner: $owner, name: $name) { issue(number: $n) { subIssues(first: 50) { nodes {
+    number title state stateReason labels(first: 20) { nodes { name } }
+    blockedBy(first: 20) { nodes { number state stateReason } }
+    closedByPullRequestsReferences(first: 1, includeClosedPrs: false) { nodes { number url } }
+  } } } }
+}`;
+/** How long a plan is kept: a parent's thread polls every few seconds, its parts change seldom. */
+const PLAN_MS = 60_000;
+
+/** One part as the Plan card shows it: its state as a list row's, ready, what it waits for. */
+function partOf(x: PartNode): Part {
+  const labels = (x.labels?.nodes ?? []).map((l) => l.name);
+  const open = x.state === "OPEN";
+  const blockers = (x.blockedBy?.nodes ?? []).filter((b) => !done(b));
+  const after = open ? blockers.map((b) => b.number) : [];
+  const ran = labels.some((l) => (STATE_LABELS as readonly string[]).includes(l));
+  const state = !open
+    ? "closed"
+    : labels.includes(NEEDS_YOU_LABEL)
+      ? "needs-you"
+      : labels.includes("working")
+        ? "working"
+        : blockers.some((b) => b.state === "OPEN")
+          ? "waiting"
+          : labels.includes(STUCK_LABEL)
+            ? "stuck"
+            : "open";
+  const pr = x.closedByPullRequestsReferences?.nodes?.[0];
+  return {
+    n: x.number,
+    title: x.title,
+    state,
+    ...(open || done(x) ? {} : { dropped: true as const }),
+    ...(open && !ran && !after.length ? { ready: true as const } : {}),
+    ...(after.length ? { after } : {}),
+    ...(pr ? { pr: { n: pr.number, url: pr.url } } : {}),
+  };
+}
+
+/** A split task's parts, in order: one GraphQL read, kept PLAN_MS for every tab and phone. */
+function planOf(gh: GitHub, deps: Deps, n: number) {
+  const [owner, name] = gh.repo.split("/");
+  return cached(
+    `web:plan:${gh.repo}:${n}`,
+    PLAN_MS,
+    async () => {
+      const d = await gh.graphql<{
+        repository?: { issue?: { subIssues?: { nodes?: PartNode[] } } | null } | null;
+      }>(PLAN, { owner, name, n });
+      return (d.repository?.issue?.subIssues?.nodes ?? []).map(partOf);
+    },
+    deps.now(),
+  );
 }
 
 /** The task runs going now, by task. */
@@ -195,6 +289,8 @@ export async function list(env: Env, deps: Deps, page = 1, closed = false): Prom
     .filter((i) => !hidden(i))
     .map((i) => {
       const labels = tagsOf(i);
+      const parts = partsOf(i);
+      const parent = parentOf(i);
       return {
         n: i.number,
         title: i.title,
@@ -204,6 +300,8 @@ export async function list(env: Env, deps: Deps, page = 1, closed = false): Prom
         url: i.html_url,
         ...(staying(i) ? { staying: true as const } : {}),
         ...(labels.length ? { labels } : {}),
+        ...(parts ? { parts } : {}),
+        ...(parent ? { parent } : {}),
       };
     });
   const review = issues
@@ -401,10 +499,12 @@ export async function thread(
   // it's on page 1: read too when the page shown is a later one. Unchanged, each is a 304.
   const page = (p: number) =>
     read<Comment[]>(env, deps, `repos/${gh.repo}/issues/${n}/comments?per_page=100&page=${p}`);
-  const [comments, first] = await Promise.all([
+  const [comments, first, plan] = await Promise.all([
     page(last),
     // Only for the Working line: a page 1 that can't be read leaves it out, never the thread.
     last > 1 ? page(1).catch(() => [] as Comment[]) : Promise.resolve([] as Comment[]),
+    // A split task's Plan card (ADR 0066): a plan that can't be read leaves the card out.
+    partsOf(issue) && !issue.pull_request ? planOf(gh, deps, n).catch(() => undefined) : undefined,
   ]);
   const owner = s.owner?.toLowerCase();
   // A task written on GitHub with only a title: its first message is that title, not an empty one.
@@ -467,6 +567,7 @@ export async function thread(
   const model = choiceOf(gh, owner, all, status);
   const labels = labelsOf(issue);
   const forTask = issue.pull_request ? taskOfPr(issue.body) : undefined;
+  const parent = issue.pull_request ? undefined : parentOf(issue);
   return {
     v: 1,
     task: {
@@ -484,6 +585,9 @@ export async function thread(
       ...(running ? { running } : {}),
       ...(issue.pull_request ? { pr: prState(issue) } : {}),
       ...(forTask ? { for: forTask } : {}),
+      ...(parent ? { parent } : {}),
+      ...(labels.includes(STARTED_LABEL) ? { started: true as const } : {}),
+      ...(plan ? { plan } : {}),
     },
     messages,
     earlier: last > 1 && !since,

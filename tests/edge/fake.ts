@@ -27,6 +27,14 @@ export interface Issue {
   updated_at?: string;
   /** GitHub's rendering of its body, when a test gives one. */
   html?: string;
+  /** Why it closed, as GraphQL says it: "COMPLETED" (none given), "NOT_PLANNED" (dropped). */
+  stateReason?: string;
+  /** The tasks it's blocked by (GitHub's link, ADR 0066). */
+  blockedBy?: number[];
+  /** Its sub-issues, in order: GitHub's link, as the box makes it on a split's `yes`. */
+  subIssues?: number[];
+  /** The open PR that closes it. */
+  closedBy?: { number: number; url: string };
 }
 
 export interface Comment {
@@ -157,6 +165,8 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     runs: {} as Record<string, Run[]>,
     tokenStatus: 201,
     githubDown: false,
+    /** GitHub's GraphQL answers a 502 (a sub-task plan's read fails). */
+    graphqlFails: false,
     /** GitHub's next this many calls get a 502 (a moment's hiccup), its token's left alone. */
     githubBlips: 0,
     /** One task's read fails (a GitHub hiccup), by its number. */
@@ -199,13 +209,49 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
       .replace(/^<!--[^\n]*-->\n?/, "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")}</p>`;
-  const issueJson = (i: Issue) => ({
-    ...i,
-    html_url: `https://github.com/${REPO}/issues/${i.number}`,
-    labels: i.labels.map((name) => ({ name })),
-    body_html: htmlOf(i.body, i.html),
-    updated_at: i.updated_at ?? i.created_at,
-    comments: w.comments.filter((c) => c.issue === i.number).length,
+  const byNumber = (n: number) => w.issues.find((x) => x.number === n);
+  // As GitHub's REST answer has them on every issue: its sub-issues done of all, its open blockers.
+  const issueJson = (i: Issue) => {
+    const { stateReason, blockedBy, subIssues, closedBy, ...rest } = i;
+    const subs = (subIssues ?? []).map(byNumber);
+    return {
+      ...rest,
+      html_url: `https://github.com/${REPO}/issues/${i.number}`,
+      labels: i.labels.map((name) => ({ name })),
+      body_html: htmlOf(i.body, i.html),
+      updated_at: i.updated_at ?? i.created_at,
+      comments: w.comments.filter((c) => c.issue === i.number).length,
+      sub_issues_summary: {
+        total: subs.length,
+        completed: subs.filter((s) => s?.state === "closed").length,
+        percent_completed: 0,
+      },
+      issue_dependencies_summary: {
+        blocked_by: (blockedBy ?? []).filter((b) => byNumber(b)?.state === "open").length,
+        blocking: 0,
+        total_blocked_by: (blockedBy ?? []).length,
+        total_blocking: 0,
+      },
+    };
+  };
+  /** An issue's state, as GraphQL says it. */
+  const status = (i: Issue) => ({
+    state: i.state === "open" ? "OPEN" : "CLOSED",
+    stateReason: i.state === "open" ? null : (i.stateReason ?? "COMPLETED"),
+  });
+  /** An issue as GraphQL's subIssues node has it. */
+  const node = (i: Issue) => ({
+    number: i.number,
+    title: i.title,
+    ...status(i),
+    labels: { nodes: i.labels.map((name) => ({ name })) },
+    blockedBy: {
+      nodes: (i.blockedBy ?? []).flatMap((b) => {
+        const x = byNumber(b);
+        return x ? [{ number: b, ...status(x) }] : [];
+      }),
+    },
+    closedByPullRequestsReferences: { nodes: i.closedBy ? [i.closedBy] : [] },
   });
   const commentJson = (c: Comment) => ({
     id: c.id,
@@ -269,6 +315,17 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     if (path === "installation/repositories")
       return { body: { repositories: [{ name: "shipify" }] } };
     if (path === "repos/actions/runner/releases/latest") return { body: w.runnerRelease };
+    if (path === "graphql" && /subIssues/.test((body as { query?: string }).query ?? "")) {
+      if (w.graphqlFails) return { status: 502 };
+      const v = (body as { variables: { owner: string; name: string; n: number } }).variables;
+      const i = `${v.owner}/${v.name}` === REPO ? byNumber(v.n) : undefined;
+      const subs = (i?.subIssues ?? []).flatMap((n) => byNumber(n) ?? []);
+      return {
+        body: {
+          data: { repository: { issue: i ? { subIssues: { nodes: subs.map(node) } } : null } },
+        },
+      };
+    }
     if (path === "graphql") {
       const id = (body as { variables?: { id?: string } }).variables?.id;
       const c = w.comments.find((x) => x.node_id === id);

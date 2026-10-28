@@ -197,13 +197,14 @@ const named = (k) => NAME[k] || cap(k);
 // A task's project (ADR 0065): the repo its title names, Shipify's own too; none is General.
 const projOf = (t, k = kindIn(t.title)) => (k && !NAME[k] ? k : "");
 // Parts loaded the first time they're needed (ADR 0065), lent what they read here: workspace.js
-// (a project's tabs and page, the doc pane, Files, Ctrl+K) and setup.js (Status & setup).
+// (a project's tabs and page, the doc pane, Files, Ctrl+K), setup.js (Status & setup) and plan.js
+// (a split task's Plan card, ADR 0066).
 const M = {};
 const lazy = (k) => (f) => {
   M[k] ||= import(`./${k}.js`).then(async (m) => {
     const lent = { S, R, go, get, keep, start, bare, named, projOf, runs, ago, until, secs, to };
-    const ui = { page, what, meta, list, btn, view, ext, mark, dot, out, copy, quick, fresh };
-    await m.init({ ...lent, ...ui, ask, join, notify, sync });
+    const ui = { page, what, meta, list, btn, view, ext, mark, dot, out, copy, quick, fresh, ws };
+    await m.init({ ...lent, ...ui, ask, join, notify, sync, say });
     return m;
   });
   return M[k].then(f).catch(oops);
@@ -401,7 +402,13 @@ function drawList() {
     h("p", to(p.n, `#${p.n} ${p.title}`), p.task && to(p.task, `Task #${p.task}`), ago(p.updated));
   const review = R.shut ? [] : L.review || [];
   const more = R.shut ? C?.more : R.old ? R.old.more : L.more;
-  // A row: a mark for its state, its title and age; then the state's word, its kind and number.
+  // A split task's parts done of all, as a thin bar (its width set from script, ADR 0066).
+  const bar = ({ done, total }, i = h("i")) => {
+    i.style.width = `${(100 * done) / total}%`;
+    return [h("span.bar", i), h("span", `${done}/${total}`)];
+  };
+  // A row: a mark for its state, its title and age; then the state's word, its kind and number. A
+  // split task's open parts fold under it, in order (ADR 0066): `#n` in S.fold is one shown open.
   const row = (t) => {
     const job = runs.get(t.n);
     // Its thread's turn only when it's this job's (by the run's id): a kept thread may be older.
@@ -418,6 +425,22 @@ function drawList() {
       title: st ? st.textContent : WORD[t.state],
     });
     const meta = h("span.meta", st, k && h("span", named(k)), h("span", `#${t.n}`));
+    const kids = t.parts ? all.filter((x) => x.parent === t.n).sort((a, b) => a.n - b.n) : [];
+    const f = `#${t.n}`;
+    const open = S.fold.includes(f);
+    const sub =
+      kids.length > 0 &&
+      btn(
+        [icon("down"), `${kids.length} part${kids.length > 1 ? "s" : ""}`],
+        () => {
+          S.fold = open ? S.fold.filter((x) => x !== f) : [...S.fold, f];
+          keep();
+          drawList();
+        },
+        ".fold.sub",
+      );
+    if (sub) sub.ariaExpanded = String(open);
+    if (t.parts) meta.append(...bar(t.parts));
     return h(
       "li",
       h(
@@ -428,6 +451,8 @@ function drawList() {
         h("time.age", ago(t.updated)),
         meta,
       ),
+      sub,
+      open && h("ul.rows.subs", kids.map(row)),
     );
   };
   const on = L.boxes.filter((b) => b.online);
@@ -615,6 +640,7 @@ function drawThread(t) {
     : [
         status(T, run, true),
         h("span", `#${n}`),
+        T.parent && to(T.parent, `Part of #${T.parent}`),
         k && h("span", named(k)),
         model,
         all.runs.length > 0 && h("span.sum", summary(all)),
@@ -637,11 +663,17 @@ function drawThread(t) {
   if (flip) flip.ariaLabel = T.open ? "Close" : "Reopen";
   const title = n ? (T.pr ? `#${n} ${T.title}` : bare(T.title)) : "New chat";
   set(v.head, back(), h("div.title", h("h2", title), tags), refreshBtn(), flip, more);
-  // A project's task: its tabs above (ADR 0065).
+  // A project's task: its tabs above (ADR 0065). A split task: its Plan card under the header.
   const P = real && !T.pr && projOf(T);
   if (P && v.p !== P) {
     v.p = P;
     ws((w) => R.v === v && w.strip(v.box, P, n));
+  }
+  if (real && T.plan) lazy("plan")((m) => R.v === v && m.plan(v, t));
+  // No plan this time (its read failed, or the parts were unlinked): no card left from before.
+  else if (v.pk) {
+    v.box.querySelector(".plan")?.remove();
+    v.pk = undefined;
   }
   // A command's answer stays until the thread's newest message changes; a note, a minute.
   const live = (p) =>

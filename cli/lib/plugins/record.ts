@@ -21,6 +21,44 @@ export interface RecordIssue {
   pull_request?: unknown;
   /** The record's own id for it, for calls that take one (pinning). */
   node_id?: string;
+  /** Its sub-issues (ADR 0066): how many, and how many are closed. None: the record has none. */
+  sub_issues_summary?: { total: number; completed: number };
+}
+
+/** A part of a split task (ADR 0066): one of its sub-issues, and what it waits for. */
+export interface RecordPart {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  /** How it closed, as the record says it: "completed", "not_planned", "duplicate". */
+  reason?: string;
+  labels: string[];
+  /** The issues it's blocked by, each with how it stands. */
+  blockedBy: { number: number; state: "open" | "closed"; reason?: string }[];
+  /** The PR that closed it, when one did. */
+  pr?: string;
+}
+
+/** A split task and its parts (ADR 0066), in one read: the parent is the task, or the one it's a part of. */
+export interface RecordFamily {
+  parent: {
+    number: number;
+    title: string;
+    body: string;
+    state: "open" | "closed";
+    labels: string[];
+  };
+  parts: RecordPart[];
+}
+
+/** A part to open (ADR 0066): its words, and what it waits for. */
+export interface NewPart {
+  title: string;
+  body: string;
+  /** The parts before it in the same list it waits for, by their place (0 is the first). */
+  after: number[];
+  /** The parent's parts that exist already, by number, it waits for. */
+  waits: number[];
 }
 
 export interface RecordComment {
@@ -157,6 +195,17 @@ export interface TaskRecord {
   pages(label: string, state?: "open" | "all"): RecordPage[];
   /** Who opened an issue and who last edited its text. */
   writers(n: number): { author: string; editor?: string };
+  /**
+   * The family a task is in (ADR 0066), in one read: its parent and their parts when it's a part,
+   * or itself and its parts when it has some. None for a task with neither.
+   */
+  family(n: number): RecordFamily | undefined;
+  /**
+   * Parts opened as sub-issues of `parent` (ADR 0066), each with the label and its blocked-by
+   * links: the parent's ids read, the parts made, then the links. A part whose title is one of the
+   * parent's parts already is that one, not opened again. Their numbers, in the order asked.
+   */
+  openParts(parent: number, parts: NewPart[], label: RecordLabel): number[];
   /**
    * Who wrote a comment and who last edited its text (ADR 0031: a status comment counts only when
    * a run wrote it and no one else edited it since). The ghost when unknown.

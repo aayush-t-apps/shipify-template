@@ -71,7 +71,7 @@ doc: [the index](README.md).
 | `recipes/` | recipes, repeats kept as files ([recipes.md](recipes.md)); `examples/` to copy |
 | `.github/workflows/` | `task.yml` (jobs `run` and `github`), `watch.yml` (due, cleanup, alert), `ci.yml` (checks, the edge's deploy, releases), `update.yml` (a new Shipify version, as a PR) |
 | `intents.json` | what you can ask: six intents, the chat commands, the help, the fixed words |
-| `tools.json`, `tools/` | the tools (Notion's server in `tools/notion/`, the MCP protocol in `tools/mcp.ts`), and Telegram's and the web chat's setup steps (`tools/web/`) |
+| `tools.json`, `tools/` | the tools (Notion's server in `tools/notion/`, Drop's in `tools/drop/`, the MCP protocol in `tools/mcp.ts`), and Telegram's and the web chat's setup steps (`tools/web/`) |
 | `executors.json` | the agents and their models, what every agent must never run, and the gateways |
 | `checks/` | the scripts repeats can run |
 | `.github/ISSUE_TEMPLATE/` | the two forms: Repeat (`4-repeat.yml`) and Operate (`7-operate.yml`) |
@@ -225,7 +225,7 @@ Every command, with its flags: [cli.md](cli.md).
 |---|---|
 | everything's OK? | `pnpm ship selftest` · `pnpm ship doctor` · `pnpm ship box list` |
 | set up, or what's missing | `pnpm ship setup` |
-| a plug-in (Notion, Telegram, the web chat) | `pnpm ship add <name>` · `pnpm ship remove <name>` |
+| a plug-in (Notion, Drop, Telegram, the web chat) | `pnpm ship add <name>` · `pnpm ship remove <name>` |
 | the door | `pnpm ship door setup` · `pnpm ship door check` |
 | the status page | `pnpm ship door page`, then `/admin/status` at the edge's address (`shipify.<your workers.dev name>.workers.dev`, or `shipify.<APPS_DOMAIN>` with your domain) |
 | the web chat | `pnpm ship add webchat`, then `<the edge>/admin/chat/` |

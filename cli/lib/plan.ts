@@ -37,6 +37,11 @@ export interface Plan {
 export const planPath = (app: string, root = PLATFORM_ROOT) =>
   join(root, "plans", `${app}.plan.md`);
 
+/** A plan's id, from the id or its file's path (`plans/drop.plan.md` is `drop`), as a run may
+ * write either; undefined when it's neither. */
+export const planId = (v: string) =>
+  /^(?:plans\/)?([a-z0-9-]+)(?:\.plan\.md)?$/.exec(v.trim())?.[1];
+
 export function hashText(text: string): string {
   return createHash("sha256").update(text).digest("hex").slice(0, 12);
 }

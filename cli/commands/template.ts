@@ -62,13 +62,13 @@ const onMain = (root: string, path: string) => git(root, "show", `${MAIN}:${path
 const mainFiles = (root: string) =>
   git(root, "ls-tree", "-r", "--name-only", MAIN).stdout.split("\n").filter(Boolean);
 
-/** A worktree of main as GitHub has it, in `dir`, detached: removed by `drop`. */
-function worktree(root: string, dir: string): { dir: string; drop: () => void } {
+/** A worktree of main as GitHub has it, in `dir`, detached: removed by `remove`. */
+function worktree(root: string, dir: string): { dir: string; remove: () => void } {
   must(
     git(root, "worktree", "add", "-q", "--detach", dir, MAIN),
     "Couldn't make a worktree of main",
   );
-  return { dir, drop: () => void git(root, "worktree", "remove", "--force", dir) };
+  return { dir, remove: () => void git(root, "worktree", "remove", "--force", dir) };
 }
 
 /** A repo's file on its main, as text, or undefined when there's none (or no repo). */
@@ -339,7 +339,7 @@ export function templateRelease(
           `Couldn't record ${next} on ${copy} (main moved since? release again)`,
         );
       } finally {
-        w.drop();
+        w.remove();
       }
     }
     if (!exists) {
@@ -565,7 +565,7 @@ export function shipUpdate(opts: { yes: boolean }, deps: ReleaseDeps = releaseDe
     must(pr, "Couldn't open the PR");
     return ok("update", `Shipify ${version} is offered: ${pr.stdout.trim()}`);
   } finally {
-    w.drop();
+    w.remove();
     rmSync(tmp, { recursive: true, force: true });
   }
 }

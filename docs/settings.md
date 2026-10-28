@@ -52,6 +52,11 @@ names what's on your copy but on no list, and a workflow can't read one that isn
 | `CF_DEPLOY_TOKEN` | a secret, this PC | Cloudflare's deploy token (`shipify-deploy`) | `ship door setup`, from your credentials file; `ship setup apps` | `ci.yml`'s edge deploy; on this PC, `ship door` and `ship add <channel>`; ts-static, ts-worker apps' deploys: `ship publish`, a merged plan's new repo | by its add-on |
 | `SHIPIFY_NOTION_READ` | a secret, this PC | notion's read-only key | `ship add notion` | `task.yml`'s think step: notion's look calls | by its add-on |
 | `SHIPIFY_NOTION_WRITE` | a secret, this PC | notion's key for the changes you approved | `ship add notion` | `task.yml`'s apply step, only for notion's calls you approved | by its add-on |
+| `SHIPIFY_DROP_URL` | a secret, this PC | Drop's address, like https://drop.app.example.com | `ship add drop` | `task.yml`'s think step, and its apply step for drop's calls you approved | by its add-on |
+| `SHIPIFY_DROP_READ_ID` | a secret, this PC | drop's read-only key | `ship add drop` | `task.yml`'s think step: drop's look calls | by its add-on |
+| `SHIPIFY_DROP_WRITE_ID` | a secret, this PC | drop's key for the changes you approved | `ship add drop` | `task.yml`'s apply step, only for drop's calls you approved | by its add-on |
+| `SHIPIFY_DROP_READ_SECRET` | a secret, this PC | drop's read-only key | `ship add drop` | `task.yml`'s think step: drop's look calls | by its add-on |
+| `SHIPIFY_DROP_WRITE_SECRET` | a secret, this PC | drop's key for the changes you approved | `ship add drop` | `task.yml`'s apply step, only for drop's calls you approved | by its add-on |
 | `CLAUDE_CODE_OAUTH_TOKEN` | a secret | claude's login | `ship setup agent` (claude setup-token; `--new` for a new one) | `task.yml`'s think step, when claude runs | by the core |
 | `OPENROUTER_API_KEY` | a secret, this PC | openrouter's key: pi's and opencode's models | `ship add openrouter` | `task.yml`'s think step, when pi or opencode runs | by its add-on |
 | `AI_GATEWAY_API_KEY` | a secret, this PC | vercel-ai-gateway's key: pi-vercel's and opencode-vercel's models | `ship add vercel-ai-gateway` | `task.yml`'s think step, when pi-vercel or opencode-vercel runs | by its add-on |

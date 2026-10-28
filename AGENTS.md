@@ -66,6 +66,7 @@ start:
 | `api-and-interface-design` | an API, a package's exports, data shapes |
 | `security-and-hardening` | input, auth, secrets, anything exposed |
 | `notion` | a task that reads or changes the owner's Notion (`tools/notion`) |
+| `drop` | a task that shares files as a link, or changes the owner's drops (`tools/drop`) |
 | `plug-ins` | adding or changing any plug-in, through its contract and conformance test |
 | `writing-skills` | adding a skill, putting a lesson into one, or changing one (`scenarios.md`) |
 

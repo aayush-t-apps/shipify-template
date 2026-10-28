@@ -205,21 +205,10 @@ export async function saveLinkedFiles(
   const saved: string[] = [];
   const failed: string[] = [];
   for (const m of links) {
-    const [url, , repo, ref, path] = m as unknown as string[];
+    const [url, , , , path] = m as unknown as string[];
     try {
       const name = basename(decodeURIComponent(path as string));
-      const res = await get(
-        `https://api.github.com/repos/${org}/${repo}/contents/${path}?ref=${encodeURIComponent(ref as string)}`,
-        {
-          headers: { authorization: `Bearer ${key}`, accept: "application/vnd.github.raw" },
-          signal: AbortSignal.timeout(60_000),
-        },
-      );
-      const size = Number(res.headers.get("content-length") ?? 0);
-      if (!res.ok || size > MAX_FILE_BYTES)
-        throw new Error(res.ok ? "over 25 MB" : `HTTP ${res.status}`);
-      const bytes = Buffer.from(await res.arrayBuffer());
-      if (bytes.length > MAX_FILE_BYTES) throw new Error("over 25 MB");
+      const bytes = await readBlob(url as string, key, get);
       const file = freeFile(dir, name);
       writeFileSync(file, bytes);
       saved.push(`\`${file}\` (from ${url})`);
@@ -232,6 +221,29 @@ export async function saveLinkedFiles(
     notes.push(`The owner linked files, saved on this box. Read each: ${saved.join(", ")}.`);
   if (failed.length) notes.push(`These linked files couldn't be read: ${failed.join(", ")}.`);
   return notes;
+}
+
+/**
+ * A file in one of the org's repos, by its link (a blob link: a task's shared files are on
+ * `shipify-files`), read with the bot's key, up to 25 MB.
+ */
+export async function readBlob(url: string, key: string, get: Fetch = fetch): Promise<Buffer> {
+  const m = new RegExp(BLOB.source).exec(url);
+  if (!m) throw new Error("not a link to a file in a repo");
+  const [, org, repo, ref, path] = m as unknown as string[];
+  const res = await get(
+    `https://api.github.com/repos/${org}/${repo}/contents/${path}?ref=${encodeURIComponent(ref as string)}`,
+    {
+      headers: { authorization: `Bearer ${key}`, accept: "application/vnd.github.raw" },
+      signal: AbortSignal.timeout(60_000),
+    },
+  );
+  const size = Number(res.headers.get("content-length") ?? 0);
+  if (!res.ok || size > MAX_FILE_BYTES)
+    throw new Error(res.ok ? "over 25 MB" : `HTTP ${res.status}`);
+  const bytes = Buffer.from(await res.arrayBuffer());
+  if (bytes.length > MAX_FILE_BYTES) throw new Error("over 25 MB");
+  return bytes;
 }
 
 async function downloadImage(

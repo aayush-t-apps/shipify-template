@@ -33,6 +33,87 @@
       }
     }
   },
+  "drop": {
+    "description": "Your Drop: share files a task made as a drop and its link, change who may open it, and revoke it",
+    "run": ["node_modules/.bin/tsx", "tools/drop/server.ts"],
+    "keys": {
+      "DROP_URL": {
+        "look": "SHIPIFY_DROP_URL",
+        "act": "SHIPIFY_DROP_URL"
+      },
+      "DROP_CLIENT_ID": {
+        "look": "SHIPIFY_DROP_READ_ID",
+        "act": "SHIPIFY_DROP_WRITE_ID"
+      },
+      "DROP_CLIENT_SECRET": {
+        "look": "SHIPIFY_DROP_READ_SECRET",
+        "act": "SHIPIFY_DROP_WRITE_SECRET"
+      }
+    },
+    "look": ["list"],
+    "act": ["publish", "update", "revoke"],
+    "args": {
+      "publish": {
+        "required": ["title", "share"],
+        "properties": {
+          "title": {},
+          "files": {},
+          "share": {},
+          "people": {},
+          "expiry": {},
+          "pin": {}
+        },
+        "files": "files"
+      },
+      "update": {
+        "required": ["drop"],
+        "properties": {
+          "drop": {},
+          "share": {},
+          "people": {},
+          "remove": {},
+          "pin": {},
+          "new_link": {}
+        },
+        "target": "drop",
+        "warn": {
+          "share": "a change may make a new link; me stops its link and every person's access",
+          "new_link": "the old link stops at once",
+          "pin": "true makes a new PIN, and the old one stops"
+        }
+      },
+      "revoke": {
+        "required": ["drop"],
+        "properties": { "drop": {} },
+        "target": "drop",
+        "warn": { "drop": "deletes the drop and its files: its links stop at once" }
+      }
+    },
+    "check": ["node_modules/.bin/tsx", "tools/drop/server.ts", "--check"],
+    "setup": {
+      "needs": [
+        "Drop, live, with its Access app on /admin and /api (plans/drop.plan.md)",
+        "Two Cloudflare Access service tokens (Zero Trust → Access → Service credentials → Create Service Token): one named Shipify Drop read, one Shipify Drop write. Add both to the /api app's policy, with the action Service Auth (docs/tools.md, Drop)."
+      ],
+      "keys": {
+        "SHIPIFY_DROP_URL": {
+          "ask": "Drop's address, like https://drop.app.example.com"
+        },
+        "SHIPIFY_DROP_READ_ID": {
+          "ask": "the read token's Client ID"
+        },
+        "SHIPIFY_DROP_READ_SECRET": {
+          "ask": "the read token's Client Secret"
+        },
+        "SHIPIFY_DROP_WRITE_ID": {
+          "ask": "the write token's Client ID"
+        },
+        "SHIPIFY_DROP_WRITE_SECRET": {
+          "ask": "the write token's Client Secret"
+        }
+      }
+    }
+  },
   "telegram": {
     "description": "Telegram: ask, remember, approve a list with a tap and get your links from your phone, through the edge (ADR 0031, ADR 0049)",
     "in": {

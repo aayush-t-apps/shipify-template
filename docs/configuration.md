@@ -7,7 +7,7 @@ it.
 | Where | What | Read by |
 |---|---|---|
 | [`executors.json`](#executorsjson) | the agents and how each starts, the commands every agent must never run, the gateways | `ship build`, runs, `ship add` (a gateway) |
-| [`tools.json`](#toolsjson) | the tools runs use (Notion) and the channels you talk through (Telegram) | runs, `ship tools`, `ship add`, `ship doctor` |
+| [`tools.json`](#toolsjson) | the tools runs use (Notion, Drop) and the channels you talk through (Telegram) | runs, `ship tools`, `ship add`, `ship doctor` |
 | [`intents.json`](#intentsjson) | what you can ask: the six intents, the chat commands, the fixed words | decide, the edge, the forms |
 | `checks/<name>.mjs` | a repeat's check scripts ([tasks.md](tasks.md)) | the think step, as the agent's user |
 | [a project's `shipify.json`](#a-projects-shipifyjson) | one project's facts | `ship`, the pipeline |

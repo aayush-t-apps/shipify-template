@@ -29,6 +29,9 @@
   // #if OPTION_D1
   "d1_databases": [{ "binding": "DB", "database_name": "{{SERVICE_NAME}}-db" }],
   // #endif
+  // #if OPTION_R2
+  "r2_buckets": [{ "binding": "R2", "bucket_name": "{{SERVICE_NAME}}-r2" }],
+  // #endif
   // #if STAGING
   "vars": { "APP_ID": "{{APP_ID}}", "APP_ENV": "production", "GIT_SHA": "dev" },
   "env": {
@@ -42,6 +45,9 @@
       // #endif
       // #if OPTION_D1_STAGING
       "d1_databases": [{ "binding": "DB", "database_name": "{{SERVICE_NAME_STAGING}}-db" }],
+      // #endif
+      // #if OPTION_R2_STAGING
+      "r2_buckets": [{ "binding": "R2", "bucket_name": "{{SERVICE_NAME_STAGING}}-r2" }],
       // #endif
       // #if STAGING
       "vars": { "APP_ID": "{{APP_ID}}", "APP_ENV": "staging", "GIT_SHA": "dev" }

@@ -20,7 +20,7 @@ replace it. Setting up from nothing: `pnpm ship setup` walks it ([getting-starte
 | **The bot** (a GitHub App) and **the agent's login** | runs' tokens, PRs, the agent | `pnpm ship bot --yes` ([below](#tasks-the-bot-and-the-agents-login)) |
 | **Boxes** (a Pi, a VPS, this PC) | running tasks | `pnpm ship box add [<user@host>] --yes` ([box-setup.md](box-setup.md)) |
 | **The edge** and **the door App** | your chats, replies out, the watch | `pnpm ship door setup --yes` ([below](#the-edge)) |
-| **Plug-ins** (Notion, Telegram, the web chat) | your tools, your phone | `pnpm ship add <name> --yes` ([below](#plug-ins)) |
+| **Plug-ins** (Notion, Drop, Telegram, the web chat) | your tools, your phone | `pnpm ship add <name> --yes` ([below](#plug-ins)) |
 | **A gateway** (OpenRouter, Vercel's AI Gateway), if you want pi or OpenCode | other agents' models | `pnpm ship add openrouter --yes` or `pnpm ship add vercel-ai-gateway --yes` ([below](#plug-ins)) |
 | **The repos App**, for your other accounts | reads and PRs on another account (ADR 0045) | `pnpm ship bot repos --yes` ([below](#another-account-the-repos-app)) |
 
@@ -210,6 +210,8 @@ pnpm ship remove <name> --yes  # undoes it
 ```
 
 - **Notion** (`notion`): [tools.md](tools.md). Its keys are shipify secrets.
+- **Drop** (`drop`): [tools.md](tools.md#drop-setting-it-up-once-about-10-minutes). Drop's address
+  and two Access service tokens, as shipify secrets. It needs Drop live first.
 - **Telegram** (`telegram`): [channels.md](channels.md). Its keys are Worker secrets. It needs the
   door App first.
 - **The web chat** (`webchat`): [channels.md](channels.md#the-web-chat). No keys of its own to
@@ -245,6 +247,7 @@ Replace a GitHub secret with `gh secret set <NAME> -R <you>/<repo>`, pasting at 
 | `WEB_PUSH_KEY` | signing the web chat's notifications | the edge's Worker | never | `pnpm ship add webchat --new --yes` makes a new one |
 | `shipify-deploy` (Cloudflare) | deploys | the credentials file (`CF_DEPLOY_TOKEN`); shipify secret `CF_DEPLOY_TOKEN` (the edge's deploy, a merged plan's keys); each app's `CLOUDFLARE_API_TOKEN` | see Cloudflare → API Tokens | `pnpm ship setup apps --new` (the credentials file and shipify), then `gh secret set` it as each app's `CLOUDFLARE_API_TOKEN` |
 | `SHIPIFY_NOTION_READ`, `SHIPIFY_NOTION_WRITE` | Notion: read; the changes you approved | shipify secrets; the credentials file | no date | refresh it on the integration's page, then `pnpm ship add notion --new --yes` |
+| `SHIPIFY_DROP_READ_ID`, `SHIPIFY_DROP_READ_SECRET`, `SHIPIFY_DROP_WRITE_ID`, `SHIPIFY_DROP_WRITE_SECRET` (and `SHIPIFY_DROP_URL`) | Drop: read; the changes you approved (Access service tokens) | shipify secrets; the credentials file | the duration you gave it (none: non-expiring) | a new service token, in the `/api` app's Service Auth policy, then `pnpm ship add drop --new --yes`; delete the old token |
 | `OPENROUTER_API_KEY` | pi's and OpenCode's models, through OpenRouter | shipify secret; the credentials file | until you delete it on OpenRouter | a new key at openrouter.ai/settings/keys, then `pnpm ship add openrouter --new --yes` |
 | `AI_GATEWAY_API_KEY` | pi's and OpenCode's models, through Vercel's AI Gateway | shipify secret; the credentials file | until you delete it in Vercel | a new key in Vercel's AI Gateway, then `pnpm ship add vercel-ai-gateway --new --yes` |
 | `SHIPIFY_TEMPLATE_TOKEN` | a private template on another account, read by the weekly update check | shipify secret; the credentials file | the date you give it (`ship setup` checks it reads the template) | a new fine-grained token (that repo only, Contents read-only), then `pnpm ship setup updates --new` |
@@ -254,8 +257,9 @@ Replace a GitHub secret with `gh secret set <NAME> -R <you>/<repo>`, pasting at 
 - **`shipify-pc`:** your account (or org), all repositories. Read and write: Actions, Administration, Contents,
   Pull requests, Secrets, Variables, Workflows. Read: Commit statuses.
 - **`shipify-deploy`:** Workers Scripts Edit, Account Settings Read, User Details Read, Memberships
-  Read; Workers KV Storage Edit (the web chat's files, and apps that keep data) and D1 Edit for apps
-  that keep data; Zone → Workers Routes Edit on your domain's zone.
+  Read; Workers KV Storage Edit (the web chat's files, and apps that keep data), D1 Edit and Workers R2
+  Storage Edit for apps that keep data (R2 asks for a card on the Cloudflare account once; nothing is
+  charged inside its free limits); Zone → Workers Routes Edit on your domain's zone.
 - **`CLOUDFLARE_ACCOUNT_ID`** isn't secret: it's one of your settings, a variable on shipify (ADR 0047).
 
 ### Variables on shipify

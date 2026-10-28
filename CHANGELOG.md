@@ -7,9 +7,74 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-10-28
+
+### Added
+
+- **A Drop tool: a task's files shared as a link (task #588).** `drop.list` looks; `drop.publish`
+  (a drop from files the task shared, with its link and any PIN), `drop.update` and `drop.revoke`
+  are made after your Yes. It calls Drop's `/api` behind Cloudflare Access with two service
+  tokens, a read one and a write one: `pnpm ship add drop`, or its five secrets on GitHub's
+  website (docs/tools.md, Drop). It sends what Drop's own admin page sends (Drop 0.2.0), and
+  docs/tools.md gives each request. The tool contract gains `args.<call>.files`: the argument that
+  names files the task shared. Decide takes such a call only when each was shared (one shared in
+  the same answer waits for your Yes), and the box reads them from `shipify-files` for the call. A
+  skill, `drop`. The core's own words "drop it" and "drop them" now say "end it" and "cancel
+  them", as the core may not say a tool's name.
+- **An `r2` storage option for Cloudflare apps (ADR 0067, task #586).** `options: [r2]` gives the
+  binding `R2` and the bucket `<worker>-r2` (staging's own `<worker>-staging-r2`). Each deploy finds
+  or makes the bucket and replaces its lifecycle rules with the app's `r2-lifecycle.json` (prefix to
+  days). An app with R2 gets no preview without staging. Tests use a local bucket. The deploy token
+  needs **Workers R2 Storage: Edit**. ts-worker and ts-static 1.1.0.
+- **Sub-tasks: one task, a few PRs, in order, when you say (ADR 0066, task #581).** A run may
+  `split` a task into 2 to 8 parts, listed for your `yes` like calls; your `yes` opens them as
+  GitHub sub-issues with blocked-by links, and nothing starts. `go` on the task starts every ready
+  part, `go #n` one now, `stop` no more. After your `go`, a part's merge starts what waited only for
+  it, in its close run with no agent; a dropped part tells the task once; the last close closes it.
+  A part's run gets its parent's goal and its siblings in one read, and doesn't stay when the box
+  started it. The web chat shows a bar and "2/4" on a split task, its parts folded under it, a grey
+  **Waiting** state, and a **Plan card** (`plan.js`, loaded only for a split task) with Start,
+  Start all ready, Stop and Open all as tabs. No new store, key or setting. `task.yml` starts a
+  close run for a part too (the `sub-task` label), so one that closes with no state label still
+  starts what waited for it, or tells its parent.
+
+### Changed
+
+- **Weekly lessons kept in their skills:** `systematic-debugging` checks the box's uptime and reset
+  cause when a run loses communication. `verification-before-completion` has six new checks for
+  work that repeats the product, and both skills have a `scenarios.md`.
+
+### Fixed
+
+- **A run's Drop tool gets its look keys (task #600).** The agent held only look keys whose names
+  end in `_READ`, so Drop's (`SHIPIFY_DROP_URL`, `SHIPIFY_DROP_READ_ID`,
+  `SHIPIFY_DROP_READ_SECRET`) never reached its server, and every `drop.list` stopped with "Drop's
+  address isn't a link". The agent now holds each tool's look keys as `tools.json` names them. An
+  address that isn't a link says what to set, and where.
+- **A sub-task thinks with its parent's model (task #592).** A part opened with no `use` line, so
+  its run took Auto, not the model and effort its parent picked. Each part's body now ends with the
+  parent's `use` pick, unless its brief names its own.
+- **R2's docs, tidied (task #592).** The plan template names `r2` among the Cloudflare options, and
+  `stacks/_cloudflare/storage.md` reads right on the token's permissions and the deploy's steps.
+- **A sub-task that waits starts by the box or your `go`, not your other words (task #594).** Your
+  comment on a part that never ran, and whose blocker wasn't done, started a full run. Now the box
+  answers once with no agent ("#14 waits for #13, so it hasn't started…"), the part keeps no state
+  label, and its run reads your words when it starts. `go` on the part starts it now and says what
+  it skipped (it said "Merge the change doc's PR first"). A part the box had answered on before (a
+  `use`, a thanks) no longer ends its start with "nothing new": a part's start is now read from its
+  labels, not from it having no status yet.
+- **A merged plan's build starts when its run gave the plan's path (task #587).** A run that wrote
+  `plans/<id>.plan.md` as its plan, not `<id>`, left a task whose merge found no task to build, and
+  whose `publish` said "Merge the plan's PR first". A run's plan and a task's stored plan now read
+  as the id; anything else in a result is a slip in its shape.
+
 ## [0.1.16] - 2026-10-25
 
 ### Fixed
+
+- **Sub-tasks in the web chat, tidied (task #581).** A split task's fold says "4 parts", not "4
+  open parts" (on the Closed tab they're closed). A Plan card whose read later fails, or whose parts
+  were unlinked, goes, and doesn't stay with old rows and live Start buttons. Two dead bits cut.
 
 - **Box setup 11: the last container and IPv6 gaps (task #565).**
   - **A container broke its slot's next run:** Podman gave the slot folder the x bits it lacked,

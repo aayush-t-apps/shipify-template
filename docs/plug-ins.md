@@ -17,7 +17,7 @@ new one is a plug-in, not a change to the core:
 
 | Kind | Its contract | Written down in | Today | Add one | Every one passes |
 |---|---|---|---|---|---|
-| **tool** | an MCP server whose calls are each look or act, a key per verb | `cli/lib/plugins/tool.ts` | Notion | `plugins/_template/tool/` → `tools/<name>/`, and its `tools.json` entry | `tests/plugins/tool.test.ts` |
+| **tool** | an MCP server whose calls are each look or act, a key per verb | `cli/lib/plugins/tool.ts` | Notion, Drop | `plugins/_template/tool/` → `tools/<name>/`, and its `tools.json` entry | `tests/plugins/tool.test.ts` |
 | **channel** | an adapter in the edge: prove a webhook, read it (a message or a button tap) into one Message, answer at once, send an Outgoing reply with its buttons; its files, a tap's acknowledgement, a file, its health and its menu if it can | `edge/src/channels/channel.ts` | Telegram, the web chat (`web`) | `edge/src/channels/<id>.ts`, one line in `channels/index.ts`, its fixtures in `tests/edge/channels/`, its `tools.json` entry | `tests/edge/channels.test.ts` |
 | **stack** | the `make` targets, `shipify.json`, `/health`, the docs every project has | [design.md](design.md) | ts-worker, ts-static, ts-package, custom-* | a folder in `stacks/`, from a second real project | `tests/golden.test.ts` (`pnpm test:golden`) |
 | **agent** | a prompt, a model and an effort in, with the commands every agent must never run (or none at all: the read profile); `result.json` and a report out | `cli/lib/plugins/agent.ts` | Claude Code, pi, OpenCode | an `executors.json` entry (its install, its login or the `gateways` it goes through) and an adapter in `cli/lib/agents/` | `tests/plugins/agent.test.ts` |
@@ -133,7 +133,7 @@ cleans up anything it made.
 | `sandbox` | each slot's agent can't read the runner's folders, its environment or another slot's runs (on a box; from the PC, each box's last clean-up) |
 | `act` | each tool's server offers every act call `tools.json` lists, so the box can make them |
 | `notebook` | a run's prompt carries the notebook |
-| `<plug-in>` (`notion`, `telegram`) | its entry's `check`, with the keys `ship add` stored on this PC |
+| `<plug-in>` (`notion`, `drop`, `telegram`) | its entry's `check`, with the keys `ship add` stored on this PC |
 | `<agent>` (`pi`, `opencode`, `claude`, and each through another gateway: `pi-vercel`) | a question through the door with `use <agent>`, its run followed: the box has the agent as `executors.json` pins it (`run agent` in its log), it answered, and the reply reached your chat. One model call |
 
 `all` (the default) runs every part, `door` and `chat` once `ship door setup` has run, then the

@@ -1,6 +1,6 @@
 {
   "id": "ts-worker",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "description": "TypeScript app: React + Vite UI and a Hono API on Cloudflare Workers (static assets are free).",
   "kind": "app",
   "layers": [

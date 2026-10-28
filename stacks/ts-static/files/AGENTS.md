@@ -43,12 +43,17 @@ This app keeps data on Cloudflare: its stack options, in `shipify.json`. Shipify
   be empty or has a default, an index), since a rollback runs the old code on the new tables; never
   edit one that has shipped.
 <!-- #endif -->
+<!-- #if OPTION_R2 -->
+- **R2** (`env.R2`): files and objects. `r2-lifecycle.json` (yours) maps a prefix to days, like
+  `{"tmp/": 7}`: each deploy makes the bucket if it is missing and replaces its expiry rules with
+  this file. Free: 10 GB, 1 million writes and 10 million reads a month.
+<!-- #endif -->
 <!-- #if OPTIONS -->
 - Unit tests get real local storage, empty on each run: `localBindings()` in `tests/unit/support/`.
 - `wrangler.jsonc` names the bindings without ids: each deploy finds or makes them.
 <!-- #endif -->
 <!-- #if !OPTIONS -->
-None. To keep data, add a stack option (KV for key-value, D1 for SQL) as a change: Shipify's
+None. To keep data, add a stack option (KV for key-value, D1 for SQL, R2 for files) as a change: Shipify's
 `stacks/_cloudflare/storage.md` says how.
 <!-- #endif -->
 

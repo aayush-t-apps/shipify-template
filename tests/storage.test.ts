@@ -45,6 +45,16 @@ globalThis.fetch = async (url, init = {}) => {
     s.d1.push({ uuid: "db-" + s.d1.length, name });
     return json(200, { result: { uuid: "db-" + (s.d1.length - 1), name } });
   }
+  if (path === "/r2/buckets" && method === "GET")
+    return json(200, { result: { buckets: s.r2.map((name) => ({ name })) } });
+  if (path === "/r2/buckets" && method === "POST") {
+    s.r2.push(JSON.parse(init.body).name);
+    return json(200, { result: {} });
+  }
+  if (path.startsWith("/r2/buckets/") && path.endsWith("/lifecycle") && method === "PUT") {
+    s.rules[path.split("/")[3]] = JSON.parse(init.body).rules;
+    return json(200, { result: {} });
+  }
   if (path.endsWith("/subdomain")) return json(200, { result: { enabled: true } });
   if (path === "/workers/domains" && method === "GET") return json(200, { result: [] });
   return json(404, { errors: [{ message: "not faked: " + path }] });
@@ -78,7 +88,7 @@ function app(opts: { staging: boolean }) {
     JSON.stringify({ id: "notes", staging: opts.staging, secrets: { runtime: [] } }),
   );
   const storage = (worker: string) =>
-    `"kv_namespaces": [{ "binding": "KV" }],\n  "d1_databases": [{ "binding": "DB", "database_name": "${worker}-db" }],`;
+    `"kv_namespaces": [{ "binding": "KV" }],\n  "d1_databases": [{ "binding": "DB", "database_name": "${worker}-db" }],\n  "r2_buckets": [{ "binding": "R2", "bucket_name": "${worker}-r2" }],`;
   writeFileSync(
     join(dir, "wrangler.jsonc"),
     `// A D1 and KV app.\n{\n  "name": "notes",\n  ${storage("notes")}\n${
@@ -90,7 +100,7 @@ function app(opts: { staging: boolean }) {
   mkdirSync(join(dir, "migrations"));
   writeFileSync(join(dir, "migrations/0001_init.sql"), "CREATE TABLE t (k TEXT);\n");
   const cf = join(dir, "cf.json");
-  writeFileSync(cf, JSON.stringify({ kv: [], d1: [], calls: [] }));
+  writeFileSync(cf, JSON.stringify({ kv: [], d1: [], r2: [], rules: {}, calls: [] }));
   const log = join(dir, "wrangler.log");
   writeFileSync(log, "");
   const run = (command: string, env: Record<string, string> = {}) =>
@@ -129,7 +139,13 @@ function app(opts: { staging: boolean }) {
           },
       );
   const api = () =>
-    JSON.parse(readFileSync(cf, "utf8")) as { kv: unknown[]; d1: unknown[]; calls: string[] };
+    JSON.parse(readFileSync(cf, "utf8")) as {
+      kv: unknown[];
+      d1: unknown[];
+      r2: string[];
+      rules: Record<string, unknown[]>;
+      calls: string[];
+    };
   return { dir, run, calls, api };
 }
 
@@ -232,6 +248,80 @@ describe("storage: the deploy script (ADR 0022)", () => {
     expect(a.calls().map((c) => c.args)).toEqual([
       ["exec", "wrangler", "d1", "migrations", "apply", "DB", "--local"],
     ]);
+    expect(a.api().calls).toEqual([]);
+  });
+});
+
+describe("storage: R2 (ADR 0067)", () => {
+  const lifecycle = (a: ReturnType<typeof app>, text: string) =>
+    writeFileSync(join(a.dir, "r2-lifecycle.json"), text);
+
+  it("makes the bucket, then finds it; the rules come from r2-lifecycle.json", () => {
+    const a = app({ staging: false });
+    lifecycle(a, '{ "tmp/": 7, "exports/": 30 }');
+    const r = a.run("deploy");
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain("Made R2 bucket notes-r2.");
+    expect(a.api().r2).toEqual(["notes-r2"]);
+    expect(a.api().rules["notes-r2"]).toEqual([
+      {
+        id: "expire-tmp/",
+        enabled: true,
+        conditions: { prefix: "tmp/" },
+        deleteObjectsTransition: { condition: { type: "Age", maxAge: 7 * 86400 } },
+      },
+      {
+        id: "expire-exports/",
+        enabled: true,
+        conditions: { prefix: "exports/" },
+        deleteObjectsTransition: { condition: { type: "Age", maxAge: 30 * 86400 } },
+      },
+    ]);
+    // A removed line removes its rule; the bucket is found, not made again.
+    lifecycle(a, '{ "tmp/": 7 }');
+    expect(a.run("deploy").status).toBe(0);
+    expect(a.api().r2).toHaveLength(1);
+    expect(a.api().rules["notes-r2"]).toHaveLength(1);
+  });
+
+  it("leaves the rules alone when there is no r2-lifecycle.json", () => {
+    const a = app({ staging: false });
+    expect(a.run("deploy").status).toBe(0);
+    expect(a.api().rules).toEqual({});
+  });
+
+  it.each(["not json", "[]", '{ "": 7 }', '{ "tmp/": 0 }', '{ "tmp/": 1.5 }'])(
+    "stops before any change on a bad r2-lifecycle.json: %s",
+    (text) => {
+      const a = app({ staging: false });
+      lifecycle(a, text);
+      const r = a.run("deploy");
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("r2-lifecycle.json");
+      expect(a.api().r2).toEqual([]);
+      expect(a.calls()).toEqual([]);
+    },
+  );
+
+  it("gives staging its own bucket; a preview makes it but sets no rules", () => {
+    const a = app({ staging: true });
+    lifecycle(a, '{ "tmp/": 7 }');
+    expect(a.run("preview").status).toBe(0); // not deployed: no upload, but the bucket is ready
+    expect(a.api().r2).toEqual(["notes-staging-r2"]);
+    expect(a.api().rules).toEqual({});
+    expect(a.run("deploy", { SHIPIFY_ENV: "staging" }).status).toBe(0);
+    expect(a.api().rules["notes-staging-r2"]).toHaveLength(1);
+    expect(a.api().r2).not.toContain("notes-r2");
+  });
+
+  it("makes no preview for an R2-only app without staging", () => {
+    const a = app({ staging: false });
+    writeFileSync(
+      join(a.dir, "wrangler.jsonc"),
+      '{ "name": "notes", "r2_buckets": [{ "binding": "R2", "bucket_name": "notes-r2" }] }',
+    );
+    const p = a.run("preview");
+    expect(p.stdout).toContain("(KV, D1 or R2)");
     expect(a.api().calls).toEqual([]);
   });
 });

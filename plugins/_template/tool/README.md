@@ -11,7 +11,9 @@ contract: [cli/lib/plugins/tool.ts](../../../cli/lib/plugins/tool.ts). The whole
    and a JSON schema for its input. Keep each answer short text.
 3. **Sort every call** into look or act in its `tools.json` entry (`entry.json` here is the shape).
    A call that changes anything is act. Give each act call its argument check under `args`
-   (`required`, `properties`), and add `pre` forms only for calls safe to make with no `yes`.
+   (`required`, `properties`; `files` for an argument that names files the task shared, which the
+   server then reads from `SHIPIFY_FILES`), and add `pre` forms only for calls safe to make with
+   no `yes`.
 4. **Two keys when the service allows it:** a read-only key for look, a write key for act, each
    named by its verb in the entry's `keys`. A service with one key for everything: set
    `"oneKey": true`.

@@ -15,6 +15,8 @@ const WHY: Record<ThinkWhy, string> = {
   work: "a talk run found work for this project: do it",
   scheduled: "a repeat's time came: do its job",
   edited: "you edited the task: read it again",
+  "sub-task":
+    "this task is a part of a split task, and it starts now (your `go` on its parent or on it, or the part it waited for merged): do this part",
 };
 
 const KIND: Partial<Record<TaskTitle["kind"], string>> = {
@@ -62,6 +64,8 @@ export interface PromptInput {
   recipe?: { name: string; body: string };
   /** What this run thinks with, as the box chose it: "Claude Code · sonnet · medium (Auto)". */
   thinksWith?: string;
+  /** A split task's section (ADR 0066): a part's parent and siblings, or a parent's parts. */
+  family?: string[];
 }
 
 /**
@@ -156,6 +160,7 @@ export function buildPrompt(p: PromptInput): string {
           "",
         ]
       : ["## Description", "", p.body.trim() || "(empty: the title is the whole ask)", ""]),
+    ...(p.family?.length ? [...p.family, ""] : []),
     "## Conversation (oldest first)",
     "",
     convo,
@@ -266,6 +271,9 @@ export function buildPrompt(p: PromptInput): string {
           "  gets your answer: say what you would change, and stop; their go starts it.",
           '- `calls`: `[{"tool": "<tool>", "name": "<call>", "args": {…}}]`: changes through a tool,',
           "  shown to the owner exactly and made by the box after their `yes`.",
+          '- `split`: `[{"title": "<repo>: …", "brief": "…", "after": [1]}]`, 2 to 8 parts, only when the',
+          "  job is more than one PR (the playbook's \"When to split\"): listed for the owner's `yes`, then each",
+          "  opens as a sub-task, and nothing starts. It comes alone: no `pr`, `work` or `calls` with it.",
           '- `notes`: `[{"topic": "Preferences", "line": "…"}]`: the owner\'s own words to keep.',
           '- `repeat`: `{"when": "every Monday at 9", "kind": "reminder" | "job" | "check", "text": "…"}`; once, then it ends: `"when": "in 15 minutes"` (or "at 17:30", "tomorrow at 9"); once something happens (an errand): `"when": "when links#12\'s checks finish"` (or "when #12 merges", "when it\'s deployed").',
           "- `files`: names of files you put in your out folder for the owner (at most 10).",

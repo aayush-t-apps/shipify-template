@@ -3,6 +3,7 @@
 import type { From, Link, Problem, ReplyKind, ToolCall } from "../contracts/index.ts";
 import type { FormRead } from "../lib/form-reader.ts";
 import type { SessionUsed } from "../lib/plugins/agent.ts";
+import type { NewPart, RecordFamily } from "../lib/plugins/record.ts";
 import type { RepoRef } from "../lib/projects-on-github.ts";
 import type { TaskState, TaskTitle } from "../lib/task.ts";
 import type { Result } from "./result.ts";
@@ -74,9 +75,18 @@ export interface Snapshot {
    * a public repo (its name as GitHub has it, and its size), or the status it answered with. Read
    * once by plan, so a word that names no repo (a file's path, `and/or`) is only a word. */
   looked?: Record<string, { repo: string; sizeKB: number } | { status: number }>;
+  /**
+   * The split task it's in (ADR 0066), read once by plan, only for a part (the `sub-task` label) or
+   * a task with parts: its parent (this task, or the one it's a part of) and every part.
+   */
+  family?: Family;
   /** The status issue/notebook guards came first; this is a real task. */
   isTask: boolean;
 }
+
+/** A split task and its parts, as the record reads them (ADR 0066). */
+export type Family = RecordFamily;
+export type Part = RecordFamily["parts"][number];
 
 /** What the agent may touch (docs/glossary.md): talk (answers, your projects on demand), work (one
  * repo's clone, on the task's branch), read (only the repos it was given, files only: ADR 0044). */
@@ -105,7 +115,9 @@ export type ThinkWhy =
   | "publish"
   | "work"
   | "scheduled"
-  | "edited";
+  | "edited"
+  /** A part's start (ADR 0066): your `go` on its parent or on it, or the part before it merged. */
+  | "sub-task";
 
 export interface Think {
   profile: Profile;
@@ -250,6 +262,23 @@ export type Write =
     }
   | { w: "preview"; repo: string; pr: string }
   | { w: "dispatch"; job: "run" | "github" }
+  /** A split's parts opened as sub-issues of the task, on your `yes` (ADR 0066); nothing starts. */
+  | { w: "split"; parts: NewPart[] }
+  /** A run of one of the task's family: a part your `go` or a merge starts (ADR 0066). */
+  | { w: "start"; n: number }
+  /**
+   * A reply on the parent of the task this run is on (ADR 0066): a part dropped, or every part
+   * closed, which closes it (`close`) and takes `started` off.
+   */
+  | {
+      w: "tell";
+      n: number;
+      kind: ReplyKind;
+      state: string;
+      text: string;
+      step: string;
+      close?: true;
+    }
   | { w: "coming-up" }
   | { w: "react"; comment: number; content: "eyes" | "+1" };
 

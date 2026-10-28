@@ -1,5 +1,5 @@
 ---
-status: accepted and built (one PR; the owner's asks on 2026-10-09). Amended by 0054 (errands): a PR's checks are read in the background only when you ask, once; a merge an errand waits for fires it in the close's own run
+status: accepted and built (one PR; the owner's asks on 2026-10-09). Amended by 0054 (errands): a PR's checks are read in the background only when you ask, once; a merge an errand waits for fires it in the close's own run. Amended by 0066 (sub-tasks): after your `go`, a part's merge starts the parts that waited only for it, in the close's own run
 date: 2026-10-09
 amends: 0019 (one more write of the due run's on a task, beside 0040's close), 0031 (the watch's follow and U6: a preview's failed checks start no run), 0040 (§3: the due run's one more write, a stale label; §5: a PR's checks no longer start anything), 0045 (what its live checks decided for other accounts, now for every account)
 ---

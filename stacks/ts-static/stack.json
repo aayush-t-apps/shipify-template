@@ -1,6 +1,6 @@
 {
   "id": "ts-static",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "description": "Static site served as-is from site/ (no build step), with a tiny Worker for /health, on Cloudflare. Ideal for ported sites.",
   "kind": "app",
   "layers": [

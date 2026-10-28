@@ -4,7 +4,7 @@
 // of each one whose time has come; it keeps "Coming up" on the status task, and the apps list the
 // edge reads.
 
-import { STATE_LABELS } from "../../contracts/index.ts";
+import { STATE_LABELS, SUB_TASK_LABEL } from "../../contracts/index.ts";
 import { doorLogin } from "../../kernel/snapshot.ts";
 import { PLATFORM_ROOT } from "../../lib/config.ts";
 import { platformRepo, RECORD_WRITER } from "../../lib/github.ts";
@@ -58,13 +58,15 @@ export function activeTasks(): Set<number> {
 export function taskDue(at = new Date()): Result<Due> {
   const who = owner();
   const door = doorLogin();
-  // Yours, the door's for you, or a recipe's task (the due run opens those: ADR 0032).
+  // Yours, the door's for you, or a task the box opened: a recipe's (the due run opens those: ADR
+  // 0032), or a part of a split task (your `yes` opens those: ADR 0066).
   const mine = (i: Issue) =>
     !i.pull_request &&
     !isStatusIssue(i) &&
     (i.user.login === who ||
       (door !== undefined && i.user.login === door) ||
-      (i.user.login === RECORD_WRITER && i.labels.some((l) => l.name === RECIPE_LABEL.name)));
+      (i.user.login === RECORD_WRITER &&
+        i.labels.some((l) => l.name === RECIPE_LABEL.name || l.name === SUB_TASK_LABEL)));
   const listed = new Map<number, Issue>();
   for (const label of [
     REPEATS_LABEL.name,

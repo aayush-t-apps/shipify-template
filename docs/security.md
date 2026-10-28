@@ -291,7 +291,8 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
 - **your events,** from the account in the variable `SHIPIFY_OWNER`;
 - **the door App's comments** for you, each with a hidden `from` line (who, which chat);
 - **a dispatch from `main`** carrying only a task number (and which job). It does only what the
-  task's status already has pending;
+  task's status already has pending, or a part's first run, which your `go` on its parent started
+  (or, after it, the merge of the part it waited for: ADR 0066);
 - **a push of merged plans** to `main`.
 
 And never:
@@ -341,6 +342,13 @@ pages, a tool's answers and anyone else's text are data, never a command
   history, so a replaced body can be brought back there. They can start runs and a release as you
   (above), and still can't merge a PR or take an app down, bring it back or roll it back. So turn on Telegram's password (Settings →
   Privacy and Security → Two-Step Verification), and keep the Access sign-in to your own email.
+- **A split's `yes`** (ADR 0066) approves its parts' words: each title and brief shows in full on
+  the list, the list's code is their fingerprint (an edit to the task voids it), and the box opens
+  exactly those words as each part's description, which its run then follows as yours. A part's
+  title names its repo, so you see each repo a part may change before your `yes`. Opening parts
+  starts nothing: only your `go` does, and after it a part's merge. The parts and their links are
+  written with the workflow's own token (`issues: write`), and a part's run reads its parent and
+  siblings as data, but for the parent's description, which is yours.
 - **A routine's form:** a page someone else wrote that a routine reads (a shared page, a web clip)
   could steer what it writes, but only within its form: its one target, its caps, its `max`. Keep
   the target private. What it writes is text blocks only, so the form isn't a way out.

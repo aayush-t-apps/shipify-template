@@ -16,6 +16,10 @@ export interface Env extends PlatformEnv {
   /** The app's database; its tables come from migrations/ (AGENTS.md, "Storage"). */
   DB: D1Database;
   // #endif
+  // #if OPTION_R2
+  /** Files and objects; expiry rules are in r2-lifecycle.json (AGENTS.md, "Storage"). */
+  R2: R2Bucket;
+  // #endif
   // #if OPTIONS
 }
 // #endif

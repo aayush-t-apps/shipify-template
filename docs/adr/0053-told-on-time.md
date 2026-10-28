@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #370) and built, simpler than written; see [As built](#as-built-2026-10-13)
+status: accepted (merged #370) and built, simpler than written; see [As built](#as-built-2026-10-13); §1 amended by 0066 (a sub-task's close starts a run with no agent, to start the next part or tell its parent)
 date: 2026-10-13
 amends: 0040 (§2: a close from GitHub is a change of state too, unless something waits on the task; §1: a waiting run whose words were already answered is cancelled, not run), 0019 and 0031 (the due run also tells you what's coming due, and a weekly digest)
 ---

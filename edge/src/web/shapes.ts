@@ -9,8 +9,11 @@ import { DOC_KINDS } from "./docs.ts";
 const iso = z.string().max(40);
 const url = z.string().max(2_000);
 
-/** A task's state, as one word the page shows as a dot. */
-export const STATES = ["needs-you", "working", "stuck", "open", "closed"] as const;
+/**
+ * A task's state, as one word the page shows as a mark. `waiting`: open, no run, and blocked by a
+ * task still open (ADR 0066); not the `waiting` label, which is an errand's.
+ */
+export const STATES = ["needs-you", "working", "stuck", "waiting", "open", "closed"] as const;
 /** Where a task started: "github", "repeat", "recipe", or the chat channel's id it came through. */
 const origin = z.string().regex(/^[a-z][a-z0-9-]{0,30}$/);
 
@@ -32,6 +35,25 @@ export const Row = z.object({
   staying: z.literal(true).optional(),
   /** Its labels other than those the row already says (the list filters by them). */
   labels: z.array(z.string()).optional(),
+  /** A split task's parts (ADR 0066): closed of all, from GitHub's own count. */
+  parts: z.object({ done: z.number(), total: z.number() }).optional(),
+  /** A part's parent, from its body's first line `Part of #<n>`. */
+  parent: z.number().optional(),
+});
+
+/** A part of a split task, as its parent's Plan card shows it (ADR 0066). */
+export const Part = z.object({
+  n: z.number(),
+  title: z.string(),
+  state: z.enum(STATES),
+  /** Closed as not planned: not done, so what waits for it waits. */
+  dropped: z.literal(true).optional(),
+  /** Open, never ran, every blocker closed as completed: `go` starts it. */
+  ready: z.literal(true).optional(),
+  /** What it waits for: its blockers not closed as completed. */
+  after: z.array(z.number()).optional(),
+  /** The open PR that closes it. */
+  pr: z.object({ n: z.number(), url }).optional(),
 });
 
 export const Running = z.object({
@@ -144,6 +166,12 @@ export const Thread = z.object({
     pr: z.enum(["open", "merged", "closed"]).optional(),
     /** The task a PR is for. */
     for: z.number().optional(),
+    /** A part's parent (ADR 0066). */
+    parent: z.number().optional(),
+    /** A split task after your `go`: a part's merge starts the next. */
+    started: z.literal(true).optional(),
+    /** A split task's parts, in order: its Plan card. None when GitHub's read failed. */
+    plan: z.array(Part).max(50).optional(),
   }),
   messages: z.array(Msg),
   /** Older messages left out: GitHub's pages of 100, and `page` is the one here (?page= reads one). */
@@ -380,6 +408,7 @@ export const Problem = z.object({ error: z.string(), fix: z.string() });
 
 export type List = z.infer<typeof List>;
 export type Row = z.infer<typeof Row>;
+export type Part = z.infer<typeof Part>;
 export type Running = z.infer<typeof Running>;
 export type Thread = z.infer<typeof Thread>;
 export type Msg = z.infer<typeof Msg>;

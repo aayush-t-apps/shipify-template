@@ -198,6 +198,12 @@ describe("a run that reads someone else's repo (ADR 0044)", () => {
     Object.assign(process.env, {
       SHIPIFY_AGENT_READ_TOKEN: "ghs_read",
       SHIPIFY_NOTION_READ: "ntn_read",
+      // Drop's look keys don't end in _READ: tools.json names them, and so they're handed over.
+      SHIPIFY_DROP_URL: "https://drop.example.com",
+      SHIPIFY_DROP_READ_ID: "drop-read-id",
+      SHIPIFY_DROP_READ_SECRET: "drop-read-secret",
+      SHIPIFY_DROP_WRITE_SECRET: "drop-write-secret",
+      SHIPIFY_NOTION_WRITE: "ntn_write",
       SHIPIFY_AGENT_LOGIN: "the-login",
       FAKE_FINAL: JSON.stringify({ v: 2, state: "done", text: "It counts words." }),
     });
@@ -233,9 +239,13 @@ describe("a run that reads someone else's repo (ADR 0044)", () => {
     expect(agentSecrets("CLAUDE_CODE_OAUTH_TOKEN", {})).toEqual({
       CLAUDE_CODE_OAUTH_TOKEN: "the-login",
     });
+    // Each tool's look keys, as tools.json names them; never an act key.
     expect(Object.keys(agentSecrets("CLAUDE_CODE_OAUTH_TOKEN")).sort()).toEqual([
       "CLAUDE_CODE_OAUTH_TOKEN",
       "GH_TOKEN",
+      "SHIPIFY_DROP_READ_ID",
+      "SHIPIFY_DROP_READ_SECRET",
+      "SHIPIFY_DROP_URL",
       "SHIPIFY_NOTION_READ",
     ]);
     // A run on another of your accounts (ADR 0045): that account's key, and no tool's.

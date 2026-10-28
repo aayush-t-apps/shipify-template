@@ -111,7 +111,7 @@ export function installAgent(
 export function tidyTools(all: Executors, tools = process.env.RUNNER_TOOL_CACHE): string[] {
   if (!tools || !existsSync(tools)) return [];
   const removed: string[] = [];
-  const drop = (dir: string, keep: string[]) => {
+  const prune = (dir: string, keep: string[]) => {
     if (!existsSync(dir)) return;
     for (const v of readdirSync(dir)) {
       if (v.startsWith(".") || keep.includes(v)) continue;
@@ -121,7 +121,7 @@ export function tidyTools(all: Executors, tools = process.env.RUNNER_TOOL_CACHE)
   };
   for (const [id, entry] of Object.entries(all)) {
     const at = installedAt(id, entry, tools);
-    if (at && entry.install) drop(at.dir, [entry.install.version]);
+    if (at && entry.install) prune(at.dir, [entry.install.version]);
   }
   // Node: the two newest (setup-node's check-latest adds one now and then).
   const node = join(tools, "node");
@@ -139,7 +139,7 @@ export function tidyTools(all: Executors, tools = process.env.RUNNER_TOOL_CACHE)
     const keep = all.filter(
       (v, i) => all.slice(0, i).filter((w) => parts(w)[0] === parts(v)[0]).length < 2,
     );
-    drop(node, keep);
+    prune(node, keep);
   }
   return removed;
 }

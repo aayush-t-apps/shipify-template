@@ -40,13 +40,20 @@ function pluginSettings(): Setting[] {
   }
   for (const [id, t] of Object.entries(loadTools())) {
     for (const k of Object.values(t.keys)) {
+      // One secret for both verbs (an address, or a oneKey tool's key): both steps read it.
+      const both = k.look === k.act;
       if (k.look)
         out.push({
           name: k.look,
           lives: ["secret", "pc"],
-          what: `${id}'s read-only key`,
+          what: both
+            ? (t.setup?.keys?.[k.look]?.ask ??
+              `${id}'s key, for looking and for the changes you approved`)
+            : `${id}'s read-only key`,
           setBy: `\`ship add ${id}\``,
-          readBy: `\`task.yml\`'s think step: ${id}'s look calls`,
+          readBy: both
+            ? `\`task.yml\`'s think step, and its apply step for ${id}'s calls you approved`
+            : `\`task.yml\`'s think step: ${id}'s look calls`,
         });
       if (k.act && k.act !== k.look)
         out.push({

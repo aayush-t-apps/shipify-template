@@ -571,6 +571,11 @@ describe("task.yml (ADR 0031)", () => {
         "secrets.SHIPIFY_REPOS_KEY",
         "secrets.SHIPIFY_NOTION_READ",
         "secrets.SHIPIFY_NOTION_WRITE",
+        "secrets.SHIPIFY_DROP_URL",
+        "secrets.SHIPIFY_DROP_READ_ID",
+        "secrets.SHIPIFY_DROP_READ_SECRET",
+        "secrets.SHIPIFY_DROP_WRITE_ID",
+        "secrets.SHIPIFY_DROP_WRITE_SECRET",
       ].sort(),
     );
     // The Apps' keys go to the pinned mint action alone, never to a step of Shipify's, in either

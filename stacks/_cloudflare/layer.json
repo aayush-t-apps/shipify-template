@@ -15,6 +15,7 @@
   ],
   "options": {
     "kv": "A KV namespace, binding KV: key-value data with quick reads. Free: 100,000 reads and 1,000 writes a day, 1 GB.",
-    "d1": "A D1 database, binding DB: SQL tables from migrations/, applied before each deploy. Free: 10 databases per account (production and staging count apart), 500 MB each, 100,000 rows written a day."
+    "d1": "A D1 database, binding DB: SQL tables from migrations/, applied before each deploy. Free: 10 databases per account (production and staging count apart), 500 MB each, 100,000 rows written a day.",
+    "r2": "An R2 bucket, binding R2: files and other objects, with lifecycle rules from r2-lifecycle.json (prefix to days). Free: 10 GB, 1 million writes and 10 million reads a month; needs a card on the Cloudflare account once."
   }
 }

@@ -42,3 +42,12 @@ describe("storage: D1", () => {
   });
 });
 // #endif
+// #if OPTION_R2
+
+describe("storage: R2", () => {
+  it("keeps what it's given", async () => {
+    await env.R2.put("tmp/hello.txt", "hello");
+    expect(await (await env.R2.get("tmp/hello.txt"))?.text()).toBe("hello");
+  });
+});
+// #endif

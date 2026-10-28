@@ -7,7 +7,7 @@ preset: {{PRESET}}
 visibility: {{VISIBILITY}}
 staging: false
 secrets: []
-options: []   # the stack's options it takes; Cloudflare apps: kv, d1 (stacks/_cloudflare/storage.md)
+options: []   # the stack's options it takes; Cloudflare apps: kv, d1, r2 (stacks/_cloudflare/storage.md)
 # service: <name>   (apps, optional: the deployed/URL name when it should differ from the app id)
 revision: 1
 ---

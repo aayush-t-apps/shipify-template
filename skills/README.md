@@ -46,6 +46,7 @@ follows.
 | [api-and-interface-design](api-and-interface-design/SKILL.md) | an HTTP API, a package's exports, types between modules | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills/tree/ce89b03cbd768d4c9f512beedae46c20822a6bf6/skills/api-and-interface-design) | MIT |
 | [security-and-hardening](security-and-hardening/SKILL.md) | user input, sessions, secrets, third parties, dependencies | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills/tree/d1463fd0d6675c6e145d9c57802d70faf84d1f51/skills/security-and-hardening) | MIT |
 | [notion](notion/SKILL.md) | a task reads or changes the owner's Notion (Shipify's Notion tool, `tools/notion`) | this repo | this repo's |
+| [drop](drop/SKILL.md) | a task shares files it made as a link, or changes the owner's drops (Shipify's Drop tool, `tools/drop`) | this repo | this repo's |
 | [plug-ins](plug-ins/SKILL.md) | adding or changing any plug-in: a tool, a chat channel, a stack, an agent | this repo | this repo's |
 | [writing-skills](writing-skills/SKILL.md) | adding a skill, putting a lesson into one, or changing one | this repo (its method after [obra/superpowers](https://github.com/obra/superpowers/tree/bb92a77741419a4ab5f06e711a283343f1ada0c3/skills/writing-skills)) | this repo's |
 

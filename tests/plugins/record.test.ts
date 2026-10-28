@@ -301,6 +301,47 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
     expect(record.issueState(12)).toBe("open");
   });
 
+  it("opens a split's parts as sub-issues with their links, once, and reads the family (ADR 0066)", () => {
+    const { record } = make();
+    // A task with no parts has no family: plan reads none.
+    expect(record.family(12)).toBeUndefined();
+    const label = { name: "sub-task", color: "8250df", description: "A part" };
+    const parts = [
+      { title: "shipify: a field", body: "Part of #12\n\nAdd it.", after: [], waits: [] },
+      { title: "links: use it", body: "Part of #12\n\nUse it.", after: [0], waits: [] },
+    ];
+    expect(record.openParts(12, parts, label)).toEqual([200, 201]);
+    const fam = record.family(201);
+    expect(fam?.parent).toMatchObject({ number: 12, title: "make it faster", state: "open" });
+    expect(fam?.parts.map((p) => [p.number, p.title, p.state, p.labels])).toEqual([
+      [200, "shipify: a field", "open", ["sub-task"]],
+      [201, "links: use it", "open", ["sub-task"]],
+    ]);
+    expect(fam?.parts[1]?.blockedBy).toEqual([{ number: 200, state: "open" }]);
+    // The parent reads the same family.
+    expect(record.family(12)?.parts.map((p) => p.number)).toEqual([200, 201]);
+    // Asked again (a run that died between its calls): none opens twice, and no link is added twice.
+    expect(record.openParts(12, parts, label)).toEqual([200, 201]);
+    expect(record.family(12)?.parts[1]?.blockedBy).toHaveLength(1);
+    // A closed part reads with how it closed, and its PR.
+    fake.set((f) => {
+      const p = f.others?.["200"]?.issue as Record<string, unknown>;
+      Object.assign(p, {
+        state: "closed",
+        state_reason: "completed",
+        pr: "https://github.com/o/shipify/pull/7",
+      });
+    });
+    expect(record.family(201)?.parts[0]).toMatchObject({
+      state: "closed",
+      reason: "completed",
+      pr: "https://github.com/o/shipify/pull/7",
+    });
+    expect(record.family(201)?.parts[1]?.blockedBy).toEqual([
+      { number: 200, state: "closed", reason: "completed" },
+    ]);
+  });
+
   it("reads a task's comments and the task again only when they changed (ADR 0057)", () => {
     const { record } = make();
     const since = "2026-01-01T00:00:00Z";

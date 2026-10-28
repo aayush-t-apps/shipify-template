@@ -1,0 +1,92 @@
+/* A split task's Plan card (ADR 0066): loaded with plan.js, for a task with parts. */
+/* Under the thread's header, its parts in order. It folds, and never takes more than half the
+   screen from the thread. */
+.plan {
+  flex: none;
+  max-height: 45vh;
+  margin: 0.5rem 0.75rem 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.plan summary {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  list-style: none;
+  cursor: pointer;
+}
+.plan summary::-webkit-details-marker {
+  display: none;
+}
+.plan summary svg {
+  width: 1rem;
+  height: 1rem;
+  transform: rotate(-90deg);
+  transition: transform 0.15s;
+}
+.plan[open] summary svg {
+  transform: none;
+}
+.plan summary .bar {
+  flex: 0 1 6rem;
+  margin: 0;
+}
+.plan summary small {
+  color: var(--muted);
+  font-weight: 500;
+}
+.plan .links {
+  padding: 0 0.75rem 0.5rem;
+}
+.plan ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.plan li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.375rem 0.75rem;
+  border-top: 1px solid var(--line);
+}
+.plan .ready {
+  background: color-mix(in srgb, var(--acc) 7%, transparent);
+}
+.pt {
+  display: grid;
+  min-width: 0;
+}
+.pt a {
+  overflow: hidden;
+  color: inherit;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-decoration: none;
+}
+.pt a:hover {
+  text-decoration: underline;
+}
+.plan .pt small {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+/* A phone: the card at full width, each part a finger's height. */
+@media (max-width: 799px) {
+  .plan {
+    margin: 0;
+    border-width: 0 0 1px;
+    border-radius: 0;
+  }
+  .plan li,
+  .plan summary {
+    min-height: 44px;
+  }
+}

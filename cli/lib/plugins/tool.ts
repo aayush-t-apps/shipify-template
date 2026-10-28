@@ -69,7 +69,10 @@ export const ToolEntry = z
      * and the only names it takes. A call with none here takes any arguments. `target`: the
      * argument naming what it changes (a page, a parent), which a pre-approved form must fix.
      * `warn`: what an argument does that its value doesn't show, said on the call's list line
-     * whenever the call has it ({"content": "replaces the page's whole body"}).
+     * whenever the call has it ({"content": "replaces the page's whole body"}). `files`: the
+     * argument that names files the task shared (a list of names): decide takes the call only when
+     * each is one, and the box fetches them for the call into a folder its server reads
+     * (SHIPIFY_FILES).
      */
     args: z
       .record(
@@ -79,6 +82,7 @@ export const ToolEntry = z
           properties: z.record(z.string(), z.unknown()).optional(),
           target: z.string().optional(),
           warn: z.record(z.string(), z.string().min(1).max(100)).optional(),
+          files: z.string().optional(),
         }),
       )
       .optional(),

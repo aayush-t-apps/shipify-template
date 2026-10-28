@@ -20,7 +20,7 @@ Every doc, by what you want to do. New here? Read the [tour](tour.md), then
 |---|---|
 | [tasks.md](tasks.md) | What can I ask, in which words? Fixed words, repeats, checks, run details |
 | [channels.md](channels.md) | How do I use Shipify from Telegram or the web chat, and add another channel? |
-| [tools.md](tools.md) | How do runs read and change my apps (Notion), and how is a tool added? |
+| [tools.md](tools.md) | How do runs read and change my apps (Notion, Drop), and how is a tool added? |
 | [notebook.md](notebook.md) | What does Shipify remember about me, and how do I add, forget or see a note? |
 | [recipes.md](recipes.md) | How do I keep an automation as a reviewed file, and turn on an example? |
 | [operations.md](operations.md) | Which command for status, release, roll back, down, up? |

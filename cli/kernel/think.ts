@@ -28,9 +28,11 @@ import type { Adapter, AgentReport, SessionUsed } from "../lib/plugins/agent.ts"
 import { repoFor } from "../lib/projects-on-github.ts";
 import type { RunDetails } from "../lib/runs.ts";
 import { onBox } from "../lib/sandbox.ts";
+import { loadTools } from "../lib/tools.ts";
 import { choiceFor, defaultAgent, executors, promptTools, Stopwatch, taskChoice } from "./agent.ts";
 import { laterWords } from "./decide.ts";
 import { hash8 } from "./keys.ts";
+import { familyLines } from "./parts.ts";
 import { binDir, type Place, placeFor } from "./place.ts";
 import { asksOf, buildPrompt, coverEach } from "./prompt.ts";
 import { type ReadIo, readRepos } from "./reads.ts";
@@ -116,17 +118,17 @@ export function agentSecrets(
   },
 ): Record<string, string> {
   const value = process.env.SHIPIFY_AGENT_LOGIN || (login ? process.env[login] : undefined);
+  // The tools' look keys, as tools.json names them, for their MCP servers: the agent's config
+  // names each as ${VAR}, which stays as written when the agent doesn't hold it.
+  const look = hold.tools
+    ? Object.values(loadTools()).flatMap((t) => Object.values(t.keys).map((k) => k.look ?? ""))
+    : [];
   return {
     ...(login && value ? { [login]: value } : {}),
     ...(hold.github ? { GH_TOKEN: hold.github } : {}),
-    // The tools' look keys (tools.json's look secrets), for their MCP servers.
-    ...(hold.tools
-      ? Object.fromEntries(
-          Object.entries(process.env).filter(
-            ([k, v]) => /^SHIPIFY_[A-Z0-9_]+_READ$/.test(k) && v,
-          ) as [string, string][],
-        )
-      : {}),
+    ...Object.fromEntries(
+      look.flatMap((k) => (k && process.env[k] ? [[k, process.env[k] as string]] : [])),
+    ),
   };
 }
 
@@ -433,6 +435,8 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       ...(t.base ? { base: t.base } : {}),
       playbook: readFileSync(join(PLATFORM_ROOT, "playbooks", "task.md"), "utf8"),
       ...(t.recipe ? { recipe: t.recipe } : {}),
+      // A split task's parent and parts (ADR 0066), as plan read them: data, but for its parent's goal.
+      ...(s.family && !reading ? { family: familyLines(s) } : {}),
       thinksWith: [adapter.name, choice.model ?? "its default model", choice.effort]
         .filter(Boolean)
         .join(" · ")

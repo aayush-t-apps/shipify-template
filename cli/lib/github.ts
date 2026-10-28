@@ -10,6 +10,7 @@ import { ShipError } from "./output.ts";
 import type {
   IssuePatch,
   IssueQuery,
+  NewPart,
   Queue,
   QueueRun,
   RecordComment,
@@ -255,6 +256,21 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
     if (r.code !== 0) throw new ShipError(`gh api graphql failed: ${r.stderr.trim()}`);
     return ((JSON.parse(r.stdout) as { data?: T }).data ?? {}) as T;
   };
+  /** A GraphQL mutation with only its own variables (strings and ids). */
+  const mutate = <T>(query: string, vars: Record<string, string>): T => {
+    const r = ghRun(
+      [
+        "api",
+        "graphql",
+        "-f",
+        `query=${query}`,
+        ...Object.entries(vars).flatMap(([k, v]) => ["-f", `${k}=${v}`]),
+      ],
+      call(),
+    );
+    if (r.code !== 0) throw new ShipError(`gh api graphql failed: ${r.stderr.trim()}`);
+    return ((JSON.parse(r.stdout) as { data?: T }).data ?? {}) as T;
+  };
   const call = (more: GhOpts = {}): GhOpts => ({
     token: opts.token ?? issuesToken(),
     timeoutMs: opts.timeoutMs,
@@ -476,10 +492,136 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
         editor: login(node?.editor ?? null),
       };
     },
+    family(n) {
+      const i = graphql<{ repository?: { issue?: GqlFamily & { parent?: GqlFamily | null } } }>(
+        `query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) { issue(number: $n) { ${FAMILY} parent { ${FAMILY} } } } }`,
+        {},
+        { n },
+      ).repository?.issue;
+      const top = i?.parent ?? i;
+      if (!top?.subIssues?.nodes.length) return undefined;
+      return {
+        parent: {
+          number: top.number,
+          title: top.title,
+          body: top.body ?? "",
+          state: top.state === "CLOSED" ? "closed" : "open",
+          labels: names(top.labels),
+        },
+        parts: top.subIssues.nodes.map((p) => ({
+          number: p.number,
+          title: p.title,
+          state: p.state === "CLOSED" ? "closed" : "open",
+          ...(p.stateReason ? { reason: p.stateReason.toLowerCase() } : {}),
+          labels: names(p.labels),
+          blockedBy: (p.blockedBy?.nodes ?? []).map((b) => ({
+            number: b.number,
+            state: b.state === "CLOSED" ? "closed" : "open",
+            ...(b.stateReason ? { reason: b.stateReason.toLowerCase() } : {}),
+          })),
+          ...(p.closedByPullRequestsReferences?.nodes[0]
+            ? { pr: p.closedByPullRequestsReferences.nodes[0].url }
+            : {}),
+        })),
+      };
+    },
+    openParts(parent, parts, label) {
+      // One read: the repo's, the label's and the parent's ids, and its parts already there.
+      type Ids = {
+        repository?: {
+          id: string;
+          label?: { id: string } | null;
+          issue?: {
+            id: string;
+            subIssues: { nodes: { id: string; number: number; title: string }[] };
+          };
+        };
+      };
+      const ids = () =>
+        graphql<Ids>(
+          "query($owner: String!, $name: String!, $label: String!, $n: Int!) { repository(owner: $owner, name: $name) { id label(name: $label) { id } issue(number: $n) { id subIssues(first: 50) { nodes { id number title } } } } }",
+          { label: label.name },
+          { n: parent },
+        ).repository;
+      let r = ids();
+      if (r && !r.label) {
+        this.makeLabel(label);
+        r = ids();
+      }
+      if (!r?.issue || !r.label) throw new ShipError(`#${parent} or its label couldn't be read`);
+      const there = r.issue.subIssues.nodes;
+      const made: ({ id: string; number: number } | undefined)[] = parts.map((p) =>
+        there.find((x) => x.title === p.title),
+      );
+      // One call makes the new ones, each a sub-issue of the parent as it's made.
+      const fresh = parts.map((_, i) => i).filter((i) => !made[i]);
+      if (fresh.length) {
+        const vars: Record<string, string> = { repo: r.id, label: r.label.id, parent: r.issue.id };
+        for (const i of fresh) {
+          vars[`t${i}`] = parts[i]?.title ?? "";
+          vars[`b${i}`] = parts[i]?.body ?? "";
+        }
+        const got = mutate<Record<string, { issue: { id: string; number: number } }>>(
+          `mutation($repo: ID!, $label: ID!, $parent: ID!, ${fresh.map((i) => `$t${i}: String!, $b${i}: String!`).join(", ")}) { ${fresh.map((i) => `p${i}: createIssue(input: {repositoryId: $repo, title: $t${i}, body: $b${i}, labelIds: [$label], parentIssueId: $parent}) { issue { id number } }`).join(" ")} }`,
+          vars,
+        );
+        for (const i of fresh) made[i] = got[`p${i}`]?.issue;
+      }
+      if (made.some((m) => !m)) throw new ShipError("GitHub didn't open every part");
+      const all = made as { id: string; number: number }[];
+      // One call links them: only the parts made now, so a second try adds no link twice.
+      const links = fresh.flatMap((i) => {
+        const p = parts[i] as NewPart;
+        return [
+          ...p.after.map((a) => all[a]?.id),
+          ...p.waits.map((w) => there.find((x) => x.number === w)?.id),
+        ]
+          .filter((b): b is string => Boolean(b))
+          .map((b) => [all[i]?.id as string, b] as const);
+      });
+      if (links.length) {
+        const vars = Object.fromEntries(
+          links.flatMap(([a, b], k) => [
+            [`a${k}`, a],
+            [`b${k}`, b],
+          ]),
+        );
+        mutate(
+          `mutation(${links.map((_, k) => `$a${k}: ID!, $b${k}: ID!`).join(", ")}) { ${links.map((_, k) => `l${k}: addBlockedBy(input: {issueId: $a${k}, blockingIssueId: $b${k}}) { clientMutationId }`).join(" ")} }`,
+          vars,
+        );
+      }
+      return all.map((m) => m.number);
+    },
     pin: (issue) => pinning("pinIssue", issue),
     unpin: (issue) => pinning("unpinIssue", issue),
   };
 }
+
+/** What the family read takes of each issue (ADR 0066): the parent's words, and each part. */
+const FAMILY =
+  "number title body state labels(first: 20) { nodes { name } } subIssues(first: 50) { nodes { number title state stateReason labels(first: 20) { nodes { name } } blockedBy(first: 20) { nodes { number state stateReason } } closedByPullRequestsReferences(first: 1, includeClosedPrs: false) { nodes { url } } } }";
+type GqlState = "OPEN" | "CLOSED";
+type GqlLabels = { nodes: { name: string }[] } | null | undefined;
+type GqlFamily = {
+  number: number;
+  title: string;
+  body: string | null;
+  state: GqlState;
+  labels: GqlLabels;
+  subIssues?: {
+    nodes: {
+      number: number;
+      title: string;
+      state: GqlState;
+      stateReason: string | null;
+      labels: GqlLabels;
+      blockedBy?: { nodes: { number: number; state: GqlState; stateReason: string | null }[] };
+      closedByPullRequestsReferences?: { nodes: { url: string }[] };
+    }[];
+  };
+};
+const names = (l: GqlLabels) => (l?.nodes ?? []).map((x) => x.name);
 
 /** Runs on GitHub Actions: starting one, and what's queued or under way (plugins/record.ts). */
 export function githubQueue(opts: RecordOpts = {}): Queue {

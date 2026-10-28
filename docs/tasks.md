@@ -307,12 +307,12 @@ changes the live app at once (taking an app down, bringing it back, a rollback) 
 | `start over` | closes the open PR and begins again from the repo's default branch | a PR is open, or not |
 | `preview` | a live preview of the open PR, with its checks run against it | a PR is open |
 | `publish` | a merged plan's repo, keys and build, or again after they stopped | the plan is merged |
-| `go` | builds a big change once its doc PR is merged; on a new project's task, the same as `publish` | the doc (or plan) is merged |
+| `go` | builds a big change once its doc PR is merged; on a new project's task, the same as `publish`. On a split task, starts its ready sub-tasks; `go #n` starts that one now; on a sub-task that hasn't started, starts it now ([Sub-tasks](#sub-tasks-one-task-a-few-prs)) | the doc (or plan) is merged; the task has open sub-tasks; the sub-task never ran |
 | `stop repeating` | ends a repeat and closes the task | it repeats |
 | `resume` | starts a paused repeat again | it's paused |
 | `close` | closes the task: its PRs stay, a repeat pauses (`resume` carries it on); write again to reopen it. From a chat, the door closes it at once with its state labels, the chat answers "Closed · #12", and no run starts: the next run that reads the task notes it (ADR 0040). On GitHub, a run closes it and says so | always |
 | `reopen` | reopens a closed task with no agent, and it waits for what you'd like next. From a chat, the door reopens it at once ("Reopened · #12") and no run starts: your next words do. On GitHub, a run reopens it, a minute or more after it closed, and says so | it's closed |
-| `stop` | stops the run that's going, within a minute: what it committed stays on the task's branch, and the run stays ([above](#a-run-that-stays)), so your next words carry on in the same session ([below](#words-while-a-run-works)) | always |
+| `stop` | stops the run that's going, within a minute: what it committed stays on the task's branch, and the run stays ([above](#a-run-that-stays)), so your next words carry on in the same session ([below](#words-while-a-run-works)). On a split task, no more sub-tasks start; the ones that run finish | always |
 | `remember: …` · `forget: …` | keeps or removes a note in the notebook, with no agent ([notebook.md](notebook.md)) | always |
 | `/ping` · `/apps` · `/repos` · `/help` · `/notebook` · `/recipes` · `/models` | the same answer a chat gets, with no agent | anywhere |
 | `use <model>` | the model (or effort, or agent) for the task's runs: alone, from your next message (from a chat it starts no run; on GitHub a run says so); as a line in a message, from that message's run | anywhere |
@@ -520,6 +520,68 @@ as a feature".
   `go` on the closed task opens it again, and the build starts from `main`.
 - **Apps with staging** get no version bump in PRs. Merging deploys staging; the Operate form's
   "Release to production" (or `<app>: release`) opens the release PR.
+- **More than one PR's work:** split it into sub-tasks ([below](#sub-tasks-one-task-a-few-prs)).
+
+## Sub-tasks: one task, a few PRs
+
+A task can **split** into **sub-tasks** (ADR 0066): each is a task of its own, with its own run,
+PR and thread. GitHub keeps them as the task's **sub-issues**, with **blocked by** links for their
+order, so Shipify stores nothing, and GitHub's app shows the tree and its progress too.
+
+| Good fit | Poor fit (one task instead) |
+|---|---|
+| one change across repos: `shipify:` a new field → `links:` uses it | a tweak or a fix |
+| an ADR's build plan, each step a short PR | parts in one repo that don't build alone |
+| the same job on many projects, in parallel | a question, research, a check |
+| find out first (a spike's doc), then build | unclear work: ask first |
+| a job too big for one run, in safe steps | repeats, errands, reminders |
+
+1. **Split.** Ask for it ("split it"), or a run suggests it when the job is more than one PR worth
+   a review by itself. Its reply lists 2 to 8 parts, each with its title (which names its repo, as
+   any task's does), its brief and what it waits for, under **To do after your `yes`**, with Yes
+   and No. Your `yes` approves those words as each part's description.
+2. **Open.** On your `yes`, the box opens the parts as sub-issues (label `sub-task`, first line
+   `Part of #12`) with their blocked-by links. Each part thinks with the task's model and effort:
+   its last line is the task's `use` pick (when it has one), unless its brief names its own; a
+   `use` on the part changes it. **Nothing starts**: "Opened #13 and #14. Say `go` to
+   start #13. #14 waits for #13."
+3. **Start.** `go` on the task starts every **ready** part (open, never run, and every part it
+   waits for merged or closed as done), each on a free slot; GitHub's queue holds what has none.
+   The task gets the label `started`. `go #14` starts that part now, whatever it waits for, and
+   says what it skipped. `stop` takes `started` off: no new part starts, and the ones that run
+   finish. `go` again carries on.
+4. **Next.** After your `go`, when a part's PR merges, its close run (no agent) starts each part
+   that waited only for it. No polling: nothing starts before your `go`.
+5. **End.** When every part is closed, the task says so ("All 3 sub-tasks are closed: #13 merged
+   (PR #20), …") and closes.
+
+- **One level:** a part can't split; say it as a task of its own.
+- **Its own repo, one PR:** a part's PR is `closes`, so its merge closes the part. The parent's own
+  PR, once it has parts, is `part-of`: it closes with its parts. A split isn't listed while the
+  task's own `closes` PR is open: merge or close it first.
+- **Parts on the same repo go one after the other** (each waits for the one before), unless the run
+  says why they touch different files: each then starts from a `main` that has the part before it.
+- **A split comes alone:** a PR, a change or calls in the same answer aren't made (a PR's commits
+  are kept on the task's branch); ask again once the parts are open. Other words after the list
+  drop it, as any list.
+- **A part's run** gets its parent's title and description, and one line for each part, in one
+  read. When the box started it (`go`, or a merge), it doesn't stay after its answer: its slot is
+  free for the next part. Your words on a part later work as on any task.
+- **Your words on a part that waits** (it never ran, and what it waits for isn't done) start
+  nothing. The box answers once, with no agent: "#14 waits for #13, so it hasn't started. It
+  starts when #13 merges, and its run reads your words. Say `go` here to start it now." It still
+  starts as planned, and its run reads what you wrote. `go` on the part starts it now and says what
+  it skipped; `stop`, `close` and `use` work as on any task.
+- **A dropped part** (closed as not planned) isn't done: what waits for it doesn't start, and the
+  task is told once: "`go #15` starts it anyway, or close it as not planned too."
+- **A part that fails or asks you** is `needs you` on its own thread; what waits for it waits.
+- **Closed as done by hand,** with no PR, a part counts as done. A link you add or take off on
+  GitHub counts at once: the box reads the links each time. A sub-issue you add by hand has no
+  `sub-task` label: its run gets no parent context, and its close tells the parent nothing.
+- **Parts that wait for each other** (a loop of links) don't start: `go` says which.
+- **The parent closed:** no part starts. Its open parts stay open, for you to close or keep.
+- **In the web chat** ([channels.md](channels.md)): a bar and "2/4" on the task, its parts folded
+  under it, a grey **Waiting** state, and a **Plan card** with Start, Start all ready and Stop.
 
 ## PRs and Live
 

@@ -1,5 +1,5 @@
 ---
-status: accepted and built (one PR, #219, with #218's fix folded in; the owner's go on 2026-10-07, all three choices as recommended: "lets cleanly build properly … same PR"); §4 amended by 0042 (the watch never starts a run: words with no run are told too, Stopped, and wait for your `continue`); §3 and §5 by 0046 (a PR's checks start nothing; the due run also takes a stale `deploying` label off)
+status: accepted and built (one PR, #219, with #218's fix folded in; the owner's go on 2026-10-07, all three choices as recommended: "lets cleanly build properly … same PR"); §4 amended by 0042 (the watch never starts a run: words with no run are told too, Stopped, and wait for your `continue`); §3 and §5 by 0046 (a PR's checks start nothing; the due run also takes a stale `deploying` label off); by 0066 (after your `go` on a split task, a part's merge starts the next part, in the close run it starts already)
 date: 2026-10-07
 amends: 0019 (the due run writes nothing on a task: now it may close one), 0021 (every event kept in order), 0031 (a close's run)
 ---

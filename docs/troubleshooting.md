@@ -75,6 +75,7 @@ chat, the file store and the notifications' key ([channels.md](channels.md#the-w
 | a diagram shows as its source | it didn't draw: the source has a mistake, or jsDelivr didn't answer | fix the source, or reload the page later |
 | "The web chat is off" | your entry in `SHIPIFY_PEOPLE` has no `"web"` | `pnpm ship add webchat --yes` |
 | 📎 is off: "Files aren't set up" | the deployed Worker has no `FILES` binding (step 4 of `ship add webchat` says so) | the deploy token needs **Workers KV Storage: Edit**; then deploy the edge again (Actions → ci → Run workflow). Words still go meanwhile |
+| A deploy stops: "can't list R2 buckets" or "make R2 bucket" (HTTP 403) | the deploy log | the deploy token needs **Workers R2 Storage: Edit**; if R2 was never turned on for the account, turn it on once in the dashboard (it asks for a card), then re-run |
 | the model picker or Status & setup shows an old `executors.json` or `tools.json` | both are built into the edge when it deploys, and a change to them alone doesn't deploy it | run the edge job by hand (Actions → ci → Run workflow), or wait for the next edge change |
 | "The door is closed" | the variable `SHIPIFY_DOOR` | delete it to open the door ([door.md](door.md#the-kill-switch)) |
 | Setup says "Notifications aren't set up" | the edge has no `WEB_PUSH_KEY` | `pnpm ship add webchat --yes` |

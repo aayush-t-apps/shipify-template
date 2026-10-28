@@ -746,6 +746,25 @@ main {
   background: none;
   box-shadow: inset 0 0 0 1.5px var(--muted);
 }
+/* Waiting (ADR 0066): blocked by a task still open. Grey, its mark a dash: on hold, not done. */
+.mark.waiting,
+.st.waiting::before {
+  width: 0.625rem;
+  height: 0.1875rem;
+  border-radius: 2px;
+  opacity: 1;
+}
+/* A split task: its open parts folded under it, in order; its parts done of all (.bar, below). */
+.fold.sub {
+  min-height: 1.75rem;
+  margin-left: 1.625rem;
+  font-size: 0.75rem;
+}
+.subs {
+  margin-left: 1.25rem;
+  padding: 0;
+  border-left: 2px solid var(--line);
+}
 .rows .need {
   background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
@@ -1722,6 +1741,12 @@ main {
   height: 100%;
   border-radius: 3px;
   background: var(--ok);
+}
+/* A split task's row: its parts done of all, a thin bar beside "2/4" (ADR 0066). */
+.meta .bar {
+  width: 2.5rem;
+  height: 0.25rem;
+  margin: 0;
 }
 .now > p .st {
   font-size: 0.875rem;

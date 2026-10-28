@@ -29,10 +29,12 @@ import {
   APP_ID,
   DOOR,
   envFor,
+  type Issue,
   type Keys,
   keys,
   ORIGIN,
   OWNER,
+  REPO,
   RUN,
   runToken,
   world,
@@ -1117,7 +1119,7 @@ describe("what the page reads", () => {
     expect((await (await t.call("/admin/chat/api/menu")).json()).repeat.zone).toBe("BST");
     const got = await (await t.call("/admin/chat/api/setup")).json();
     // Tools are what a run uses; the chats (a door is their way in) are under Chats.
-    expect(got.tools.map((x: { id: string }) => x.id)).toEqual(["notion"]);
+    expect(got.tools.map((x: { id: string }) => x.id)).toEqual(["notion", "drop"]);
     const setup = JSON.stringify(got);
     expect(setup).not.toContain("PRIVATE KEY");
     expect(setup).not.toContain("4242");
@@ -1316,6 +1318,149 @@ describe("what the page reads", () => {
       projects: ["links"],
       apps: [{ id: "links", url: "https://links.example.com", failing: true, paused: false }],
     });
+  });
+});
+
+// Sub-tasks (ADR 0066, "The web chat"): the list's counts and Waiting come from the list call that
+// it makes already; a parent's Plan card is one GraphQL read when its thread opens, kept 60 s.
+describe("sub-tasks (ADR 0066)", () => {
+  /** A split task #1 and its parts as the box opens them: #2 ran and merged, #3 waits for #2's
+   * sibling #4, which waits for nothing; #5 was dropped. */
+  function split(t: ReturnType<typeof setUp>) {
+    const parent = t.f.issue({
+      title: "shipify: sub-tasks",
+      user: { login: OWNER },
+      labels: ["started"],
+    });
+    const part = (title: string, more: Partial<Issue> = {}) =>
+      t.f.issue({
+        title,
+        body: `Part of #${parent.number}\n\nThe brief.`,
+        user: RUN,
+        labels: ["sub-task"],
+        ...more,
+      });
+    const a = part("shipify: the kernel", { state: "closed" });
+    const b = part("links: use it", { labels: ["sub-task"] });
+    const c = part("shipify: the web chat");
+    const d = part("notes: try it", { state: "closed", stateReason: "NOT_PLANNED" });
+    b.blockedBy = [c.number];
+    c.closedBy = { number: 40, url: `https://github.com/${REPO}/pull/40` };
+    c.labels.push("needs you");
+    parent.subIssues = [a.number, b.number, c.number, d.number];
+    return { parent, a, b, c, d };
+  }
+  const graphql = (t: ReturnType<typeof setUp>) =>
+    t.f.gh().filter((c) => c === "POST graphql").length;
+
+  it("the list: a parent's parts done of all, a part's parent, and Waiting, with no read more", async () => {
+    const t = setUp();
+    const { parent, b, c } = split(t);
+    const list = await (await t.call("/admin/chat/api/list")).json();
+    const row = (n: number) => list.tasks.find((x: { n: number }) => x.n === n);
+    expect(row(parent.number)).toMatchObject({ parts: { done: 2, total: 4 }, state: "open" });
+    expect(row(parent.number).parent).toBeUndefined();
+    // A part the box opened is a task as a recipe's is; its own labels aren't filters.
+    expect(row(b.number)).toMatchObject({ parent: parent.number, state: "waiting" });
+    expect(row(b.number).labels).toBeUndefined();
+    expect(row(parent.number).labels).toBeUndefined();
+    expect(row(b.number).parts).toBeUndefined();
+    // Waiting is for one with nothing else to say: needs you wins.
+    expect(row(c.number)).toMatchObject({ parent: parent.number, state: "needs-you" });
+    expect(graphql(t)).toBe(0);
+    // Its blocker closed: it's open, not Waiting.
+    const done = t.f.w.issues.find((x) => x.number === c.number);
+    if (done) done.state = "closed";
+    t.f.later(10_000);
+    const again = await (await t.call("/admin/chat/api/list")).json();
+    expect(again.tasks.find((x: { n: number }) => x.n === b.number).state).toBe("open");
+  });
+
+  it("a part waits only while it's open and no run works on it", async () => {
+    const t = setUp();
+    const { b } = split(t);
+    t.f.w.runs["task.yml"] = [
+      {
+        id: 90,
+        status: "in_progress",
+        conclusion: null,
+        display_title: `task #${b.number}`,
+        created_at: new Date(t.f.w.at).toISOString(),
+      },
+    ];
+    const list = await (await t.call("/admin/chat/api/list")).json();
+    expect(list.tasks.find((x: { n: number }) => x.n === b.number).state).toBe("working");
+  });
+
+  it("a parent's thread: its Plan, one read when it opens, kept 60 s", async () => {
+    const t = setUp();
+    const { parent, a, b, c, d } = split(t);
+    const res = await t.call(`/admin/chat/api/task/${parent.number}`);
+    expect(res.status).toBe(200);
+    const th = await res.json();
+    expect(th.task.started).toBe(true);
+    expect(th.task.plan).toEqual([
+      { n: a.number, title: a.title, state: "closed" },
+      { n: b.number, title: b.title, state: "waiting", after: [c.number] },
+      {
+        n: c.number,
+        title: c.title,
+        state: "needs-you",
+        pr: { n: 40, url: `https://github.com/${REPO}/pull/40` },
+      },
+      { n: d.number, title: d.title, state: "closed", dropped: true },
+    ]);
+    expect(graphql(t)).toBe(1);
+    // A poll (the thread's own read is kept 5 s) doesn't read the plan again within the minute.
+    t.f.later(10_000);
+    await t.call(`/admin/chat/api/task/${parent.number}`);
+    expect(graphql(t)).toBe(1);
+    t.f.later(55_000);
+    await t.call(`/admin/chat/api/task/${parent.number}`);
+    expect(graphql(t)).toBe(2);
+  });
+
+  it("a part that's ready says so: open, never ran, every blocker closed as completed", async () => {
+    const t = setUp();
+    const { parent, b, c, d } = split(t);
+    const blocker = t.f.w.issues.find((x) => x.number === c.number);
+    if (blocker) Object.assign(blocker, { state: "closed", labels: ["sub-task"] });
+    const th = await (await t.call(`/admin/chat/api/task/${parent.number}`)).json();
+    const part = (n: number) => th.task.plan.find((x: { n: number }) => x.n === n);
+    expect(part(b.number)).toEqual({ n: b.number, title: b.title, state: "open", ready: true });
+    // A dropped blocker isn't done: what waits for it waits.
+    t.f.later(61_000);
+    b.blockedBy = [d.number];
+    const again = await (await t.call(`/admin/chat/api/task/${parent.number}`)).json();
+    expect(again.task.plan.find((x: { n: number }) => x.n === b.number)).toMatchObject({
+      state: "open",
+      after: [d.number],
+    });
+    expect(again.task.plan.find((x: { n: number }) => x.n === b.number).ready).toBeUndefined();
+  });
+
+  it("a part's thread: its parent and Waiting, and it takes your words; no plan read", async () => {
+    const t = setUp();
+    const { parent, b } = split(t);
+    const th = await (await t.call(`/admin/chat/api/task/${b.number}`)).json();
+    expect(th.task).toMatchObject({ parent: parent.number, state: "waiting" });
+    expect(th.task.plan).toBeUndefined();
+    expect(th.writable).toBe(true);
+    // A task with no sub-tasks reads no plan either.
+    const plain = t.f.issue({ title: "plain", user: { login: OWNER } });
+    const p = await (await t.call(`/admin/chat/api/task/${plain.number}`)).json();
+    expect(p.task.plan).toBeUndefined();
+    expect(p.task.parent).toBeUndefined();
+    expect(graphql(t)).toBe(0);
+  });
+
+  it("a plan GitHub can't read leaves the card out, never the thread", async () => {
+    const t = setUp();
+    const { parent } = split(t);
+    t.f.w.graphqlFails = true;
+    const res = await t.call(`/admin/chat/api/task/${parent.number}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).task.plan).toBeUndefined();
   });
 });
 

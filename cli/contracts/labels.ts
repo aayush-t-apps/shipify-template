@@ -12,6 +12,13 @@ export const STUCK_LABEL = "stuck";
  * the task, and as the watch marks it Stopped.
  */
 export const STAYING_LABEL = "staying";
+/**
+ * On a part of a split task (ADR 0066): the box opened it on your `yes`, its run gets its parent's
+ * goal, and its close tells its parent. Its body's first line is `Part of #<parent>`.
+ */
+export const SUB_TASK_LABEL = "sub-task";
+/** On a split task after your `go` (ADR 0066): a part's merge starts the next. `stop` takes it off. */
+export const STARTED_LABEL = "started";
 /** On a task while its merged PR's deploy is followed by the due run. */
 export const DEPLOYING_LABEL = "deploying";
 /** On a task waiting for you (a question, a list for your yes, a PR to merge): the status page lists them. */

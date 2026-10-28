@@ -21,7 +21,7 @@ export const WORDS = {
   },
   no: {
     re: /^\s*no(\s+[0-9a-f]{8})?[.!]?\s*$/i,
-    does: "drop the listed calls; a list's No sends `no <its code>`",
+    does: "cancel the listed calls; a list's No sends `no <its code>`",
   },
   continue: {
     re: /^\s*(continue|(run\s+)?again)[.!]?\s*$/i,
@@ -41,8 +41,8 @@ export const WORDS = {
     does: "build and publish a merged plan (again, after it stopped)",
   },
   go: {
-    re: /^\s*go[.!]?\s*$/i,
-    does: "build a big change after its doc merged, or a new project after its plan merged",
+    re: /^\s*go(\s+#\d+)?[.!]?\s*$/i,
+    does: "build a big change after its doc merged, or a new project after its plan merged; on a split task, start its ready sub-tasks (`go #n`: that one now)",
   },
   "stop repeating": {
     re: /^\s*stop\s+repeating[.!]?\s*$/i,
@@ -59,9 +59,15 @@ export const WORDS = {
   },
   stop: {
     re: /^\s*stop(\s+(it|this|now))?[.!]?\s*$/i,
-    does: "stop the run that's going, within a minute; its commits stay on the task's branch",
+    does: "stop the run that's going, within a minute; its commits stay on the task's branch; on a split task, start no more sub-tasks",
   },
 } as const satisfies Record<string, FixedWord>;
+
+/** The sub-task a `go #n` names (ADR 0066), or none for a plain `go`. */
+export const goPartOf = (text: string) => {
+  const n = /^\s*go\s+#(\d+)[.!]?\s*$/i.exec(text)?.[1];
+  return n ? Number(n) : undefined;
+};
 
 export type Word = keyof typeof WORDS;
 

@@ -7,6 +7,7 @@ import { NEEDS_YOU_LABEL, Problem, ToolCall } from "../contracts/index.ts";
 import { type Form, type FormRead, readForm } from "./form-reader.ts";
 import { RECORD_WRITER } from "./github.ts";
 import { intentOfWord } from "./intents.ts";
+import { planId } from "./plan.ts";
 import { formatWhen, RepeatState, whenProblem } from "./repeat.ts";
 import { RunDetails, RunRow, renderRuns } from "./runs.ts";
 
@@ -244,6 +245,21 @@ export function repeatForm(
   };
 }
 
+/**
+ * One part of a split, as a run proposes it (ADR 0066): its title (naming its repo, as any task's
+ * does), its brief, and what it waits for: the entries before it by their place (1 is the first),
+ * or the task's parts already there (`#n`).
+ */
+export const SplitEntry = z.object({
+  title: z.string().min(1).max(200),
+  brief: z.string().min(1).max(600),
+  after: z
+    .array(z.union([z.number().int().min(1).max(8), z.string().regex(/^#\d+$/)]))
+    .max(8)
+    .optional(),
+});
+export type SplitEntry = z.infer<typeof SplitEntry>;
+
 /** A task's state, version 2 (ADR 0031): facts, not a phase machine. A state of another version isn't read. */
 export const TaskState = z.object({
   v: z.literal(2),
@@ -263,8 +279,12 @@ export const TaskState = z.object({
       }),
     )
     .optional(),
-  /** New projects: the plan id, so merging the plan starts the build. */
-  plan: z.string().optional(),
+  /** New projects: the plan id, so merging the plan starts the build. A path stored before reads
+   * as its id (#587). */
+  plan: z
+    .string()
+    .transform((v) => planId(v) ?? v)
+    .optional(),
   /** The agent, model and effort its runs think with (ADR 0025): set by the form's Model field, a
    * blank issue's first line, or a `use` comment. None means the default agent's Auto. */
   use: z
@@ -304,6 +324,8 @@ export const TaskState = z.object({
         .optional(),
       /** Notes a run that read outside content proposed: written only after your yes. */
       notes: z.array(z.object({ topic: z.string(), line: z.string() })).optional(),
+      /** A split a run proposed (ADR 0066): its parts open only after your yes. */
+      split: z.array(SplitEntry).optional(),
       /** The list of those calls and notes: the reply that showed it, and when. A yes counts only
        * after that reply, and within a day of it (ADR 0049). */
       list: z.object({ post: z.number(), at: z.string() }).optional(),
@@ -521,9 +543,9 @@ const HELP: Record<Phase, string> = {
   working:
     "A box is on it. Comment any time: the next run reads it, and “use opus” (or another model) picks its model.",
   "needs-you":
-    "Comment to change something, say “preview” for a live link to the PR or “start over” to begin again from its default branch, “use opus” (or another model) for the next runs, or close this task as not planned to drop it.",
+    "Comment to change something, say “preview” for a live link to the PR or “start over” to begin again from its default branch, “use opus” (or another model) for the next runs, or close this task as not planned to end it.",
   failed:
-    "Comment “continue” (or anything) to try again, “use opus” (or another model) first for a stronger one, or close this task to drop it.",
+    "Comment “continue” (or anything) to try again, “use opus” (or another model) first for a stronger one, or close this task to end it.",
   answered:
     "Comment to ask more or change something, or “remember …” to keep something for every task. After a quiet day it closes by itself, and a comment later carries on.",
   done: "Comment to carry on. On a release or a take-down, “again” runs it again.",
@@ -613,7 +635,7 @@ export function renderStatus(s: TaskState, view: StatusView = {}): string {
     view.question ? quoted("Question", view.question) : undefined,
     [...prLines(s), ...links.map(([l, u]) => `- ${l}: ${u}`)].join("\n") || undefined,
     s.runs?.length ? renderRuns(s.runs, s.ran ?? s.runs.length, tz, s.last) : undefined,
-    `<sub>${s.pending?.calls || s.pending?.notes ? "Say “yes” (exactly that, here or in your chat, where Yes is a tap) to make exactly the listed changes, or “no” to drop them. Anything else you say plans again." : (view.help ?? `${HELP[s.phase]}${s.phase === "needs-you" && s.plan ? PUBLISH : ""}`)}</sub>`,
+    `<sub>${s.pending?.calls || s.pending?.notes || s.pending?.split ? "Say “yes” (exactly that, here or in your chat, where Yes is a tap) to make exactly the listed changes, or “no” to cancel them. Anything else you say plans again." : (view.help ?? `${HELP[s.phase]}${s.phase === "needs-you" && s.plan ? PUBLISH : ""}`)}</sub>`,
   ]
     .filter(Boolean)
     .join("\n\n");

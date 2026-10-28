@@ -71,7 +71,7 @@ What setup walks you through, one step at a time:
 
 That's the core. Each of these is a choice you can add later:
 - **Chat:** Telegram or the web chat, through the door, on Cloudflare's free plan.
-- **Tools:** Notion today; the next one is a plug-in.
+- **Tools:** Notion and Drop today; the next one is a plug-in.
 - **Other accounts:** the repos App (below).
 - **Projects:** apps Shipify builds and deploys, which needs a Cloudflare account and a domain.
 

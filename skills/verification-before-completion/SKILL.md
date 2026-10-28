@@ -47,6 +47,15 @@ Skip any step = lying, not verifying
 | Agent completed | VCS diff shows changes | Agent reports "success" |
 | Requirements met | Line-by-line checklist | Tests passing |
 
+## When The Check Repeats The Product
+
+- **Config edits:** before the PR, scan them for key-like public IDs. Allow one line with `gitleaks:allow` and its reason.
+- **Tests that read files at run time:** `make verify` runs only tests that import a changed TypeScript file. After you change a script, JSON or Markdown file, grep `tests/` for its name and run those tests.
+- **A release's check:** repeat it on a tree built as the release builds it: leave out the owner's files, and add the template as `origin`.
+- **A PR a later run carries on:** check that the PR's head commit has the earlier commit before you say it has.
+- **A check that repeats the product:** use the product's exact settings and folder layout.
+- **A check that runs the real thing:** check the state it leaves (folder modes, owners), not only its result.
+
 ## Red Flags - STOP
 
 - Using "should", "probably", "seems to"

@@ -3,7 +3,9 @@
 // never pushes, opens a PR or calls an act tool itself.
 import { z } from "zod";
 import { MAX_FILES_OUT, ToolCall } from "../contracts/index.ts";
+import { planId } from "../lib/plan.ts";
 import { limitName } from "../lib/runs.ts";
+import { SplitEntry } from "../lib/task.ts";
 import type { Stop } from "./types.ts";
 
 export const RESULT_VERSION = 2;
@@ -32,10 +34,21 @@ export const Result = z.object({
       preview: z.boolean().optional(),
     })
     .optional(),
-  /** A new project's plan id (plans/<id>.plan.md in its commits). */
-  plan: z.string().optional(),
+  /** A new project's plan id (plans/<id>.plan.md in its commits): its path reads as the id, and a
+   * blank one as none. */
+  plan: z
+    .string()
+    .refine((v) => !v.trim() || planId(v), "isn't a plan id (plans/<id>.plan.md)")
+    .transform(planId)
+    .optional(),
   /** Tool calls it proposes: shown to you exactly, made by the box after your yes. */
   calls: z.array(ToolCall).max(20).optional(),
+  /**
+   * The task split into parts (ADR 0066): listed for your yes, then opened as sub-tasks, nothing
+   * starting. `after`: the entries it waits for, by their place in this list (1 is the first), or
+   * the task's parts already there (`#n`).
+   */
+  split: z.array(SplitEntry).min(2).max(8).optional(),
   /** Notes for the notebook: your own words to keep. */
   notes: z
     .array(z.object({ topic: z.string().max(60), line: z.string().max(500) }))

@@ -148,6 +148,7 @@ const WHY: Record<string, [short: string, long: string]> = {
   publish: ["publish", "your “publish”"],
   work: ["work", "work a run found for a project"],
   scheduled: ["schedule", "the watch: its time came"],
+  "sub-task": ["sub-task", "your “go”, or the part before it merged"],
 };
 const whyShort = (why: string) => WHY[why]?.[0] ?? why;
 const whyLong = (why: string) => WHY[why]?.[1] ?? why;

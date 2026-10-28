@@ -99,8 +99,11 @@ describe("the page", () => {
   // Parts loaded the first time they're needed (ADR 0065), each with a budget of its own, so the
   // page you open every day doesn't carry them: workspace.js and .css (a project's tabs and page,
   // the doc pane, Files, Ctrl+K), 9 KB; setup.js (Status & setup), 5 KB. With Setup and Files moved
-  // out, and the list's projects in, the page went from 41.8 KB to 40.1.
-  const LAZY = { workspace: 9, setup: 5 };
+  // out, and the list's projects in, the page went from 41.8 KB to 40.1. Sub-tasks (ADR 0066): the
+  // list's bar, fold and Waiting took the page to 40.7; the Plan card (2.4 KB) did not fit in
+  // workspace.js's room (it took it to 8.9 of 9), so it is plan.js and .css, loaded only for a task
+  // with parts: 3 KB.
+  const LAZY = { workspace: 9, setup: 5, plan: 3 };
   it.skipIf(!have)("is plain files of its own, under 42 KB as sent, its worker under 2 KB", () => {
     const list = files(dir);
     for (const want of ["index.html", "app.js", "compose.js", "app.css", "manifest.json", "sw.js"])
@@ -148,6 +151,7 @@ describe("the page", () => {
     expect(js).toContain("import(`./${k}.js`)");
     expect(js).toContain('lazy("workspace")');
     expect(js).toContain('lazy("setup")');
+    expect(js).toContain('lazy("plan")');
     // Each takes what the page lends it, and nothing else of the page's.
     for (const k of Object.keys(LAZY)) {
       const part = readFileSync(join(ROOT, dir, `${k}.js`), "utf8");
@@ -157,9 +161,159 @@ describe("the page", () => {
     }
     // What app.js asks of the workspace, it has.
     const ws = readFileSync(join(ROOT, dir, "workspace.js"), "utf8");
-    for (const f of ["strip", "redraw", "project", "files", "doc", "quick", "pick"])
+    for (const f of ["strip", "redraw", "project", "files", "doc", "quick", "pick", "tab"])
       expect(ws, f).toMatch(new RegExp(`export (?:async )?function ${f}\\(`));
   });
+
+  // A split task's Plan card (ADR 0066), drawn in a small fake DOM (the page's own h() makes it):
+  // its buttons send your words, as a reply's do, and only where they make sense.
+  it.skipIf(!have)(
+    "the Plan card: Start on a ready part, Start all ready, Stop, Open all as tabs",
+    async () => {
+      class El {
+        children: El[] = [];
+        attrs: Record<string, string> = {};
+        on: Record<string, (e: unknown) => void> = {};
+        style: Record<string, string> = {};
+        className = "";
+        disabled = false;
+        parent?: El;
+        text?: string;
+        constructor(public tag: string) {}
+        setAttribute(k: string, v: unknown) {
+          this.attrs[k] = String(v);
+        }
+        addEventListener(k: string, f: (e: unknown) => void) {
+          this.on[k] = f;
+        }
+        append(...c: (El | string)[]) {
+          for (const x of c) {
+            const n = typeof x === "string" ? Object.assign(new El("#text"), { text: x }) : x;
+            n.parent = this;
+            this.children.push(n);
+          }
+        }
+        get open() {
+          return "open" in this.attrs;
+        }
+        get lastChild() {
+          return this.children.at(-1);
+        }
+        get textContent(): string {
+          return this.text ?? this.children.map((c) => c.textContent).join("");
+        }
+        set textContent(t: string) {
+          this.text = t;
+          this.children = [];
+        }
+        after(n: El) {
+          const p = this.parent as El;
+          p.children.splice(p.children.indexOf(this) + 1, 0, n);
+          n.parent = p;
+        }
+        replaceWith(n: El) {
+          const p = this.parent as El;
+          p.children[p.children.indexOf(this)] = n;
+          n.parent = p;
+        }
+        all(): El[] {
+          return this.children.flatMap((c) => [c, ...c.all()]);
+        }
+        querySelector(s: string) {
+          return this.all().find((e) => e.className.split(" ").includes(s.slice(1))) ?? null;
+        }
+        click() {
+          if (!this.disabled) this.on.click?.({ currentTarget: this });
+        }
+      }
+      const make = (tag: string) => new El(tag);
+      vi.stubGlobal("document", {
+        createElement: make,
+        createElementNS: (_: string, t: string) => make(t),
+        head: make("head"),
+      });
+      vi.stubGlobal("matchMedia", () => ({ matches: true }));
+      vi.stubGlobal("confirm", () => true);
+      try {
+        const { h } = await import(join(ROOT, dir, "compose.js"));
+        const m = await import(join(ROOT, dir, "plan.js"));
+        const said: [number, string][] = [];
+        const tabs: number[][] = [];
+        const init = m.init({
+          say: (n: number, w: string) => said.push([n, w]),
+          projOf: (t: { title: string }) => /^(\w+):/.exec(t.title)?.[1] ?? "",
+          bare: (s: string) => s.replace(/^\w+:\s*/, ""),
+          named: (s: string) => s,
+          to: (n: number, t: string) => h("a", { href: `#/t/${n}` }, t),
+          ext: (u: string, t: string, c = "") => h(`a${c}`, { href: u }, t),
+          meta: (...a: unknown[]) => h("small", a.filter(Boolean).join(" · ")),
+          btn: (l: unknown, f: unknown, c = "") => h(`button${c}`, { onclick: f }, l),
+          ws: (f: (w: { tab: (l: { n: number }[]) => void }) => void) =>
+            f({ tab: (l) => tabs.push(l.map((x) => x.n)) }),
+        });
+        (document.head as unknown as El).children.at(-1)?.on.load?.({});
+        await init;
+        const url = "https://github.com/o/shipify/issues/1";
+        const plan = [
+          { n: 2, title: "shipify: the kernel", state: "closed" },
+          { n: 3, title: "links: use it", state: "waiting", after: [4] },
+          {
+            n: 4,
+            title: "shipify: the chat",
+            state: "open",
+            ready: true,
+            pr: { n: 40, url: "https://github.com/o/shipify/pull/40" },
+          },
+          { n: 5, title: "notes: try it", state: "closed", dropped: true },
+        ];
+        const thread = (more = {}) => ({
+          writable: true,
+          task: { n: 1, title: "shipify: sub-tasks", url, open: true, plan, ...more },
+        });
+        const head = make("header");
+        const box = make("section");
+        box.append(head);
+        const v = { box, head };
+        m.plan(v, thread());
+        const card = box.children[1] as El;
+        expect(card.className).toBe("plan");
+        expect(card.open).toBe(true);
+        const buttons = () => (box.children[1] as El).all().filter((e) => e.tag === "button");
+        // Not started: Start on the ready part, Start all ready, Open all as tabs; no Stop.
+        expect(buttons().map((b) => b.textContent)).toEqual([
+          "Start all ready",
+          "Open all as tabs",
+          "Start",
+        ]);
+        const text = card.textContent;
+        expect(text).toContain("2/4 closed");
+        expect(text).toContain("#3 · links · Waiting · waits for #4");
+        expect(text).toContain("#5 · notes · Dropped");
+        expect(text).toContain("PR #40");
+        buttons()[2]?.click();
+        buttons()[0]?.click();
+        buttons()[1]?.click();
+        expect(said).toEqual([
+          [1, "go #4"],
+          [1, "go"],
+        ]);
+        expect(tabs).toEqual([[3, 4]]);
+        // The same plan again draws nothing new; after `go`, Stop is there.
+        m.plan(v, thread());
+        expect(box.children[1]).toBe(card);
+        m.plan(v, thread({ started: true }));
+        expect(box.children).toHaveLength(2);
+        const stop = buttons().find((b) => b.textContent === "Stop");
+        stop?.click();
+        expect(said.at(-1)).toEqual([1, "stop"]);
+        // A closed task, or one that takes no words here: no button sends anything.
+        m.plan(v, thread({ open: false, started: true }));
+        expect(buttons().map((b) => b.textContent)).toEqual(["Open all as tabs"]);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   // ↻ (ADR 0049): left of New chat, and in a thread's and a page's header; a tap reads what's on
   // screen again as coming back to the page does (wake). Dragging down stays the browser's reload.

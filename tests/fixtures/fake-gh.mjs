@@ -97,6 +97,8 @@ const edit = (thing, patch) => {
 };
 
 if (args[0] === "label" && args[1] === "create") {
+  // Made, by name (a split's label, ADR 0066, is read by GraphQL after it).
+  state.labelsMade = [...new Set([...(state.labelsMade ?? []), args[2]])];
   save();
   process.exit(0);
 }
@@ -352,6 +354,98 @@ if (args[1] === "graphql") {
     out({
       data: {
         node: c ? { author: actor(c.user.login), editor: actor(c.editor) } : null,
+      },
+    });
+  } else if (query.includes("createIssue(")) {
+    // A split's parts opened (ADR 0066): each alias a new issue, a sub-issue of $parent.
+    const data = {};
+    for (const m of query.matchAll(
+      /(p\d+): createIssue\(input: \{[^}]*title: \$(t\d+), body: \$(b\d+)/g,
+    )) {
+      const number = state.nextIssue ?? 200;
+      state.nextIssue = number + 1;
+      const parent = all.find((i) => `I_${i.number}` === vars.parent);
+      const label = String(vars.label).replace(/^L_/, "");
+      const issue = {
+        number,
+        title: vars[m[2]],
+        body: vars[m[3]],
+        state: "open",
+        labels: [{ name: label }],
+        user: { login: state.bot },
+        parent: parent?.number,
+        blockedBy: [],
+      };
+      state.others[String(number)] = { issue, comments: [] };
+      data[m[1]] = { issue: { id: `I_${number}`, number } };
+    }
+    out({ data });
+  } else if (query.includes("addBlockedBy(")) {
+    // Its blocked-by links: each issue keeps the numbers it waits for.
+    for (const m of query.matchAll(
+      /addBlockedBy\(input: \{issueId: \$(a\d+), blockingIssueId: \$(b\d+)/g,
+    )) {
+      const a = all.find((i) => `I_${i.number}` === vars[m[1]]);
+      const b = all.find((i) => `I_${i.number}` === vars[m[2]]);
+      if (a && b) a.blockedBy = [...(a.blockedBy ?? []), b.number];
+    }
+    out({ data: {} });
+  } else if (query.includes("label(name: $label)")) {
+    // The ids a split needs: the repo's, the label's (null until it's made) and the parent's.
+    const i = all.find((x) => x.number === Number(vars.n));
+    const made = (state.labelsMade ?? []).includes(vars.label);
+    out({
+      data: {
+        repository: {
+          id: "R_1",
+          label: made ? { id: `L_${vars.label}` } : null,
+          issue: i
+            ? {
+                id: `I_${i.number}`,
+                subIssues: {
+                  nodes: all
+                    .filter((k) => k.parent === i.number)
+                    .map((k) => ({ id: `I_${k.number}`, number: k.number, title: k.title })),
+                },
+              }
+            : null,
+        },
+      },
+    });
+  } else if (query.includes("parent {")) {
+    // A task's family (ADR 0066): its parent's when it has one, else its own parts.
+    const gstate = (i) => (i.state === "closed" ? "CLOSED" : "OPEN");
+    const reason = (i) => (i.state_reason ? String(i.state_reason).toUpperCase() : null);
+    const fam = (i) => ({
+      number: i.number,
+      title: i.title,
+      body: i.body,
+      state: gstate(i),
+      labels: { nodes: i.labels },
+      subIssues: {
+        nodes: all
+          .filter((k) => k.parent === i.number)
+          .map((k) => ({
+            number: k.number,
+            title: k.title,
+            state: gstate(k),
+            stateReason: reason(k),
+            labels: { nodes: k.labels },
+            blockedBy: {
+              nodes: (k.blockedBy ?? [])
+                .map((b) => all.find((x) => x.number === b))
+                .filter(Boolean)
+                .map((b) => ({ number: b.number, state: gstate(b), stateReason: reason(b) })),
+            },
+            closedByPullRequestsReferences: { nodes: k.pr ? [{ url: k.pr }] : [] },
+          })),
+      },
+    });
+    const i = all.find((x) => x.number === Number(vars.n));
+    const parent = i?.parent ? all.find((x) => x.number === i.parent) : undefined;
+    out({
+      data: {
+        repository: { issue: i ? { ...fam(i), parent: parent ? fam(parent) : null } : null },
       },
     });
   } else if (query.includes("issue(number:")) {

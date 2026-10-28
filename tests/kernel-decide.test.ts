@@ -13,13 +13,23 @@ import {
   type ToolAct,
 } from "../cli/kernel/decide.ts";
 import { listCode } from "../cli/kernel/keys.ts";
+import { familyLines, openedText } from "../cli/kernel/parts.ts";
 import { buildPrompt, type PromptInput } from "../cli/kernel/prompt.ts";
 import { type Result, readResult } from "../cli/kernel/result.ts";
-import { takes } from "../cli/kernel/stay.ts";
+import { staysAfter, takes } from "../cli/kernel/stay.ts";
 import { toolActs } from "../cli/kernel/snapshot.ts";
-import type { Plan, Said, Snapshot, Think, ThinkMeta, Write } from "../cli/kernel/types.ts";
+import type {
+  Family,
+  Part,
+  Plan,
+  Said,
+  Snapshot,
+  Think,
+  ThinkMeta,
+  Write,
+} from "../cli/kernel/types.ts";
 import { repeatLine } from "../cli/lib/repeat.ts";
-import { newState, type TaskState } from "../cli/lib/task.ts";
+import { newState, TaskState } from "../cli/lib/task.ts";
 
 // decide, as plain data (ADR 0031): every intent, every fixed word and where it's accepted, and the
 // edge cases the ADR and its reviews decided, with no GitHub.
@@ -767,6 +777,43 @@ describe("plan: fixed words, and where each is accepted", () => {
       "no merged plan",
     );
     const p = plan(base([said(101, "publish")], { plan: "tipcalc" }), ctx());
+    expect(p.do === "box" && p.state.pending.prepare?.plan).toBe("tipcalc");
+    expect(kinds(writes(p))).toContain("dispatch");
+  });
+
+  it("a plan given as its file's path reads as its id, in a result and in a stored state (#587)", () => {
+    const result = readResult(
+      JSON.stringify({
+        v: 2,
+        state: "needs-you",
+        text: "The plan is written.",
+        plan: "plans/tipcalc.plan.md",
+        pr: { kind: "part-of", title: "plan: tipcalc", body: "The plan." },
+      }),
+    );
+    const work: Think = {
+      profile: "work",
+      project: "shipify",
+      why: "new",
+      notes: [],
+      fresh: [101],
+      web: true,
+    };
+    const d = afterThink(
+      base([said(101, "a tip calculator")]),
+      { ...newState(), ...ran() } as TaskState,
+      work,
+      result,
+      { readOutside: false, touchesWorkflows: false, commits: true },
+      ctx(),
+    );
+    expect(d.state.plan).toBe("tipcalc");
+    // Anything else in its place is a slip in the result's shape.
+    const slip = readResult(JSON.stringify({ v: 2, state: "done", text: "x", plan: "my plan" }));
+    expect(slip).toHaveProperty("wrong");
+    // A state stored with the path: `publish` (and the merge) find its plan.
+    const stored = TaskState.parse({ ...newState(), plan: "plans/tipcalc.plan.md" });
+    const p = plan(base([said(101, "publish")], stored), ctx());
     expect(p.do === "box" && p.state.pending.prepare?.plan).toBe("tipcalc");
     expect(kinds(writes(p))).toContain("dispatch");
   });
@@ -2511,6 +2558,34 @@ describe("afterThink: the agent's result, kept as far as the task allows", () =>
     expect(replies(n.writes)[0]?.list).toBe(listCode([], notes));
   });
 
+  it("a call's files are ones the task shared, before or in this answer; one this answer shares waits for your yes", () => {
+    const box: ToolAct = {
+      calls: { send: () => true },
+      files: { send: "files" },
+      pre: [{ call: "send", fixed: { to: "me", files: ["chart.png"] }, caps: {}, max: 1 }],
+    };
+    const c = ctx({ tools: { box } });
+    const send = (files: unknown) => ({ tool: "box", name: "send", args: { to: "me", files } });
+    const url = "https://github.com/o/shipify/blob/shipify-files/task-12/a/chart.png";
+    const shared = { ...s().state, shared: { "chart.png": { hash: "h", url } } };
+    const run = (st: TaskState, over: Partial<Result>) =>
+      afterThink(s(), st, talk, r(over), meta, c);
+    // Shared before: made now, as its form allows.
+    expect(run(shared, { calls: [send(["chart.png"])] }).needs.act).toBe("box");
+    // Shared in this answer: apply shares the answer's files after its calls, so it's listed.
+    const now = run(s().state, { files: ["/out/chart.png"], calls: [send(["chart.png"])] });
+    expect(now.needs.act).toBeUndefined();
+    expect(now.state.pending.calls?.calls).toHaveLength(1);
+    // Never shared, or not a list of names: left out, and the reply says so.
+    for (const files of [["other.pdf"], "chart.png", [7]]) {
+      const d = run(shared, { calls: [send(files)] });
+      expect(d.state.pending.calls).toBeUndefined();
+      expect(replies(d.writes)[0]?.text).toContain(
+        "box.send (it names a file this task hasn't shared",
+      );
+    }
+  });
+
   it("notes: written now from your words; from a run that read outside content, after your yes", () => {
     const notes = [{ topic: "Preferences", line: "Dark mode" }];
     expect(
@@ -3643,5 +3718,653 @@ describe("errands: wait for a PR, then tell you or act, once (ADR 0054)", () => 
     expect(repeatLine(errand(), "UTC")).toBe(
       "**Waiting** for links#12's checks to finish, then a reminder · until Tue 6 Oct, 09:00 UTC",
     );
+  });
+});
+
+describe("sub-tasks (ADR 0066): split, go, and a part's close", () => {
+  const talk: Think = { profile: "talk", why: "comment", notes: [], fresh: [101], web: true };
+  const meta = { readOutside: false, touchesWorkflows: false };
+  const r = (over: Partial<Result>): Result => ({
+    v: 2,
+    state: "done",
+    text: "Split it.",
+    ...over,
+  });
+  const full = () => ({ ...newState(), ...ran() }) as TaskState;
+  const split = [
+    { title: "shipify: a new field", brief: "Add the field to the schema." },
+    { title: "links: use it", brief: "Turn it on in links.", after: [1] },
+  ];
+  const part = (n: number, over: Partial<Part> = {}): Part => ({
+    number: n,
+    title: `links: part ${n}`,
+    state: "open",
+    labels: ["sub-task"],
+    blockedBy: [],
+    ...over,
+  });
+  const family = (parts: Part[], labels: string[] = []): Family => ({
+    parent: { number: 12, title: "do it in parts", body: "The goal.", state: "open", labels },
+    parts,
+  });
+  // #20 merged, #21 ready, #22 waits for #21, #23 waits for #20 and #21, #24 runs.
+  const parts = () => [
+    part(20, { state: "closed", reason: "completed", pr: "https://github.com/o/links/pull/7" }),
+    part(21),
+    part(22, { blockedBy: [{ number: 21, state: "open" }] }),
+    part(23, {
+      blockedBy: [
+        { number: 20, state: "closed", reason: "completed" },
+        { number: 21, state: "open" },
+      ],
+    }),
+    part(24, { labels: ["sub-task", "working"] }),
+  ];
+  const parent = (words: string, labels: string[] = []) =>
+    snap({
+      trigger: { kind: "comment" },
+      statusId: 5,
+      state: ran(),
+      said: [said(101, words)],
+      issue: { ...snap().issue, labels },
+      family: family(parts(), labels),
+    });
+
+  it("lists a split for your yes, alone, with each title and brief, and its own code", () => {
+    const d = afterThink(
+      snap({ statusId: 5, state: ran() }),
+      full(),
+      talk,
+      r({ split }),
+      meta,
+      ctx(),
+    );
+    expect(d.state.pending.split).toEqual(split);
+    expect(d.state.phase).toBe("needs-you");
+    const reply = replies(d.writes)[0];
+    expect(reply?.list).toBe(listCode([], [], split));
+    expect(reply?.text).toContain(LIST_HEAD);
+    expect(reply?.text).toContain(
+      "Open the sub-task `links: use it` (after 1): Turn it on in links.",
+    );
+    // A split's code isn't a list of calls' code: a Yes under another list counts for nothing.
+    expect(listCode([], [], split)).not.toBe(listCode([], []));
+  });
+
+  it("makes nothing else a split's answer asked for, keeping a PR's commits on the branch", () => {
+    const work: Think = { ...talk, profile: "work", project: "spotter" };
+    const d = afterThink(
+      snap({ statusId: 5, state: ran() }),
+      full(),
+      work,
+      r({
+        split,
+        pr: { kind: "closes", title: "x", body: "y" },
+        calls: [{ tool: "notion", name: "update_page", args: { id: "1" } }],
+      }),
+      { ...meta, commits: true },
+      ctx(),
+    );
+    expect(d.writes.filter((w) => w.w === "push")).toEqual([
+      expect.objectContaining({ open: false, quiet: true }),
+    ]);
+    expect(d.state.pending.calls).toBeUndefined();
+    expect(replies(d.writes)[0]?.text).toContain("A split comes alone");
+  });
+
+  it("lists no split from a part, a read run, a task whose PR would close it first, or with a wrong `after`", () => {
+    const st = full();
+    const onPart = afterThink(
+      snap({ n: 21, statusId: 5, state: ran(), family: family(parts()) }),
+      st,
+      talk,
+      r({ split }),
+      meta,
+      ctx(),
+    );
+    expect(onPart.state.pending.split).toBeUndefined();
+    expect(replies(onPart.writes)[0]?.text).toContain("A sub-task can't split");
+    const reading = afterThink(
+      snap({ state: ran() }),
+      st,
+      { ...talk, profile: "read", web: false },
+      r({ split }),
+      meta,
+      ctx(),
+    );
+    expect(replies(reading.writes)[0]?.text).toContain("Left out: a split");
+    const url = "https://github.com/o/spotter/pull/3";
+    const withPr = {
+      ...st,
+      prs: [url],
+      prInfo: { [url]: { kind: "code" as const, state: "open" as const } },
+    };
+    const prOpen = afterThink(snap({ state: withPr }), withPr, talk, r({ split }), meta, ctx());
+    expect(prOpen.state.pending.split).toBeUndefined();
+    expect(replies(prOpen.writes)[0]?.text).toContain("Merge or close that PR first");
+    const ahead = afterThink(
+      snap({ state: ran() }),
+      st,
+      talk,
+      r({ split: [{ ...split[0], after: [2] }, split[1]] as typeof split }),
+      meta,
+      ctx(),
+    );
+    expect(replies(ahead.writes)[0]?.text).toContain(
+      "entry 1 waits for entry 2, which isn't before it",
+    );
+  });
+
+  it("opens the parts on your yes, each naming its parent, and starts nothing", () => {
+    const st = ran({ phase: "needs-you", pending: { split, list: { post: 90, at: NOW } } });
+    const p = plan(
+      snap({
+        trigger: { kind: "comment" },
+        statusId: 5,
+        state: st,
+        said: [said(101, `yes ${listCode([], [], split)}`)],
+      }),
+      ctx(),
+    );
+    expect(p.do === "box" && p.state.phase).toBe("needs-you");
+    expect(p.do === "box" && p.state.closes).toBeUndefined();
+    expect(p.do === "box" && p.state.pending.split).toBeUndefined();
+    expect(writes(p)).toContainEqual({
+      w: "split",
+      parts: [
+        {
+          title: "shipify: a new field",
+          body: "Part of #12\n\nAdd the field to the schema.",
+          after: [],
+          waits: [],
+        },
+        {
+          title: "links: use it",
+          body: "Part of #12\n\nTurn it on in links.",
+          after: [0],
+          waits: [],
+        },
+      ],
+    });
+    expect(kinds(writes(p))).not.toContain("start");
+    // `no` drops it; other words plan again, and the list goes.
+    const no = plan(
+      snap({ trigger: { kind: "comment" }, statusId: 5, state: st, said: [said(101, "no")] }),
+      ctx(),
+    );
+    expect(kinds(writes(no))).not.toContain("split");
+    const words = plan(
+      snap({
+        trigger: { kind: "comment" },
+        statusId: 5,
+        state: st,
+        said: [said(101, "make it three parts")],
+      }),
+      ctx(),
+    );
+    expect(words.do).toBe("think");
+    expect(words.state?.pending.split).toBeUndefined();
+    // A day late, or edited, it opens nothing.
+    const late = plan(
+      snap({
+        trigger: { kind: "comment" },
+        statusId: 5,
+        state: ran({ pending: { split, list: { post: 90, at: "2026-10-03T10:00:00.000Z" } } }),
+        said: [said(101, "yes")],
+      }),
+      ctx(),
+    );
+    expect(kinds(writes(late))).not.toContain("split");
+    const edited = plan(
+      snap({
+        trigger: { kind: "comment" },
+        statusId: 5,
+        state: st,
+        said: [said(101, "yes", { edited: true })],
+      }),
+      ctx(),
+    );
+    expect(kinds(writes(edited))).not.toContain("split");
+  });
+
+  it("gives each part the parent's pick as its `use` line, unless its brief names one", () => {
+    const use = { agent: "claude", model: "opus", effort: "high", label: "Opus · High" };
+    const own = [
+      split[0],
+      { ...split[1], brief: "Turn it on in links.\nuse claude sonnet" },
+    ] as typeof split;
+    const st = ran({
+      use,
+      phase: "needs-you",
+      pending: { split: own, list: { post: 90, at: NOW } },
+    });
+    const p = plan(
+      snap({
+        trigger: { kind: "comment" },
+        statusId: 5,
+        state: st,
+        said: [said(101, `yes ${listCode([], [], own)}`)],
+      }),
+      ctx(),
+    );
+    const made = writes(p).find((w) => w.w === "split");
+    expect(made?.w === "split" && made.parts.map((x) => x.body)).toEqual([
+      "Part of #12\n\nAdd the field to the schema.\n\nuse claude opus high",
+      "Part of #12\n\nTurn it on in links.\nuse claude sonnet",
+    ]);
+  });
+
+  it("`go` on the parent starts every ready part, says what waits and why, and never closes for quiet", () => {
+    const p = plan(parent("go"), ctx());
+    expect(writes(p)).toContainEqual({ w: "labels", add: ["started"] });
+    expect(writes(p).filter((w) => w.w === "start")).toEqual([{ w: "start", n: 21 }]);
+    const text = replies(writes(p))[0]?.text ?? "";
+    expect(text).toContain("Started #21.");
+    expect(text).toContain("#24 ran already.");
+    expect(text).toContain("#22 waits for #21.");
+    expect(text).toContain("#23 waits for #21.");
+    expect(p.do === "box" && p.state.phase).toBe("answered");
+    expect(p.do === "box" && p.state.closes).toBeUndefined();
+  });
+
+  it("`go #n` starts that part now, saying what it skipped; and refuses one that isn't a part, closed or ran", () => {
+    const one = plan(parent("go #22"), ctx());
+    expect(writes(one).filter((w) => w.w === "start")).toEqual([{ w: "start", n: 22 }]);
+    expect(writes(one)).not.toContainEqual({ w: "labels", add: ["started"] });
+    expect(replies(writes(one))[0]?.text).toBe("#22 started. It waited for #21, which isn't done.");
+    for (const [n, says] of [
+      [99, "#99 isn't a part of this task"],
+      [20, "#20 is closed"],
+      [24, "#24 has run already"],
+    ] as const) {
+      const p = plan(parent(`go #${n}`), ctx());
+      expect(kinds(writes(p))).not.toContain("start");
+      expect(replies(writes(p))[0]?.text).toContain(says);
+    }
+    // On a task with no parts.
+    const none = plan(
+      snap({ trigger: { kind: "comment" }, statusId: 5, state: ran(), said: [said(101, "go #5")] }),
+      ctx(),
+    );
+    expect(replies(writes(none))[0]?.text).toContain("#5 isn't a part of this task");
+  });
+
+  it("`stop` on the parent starts no more parts, and `go` carries on", () => {
+    const p = plan(parent("stop", ["started"]), ctx());
+    expect(writes(p)).toContainEqual({ w: "labels", remove: ["started"] });
+    expect(replies(writes(p))[0]?.text).toContain(
+      "No more parts start. #24 works on and finishes.",
+    );
+    expect(p.do === "box" && p.state.phase).toBe("needs-you");
+  });
+
+  it("says which parts wait for each other, and starts none of them", () => {
+    const loop = snap({
+      trigger: { kind: "comment" },
+      statusId: 5,
+      state: ran(),
+      said: [said(101, "go")],
+      family: family([
+        part(30, { blockedBy: [{ number: 31, state: "open" }] }),
+        part(31, { blockedBy: [{ number: 30, state: "open" }] }),
+      ]),
+    });
+    const p = plan(loop, ctx());
+    expect(kinds(writes(p))).not.toContain("start");
+    expect(replies(writes(p))[0]?.text).toContain("#30 and #31 wait for each other");
+  });
+
+  it("`go` on a task whose parts are all closed is as before: the doc's build", () => {
+    const p = plan(
+      snap({
+        trigger: { kind: "comment" },
+        statusId: 5,
+        state: ran(),
+        said: [said(101, "go")],
+        family: family([part(20, { state: "closed", reason: "completed" })]),
+      }),
+      ctx(),
+    );
+    expect(replies(writes(p))[0]?.text).toBe("Merge the change doc's PR first; then say `go`.");
+  });
+
+  describe("a part's close, in its own run with no agent", () => {
+    const url = "https://github.com/o/links/pull/9";
+    const closedPart = (n: number, reason: string, fam: Family, over: Partial<Snapshot> = {}) =>
+      snap({
+        n,
+        trigger: { kind: "closed" },
+        statusId: 5,
+        state: ran({
+          phase: "needs-you",
+          prs: [url],
+          prInfo: { [url]: { kind: "code", state: "merged" } },
+        }),
+        issue: {
+          ...snap().issue,
+          title: `links: part ${n}`,
+          state: "closed",
+          stateReason: reason,
+          closedAt: NOW,
+          labels: ["sub-task"],
+          author: "run",
+        },
+        family: fam,
+        ...over,
+      });
+    const merged = { mergedPr: { url, title: "Part 21" } };
+
+    it("starts each part that waited only for it, after your `go`", () => {
+      const p = plan(closedPart(21, "completed", family(parts(), ["started"])), ctx(merged));
+      expect(replies(writes(p))[0]?.text).toContain("**Merged:**");
+      // #22 waited only for #21; #23 for #20 (merged) and #21.
+      expect(writes(p).filter((w) => w.w === "start")).toEqual([
+        { w: "start", n: 22 },
+        { w: "start", n: 23 },
+      ]);
+      // Before your `go`, nothing starts.
+      const before = plan(closedPart(21, "completed", family(parts())), ctx(merged));
+      expect(kinds(writes(before))).not.toContain("start");
+    });
+
+    it("never starts one that waits for another open part too", () => {
+      const fam = family(
+        [
+          part(21),
+          part(25),
+          part(26, {
+            blockedBy: [
+              { number: 21, state: "open" },
+              { number: 25, state: "open" },
+            ],
+          }),
+        ],
+        ["started"],
+      );
+      expect(kinds(writes(plan(closedPart(21, "completed", fam), ctx(merged))))).not.toContain(
+        "start",
+      );
+    });
+
+    it("a dropped part starts nothing, and tells the parent once what waits for it", () => {
+      const p = plan(closedPart(21, "not_planned", family(parts(), ["started"])), ctx());
+      expect(kinds(writes(p))).not.toContain("start");
+      const tell = writes(p).find((w) => w.w === "tell");
+      expect(tell).toMatchObject({ n: 12, kind: "needs-you", step: "part-dropped-21" });
+      expect(tell?.w === "tell" && tell.text).toContain("`go #22` or `go #23` starts one anyway");
+      // Nothing waits for it: nothing to tell.
+      const alone = plan(closedPart(24, "not_planned", family(parts(), ["started"])), ctx());
+      expect(kinds(writes(alone))).not.toContain("tell");
+    });
+
+    it("the last part's close tells the parent and closes it", () => {
+      const fam = family(
+        [
+          part(20, {
+            state: "closed",
+            reason: "completed",
+            pr: "https://github.com/o/links/pull/7",
+          }),
+          part(21),
+          part(22, { state: "closed", reason: "not_planned" }),
+        ],
+        ["started"],
+      );
+      const p = plan(closedPart(21, "completed", fam), ctx(merged));
+      const tell = writes(p).find((w) => w.w === "tell");
+      expect(tell).toMatchObject({ n: 12, close: true });
+      expect(tell?.w === "tell" && tell.text).toBe(
+        "All 3 sub-tasks are closed: #20 merged (PR #7), #21 merged (PR #9), #22 dropped. This task closes with them.",
+      );
+    });
+
+    it("does nothing for a closed parent, nor for a close already handled", () => {
+      const fam = family(parts(), ["started"]);
+      const gone = plan(
+        closedPart(21, "completed", { ...fam, parent: { ...fam.parent, state: "closed" } }),
+        ctx(merged),
+      );
+      expect(kinds(writes(gone))).not.toContain("start");
+      const again = plan(
+        closedPart(21, "completed", fam, {
+          state: { ...newState(), ...ran({ phase: "done" }) } as TaskState,
+        }),
+        ctx(merged),
+      );
+      expect(kinds(writes(again))).not.toContain("start");
+    });
+
+    it("a part closed with `close` counts as done", () => {
+      const p = plan(
+        snap({
+          n: 21,
+          trigger: { kind: "comment" },
+          statusId: 5,
+          state: ran(),
+          said: [said(101, "close")],
+          issue: { ...snap().issue, labels: ["sub-task"], author: "run" },
+          family: family(parts(), ["started"]),
+        }),
+        ctx(),
+      );
+      expect(writes(p)).toContainEqual({ w: "close", reason: "completed" });
+      expect(writes(p).filter((w) => w.w === "start")).toEqual([
+        { w: "start", n: 22 },
+        { w: "start", n: 23 },
+      ]);
+    });
+  });
+
+  it("a part's first run the box started is a sub-task's, which doesn't stay; a second start does nothing", () => {
+    const first = snap({
+      n: 21,
+      trigger: { kind: "dispatch", job: "run" },
+      issue: {
+        ...snap().issue,
+        title: "links: part 21",
+        labels: ["sub-task"],
+        author: "run",
+        body: "Part of #12\n\nDo it.",
+      },
+      parsed: { kind: "app", project: "links", ask: "part 21" },
+      family: family(parts()),
+    });
+    const p = plan(first, ctx());
+    expect(p.do === "think" && p.think.why).toBe("sub-task");
+    expect(p.do === "think" && p.think.profile).toBe("work");
+    const d = { writes: [], state: full(), needs: {} };
+    expect(staysAfter(first, p, d, { ...meta, session: "s1" }, 20)).toBe(false);
+    // It ran: its state label says so, as the box reads it.
+    const second = plan(
+      {
+        ...first,
+        statusId: 5,
+        state: full(),
+        issue: { ...first.issue, labels: ["sub-task", "answered"] },
+      },
+      ctx(),
+    );
+    expect(second.do).toBe("nothing");
+  });
+
+  it("a parent's answer never closes it for quiet, and its PR is part-of", () => {
+    const work: Think = { ...talk, profile: "work", project: "spotter" };
+    const s = snap({ statusId: 5, state: ran(), family: family(parts()) });
+    const done = afterThink(s, full(), talk, r({}), meta, ctx());
+    expect(done.state.phase).toBe("answered");
+    expect(done.state.closes).toBeUndefined();
+    const pr = afterThink(
+      s,
+      full(),
+      work,
+      r({ pr: { kind: "closes", title: "x", body: "y" } }),
+      { ...meta, commits: true },
+      ctx(),
+    );
+    expect(pr.writes.find((w) => w.w === "push")).toMatchObject({ kind: "part-of" });
+  });
+
+  it("a part's prompt has its parent's goal and its siblings; a parent's, its parts", () => {
+    const lines = familyLines({ n: 22, family: family(parts()) }).join("\n");
+    expect(lines).toContain("## Part of #12: do it in parts");
+    expect(lines).toContain("> The goal.");
+    expect(lines).toContain("- #20 `links: part 20`: merged (PR #7)");
+    expect(lines).toContain("- #22 `links: part 22`: **this one**");
+    expect(lines).toContain("- #23 `links: part 23`: waits for #21");
+    expect(lines).toContain("- #24 `links: part 24`: working");
+    const mine = familyLines({ n: 12, family: family(parts()) }).join("\n");
+    expect(mine).toContain("## Its sub-tasks");
+    expect(mine).toContain("- #21 `links: part 21`: ready");
+  });
+
+  it("says the opened parts, and what `go` starts", () => {
+    expect(
+      openedText(
+        [
+          { title: "a", body: "", after: [], waits: [] },
+          { title: "b", body: "", after: [0], waits: [] },
+          { title: "c", body: "", after: [], waits: [7] },
+        ],
+        [30, 31, 32],
+      ),
+    ).toBe(
+      "Opened #30, #31 and #32 as sub-tasks of this task. Nothing has started. Say `go` to start #30. #31 waits for #30. #32 waits for #7.",
+    );
+  });
+});
+
+describe("sub-tasks (ADR 0066): a part that waits starts by the box or your `go`, not your other words", () => {
+  const WAITS =
+    "#21 waits for #20, so it hasn't started. It starts when #20 merges, and its run reads your words. Say `go` here to start it now.";
+  // #21, a part no run has started, waits for #20 (open, or merged), under #12.
+  const family = (blocker: "open" | "merged", parent = ["started"]): Family => {
+    const b =
+      blocker === "open"
+        ? { state: "open" as const }
+        : { state: "closed" as const, reason: "completed" };
+    return {
+      parent: {
+        number: 12,
+        title: "do it in parts",
+        body: "The goal.",
+        state: "open",
+        labels: parent,
+      },
+      parts: [
+        {
+          number: 20,
+          title: "links: part 20",
+          labels: ["sub-task", "answered"],
+          blockedBy: [],
+          ...b,
+        },
+        {
+          number: 21,
+          title: "links: part 21",
+          state: "open",
+          labels: ["sub-task"],
+          blockedBy: [{ number: 20, ...b }],
+        },
+      ],
+    };
+  };
+  const onPart = (
+    over: Omit<Partial<Snapshot>, "state"> & { state?: Partial<TaskState> } = {},
+  ): Snapshot =>
+    snap({
+      n: 21,
+      trigger: { kind: "comment" },
+      issue: {
+        ...snap().issue,
+        title: "links: part 21",
+        labels: ["sub-task"],
+        author: "run",
+        body: "Part of #12\n\nDo it.",
+      },
+      parsed: { kind: "app", project: "links", ask: "part 21" },
+      family: family("open"),
+      said: [said(101, "make the button blue too")],
+      ...over,
+    });
+
+  it("your words on it get one reply from the box, and it waits on, still to start", () => {
+    const p = plan(onPart(), ctx());
+    expect(p.do).toBe("box");
+    expect(replies(writes(p)).map((r) => r.text)).toEqual([WAITS]);
+    expect(kinds(writes(p))).not.toContain("start");
+    // No state label: the box still starts it when #20 merges.
+    expect(p.state?.phase).toBe("waiting");
+    // An edit of its words, and words again after that reply, are the same.
+    const edit = plan(onPart({ trigger: { kind: "edited" }, said: [] }), ctx());
+    expect(replies(writes(edit)).map((r) => r.text)).toEqual([WAITS]);
+    const again = plan(
+      onPart({ statusId: 5, state: ran({ seen: 101 }), said: [said(101, "x"), said(102, "y")] }),
+      ctx(),
+    );
+    expect(replies(writes(again)).map((r) => r.text)).toEqual([WAITS]);
+    // Before the parent's `go`, a merge starts nothing: the reply says what starts it.
+    const before = plan(onPart({ family: family("open", []) }), ctx());
+    expect(replies(writes(before))[0]?.text).toBe(
+      "#21 waits for #20, so it hasn't started. Once #20 merges, `go` on #12 starts it, and its run reads your words. Say `go` here to start it now.",
+    );
+  });
+
+  it("`go` there starts it now, and its run says what it skipped", () => {
+    const p = plan(onPart({ said: [said(101, "go")] }), ctx());
+    expect(p.do === "think" && p.think.why).toBe("sub-task");
+    expect(p.do === "think" && p.think.profile).toBe("work");
+    expect(p.do === "think" && p.think.notes).toContain(
+      "It waited for #20, which isn't done: the owner's `go` here started it anyway. Say so in your reply.",
+    );
+    // A ready part that hasn't started starts on `go` too, with nothing skipped.
+    const ready = plan(onPart({ said: [said(101, "go")], family: family("merged", []) }), ctx());
+    expect(ready.do === "think" && ready.think.why).toBe("sub-task");
+    expect(ready.do === "think" && ready.think.notes.join(" ")).not.toContain("It waited");
+  });
+
+  it("the box's start thinks, its words since the box's replies its run's to read", () => {
+    // `go #21` on the parent (it still waits), after the box answered the owner's words on it.
+    const start = onPart({
+      trigger: { kind: "dispatch", job: "run" },
+      statusId: 5,
+      state: ran({ seen: 101 }),
+      said: [said(101, "make the button blue too")],
+    });
+    const p = plan(start, ctx());
+    expect(p.do === "think" && p.think.why).toBe("sub-task");
+    expect(p.do === "think" && p.think.notes).toContain(
+      "The owner wrote on this part before it started, and no agent has read those words: they are in the conversation, and are for this run too.",
+    );
+    // A setting the box answered (`use opus`) leaves it to start, with that pick.
+    const set = plan(
+      onPart({
+        trigger: { kind: "dispatch", job: "run" },
+        statusId: 5,
+        state: ran({ seen: 101, use: { agent: "claude", model: "opus", label: "Opus" } }),
+        said: [said(101, "use opus")],
+        family: family("merged"),
+      }),
+      ctx(),
+    );
+    expect(set.do === "think" && set.think.why).toBe("sub-task");
+    expect(set.state?.use?.model).toBe("opus");
+  });
+
+  it("a ready part, one that ran, `stop`, `close` and settings are as before", () => {
+    // Ready: your words start it, as on any task.
+    const ready = plan(onPart({ family: family("merged") }), ctx());
+    expect(ready.do === "think" && ready.think.why).toBe("new");
+    // It ran (its state label, or a run on its status): your words carry it on, whatever it waits for.
+    const labelled = onPart({ statusId: 5, state: ran() });
+    labelled.issue.labels = ["sub-task", "answered"];
+    expect(plan(labelled, ctx()).do).toBe("think");
+    const reopened = plan(onPart({ statusId: 5, state: ran({ ran: 1 }) }), ctx());
+    expect(reopened.do === "think" && reopened.think.why).toBe("comment");
+    const stop = plan(onPart({ said: [said(101, "stop")] }), ctx());
+    expect(replies(writes(stop))[0]?.text).toContain("Nothing was working by then");
+    const close = plan(onPart({ said: [said(101, "close")] }), ctx());
+    expect(writes(close)).toContainEqual({ w: "close", reason: "completed" });
+    const use = plan(onPart({ said: [said(101, "use opus")] }), ctx());
+    expect(replies(writes(use)).map((r) => r.text)).toEqual(["From the next run: Opus."]);
   });
 });

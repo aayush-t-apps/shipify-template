@@ -16,7 +16,14 @@ import {
   productionUrl,
   releaseState,
 } from "../commands/task/deploys.ts";
-import { namesPick, pickedLine, pickerAsked, readFrom, withoutLine } from "../contracts/index.ts";
+import {
+  namesPick,
+  pickedLine,
+  pickerAsked,
+  readFrom,
+  SUB_TASK_LABEL,
+  withoutLine,
+} from "../contracts/index.ts";
 import { parseUse, useChoices, useCommand } from "../lib/agents.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
 import { ghRun, platformRepo, RECORD_WRITER, repoOfPr } from "../lib/github.ts";
@@ -297,6 +304,14 @@ export function snapshot(
   };
   const looked = opts.look ? lookedUp(s, process.env.SHIPIFY_READ_TOKEN || undefined) : undefined;
   if (looked) s.looked = looked;
+  // A split task's family (ADR 0066): one read by plan, only for a part or a task with parts.
+  if (opts.look && (labels.includes(SUB_TASK_LABEL) || (issue.sub_issues_summary?.total ?? 0) > 0))
+    try {
+      const family = rec().family(n);
+      if (family) s.family = family;
+    } catch (e) {
+      process.stderr.write(`  … its sub-tasks couldn't be read: ${(e as Error).message}\n`);
+    }
   return { s, ctx: context(s) };
 }
 
@@ -493,6 +508,7 @@ export function toolActs(): Record<string, ToolAct> {
               required?: string[];
               properties?: Record<string, unknown>;
               warn?: Record<string, string>;
+              files?: string;
             }
           >;
         }
@@ -501,8 +517,12 @@ export function toolActs(): Record<string, ToolAct> {
     const warn = Object.fromEntries(
       Object.entries(schemas).flatMap(([c, sc]) => (sc.warn ? [[c, sc.warn]] : [])),
     );
+    const files = Object.fromEntries(
+      Object.entries(schemas).flatMap(([c, sc]) => (sc.files ? [[c, sc.files]] : [])),
+    );
     out[name] = {
       ...(Object.keys(warn).length ? { warn } : {}),
+      ...(Object.keys(files).length ? { files } : {}),
       calls: Object.fromEntries(
         act.map((c) => [
           c,

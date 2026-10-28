@@ -170,7 +170,8 @@ jobs:
       && (github.event.action != 'closed'
           || contains(github.event.issue.labels.*.name, 'needs you')
           || contains(github.event.issue.labels.*.name, 'working')
-          || contains(github.event.issue.labels.*.name, 'waiting'))
+          || contains(github.event.issue.labels.*.name, 'waiting')
+          || contains(github.event.issue.labels.*.name, 'sub-task'))
       && !contains(github.event.issue.labels.*.name, 'shipify-status')
       && !contains(github.event.issue.labels.*.name, 'notebook')
       && !(github.event_name == 'issue_comment' && contains(github.event.issue.labels.*.name, 'staying'))
@@ -385,6 +386,9 @@ jobs:
           SHIPIFY_ACCOUNT_READ_TOKEN: ${{ steps.agent_account_token.outputs.token }}
           # Each tool's read-only key (tools.json's look secrets); a write key never reaches this step.
           SHIPIFY_NOTION_READ: ${{ secrets.SHIPIFY_NOTION_READ }}
+          SHIPIFY_DROP_URL: ${{ secrets.SHIPIFY_DROP_URL }}
+          SHIPIFY_DROP_READ_ID: ${{ secrets.SHIPIFY_DROP_READ_ID }}
+          SHIPIFY_DROP_READ_SECRET: ${{ secrets.SHIPIFY_DROP_READ_SECRET }}
         run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run think "$ISSUE"
 
       # Decide and apply read with a token of their own: a long think outlives plan's hour.
@@ -478,6 +482,9 @@ jobs:
           SHIPIFY_FILES_TOKEN: ${{ steps.files.outputs.token }}
           # A tool's write key only for the calls decide found approved (your yes, or pre-approved).
           SHIPIFY_NOTION_WRITE: ${{ steps.decide.outputs.act == 'notion' && secrets.SHIPIFY_NOTION_WRITE || '' }}
+          SHIPIFY_DROP_URL: ${{ steps.decide.outputs.act == 'drop' && secrets.SHIPIFY_DROP_URL || '' }}
+          SHIPIFY_DROP_WRITE_ID: ${{ steps.decide.outputs.act == 'drop' && secrets.SHIPIFY_DROP_WRITE_ID || '' }}
+          SHIPIFY_DROP_WRITE_SECRET: ${{ steps.decide.outputs.act == 'drop' && secrets.SHIPIFY_DROP_WRITE_SECRET || '' }}
         run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run apply "$ISSUE"
 
       # A run that stays (ADR 0057): after its answer, for SHIPIFY_STAY quiet minutes (20), it answers
@@ -530,6 +537,9 @@ jobs:
           SHIPIFY_AGENT_READ_TOKEN: ${{ steps.stay_token.outputs.token }}
           SHIPIFY_ACCOUNT_READ_TOKEN: ${{ steps.stay_account_token.outputs.token }}
           SHIPIFY_NOTION_READ: ${{ secrets.SHIPIFY_NOTION_READ }}
+          SHIPIFY_DROP_URL: ${{ secrets.SHIPIFY_DROP_URL }}
+          SHIPIFY_DROP_READ_ID: ${{ secrets.SHIPIFY_DROP_READ_ID }}
+          SHIPIFY_DROP_READ_SECRET: ${{ secrets.SHIPIFY_DROP_READ_SECRET }}
           SHIPIFY_STAY: ${{ vars.SHIPIFY_STAY }}
         run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run stay "$ISSUE"
 
@@ -597,6 +607,9 @@ jobs:
           SHIPIFY_WRITE_TOKEN: ${{ steps.stay_write.outputs.token || steps.stay_write_account.outputs.token }}
           SHIPIFY_FILES_TOKEN: ${{ steps.stay_files.outputs.token }}
           SHIPIFY_NOTION_WRITE: ${{ steps.stay.outputs.act == 'notion' && secrets.SHIPIFY_NOTION_WRITE || '' }}
+          SHIPIFY_DROP_URL: ${{ steps.stay.outputs.act == 'drop' && secrets.SHIPIFY_DROP_URL || '' }}
+          SHIPIFY_DROP_WRITE_ID: ${{ steps.stay.outputs.act == 'drop' && secrets.SHIPIFY_DROP_WRITE_ID || '' }}
+          SHIPIFY_DROP_WRITE_SECRET: ${{ steps.stay.outputs.act == 'drop' && secrets.SHIPIFY_DROP_WRITE_SECRET || '' }}
         run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run apply "$ISSUE"
       # However the job ends (a crash, a cancel, its clock): your next words are never skipped.
       - name: Its stay's label off, however the job ends

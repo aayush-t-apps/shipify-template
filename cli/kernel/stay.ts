@@ -57,9 +57,10 @@ export function stayMinutes(setting: string | undefined): number {
   return Number.isInteger(n) && n >= 0 ? n : STAY_IDLE_MINUTES;
 }
 
-/** Whether an answer starts another run (a work run, a build) or closes the task: no stay follows. */
+/** Whether an answer starts another run (a work run, a build, a part: ADR 0066) or closes the
+ * task: no stay follows, and its slot is free for that run. */
 export const ends = (d: Pick<Decided, "writes">): boolean =>
-  d.writes.some((w) => w.w === "dispatch" || w.w === "close");
+  d.writes.some((w) => w.w === "dispatch" || w.w === "close" || w.w === "start");
 
 /**
  * Whether a run stays after this answer (ADR 0060): it answered your words, in any profile, its
@@ -75,8 +76,9 @@ export function staysAfter(
   minutes: number,
 ): boolean {
   if (minutes <= 0 || p.do !== "think" || p.think.check) return false;
-  // Your words, however its job started: a stay's handover is a dispatch too. A repeat's isn't.
-  if (p.think.why === "scheduled") return false;
+  // Your words, however its job started: a stay's handover is a dispatch too. A repeat's isn't,
+  // nor a part's start (ADR 0066): it frees its slot for the next part.
+  if (p.think.why === "scheduled" || p.think.why === "sub-task") return false;
   if (s.issue.state !== "open" || !meta?.session) return false;
   // Your `stop` ends the agent's work, not its session: your next words carry on in it. An agent
   // that stopped by itself (a crash, its clock, your plan's limit) leaves no session to trust.

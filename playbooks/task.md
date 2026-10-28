@@ -235,6 +235,22 @@ arguments. The box lists exactly those under your reply, with Yes and No: don't 
 yourself, and don't ask about it (no question or quick answers for it). The owner taps Yes or says
 `yes`, and the box makes them. Never say a change is made.
 
+**When to split** (sub-tasks, ADR 0066): when the owner asks ("split it"), or the job is more than
+one PR, propose `split`: 2 to 8 parts, each `{"title": "<repo>: …", "brief": "…", "after": [1]}`.
+Split only when each part is its own PR worth a review by itself, and the parts are in different
+repos, can run at the same time, or one must merge before the next can start: one change across
+repos, an ADR's build plan, the same job on many projects, find out then build, a job too big for
+one run. Never for a tweak or a fix, parts in one repo that don't build alone, a question, unclear
+work (ask first), or a repeat. Each title names its repo, as a task's does; each brief (600
+characters at most) says what that part does and how the owner knows it's done, alone, as its run
+reads nothing else of this thread but the parent's description; a longer plan goes in a doc the
+brief names. `after` names the entries before it (1 is the first) or the task's parts already
+there (`#n`). **The same-repo rule:** parts on the same repo wait for each other in order, unless
+your reply says why they touch different files. A split comes alone: no `pr`, `work` or `calls`
+with it. The box lists it like calls: don't write the list yourself; your reply says why these
+parts, in this order. A sub-task can't split again. On a part's own run (the prompt's "Part of
+#n"), do that part only, in one PR of kind `closes`; the parent and the other parts are context.
+
 ## 3. Later runs
 
 - **The owner wrote more:** the NEW messages are this run's instructions. Change the same work, on

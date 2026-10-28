@@ -71,6 +71,7 @@ You MUST complete each phase before proceeding to the next.
    - Git diff, recent commits
    - New dependencies, config changes
    - Environmental differences
+   - A self-hosted run that "lost communication" may be the box, not the code: check its uptime and reset cause (on a Pi, the bootloader `rsts` value) first
 
 4. **Gather Evidence in Multi-Component Systems**
 

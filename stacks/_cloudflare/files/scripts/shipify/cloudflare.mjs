@@ -3,9 +3,10 @@
 // browser tests), and `bundle` (a PR's Worker and assets for its preview, made with no keys). The Shipify pipeline runs `make <target>` with SHIPIFY_* variables, and passes
 // the repository variables CLOUDFLARE_ACCOUNT_ID and CF_WORKERS_SUBDOMAIN as environment variables.
 // Worker names come from wrangler.jsonc.
-// Storage (KV namespaces, D1 databases) has no ids in wrangler.jsonc: a deploy finds each by its
+// Storage (KV namespaces, D1 databases, R2 buckets) has no ids in wrangler.jsonc: a deploy finds each by its
 // name (a KV namespace is "<worker>-<binding>", a database its database_name) or makes it, applies
-// the D1 migrations, then deploys with the ids filled in. Nothing is left to wrangler's guessing.
+// the D1 migrations, then deploys with the ids filled in. An R2 bucket has a name, not an id: a
+// deploy makes it when missing and sets its lifecycle rules from r2-lifecycle.json. Nothing is left to wrangler's guessing.
 // One address (ADR 0024): the app lives where shipify.json's urls say. A URL on your own domain
 // means that name is attached (through Cloudflare's API, after a check that nothing else answers
 // there, so a deploy never replaces one) and workers.dev stays off; a workers.dev URL means no
@@ -228,11 +229,11 @@ async function waitLive(host) {
 /** A Worker's storage bindings, as wrangler.jsonc gives them (top level, or env.staging). */
 function storageOf(onStaging) {
   const c = onStaging ? (config.env?.staging ?? {}) : config;
-  return { kv: c.kv_namespaces ?? [], d1: c.d1_databases ?? [] };
+  return { kv: c.kv_namespaces ?? [], d1: c.d1_databases ?? [], r2: c.r2_buckets ?? [] };
 }
 const keepsData = (onStaging) => {
   const s = storageOf(onStaging);
-  return s.kv.length > 0 || s.d1.length > 0;
+  return s.kv.length > 0 || s.d1.length > 0 || s.r2.length > 0;
 };
 /** Wrangler's own name for a binding's resource: "<worker>-<binding>", lower case. */
 const resourceName = (worker, binding) => `${worker}-${binding.toLowerCase().replaceAll("_", "-")}`;
@@ -327,6 +328,82 @@ async function deployConfig(onStaging) {
   return file;
 }
 
+/** r2-lifecycle.json as R2 lifecycle rules: { "tmp/": 7 } is one rule per prefix. Undefined when absent. */
+function lifecycleRules() {
+  const file = "r2-lifecycle.json";
+  if (!existsSync(file)) return undefined;
+  let map;
+  try {
+    map = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    fail(`${file} isn't valid JSON. Nothing was changed.`);
+  }
+  if (!map || typeof map !== "object" || Array.isArray(map))
+    fail(`${file} must be an object of prefix to days, like {"tmp/": 7}. Nothing was changed.`);
+  return Object.entries(map).map(([prefix, days]) => {
+    if (!prefix || !Number.isInteger(days) || days < 1)
+      fail(
+        `${file}: "${prefix}" needs a non-empty prefix and whole days of 1 or more. Nothing was changed.`,
+      );
+    return {
+      id: `expire-${prefix}`,
+      enabled: true,
+      conditions: { prefix },
+      // The API counts seconds.
+      deleteObjectsTransition: { condition: { type: "Age", maxAge: days * 86400 } },
+    };
+  });
+}
+
+/**
+ * Each R2 bucket found by its bucket_name or made, then the app's lifecycle rules set on it. A
+ * preview only makes the bucket: a PR's rules wait for its merge, as its migrations do.
+ */
+async function ensureBuckets(onStaging, { setRules = true } = {}) {
+  const buckets = storageOf(onStaging).r2;
+  if (!buckets.length) return;
+  const rules = setRules ? lifecycleRules() : undefined;
+  const needs = '"Workers R2 Storage: Edit"';
+  const refused = (what, status) =>
+    status === 401 || status === 403
+      ? fail(
+          `The deploy token can't ${what} (HTTP ${status}). Give CF_DEPLOY_TOKEN ${needs} (docs/setup.md). If R2 isn't turned on for the account, turn it on once in the dashboard (it asks for a card), then re-run.`,
+        )
+      : undefined;
+  const { status: listed, body: listBody } = await api("/r2/buckets?per_page=1000");
+  refused("list R2 buckets", listed);
+  if (listed !== 200) fail(`Cloudflare R2 buckets: HTTP ${listed}`);
+  const have = listBody.result?.buckets ?? listBody.result ?? [];
+  for (const b of buckets) {
+    const name = b.bucket_name;
+    if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(name))
+      fail(`R2 bucket name "${name}" must be 3 to 63 lower-case letters, digits or hyphens.`);
+    if (!have.some((x) => x.name === name)) {
+      const { status, body } = await api("/r2/buckets", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      refused(`make R2 bucket ${name}`, status);
+      if (status !== 200)
+        fail(
+          `Couldn't make R2 bucket ${name}: HTTP ${status} ${JSON.stringify(body.errors ?? [])}`,
+        );
+      console.log(`Made R2 bucket ${name}.`);
+    }
+    if (!rules) continue;
+    const { status, body } = await api(`/r2/buckets/${name}/lifecycle`, {
+      method: "PUT",
+      body: JSON.stringify({ rules }),
+    });
+    refused(`set the lifecycle of ${name}`, status);
+    if (status !== 200)
+      fail(
+        `Couldn't set the lifecycle of ${name}: HTTP ${status} ${JSON.stringify(body.errors ?? [])}`,
+      );
+    console.log(`${name}: ${rules.length} lifecycle rule(s).`);
+  }
+}
+
 /** D1 migrations, applied to the Worker's databases (each runs once; wrangler keeps the list). */
 function migrate(onStaging, configFile) {
   for (const b of storageOf(onStaging).d1)
@@ -358,6 +435,7 @@ async function deploy() {
   if (exists) await syncDomains(worker);
   // Its storage first, then its migrations (they only add, so the running code is fine with them),
   // then the code that needs them.
+  await ensureBuckets(toStaging);
   const configFile = await deployConfig(toStaging);
   try {
     if (configFile) migrate(toStaging, configFile);
@@ -428,7 +506,7 @@ async function preview() {
   // A preview is a version of its Worker, with that Worker's data: without staging, production's.
   if (!staging && keepsData(false)) {
     console.log(
-      "No preview: this app keeps data (KV or D1) and has no staging, so a preview would use production's. Turn staging on for previews: pnpm ship staging <id> on.",
+      "No preview: this app keeps data (KV, D1 or R2) and has no staging, so a preview would use production's. Turn staging on for previews: pnpm ship staging <id> on.",
     );
     return;
   }
@@ -438,6 +516,7 @@ async function preview() {
     return;
   }
   // Staging's own storage; a PR's new migrations wait for its merge (staging's data is shared).
+  await ensureBuckets(staging, { setRules: false });
   const configFile = await deployConfig(staging);
   try {
     wrangler([

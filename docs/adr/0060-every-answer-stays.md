@@ -1,5 +1,5 @@
 ---
-status: accepted (the owner's words on #500) and built; see [As built](#as-built-2026-10-16); amended by 0061 (a slip in an answer's shape keeps its stay) and 0062 (a stay's answer that needs a token is applied in its job), 0063 (a stay's turn sends only its own commits)
+status: accepted (the owner's words on #500) and built; see [As built](#as-built-2026-10-16); amended by 0061 (a slip in an answer's shape keeps its stay) and 0062 (a stay's answer that needs a token is applied in its job), 0063 (a stay's turn sends only its own commits), 0066 (a sub-task's run the box started doesn't stay; an answer that starts a part ends a stay)
 date: 2026-10-16
 amends: 0057 (every answer stays, unless it started another run or closed the task), 0037 (no round count: the catch-up goes on while you write and the agent's clock has time)
 ---

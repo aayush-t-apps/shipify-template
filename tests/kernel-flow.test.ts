@@ -1127,6 +1127,47 @@ describe("a run end to end", () => {
     expect(replies().at(-1)?.c.body).toContain("came before the list");
   });
 
+  it("opens a split's parts on your Yes, starting none, and `go` starts the ready one (ADR 0066)", async () => {
+    process.env.FAKE_RESULT = JSON.stringify({
+      v: 2,
+      state: "needs-you",
+      text: "Two PRs, one after the other.",
+      split: [
+        { title: "shipify: a new field", brief: "Add the field." },
+        { title: "links: use it", brief: "Turn it on.", after: [1] },
+      ],
+    });
+    await job("issues", "opened");
+    const list = replies().at(-1);
+    expect(list?.c.body).toContain("Open the sub-task `links: use it` (after 1): Turn it on.");
+    say(`yes ${list?.line?.list}`);
+    const yes = await job("issue_comment", "created");
+    expect(yes.do).toBe("box");
+    expect(replies().at(-1)?.c.body).toContain(
+      "Opened #200 and #201 as sub-tasks of this task. Nothing has started. Say `go` to start #200. #201 waits for #200.",
+    );
+    const parts = Object.values(read().others) as { issue: Record<string, unknown> }[];
+    expect(
+      parts.map((o) => [o.issue.title, o.issue.body, o.issue.parent, o.issue.blockedBy]),
+    ).toEqual([
+      ["shipify: a new field", "Part of #12\n\nAdd the field.", 12, []],
+      ["links: use it", "Part of #12\n\nTurn it on.", 12, [200]],
+    ]);
+    expect(read().calls.filter((c) => c.startsWith("workflow run"))).toEqual([]);
+    expect(status().phase).toBe("needs-you");
+    // `go`: the parent is read with its parts (GitHub counts them on the issue), and the ready one starts.
+    set((f) => {
+      Object.assign(f.issue, { sub_issues_summary: { total: 2, completed: 0 } });
+    });
+    say("go");
+    await job("issue_comment", "created");
+    expect(read().calls.filter((c) => c.startsWith("workflow run"))).toEqual([
+      "workflow run task.yml -R o/shipify -f issue=200 -f job=run",
+    ]);
+    expect(read().issue.labels.map((l) => l.name)).toContain("started");
+    expect(replies().at(-1)?.c.body).toContain("Started #200. #201 waits for #200.");
+  });
+
   it("says the agent couldn't start (the box's setup), never that it stopped early", async () => {
     const executors = JSON.parse(
       readFileSync(process.env.SHIPIFY_EXECUTORS_FILE as string, "utf8"),

@@ -18,7 +18,7 @@ Day-to-day commands. Every command and its flags: [cli.md](cli.md). When somethi
 | tasks waiting for you | the shipify issues labelled `needs you` |
 | a task that failed | its reply names the fix; usually comment `continue` |
 | boxes | `pnpm ship box list`; this machine's: `pnpm ship box status` · `stop` · `start` · `logs -f` ([box-setup.md](box-setup.md)) |
-| a plug-in (Notion, Telegram) | `pnpm ship add <name>` → `--yes`; `--new` pastes its keys again; `pnpm ship selftest <name>`; `pnpm ship remove <name> --yes` |
+| a plug-in (Notion, Drop, Telegram) | `pnpm ship add <name>` → `--yes`; `--new` pastes its keys again; `pnpm ship selftest <name>`; `pnpm ship remove <name> --yes` |
 | a key or token to replace | [setup.md](setup.md), "Tokens and secrets" |
 | the projects on a new machine | `pnpm ship sync` (clones what's missing), or `pnpm ship reconcile` |
 | new projects in the task forms | automatic after publishing (a small PR), or `pnpm ship forms --yes` |
