@@ -2,11 +2,13 @@
 // become a task or a comment, written once by the door App; what needs no run is answered at once,
 // writing nothing; #n that can't take them is refused at once.
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { PIN_MARK, readFrom } from "../../cli/contracts/index.ts";
+import { PIN_MARK, readFrom, withoutLine } from "../../cli/contracts/index.ts";
 import { handle } from "../../edge/src/app.ts";
 import { clearCaches } from "../../edge/src/cache.ts";
+import { moveToProject, newChatIn } from "../../edge/src/capture.ts";
 import type { Channel, Message } from "../../edge/src/channels/channel.ts";
 import { doorIn } from "../../edge/src/door-in.ts";
+import { github } from "../../edge/src/github.ts";
 import { APP_ID, CHAT, DOOR, envFor, type Keys, keys, world } from "./fake.ts";
 
 let k: Keys;
@@ -224,6 +226,17 @@ describe("writing your words as the door App", () => {
     expect(f.w.comments.map((c) => readFrom(c.body)?.setting)).toEqual([true, true]);
   });
 
+  it("writes a part's `close` as words, so its run sees to it: what waited for it starts (ADR 0066)", async () => {
+    const f = world(k);
+    const part = f.issue({ title: "new: games", labels: ["sub-task", "needs you"] });
+    expect(await said(await post(f, update({ text: `#${part.number} close` })))).toBe(
+      `Closed · #${part.number}`,
+    );
+    expect(part.state).toBe("closed");
+    expect(part.labels).toEqual(["sub-task"]);
+    expect(readFrom(f.w.comments[0]?.body ?? "")?.setting).toBeUndefined();
+  });
+
   it("says a task is already open or closed, and writes nothing: no run starts for it", async () => {
     const f = world(k);
     const task = f.issue({ title: "make it faster" });
@@ -257,6 +270,170 @@ describe("writing your words as the door App", () => {
     expect(await said(await post(f, update({ text: "hi there" })))).toBe(
       "Got it · #1 · Auto (Sonnet · Medium)\nNo box is online: it runs when one is back.",
     );
+  });
+});
+
+describe("saved with no run: a project, an Inbox item, a Journal line (ADR 0069)", () => {
+  it("makes a project once, labelled `project`, its brief its body, with its main page", async () => {
+    const f = world(k);
+    const res = await post(
+      f,
+      update({ text: "project: shop repos: shop-api, shop-web\nAn online shop." }, 61),
+    );
+    expect(await said(res)).toMatch(
+      /^Project shop made · #1, its main page · #2\. No run started\./,
+    );
+    const [p, page] = f.w.issues;
+    expect(p?.title).toBe("Project: shop");
+    expect(p?.labels).toEqual(["project"]);
+    expect(readFrom(p?.body)).toMatchObject({ person: "owner", id: "61" });
+    expect(p?.body).toContain("Repos: shop-api, shop-web\n\nAn online shop.");
+    // The main page: the brief, then an empty Now and Map for runs to keep (ADR 0070).
+    expect(page?.title).toBe("Notebook: shop");
+    expect(page?.labels).toEqual(["library", "project:shop"]);
+    expect(readFrom(page?.body)?.person).toBe("owner");
+    expect(withoutLine(page?.body ?? "")).toBe(
+      "# shop\n\nRepos: shop-api, shop-web\n\nAn online shop.\n\n## Now\n\n## Map\n",
+    );
+    expect(await said(await post(f, update({ text: "project: shop" })))).toContain(
+      "is there already · #1",
+    );
+    expect(f.w.issues).toHaveLength(2);
+    expect(await said(await post(f, update({ text: "project: shop-front!" })))).toBe(
+      "Name the project after `project:`: lowercase letters, digits and dashes (`project: games`).",
+    );
+  });
+
+  it("keeps the main page a closed project of that name left, rather than make a second", async () => {
+    const f = world(k);
+    f.issue({ title: "Project: shop", labels: ["project"], state: "closed" });
+    const old = f.issue({
+      title: "Notebook: shop",
+      body: "## Map",
+      labels: ["library", "project:shop"],
+    });
+    expect(await said(await post(f, update({ text: "project: shop" })))).toMatch(
+      `, its main page · #${old.number}.`,
+    );
+    expect(f.w.issues.filter((i) => i.title === "Notebook: shop")).toHaveLength(1);
+  });
+
+  it("adds a find to a project's Inbox page as a comment, making the page once", async () => {
+    const f = world(k);
+    await post(f, update({ text: "project: games" }));
+    expect(await said(await post(f, update({ text: "add games: an engine list" })))).toMatch(
+      /^Added to the games Inbox · #3\. No run started/,
+    );
+    await post(f, update({ text: "add games: a second find" }));
+    const inbox = f.w.issues.find((i) => i.title === "Notebook: games-inbox");
+    expect(inbox?.labels).toEqual(["library", "project:games"]);
+    expect(f.w.issues).toHaveLength(3);
+    const items = f.w.comments.filter((c) => c.issue === inbox?.number);
+    expect(items.map((c) => c.body.split("\n").slice(1).join("\n"))).toEqual([
+      "an engine list",
+      "a second find",
+    ]);
+    expect(readFrom(items[0]?.body)?.person).toBe("owner");
+  });
+
+  it("opens a task from `add <word>: …` when no open project has that name: your words, as any", async () => {
+    const f = world(k);
+    f.issue({ title: "Project: docs", labels: ["project"], state: "closed" });
+    const long = `add ${"a".repeat(40)}: a name no project can have`;
+    for (const text of ["Add tests: for the login page", "add docs: a closed project's", long]) {
+      const res = await post(f, update({ text }));
+      // As any new words: a task, its title your words, your model said; nothing is lost.
+      expect(await said(res)).toBe(
+        `Got it · #${f.w.issues.at(-1)?.number} · Auto (Sonnet · Medium)`,
+      );
+      const task = f.w.issues.at(-1);
+      expect(task?.title).toBe(text);
+      expect(task?.labels).toEqual([]);
+      expect(withoutLine(task?.body ?? "")).toBe(text);
+    }
+    expect(f.w.issues.filter((i) => i.title.startsWith("Notebook:"))).toEqual([]);
+    expect(f.w.comments).toEqual([]);
+  });
+
+  it("jots a dated line on this month's Journal page, its hidden line kept first", async () => {
+    const f = world(k);
+    expect(await said(await post(f, update({ text: "jot: #games try a pico-8 port?" })))).toMatch(
+      /^Jotted in Journal \d{4}-\d{2} · /,
+    );
+    await post(f, update({ text: "jot: and a second thought" }));
+    const [page] = f.w.issues;
+    expect(page?.title).toMatch(/^Notebook: Journal \d{4}-\d{2}$/);
+    expect(page?.labels).toEqual(["library"]);
+    expect(readFrom(page?.body)?.person).toBe("owner");
+    const lines = (page?.body ?? "").split("\n").filter((l) => l.startsWith("- "));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^- #games try a pico-8 port\? \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\)$/);
+    expect(f.w.issues).toHaveLength(1);
+  });
+
+  it("opens a new chat under a project, `Part of #n` first, and moves a chat in with a label", async () => {
+    const f = world(k);
+    const gh = github(envFor(k), f.deps);
+    f.issue({ title: "Project: games", labels: ["project"] });
+    const head = '<!-- shipify-from {"v":1} -->';
+    expect(await newChatIn(gh, 1, "which engine?", `${head}\nwhich engine?`)).toEqual({
+      number: 2,
+    });
+    expect(f.w.issues[1]?.body).toBe(`${head}\nPart of #1\n\nwhich engine?`);
+    expect(f.w.issues[0]?.subIssues).toEqual([2]);
+    const old = f.issue({ title: "make it faster" });
+    expect(await moveToProject(gh, old.number, 1)).toBe(
+      `Moved #${old.number} into games · #1. Its next run reads the project's pages.`,
+    );
+    expect(old.labels).toEqual(["in-project"]);
+    expect(f.w.issues[0]?.subIssues).toEqual([2, old.number]);
+    // Not a project, or full: said, and nothing made.
+    expect(await newChatIn(gh, old.number, "x", head)).toEqual({
+      why: `#${old.number} isn't a project.`,
+    });
+    Object.assign(f.w.issues[0] ?? {}, {
+      subIssues: Array.from({ length: 100 }, (_, i) => 1000 + i),
+    });
+    const fresh = f.issue({ title: "a third chat" });
+    expect(await moveToProject(gh, fresh.number, 1)).toContain("holds 100 chats");
+    expect(fresh.labels).toEqual([]);
+  });
+
+  it("moves a chat once: one in a project already, or a part of a split task, is refused as so", async () => {
+    const f = world(k);
+    const gh = github(envFor(k), f.deps);
+    f.issue({ title: "Project: games", labels: ["project"] });
+    f.issue({ title: "Project: shop", labels: ["project"] });
+    const chat = f.issue({ title: "make it faster" });
+    expect(await moveToProject(gh, chat.number, 1)).toMatch(/^Moved #3 into games · #1\./);
+    // Again, or into another project: said plainly (never "full"), and nothing changes.
+    for (const p of [1, 2])
+      expect(await moveToProject(gh, chat.number, p)).toBe("#3 is in a project already.");
+    // New chat here's: its `Part of #1` says so, with no label.
+    const made = await newChatIn(gh, 1, "x", '<!-- shipify-from {"v":1} -->\nwhich engine?');
+    const n = "number" in made ? made.number : 0;
+    expect(await moveToProject(gh, n, 2)).toBe(`#${n} is in a project already.`);
+    // A part of a split task (ADR 0066) goes where its task goes.
+    const part = f.issue({ title: "a part", body: "Part of #3\n\nDo it.", labels: ["sub-task"] });
+    expect(await moveToProject(gh, part.number, 2)).toBe(
+      `#${part.number} is a part of #3: move #3 instead.`,
+    );
+    // Linked under another issue on GitHub alone (no label, no line): GitHub's own refusal, said.
+    const other = f.issue({ title: "linked by hand" });
+    Object.assign(f.w.issues[2] ?? {}, { subIssues: [other.number] });
+    expect(await moveToProject(gh, other.number, 2)).toBe(
+      `#${other.number} is under another issue on GitHub already: an issue has one parent.`,
+    );
+    expect(f.w.issues[1]?.subIssues ?? []).toEqual([]);
+    expect([chat, part, other].map((i) => i.labels)).toEqual([["in-project"], ["sub-task"], []]);
+  });
+
+  it("leaves the words alone on a task: `#1 jot: …` is a comment, as ever", async () => {
+    const f = world(k);
+    f.issue({ title: "make it faster" });
+    await post(f, update({ text: "#1 jot: this goes on the task" }));
+    expect(f.w.issues).toHaveLength(1);
+    expect(f.w.comments.at(-1)?.body).toContain("jot: this goes on the task");
   });
 });
 

@@ -4,11 +4,12 @@
 // from the file itself (files.ts `serve`), anything else as its name and a Download. A file never
 // changes, so its rendering is kept a day in this Worker: one call to GitHub a file, at most.
 import { cached } from "../cache.ts";
-import type { Deps, Env, Kv } from "../env.ts";
+import type { Bucket, Deps, Env } from "../env.ts";
 import { FILE_REF } from "../env.ts";
 import { GitHubError, installationToken } from "../github.ts";
 import { clean } from "./clean.ts";
-import { type FileMeta, PICTURE, safeType } from "./files.ts";
+import { open } from "../store.ts";
+import { PICTURE, safeType } from "./files.ts";
 import type { Doc } from "./shapes.ts";
 
 /** The most of a file read to show it: past it, the pane says it's cut and offers the rest. */
@@ -101,7 +102,7 @@ export function csvRows(text: string, most = MOST_ROWS) {
 }
 
 /** GitHub's rendering of Markdown, as a README's (no #12 links), cleaned for the page. */
-async function render(env: Env, deps: Pick<Deps, "fetch" | "now">, text: string) {
+export async function render(env: Env, deps: Pick<Deps, "fetch" | "now">, text: string) {
   const token = await installationToken(env, deps);
   const res = await deps.fetch("https://api.github.com/markdown", {
     method: "POST",
@@ -127,15 +128,16 @@ async function render(env: Env, deps: Pick<Deps, "fetch" | "now">, text: string)
 export async function docOf(
   env: Env,
   deps: Pick<Deps, "fetch" | "now">,
-  kv: Kv,
+  bucket: Bucket,
   ref: string,
 ): Promise<Doc | undefined> {
   if (!FILE_REF.test(ref)) return undefined;
   const key = `web:doc:${ref}`;
   let plain: Doc | undefined;
   const read = async (): Promise<Doc | null> => {
-    const { value, metadata } = await kv.getWithMetadata<FileMeta>(ref, "stream");
-    if (!value || !metadata) return null;
+    const f = await open(bucket, ref);
+    if (!f) return null;
+    const { body: value, meta: metadata } = f;
     const kind = docKind(metadata.name, metadata.type);
     const base = {
       v: 1 as const,

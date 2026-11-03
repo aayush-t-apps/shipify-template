@@ -3,7 +3,6 @@
 // never pushes, opens a PR or calls an act tool itself.
 import { z } from "zod";
 import { MAX_FILES_OUT, ToolCall } from "../contracts/index.ts";
-import { planId } from "../lib/plan.ts";
 import { limitName } from "../lib/runs.ts";
 import { SplitEntry } from "../lib/task.ts";
 import type { Stop } from "./types.ts";
@@ -34,13 +33,6 @@ export const Result = z.object({
       preview: z.boolean().optional(),
     })
     .optional(),
-  /** A new project's plan id (plans/<id>.plan.md in its commits): its path reads as the id, and a
-   * blank one as none. */
-  plan: z
-    .string()
-    .refine((v) => !v.trim() || planId(v), "isn't a plan id (plans/<id>.plan.md)")
-    .transform(planId)
-    .optional(),
   /** Tool calls it proposes: shown to you exactly, made by the box after your yes. */
   calls: z.array(ToolCall).max(20).optional(),
   /**
@@ -52,6 +44,14 @@ export const Result = z.object({
   /** Notes for the notebook: your own words to keep. */
   notes: z
     .array(z.object({ topic: z.string().max(60), line: z.string().max(500) }))
+    .max(5)
+    .optional(),
+  /**
+   * Library pages rewritten (ADR 0069): each page's whole new text in a file in its out folder,
+   * which the box writes after the run: its project's pages, or the Library's own.
+   */
+  pages: z
+    .array(z.object({ page: z.string().min(1).max(140), file: z.string().min(1).max(200) }))
     .max(5)
     .optional(),
   repeat: z
@@ -114,11 +114,20 @@ export function readResult(text: string | undefined): Result | Unusable {
   } catch {
     return { error: "its result isn't JSON" };
   }
-  const r = Result.safeParse(withoutNulls(raw));
+  // A result from before the handoff file (ADR 0041) named screenshots' paths as `pages`: set aside.
+  const o = withoutNulls(raw) as Record<string, unknown> | null;
+  if (Array.isArray(o?.pages) && o.pages.some((p) => typeof p === "string")) delete o.pages;
+  const r = Result.safeParse(o);
   if (r.success) {
-    const { files, ...rest } = r.data;
-    const yours = files?.filter((f) => !BOX_FILES.includes(f.split("/").pop() ?? ""));
-    return yours?.length ? { ...rest, files: yours } : rest;
+    const { files, pages, ...rest } = r.data;
+    const mine = (f: string) => BOX_FILES.includes(f.split("/").pop() ?? "");
+    const yours = files?.filter((f) => !mine(f));
+    const written = pages?.filter((p) => !mine(p.file));
+    return {
+      ...rest,
+      ...(yours?.length ? { files: yours } : {}),
+      ...(written?.length ? { pages: written } : {}),
+    };
   }
   const wrong = r.error.issues
     .slice(0, 3)

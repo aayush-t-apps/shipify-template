@@ -12,7 +12,14 @@ export default defineConfig({
     maxWorkers: Math.max(2, Math.floor(availableParallelism() / 2)),
     coverage: {
       provider: "v8",
+      // #if !OPTION_DO
       exclude: ["src/worker/index.ts", "src/shared/health.ts"],
+      // #endif
+      // #if OPTION_DO
+      // Durable Objects run in workerd (tests/unit/support/worker.ts), where Node can't count them:
+      // logic that needs branch tests goes in plain modules beside them.
+      exclude: ["src/worker/index.ts", "src/shared/health.ts", "src/worker/objects/**"],
+      // #endif
       include: ["src/worker/**/*.ts", "src/shared/**/*.ts", "src/web/lib/**/*.ts"],
       thresholds: { lines: {{COVERAGE_FLOOR}}, branches: {{COVERAGE_FLOOR}}, functions: {{COVERAGE_FLOOR}}, statements: {{COVERAGE_FLOOR}} },
     },

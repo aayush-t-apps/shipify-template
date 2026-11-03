@@ -7,7 +7,7 @@ preset: {{PRESET}}
 visibility: {{VISIBILITY}}
 staging: false
 secrets: []
-options: []   # the stack's options it takes; Cloudflare apps: kv, d1, r2 (stacks/_cloudflare/storage.md)
+options: []   # the stack's options it takes; Cloudflare apps: kv, d1, r2, do (stacks/_cloudflare/storage.md)
 # service: <name>   (apps, optional: the deployed/URL name when it should differ from the app id)
 revision: 1
 ---
@@ -70,8 +70,9 @@ flowchart LR
 ### Data
 
 <!-- What it keeps, where, and why there. Kept on Cloudflare: the front matter's `options` (kv for
-     key-value, d1 for SQL tables), with each table or key shape here, the free limits it stays
-     within, and what a rollback does to it (stacks/_cloudflare/storage.md). -->
+     key-value, d1 for SQL tables, r2 for files, do for live state and WebSockets: no PR previews),
+     with each table or key shape here, the free limits it stays within, and what a rollback does
+     to it (stacks/_cloudflare/storage.md). -->
 None. Static assets only.
 
 ### API

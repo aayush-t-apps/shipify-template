@@ -44,9 +44,16 @@ export interface Message {
    * (`tapped`). Its words are the button's, and it replies to the message the button sat on.
    */
   tap?: string;
+  /**
+   * A button's word in the web chat (ADR 0069: Close, Reopen, Stop the run, Stop repeating): marked
+   * on its from-line, so the web chat shows no message for it.
+   */
+  button?: true;
   /** Files sent together share it, and land on one task. */
   album?: string;
   file?: InFile;
+  /** A new chat in this project (ADR 0069, the web chat's **New chat here**): its issue's number. */
+  under?: number;
 }
 
 /** What a message shows beside its words: its task's link, buttons that send words, the reply box. */
@@ -196,8 +203,8 @@ export function readHead(head: string): { task?: number } {
   return n > 0 ? { task: n } : {};
 }
 
-/** A file a run reads at most, either way. */
-export const MAX_FILE_BYTES = 10 * 1024 * 1024;
+/** A file a run reads at most, either way: a Worker's request on Cloudflare's free plan (100 MB). */
+export const MAX_FILE_BYTES = 100 * 1024 * 1024;
 
 /** A stream that fails past max bytes, for a file whose size its channel didn't say. */
 export function capped(body: ReadableStream<Uint8Array>, max: number) {

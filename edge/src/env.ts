@@ -32,8 +32,9 @@ export interface Env {
    * a JWK (`ship add webchat`). Without it, the chat works and notifies no one.
    */
   WEB_PUSH_KEY?: string;
-  // Two bindings beside these strings, read only by the web chat (ADR 0036): FILES, its Workers KV
-  // store (kvOf, below), and ASSETS, its page's files (web/routes.ts). Both optional.
+  // Three bindings beside these strings, read only by the web chat (ADR 0036, ADR 0069): BUCKET, its
+  // files in R2 (bucketOf, below); FILES, its Workers KV store, for model picks and devices only
+  // (kvOf); and ASSETS, its page's files (web/routes.ts). All optional.
   /** Each chat channel's secrets, by the names its adapter `needs` (`ship add <channel>` sets them). */
   [secret: string]: string | undefined;
 }
@@ -45,6 +46,8 @@ export interface Deps {
   sleep: (ms: number) => Promise<void>;
   /** Where log lines go: Workers' logs (console.log). */
   write: (line: string) => void;
+  /** Work that may finish after the answer (the Worker's ctx.waitUntil); without it, awaited. */
+  waitUntil?: (work: Promise<unknown>) => void;
 }
 
 export const defaultDeps = (): Deps => ({
@@ -125,11 +128,12 @@ export const ownProof = async (env: Env, channel: string) => {
   return key ? hmacHex(key, `shipify ${channel} chat v1`) : "";
 };
 
-// ---------------------------------------------------------------- the web chat's file store
+// ---------------------------------------------------------------- the web chat's stores
 
 /**
- * As much of Workers KV as the edge uses, bound as FILES (ADR 0036): the web chat's files, your
- * model (model.ts) and the devices a chat notifies (below).
+ * As much of Workers KV as the edge uses, bound as FILES (ADR 0036): your model (model.ts) and the
+ * devices a chat notifies (below). It held the web chat's files till ADR 0069, which copied them
+ * to R2 once (store.ts).
  */
 export interface Kv {
   get(key: string, type: "stream"): Promise<ReadableStream | null>;
@@ -155,10 +159,47 @@ export const kvOf = (env: Env): Kv | undefined => {
   return kv && typeof kv.get === "function" ? kv : undefined;
 };
 
-/** How long the store keeps a file: 7 days. */
-export const KEEP_S = 7 * 86_400;
-/** A kept file's key: yours (`up-…`), or a run's on a task (`run-<task>-…`). Nothing else is read. */
-export const FILE_REF = /^(?:up-[a-z0-9]{16,40}|run-\d{1,9}-[a-z0-9]{16,40})$/;
+/** An object in R2, as listed: its key, its size and its own metadata (strings). */
+export interface R2Item {
+  key: string;
+  size: number;
+  customMetadata?: Record<string, string>;
+}
+
+/**
+ * As much of R2 as the edge uses, bound as BUCKET (`shipify-web-files`, ADR 0069): the web chat's
+ * files, yours and a copy of a run's, each with its metadata. Listed by key, 1,000 a call.
+ */
+export interface Bucket {
+  head(key: string): Promise<R2Item | null>;
+  get(key: string): Promise<(R2Item & { body: ReadableStream }) | null>;
+  put(
+    key: string,
+    value: ReadableStream | ArrayBuffer | Blob | string,
+    options?: { customMetadata?: Record<string, string> },
+  ): Promise<unknown>;
+  list(options?: {
+    prefix?: string;
+    limit?: number;
+    cursor?: string;
+    include?: "customMetadata"[];
+  }): Promise<{ objects: R2Item[]; truncated: boolean; cursor?: string }>;
+  delete(keys: string | string[]): Promise<void>;
+}
+
+/** The bucket, when the Worker has it (an optional binding). */
+export const bucketOf = (env: Env): Bucket | undefined => {
+  const b = (env as unknown as { BUCKET?: Bucket }).BUCKET;
+  return b && typeof b.list === "function" ? b : undefined;
+};
+
+/**
+ * A kept file's key, which is its ref: `f-<time counted down>-<id>` (newest first in a list), or
+ * one from before R2, copied under its old key: yours (`up-…`), or a run's (`run-<task>-…`).
+ * Nothing else is read.
+ */
+export const FILE_REF =
+  /^(?:f-\d{13}-[a-z0-9]{16,40}|up-[a-z0-9]{16,40}|run-\d{1,9}-[a-z0-9]{16,40})$/;
 
 /** An object's fields, or null for anything else (a list, null, a string). */
 export const obj = (v: unknown) =>

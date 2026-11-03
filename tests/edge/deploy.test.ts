@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { EDGE_BUCKET } from "../../edge/setup/worker.ts";
 import { ROOT } from "../helpers.ts";
 
 type Step = {
@@ -93,5 +94,14 @@ describe("the edge's Worker (edge/wrangler.jsonc)", () => {
     });
     // No secret in its config, and no binding beyond its commit's default.
     expect(config.vars).toEqual({ GIT_SHA: "dev" });
+  });
+
+  // ADR 0069: the web chat's files in R2, which the deploy creates; KV keeps its binding's name, so
+  // the deploy finds the same namespace (model picks and devices) and makes no empty one.
+  it("binds the files' bucket as BUCKET, beside KV still bound as FILES", () => {
+    expect(config.r2_buckets).toEqual([{ binding: "BUCKET", bucket_name: "shipify-web-files" }]);
+    // The one `ship door check` and `door setup` ask Cloudflare for.
+    expect(EDGE_BUCKET).toBe("shipify-web-files");
+    expect(config.kv_namespaces).toEqual([{ binding: "FILES" }]);
   });
 });

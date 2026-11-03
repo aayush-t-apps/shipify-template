@@ -3,7 +3,9 @@
 A **tool** lets tasks read and change things in your own apps: **Notion** and **Drop**. You ask in a task
 as usual. The agent **looks** with a read-only key. Anything it would change, it **proposes** as
 exact calls, and the **box makes them** with the write key, after your `yes`: a tap of **Yes** in
-your chat, or the word on GitHub. No agent ever holds a write key.
+your chat, or the word on GitHub. A call that fits a [pre-approved form](#pre-approved-calls)
+needs no `yes`: your words are enough, and the box makes it in the same run (a new drop you ask
+for). No agent ever holds a write key.
 
 ```
 you: "mark Pay rent done in my Tasks"
@@ -52,8 +54,10 @@ run 2   no agent: the box makes exactly that call (write key) → ✓ with Notio
 
 ## Pre-approved calls
 
-Some calls are safe to make with no `yes` each time, like saving a note under one fixed page. List
-them under `pre` in the tool's `tools.json` entry. **Merging that change is the approval.**
+Some calls are safe to make with no `yes` each time, like saving a note under one fixed page, or
+making a new drop you asked for. List them under `pre` in the tool's `tools.json` entry. **Merging
+that change is the approval.** Then your words are enough: the box makes the call in the same run,
+and the reply says what it made. The rule is in the box, so it's the same for every agent.
 
 ```json
 "pre": [
@@ -64,9 +68,12 @@ them under `pre` in the tool's `tools.json` entry. **Merging that change is the 
 
 - **`fixed`:** fields that must have exactly these values. It always fixes the call's target (the
   page, the database): each act call names it in `args.<call>.target` (Notion's `create_page` is
-  `parent`, its `update_page` is `page`), and a form that doesn't fix it is refused.
-- **`caps`:** text fields allowed, each up to this many characters. Any other field makes it a
-  normal call.
+  `parent`, its `update_page` is `page`), and a form that doesn't fix it is refused. A call that
+  changes nothing there is, and only makes something new, says `"new": true` in its `args`
+  instead, and its form fixes no target (Drop's `publish`).
+- **`caps`:** text fields allowed, each up to this many characters.
+- **`any`:** fields allowed with any value the call takes (its own checks still apply). Any field
+  not fixed, capped or here makes it a normal call.
 - **`max`:** the most of this call one run may make.
 - **`after`** (ADR 0049): the tools whose look calls it still counts after, so a routine can read
   your Notion and write to it. With none, it counts only in a run that read nothing from outside.
@@ -93,15 +100,17 @@ Each act call can have a schema under `args` in its `tools.json` entry:
 - **`properties`:** the only fields it may have.
 - **`target`:** the field that says what the call changes (a page, a parent), which a
   pre-approved form must fix. Notion's: `create_page` → `parent`, `update_page` → `page`.
+- **`new`:** `true` for a call that changes nothing there is and only makes something new: its
+  pre-approved form has no target to fix. Drop's `publish`.
 - **`warn`:** what a field does that its value doesn't show, in a few words the list line says
   whenever the call has that field. Notion's `update_page` with `content`: "replaces the page's
   whole body".
 - **`files`:** the field that names files the task shared (a list of names, as its replies list
   them). Decide takes the call only when each one is a file the task shared before, or shares in
-  the same answer; a call that names a file of that answer always waits for your `yes`, as the box
-  shares the answer's files after it makes calls. When the box makes the call, it reads those files
-  from `shipify-files` with the run's read key into a folder of their own, gives the tool's server
-  that folder as `SHIPIFY_FILES`, and removes it after. Drop's `publish`: `files`.
+  the same answer: the box shares an answer's files before it makes the answer's pre-approved
+  calls. When the box makes the call, it reads those files from `shipify-files` with the run's
+  read key into a folder of their own, gives the tool's server that folder as `SHIPIFY_FILES`, and
+  removes it after. Drop's `publish` and `update`: `files`.
 - A proposal that doesn't fit is dropped before it's shown to you, and the reply says so. The
   server checks the values themselves when the call is made.
 
@@ -137,7 +146,7 @@ made as a drop, and you get the link: "make a PDF of this and share it, anyone c
 The tool calls Drop's `/api` behind Cloudflare Access, with an Access **service token**: a read
 token for looking, and a write token for changes, as Notion has two keys.
 
-1. **Drop is live** (0.2.0 or later), with its Access app on `/admin` and `/api` (the plan's
+1. **Drop is live** (0.3.0 or later), with its Access app on `/admin` and `/api` (the plan's
    setup).
 2. **Two service tokens.** In Cloudflare: **Zero Trust → Access → Service credentials → Create
    Service Token**. Name one **Shipify Drop read** and one **Shipify Drop write**. Copy each
@@ -185,48 +194,62 @@ policy, `pnpm ship add drop --new --yes`, then delete the old one. To take Drop 
 
 | Call | Kind | Arguments |
 |---|---|---|
-| `drop.list` | look | `query`: words in a title. Its drops (title, id, who may open it, PIN, people, expiry, requests to answer) and Drop's people |
-| `drop.publish` | act | `title` (up to 120 characters), `files` (names the task shared), `share`: `me`, `view`, `add`, `collect` or `people` (with `people`: `{"Mom": "view"}`, a name in Drop's People or an email), `expiry`: `1d`, `7d` (the default), `30d` or `keep`, `pin`: true for a PIN. Answers with its link, the PIN and its page in Drop's admin |
-| `drop.update` | act | `drop` (its id or link), and any of: `share` (`me` stops its link and every person's access), `people`, `remove` (people), `pin` (true: a new one; false: none), `new_link` (true: a new link, and the old one stops). Its title and expiry don't change |
+| `drop.list` | look | `query`: words in a title. Its drops (title, id, who may open it and its link, PIN, people, expiry, requests to answer), the space they use of Drop's cap, and Drop's people. A `query` that finds one drop shows its files (with their sizes), limits and who asks to open it |
+| `drop.publish` | act | `title` (up to 120 characters), `files` (names the task shared), `share`: `me`, `view`, `add`, `collect` or `people` (with `people`: `{"Mom": "view"}`, a name in Drop's People or an email), `expiry`: `1d`, `7d` (the default), `30d` or `keep`, `pin`: true for a PIN. Answers with its link, the PIN and its page in Drop's admin. Pre-approved (one a run): made with no `yes` when the run read nothing from outside, Drop's own `list` too |
+| `drop.update` | act | `drop` (its id or link), and any of: `title`, `expiry` (counted from now), `limits` (`{"mb": 1 to 2000, "files": 1 to 5000}`, either or both, as Drop's Details form takes them), `files` (names the task shared, added), `delete_files` (names in the drop), `share` (its link stays the same; `me`: only you can open it), `people`, `remove` (people), `requests` (who asked to open it, by email: `view`, `add` or `deny`, as Drop's Requests page answers them), `pin` (true: a new one; false: none), `new_link` (true: a new link, and the old one stops) |
 | `drop.revoke` | act | `drop`: the drop and its files are deleted, and its links stop |
 
-**A run's files:** your Yes comes in a later run, after the agent's folder is gone. So `files`
-names files the task shared in a reply (under **Files:**), and the box fetches them for the call
+**A run's files:** `files` names files the task shared in a reply (under **Files:**), in this
+answer or before: a Yes comes in a later run, after the agent's folder is gone, and the box
+shares an answer's files before it makes its pre-approved calls. The box fetches them for the call
 ([`files`](#argument-checks)): up to 20, each up to 25 MB, as a task shares them. Every file goes
-in, or no drop: if Drop refuses one, the tool deletes the new drop and says so.
+in, or no drop: if Drop refuses one, the tool deletes the new drop and says so. `update` adds
+files to a drop one by one, and if Drop refuses one, its answer says which went in.
 
 **What you can ask:**
 
 | You ask | What happens |
 |---|---|
 | "what drops do I have?" | an answer from Drop; nothing changes |
-| "make a PDF of this and share it, anyone can view, 7 days" | the run makes the file, shares it, and lists `drop.publish`; after your Yes the box makes the drop and replies with its link |
-| "share the Diwali photos with Mom and Dad, keep them" | the same, with `share: "people"` and `expiry: "keep"` |
+| "make a PDF of this and share it, anyone can view, 7 days" | the run makes the file and proposes `drop.publish`; the box makes the drop in the same run, with no `yes` (its pre-approved form), and the reply has its link |
+| "share the Diwali photos with Mom and Dad, keep them" | the same, with `share: "people"` and `expiry: "keep"`. A name Drop doesn't have is refused when the box makes it, and the reply says so |
+| "the link to the Ladakh drop" | an answer from Drop, with its link; nothing changes |
+| "add this PDF to the Ladakh drop and keep it 30 more days", "delete old.txt from it" | it looks, lists `drop.update` (with `files`, `expiry`, `delete_files`), and the box makes it after your Yes |
+| "let my aunt into the Diwali drop", "who asked for it?" | it looks (a `query` that finds one drop names who asked), lists `drop.update` with `requests`, and the box makes it after your Yes |
 | "a new link for the Ladakh drop", "revoke it" | it looks, lists `drop.update` or `drop.revoke`, and the box makes it after your Yes |
 
-**The API it uses:** Drop's own `/api` (0.2.0), the one its admin page calls, so the tool sends what
+**The API it uses:** Drop's own `/api` (0.3.0), the one its admin page calls, so the tool sends what
 that page sends (JSON, `no-store`). Each request carries `CF-Access-Client-Id` and
 `CF-Access-Client-Secret`; Access checks them and gives Drop its JWT. An error answers
-`{"error": "<code>", "message": "<plain words>"}`.
+`{"error": "<code>", "message": "<plain words>"}`. Checked on 2026-10-29 against the admin page
+live Drop serves, and its answers to the read token. The tool uses each request below as that page does. It leaves out what only a
+person does there: Drop's People (add someone, their home link, Easy or Sign-in), removing a link
+with no new one, and photo thumbnails, which the page makes in the browser (a drop the tool makes
+shows each photo whole).
 
 | Request | Body | Answer |
 |---|---|---|
-| `GET /api/drops` | | `{"drops": [Drop]}` |
-| `GET /api/drops/:address` | | `{"drop": Drop}`, with `files`, `people` and `limits` |
+| `GET /api/drops` | | `{"drops": [Drop], "usage": {"bytes", "capBytes"}}`: the space all drops use, of Drop's cap (`STORAGE_GB`) |
+| `GET /api/drops/:address` | | `{"drop": Drop}`, with `files` (`[{"name", "size", …}]`), `people` and `requests` (`[{"id", "email"}]`) |
 | `GET /api/people` | | `{"people": [{"id", "name", "email", "mode"}]}` |
 | `POST /api/drops` | `{"title", "gate", "expiry", "pin"?: "<6 digits>"}` | `{"drop": Drop, "link"?}` |
 | `PUT /api/drops/:address/files/:name` | the file's bytes | 201 `{"name"}`: a name already there gets a number |
-| `PATCH /api/drops/:address` | one of `{"gate"}`, `{"pin": "<6 digits>" or null}`, `{"people": {"<person id or email>": role or null}}` | `{"drop": Drop, "link"?}`; `null` takes a person off |
+| `DELETE /api/drops/:address/files/:name` | | the file is gone |
+| `PATCH /api/drops/:address` | one of `{"gate"}`, `{"pin": "<6 digits>" or null}`, `{"people": {"<person id or email>": role or null}}`, `{"title", "limits": {"mb", "files"}, "expiry"?}` | `{"drop": Drop, "link"?}`; `null` takes a person off; `expiry` counts from now |
 | `POST /api/drops/:address/links` | `{"role"}` | `{"link"}`; the old link stops |
+| `POST /api/requests/:address.:id/allow` · `/deny` | allow: `{"role"}` | the one who asked is on the drop with that role, or turned down |
 | `DELETE /api/drops/:address` | | the drop and its files are gone |
 
-- **`Drop`:** `{"address", "title", "gate", "pin": bool, "expires": ISO time or null,
-  "peopleCount", "requestCount", "link": {"role"} or null}`. A drop has one link at most, and Drop
-  keeps only its hash: a `link` (a path, `/d/<address>.<secret>`) shows once, when it's made.
+- **`Drop`:** `{"address", "title", "gate", "pin": bool, "expires": ISO time or null, "expired":
+  bool, "peopleCount", "requestCount", "limits": {"mb", "files"}, "link": {"role", "path"} or
+  null}`. A drop has one link at most,
+  and Drop keeps it: `path` is `/d/<address>.<secret>`. A link made before 0.3.0 has no `path`
+  (Drop kept only its hash): a new link gives one, and the old one stops.
 - **Words:** `gate` is `me`, `view`, `add`, `collect` or `people`, the tool's `share` as it is;
   `expiry` is `1d`, `7d`, `30d` or `keep`. A link's role follows its gate: `view`, `add`, or `send`
   for `collect`. The people on a drop open `/d/<address>` and sign in, or find it on their home
-  page. A gate that gives more makes a new link, so a link already sent never gains a right.
+  page. A change of gate keeps the link, so from `view` to `add` a link already sent can add
+  files too: a new link stops it.
 - **`pin: true`:** the tool makes a random 6-digit PIN, sends it, and its answer gives it once;
   a new one stops the old.
 - **What the tool says to each error:** Access's redirect to its sign-in page (a token it doesn't

@@ -1,5 +1,6 @@
-// Workers KV, in memory, for the web chat's tests: values with their metadata and expiry, listed
-// by prefix as KV lists them. `down` makes every call fail, as a store over its limits does.
+// Workers KV, in memory, for the edge's tests (model picks, devices, and the files the switch to R2
+// copies once): values with their metadata and expiry, listed by prefix as KV lists them. `down`
+// makes every call fail, as a store over its limits does.
 import type { Kv } from "../../edge/src/env.ts";
 
 export function memoryKv(now: () => number = Date.now) {

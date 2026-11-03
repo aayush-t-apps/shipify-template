@@ -157,7 +157,8 @@ if (process.env.FAKE_WORK === "slow" && !catchUp) {
     process.stdout.write(
       `${JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "WebFetch", input: { url: "https://example.com" } }] } })}\n`,
     );
-  const pr = { kind: "closes", title: "Make it pass", body: "Why" };
+  // FAKE_PR_KIND: the kind it asks for (closes when unset).
+  const pr = { kind: process.env.FAKE_PR_KIND ?? "closes", title: "Make it pass", body: "Why" };
   const text = catchUp ? "Covered both." : resumed ? "Fixed it." : "Made it.";
   // FAKE_WORK=question: it stops mid-change to ask you, with an edit it hasn't committed and no PR
   // (ADR 0041).
@@ -192,6 +193,8 @@ const out = result
   : next
     ? join(process.env.HOME ?? ".", "..", "out")
     : join(process.cwd(), "..", "out");
+// A talk run's prompt, kept for the test to read (a work run keeps its own above).
+if (result && !process.env.FAKE_WORK) writeFileSync(join(out, "talk-prompt.md"), prompt);
 writeFileSync(join(out, next ? "next-prompt.md" : "prompt.md"), prompt);
 writeFileSync(join(out, "argv.json"), JSON.stringify(process.argv.slice(2)));
 // The keys it was handed (names only), and where it ran: what a read run holds (ADR 0044).

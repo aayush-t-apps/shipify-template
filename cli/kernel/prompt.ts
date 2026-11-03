@@ -35,7 +35,8 @@ export interface PromptInput {
   profile: Profile;
   project?: string;
   state: TaskState;
-  conversation: { who: string; at: string; text: string; isNew: boolean }[];
+  /** The task's messages, oldest first; each by its comment's id, which `<ship> task read` takes. */
+  conversation: { id?: number; who: string; at: string; text: string; isNew: boolean }[];
   /** Where things are, on this box, for this run. */
   paths: {
     work: string;
@@ -58,13 +59,18 @@ export interface PromptInput {
   repos?: { name: string; repo: string }[];
   notes: string[];
   notebook?: string;
+  /** A project's pages (ADR 0069), for a run in it: data, in a section of their own. */
+  projectPages?: string;
   tools?: string;
   playbook: string;
   /** A recipe's run (ADR 0032): its body, as merged on main, is the job. */
   recipe?: { name: string; body: string };
   /** What this run thinks with, as the box chose it: "Claude Code · sonnet · medium (Auto)". */
   thinksWith?: string;
-  /** A split task's section (ADR 0066): a part's parent and siblings, or a parent's parts. */
+  /**
+   * A split task's section (ADR 0066): a part's parent and siblings, or a parent's parts; after
+   * the project it's in, when it's in one (ADR 0069).
+   */
   family?: string[];
 }
 
@@ -108,15 +114,71 @@ const repeatSaid = (r: NonNullable<TaskState["repeat"]>) =>
     r.paused ? " (paused)" : "",
   ].join("");
 
+/** Past this much conversation (ADR 0069 section 8, about 10k tokens), older messages are cut. */
+export const CUT_AT = 40 * 1024;
+/** The newest messages a cut conversation keeps whole. */
+export const KEPT_WHOLE = 8;
+/** The most of an older message's first line a cut conversation keeps. */
+const FIRST_LINE = 100;
+
+type Message = PromptInput["conversation"][number];
+const whole = (m: Message) =>
+  `- ${m.isNew ? "**NEW** " : ""}${m.who}, ${m.at}:\n${m.text.replace(/^/gm, "  ")}`;
+/** An older message as one line: its date, who wrote it, its first line (cut short), its id. */
+const oneLine = (m: Message) => {
+  const first = m.text.trim().split("\n")[0]?.trim() ?? "";
+  const cut = first.length > FIRST_LINE ? `${first.slice(0, FIRST_LINE - 1).trimEnd()}…` : first;
+  return `- ${m.at.slice(0, 16).replace("T", " ")}, ${m.who}${m.id ? ` (id ${m.id})` : ""}: ${cut}`;
+};
+
+/**
+ * The conversation as the prompt shows it (ADR 0069 section 8): whole, until it's over CUT_AT. Then
+ * the newest KEPT_WHOLE messages, and every NEW one, stay whole, and each older one is one line, read
+ * whole on demand (`<ship> task read <id>`). Every word stays on GitHub. A run with no command to
+ * read one with (`read` unset: a read run, ADR 0044) gets it all whole.
+ */
+function conversationOf(
+  c: PromptInput["conversation"],
+  o: { read?: string; progress?: boolean } = {},
+): { text: string; cut: boolean } {
+  if (!c.length) return { text: "- (no messages yet)", cut: false };
+  const all = c.map(whole).join("\n");
+  if (!o.read || Buffer.byteLength(all) <= CUT_AT) return { text: all, cut: false };
+  const from = c.length - KEPT_WHOLE;
+  return {
+    text: [
+      `This thread is long, so each message before the newest ${KEPT_WHOLE} is one line: when, who, its first line and its id.${o.progress ? " The Progress below says where the work stands." : ""} \`${o.read} task read <id>\` prints one whole: read the ones you need, not all.`,
+      "",
+      ...c.map((m, i) => (i >= from || m.isNew ? whole(m) : oneLine(m))),
+    ].join("\n"),
+    cut: true,
+  };
+}
+
+/**
+ * The files earlier runs shared on Shipify's `shipify-files` branch, newest last, as the task's
+ * status keeps them (decide's SHARED_KEPT): a later run reads one when it needs it.
+ */
+function earlierFiles(repo: string, shared: TaskState["shared"]): string {
+  const files = Object.entries(shared ?? {});
+  if (!files.length) return "";
+  return [
+    "",
+    "## Files earlier runs made",
+    "",
+    `Shared with the owner, newest last. To read one: \`gh api "repos/${repo}/contents/<path>?ref=shipify-files" -H "Accept: application/vnd.github.raw"\`, its path being what follows \`blob/shipify-files/\` in its link.`,
+    "",
+    ...files.map(([name, f]) => `- ${name}: ${f.url}`),
+  ].join("\n");
+}
+
 export function buildPrompt(p: PromptInput): string {
   const asks = asksOf(p);
-  const convo = p.conversation.length
-    ? p.conversation
-        .map(
-          (m) => `- ${m.isNew ? "**NEW** " : ""}${m.who}, ${m.at}:\n${m.text.replace(/^/gm, "  ")}`,
-        )
-        .join("\n")
-    : "- (no messages yet)";
+  // A read run has no command to read an older message with (ADR 0044): its thread stays whole.
+  const convo = conversationOf(p.conversation, {
+    ...(p.profile === "read" ? {} : { read: p.paths.ship }),
+    progress: Boolean(p.state.notes?.trim()),
+  }).text;
   // A `new:` task's planning is in Shipify; once its plan is built, its runs work on the project.
   const planning = p.parsed.kind !== "new" || !p.project || p.project === PLATFORM;
   const kind =
@@ -181,14 +243,20 @@ export function buildPrompt(p: PromptInput): string {
           `- Shipify (read-only: its skills, its tools, its playbooks): \`${p.paths.shipify}\`.`,
           `- Shipify's CLI for local commands (\`<ship>\` in the playbook): \`${p.paths.ship}\`.`,
           `- Files the owner sent, and files you make for them: \`${p.paths.files}\` (read) and \`${p.paths.out}\` (write).`,
-          `- Your handoff for the next run: keep \`${p.paths.out}/handoff.md\` current as you work (Goal, Done, Next, Decisions, Open). The box keeps it however this run ends, even if it's stopped.`,
+          p.state.notes?.trim()
+            ? `- Your handoff for the next run: \`${p.paths.out}/handoff.md\` is seeded with the last one (the Progress below): edit it in place as you work, keeping what still holds (Goal, Done, Next, Decisions, Open). The box keeps it however this run ends, even if it's stopped.`
+            : `- Your handoff for the next run: keep \`${p.paths.out}/handoff.md\` current as you work (Goal, Done, Next, Decisions, Open). The box keeps it however this run ends, even if it's stopped.`,
         ]),
     p.state.prs?.length
       ? `- PRs this task opened:\n${p.state.prs.map((u) => `  - ${u}`).join("\n")}`
       : "",
-    p.state.notes ? `\n## Your notes from the last run\n\n${p.state.notes.trim()}` : "",
+    p.state.notes?.trim() ? `\n## Progress: the last run's handoff\n\n${p.state.notes.trim()}` : "",
+    // The files earlier runs shared (ADR 0069 section 13), as the status keeps them: a run with
+    // commands and Shipify's key reads one from the branch; none is fetched up front.
+    p.profile !== "read" && !p.account ? earlierFiles(p.repo, p.state.shared) : "",
     p.notes.length ? `\n## Notes from the box\n\n${p.notes.map((x) => `- ${x}`).join("\n")}` : "",
     p.notebook ? `\n## The notebook\n\n${p.notebook}` : "",
+    p.projectPages ? `\n## The project's pages\n\n${p.projectPages}` : "",
     p.tools ? `\n## Tools (look only)\n\n${p.tools}` : "",
     p.ownRules
       ? [
@@ -196,7 +264,7 @@ export function buildPrompt(p: PromptInput): string {
           "## Its own rules first",
           "",
           `\`${p.project}\` isn't a Shipify project, so work on it its own way, as the playbook's "A repo that`,
-          "keeps its own rules\" says: its own rules first, then Shipify's. Add nothing of Shipify's to it",
+          "keeps its own rules\" and its `own-rules-repo` skill say: its own rules first, then Shipify's. Add nothing of Shipify's to it",
           "unless the owner asks. The box runs no project checks on it, and refuses a change to its workflow",
           "files: its own CI checks the PR.",
           ...(p.base
@@ -275,6 +343,11 @@ export function buildPrompt(p: PromptInput): string {
           "  job is more than one PR (the playbook's \"When to split\"): listed for the owner's `yes`, then each",
           "  opens as a sub-task, and nothing starts. It comes alone: no `pr`, `work` or `calls` with it.",
           '- `notes`: `[{"topic": "Preferences", "line": "…"}]`: the owner\'s own words to keep.',
+          ...(p.projectPages
+            ? [
+                '- `pages`: `[{"page": "<topic>", "file": "<file>"}]`: a project page\'s whole new text, in a file in your out folder (5 at most); the box writes it (`skills/knowledge`).',
+              ]
+            : []),
           '- `repeat`: `{"when": "every Monday at 9", "kind": "reminder" | "job" | "check", "text": "…"}`; once, then it ends: `"when": "in 15 minutes"` (or "at 17:30", "tomorrow at 9"); once something happens (an errand): `"when": "when links#12\'s checks finish"` (or "when #12 merges", "when it\'s deployed").',
           "- `files`: names of files you put in your out folder for the owner (at most 10).",
           "- `read_outside`: true when you read a web page (the box counts your tools' reads itself).",

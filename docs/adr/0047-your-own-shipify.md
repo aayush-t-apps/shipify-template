@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #285) and built (#286–#292, #295, #299, #300; the owner's go on 2026-10-09); see [As built](#as-built-2026-10-09)
+status: accepted (merged #285) and built (#286–#292, #295, #299, #300; the owner's go on 2026-10-09); see [As built](#as-built-2026-10-09); amended by 0069 (the notebook's three reaches: always, a project's, on demand)
 date: 2026-10-09
 amends: 0012 (a copy on a user account too), 0024 (the edge's address: workers.dev by default, your domain optional), 0044 and 0045 (repos and projects as one list with two kinds; a repo's own notes on any account), product.md (road step 2, designed here)
 ---

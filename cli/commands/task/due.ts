@@ -1,6 +1,7 @@
 // The due run (ADR 0019, ADR 0031): what's due, started as each task's own run. A task's comments
-// and status are its own run's (task.yml, in its group); here only a quiet day's close (ADR 0040)
-// is written on one. It reads every repeating, answered or deploying task, and dispatches the run
+// and status are its own run's (task.yml, in its group); here only a part's quiet-day close (ADR
+// 0040, 0069) is written on one. It reads every repeating, waiting or deploying task and answered
+// part, and dispatches the run
 // of each one whose time has come; it keeps "Coming up" on the status task, and the apps list the
 // edge reads.
 
@@ -31,7 +32,7 @@ const BUSY_AGAIN_MS = 10 * 60_000;
 
 export interface Due {
   /**
-   * Every repeat and quiet close waiting for its time, for the status task. The soonest is the
+   * Every repeat waiting for its time, for the status task. The soonest is the
    * watch's next due time (setUpcoming), so none is ever a time already past.
    */
   upcoming: { n: number; title: string; next: string; every?: string }[];
@@ -68,13 +69,14 @@ export function taskDue(at = new Date()): Result<Due> {
       (i.user.login === RECORD_WRITER &&
         i.labels.some((l) => l.name === RECIPE_LABEL.name || l.name === SUB_TASK_LABEL)));
   const listed = new Map<number, Issue>();
-  for (const label of [
-    REPEATS_LABEL.name,
-    TASK_LABELS.answered.name,
-    TASK_LABELS["needs-you"].name,
+  // An answered task is listed only when it's a split's part, the one that closes after a quiet
+  // day (ADR 0069): the rest stay open, so these reads don't grow with them.
+  for (const labels of [
+    [REPEATS_LABEL.name],
+    [TASK_LABELS.answered.name, SUB_TASK_LABEL],
+    [TASK_LABELS["needs-you"].name],
   ])
-    for (const i of tryOr(() => rec().issues({ labels: [label] }), []))
-      if (mine(i)) listed.set(i.number, i);
+    for (const i of tryOr(() => rec().issues({ labels }), [])) if (mine(i)) listed.set(i.number, i);
   // A merge closes its task: a deploy, and an errand (ADR 0054), are followed open or closed.
   for (const label of [DEPLOYING.name, WAITING_LABEL.name])
     for (const i of tryOr(() => rec().issues({ labels: [label], state: "all", newest: 30 }), []))
@@ -86,8 +88,8 @@ export function taskDue(at = new Date()): Result<Due> {
     const r = queue().dispatch("task.yml", { issue: String(i.number), job: "run" });
     events.push(r.ok ? `started #${i.number} (${why})` : `couldn't start #${i.number}: ${r.error}`);
   };
-  // A quiet day's close, made here (ADR 0040): the task closed and its state labels off, as the
-  // door closes one; no run for it. Its status catches up when a run next reads the task.
+  // A part's close after a quiet day, made here (ADR 0040, 0069): the task closed and its state
+  // labels off, as the door closes one. Its status catches up when its run next reads the task.
   const close = (i: Issue) => {
     const done = tryOr(() => {
       rec().updateIssue(i.number, { state: "closed", state_reason: "completed" });
@@ -98,6 +100,7 @@ export function taskDue(at = new Date()): Result<Due> {
     events.push(
       done ? `closed #${i.number} (a quiet day)` : `couldn't close #${i.number}: next time`,
     );
+    return done;
   };
 
   for (const i of listed.values()) {
@@ -165,19 +168,22 @@ export function taskDue(at = new Date()): Result<Due> {
       continue;
     }
     if (busy.has(i.number)) continue;
-    // An answered task closes after a quiet day (once: a closed one is listed for its deploy).
-    if (st.phase === "answered" && st.closes && i.state === "open") {
-      if (Date.parse(st.closes) <= now) close(i);
-      else {
-        upcoming.push({ n: i.number, title: i.title, next: st.closes, every: "closes if quiet" });
-      }
+    // An answered part closes after a quiet day (ADR 0069: no other task does), once: a closed one
+    // is listed for its deploy. Its run follows (ADR 0066), with no agent: its close starts what
+    // waited for it, as a merge's does, since the box's own close starts no run. Its time isn't
+    // listed under "Coming up": nothing to remember.
+    const part = i.labels.some((l) => l.name === SUB_TASK_LABEL);
+    if (part && st.phase === "answered" && st.closes && i.state === "open") {
+      if (Date.parse(st.closes) <= now && close(i)) start(i, "a part closed");
       continue;
     }
-    // A merged PR's deploy: its run is started once the pipeline says up or failed, or it's late.
+    // A merged PR's deploy: its run is started once the pipeline says up or failed, or it's late,
+    // and once to tell a run GitHub holds for your approval.
     if (st.deploy) {
       const d = deployState(st.deploy, process.env.SHIPIFY_READ_TOKEN || undefined);
       const late = now - Date.parse(st.deploy.since) > GIVE_UP_MS;
-      if (d.state === "up" || d.state === "failed" || late || d.state === "unreadable")
+      const held = d.state === "held" && d.run !== st.deploy.held;
+      if (d.state === "up" || d.state === "failed" || held || late || d.state === "unreadable")
         start(i, "its deploy");
       continue;
     }

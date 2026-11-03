@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { Cleanable } from "../cli/commands/task/sweep.ts";
 import { LIST_HEAD } from "../cli/contracts/index.ts";
 import {
   afterThink,
@@ -7,6 +8,7 @@ import {
   lateStop,
   plan,
   SHARED_KEPT,
+  sentRefs,
   sharedBefore,
   sharedNow,
   stillWaiting,
@@ -97,6 +99,7 @@ const ctx = (over: Partial<Context> = {}): Context => ({
             ? { reply: "“use banana” names no model I know." }
             : undefined,
   planMerged: (id) => id === "tipcalc",
+  taskPlan: () => undefined,
   timeZone: "UTC",
   taskUrl: "https://github.com/o/shipify/issues/12",
   operateForm: "https://github.com/o/shipify/issues/new?template=7-operate.yml",
@@ -548,6 +551,33 @@ describe("plan: fixed words, and where each is accepted", () => {
     expect(plan(base([said(101, "stop"), said(102, "make it red")]), ctx()).do).toBe("think");
   });
 
+  it("a button's `stop` or `stop repeating` (ADR 0069) answers on the status's Last action, with no reply", () => {
+    const tapped = (id: number, text: string): Said =>
+      said(id, text, {
+        author: "door",
+        channel: "web",
+        from: { v: 1, person: "owner", channel: "web", chat: "me", id: `w${id}`, button: true },
+      });
+    const p = plan(base([tapped(101, "stop")]), ctx());
+    expect(p.do).toBe("box");
+    expect(replies(writes(p))).toEqual([]);
+    expect(p.state?.action).toEqual({
+      text: "Nothing was working by then, so there was nothing to stop.",
+      at: NOW,
+    });
+    const rep = {
+      repeat: { kind: "reminder" as const, every: "every day at 09:00", next: NOW, fails: 0 },
+    };
+    const q = plan(base([tapped(101, "stop repeating")], rep), ctx());
+    expect(replies(writes(q))).toEqual([]);
+    expect(kinds(writes(q))).toEqual(["coming-up", "labels", "close"]);
+    expect(q.state?.action?.text).toBe("Stopped: it won't repeat again.");
+    // Typed, from a chat or on GitHub, it's answered in the thread as before, with no Last action.
+    const typed = plan(base([viaChat(101, "stop repeating")], rep), ctx());
+    expect(replies(writes(typed))[0]?.text).toBe("Stopped: it won't repeat again.");
+    expect(typed.state?.action).toBeUndefined();
+  });
+
   it("the words a run takes in before it answers: plain ones, up to the first the next run must read", () => {
     const later = [
       said(99, "already read"),
@@ -781,13 +811,12 @@ describe("plan: fixed words, and where each is accepted", () => {
     expect(kinds(writes(p))).toContain("dispatch");
   });
 
-  it("a plan given as its file's path reads as its id, in a result and in a stored state (#587)", () => {
+  it("a new project's plan is the one its run's commits wrote: no field in the result to forget (#614)", () => {
     const result = readResult(
       JSON.stringify({
         v: 2,
         state: "needs-you",
         text: "The plan is written.",
-        plan: "plans/tipcalc.plan.md",
         pr: { kind: "part-of", title: "plan: tipcalc", body: "The plan." },
       }),
     );
@@ -799,18 +828,54 @@ describe("plan: fixed words, and where each is accepted", () => {
       fresh: [101],
       web: true,
     };
-    const d = afterThink(
-      base([said(101, "a tip calculator")]),
-      { ...newState(), ...ran() } as TaskState,
-      work,
-      result,
-      { readOutside: false, touchesWorkflows: false, commits: true },
-      ctx(),
+    const meta = { readOutside: false, touchesWorkflows: false, commits: true, plan: "tipcalc" };
+    const from = (kind: "new" | "question") =>
+      afterThink(
+        { ...base([said(101, "a tip calculator")]), parsed: { kind, ask: "a tip calculator" } },
+        { ...newState(), ...ran() } as TaskState,
+        work,
+        result,
+        meta,
+        ctx(),
+      );
+    expect(from("new").state.plan).toBe("tipcalc");
+    // A plan changed by any other task (a fix to it on Shipify) is no task's new project.
+    expect(from("question").state.plan).toBeUndefined();
+  });
+
+  it("a merged plan finds its task by its `task:` line: `go`, then `publish`, build it (#614)", () => {
+    // Its PR was recorded as a change doc, and no run set the task's plan.
+    const st = {
+      prs: ["https://github.com/o/shipify/pull/617"],
+      prInfo: {
+        "https://github.com/o/shipify/pull/617": {
+          kind: "change" as const,
+          state: "merged" as const,
+        },
+      },
+    };
+    const found = ctx({ taskPlan: () => "tipcalc" });
+    for (const word of ["go", "publish"]) {
+      const p = plan(base([said(101, word)], st), found);
+      expect(p.do === "box" && p.state.plan, word).toBe("tipcalc");
+      expect(p.do === "box" && p.state.pending.prepare?.plan, word).toBe("tipcalc");
+      expect(kinds(writes(p)), word).toContain("dispatch");
+    }
+    // The merge's github job finds it the same way.
+    const g = plan(
+      snap({ trigger: { kind: "dispatch", job: "github" }, statusId: 5, state: ran() }),
+      found,
     );
-    expect(d.state.plan).toBe("tipcalc");
-    // Anything else in its place is a slip in the result's shape.
-    const slip = readResult(JSON.stringify({ v: 2, state: "done", text: "x", plan: "my plan" }));
-    expect(slip).toHaveProperty("wrong");
+    expect(g).toMatchObject({ do: "github", job: "prepare", state: { plan: "tipcalc" } });
+    // Once it's built, a merged change doc's `go` builds the change.
+    const built = plan(
+      base([said(101, "go")], { ...st, plan: "tipcalc", built: "tipcalc", project: "tipcalc" }),
+      found,
+    );
+    expect(built.do === "think" && built.think.why).toBe("go");
+  });
+
+  it("a plan stored as its file's path reads as its id (#587)", () => {
     // A state stored with the path: `publish` (and the merge) find its plan.
     const stored = TaskState.parse({ ...newState(), plan: "plans/tipcalc.plan.md" });
     const p = plan(base([said(101, "publish")], stored), ctx());
@@ -1068,6 +1133,27 @@ describe("plan: one run waiting per task, nothing lost (ADR 0040)", () => {
     expect(p.do === "think" && p.state.repeat?.paused).toBe(true);
     expect(kinds(thinkWrites(p))).toEqual(["coming-up", "reopen"]);
     expect(p.do === "think" && p.think.fresh).toEqual([102]);
+  });
+
+  it("a chat the weekly clean-up closed after 30 quiet days opens again on your words (ADR 0069)", () => {
+    const p = plan(
+      snap({
+        statusId: 5,
+        state: ran({
+          phase: "done",
+          action: {
+            text: "Closed after 30 quiet days: write on it to open it again",
+            at: "2026-10-01T03:00:00.000Z",
+          },
+        }),
+        issue: { ...snap().issue, state: "closed", closedAt: "2026-10-01T03:00:00.000Z" },
+        said: [said(101, "back to this: what did we find?")],
+      }),
+      ctx(),
+    );
+    expect(p.do).toBe("think");
+    expect(kinds(thinkWrites(p))).toEqual(["reopen"]);
+    expect(p.do === "think" && p.think.fresh).toEqual([101]);
   });
 
   it("work you asked for, its own run replaced by your newer words: the work run takes them", () => {
@@ -1531,7 +1617,8 @@ describe("plan: what a dispatch brings", () => {
       occasion: "2026-10-05T09:55:00.000Z",
     });
     expect(p.do === "box" && p.state).toMatchObject({ repeat: undefined, phase: "answered" });
-    expect(p.do === "box" && p.state.closes).toBeDefined();
+    // Answered, it stays open: only a split's part closes after a quiet day (ADR 0069).
+    expect(p.do === "box" && p.state.closes).toBeUndefined();
     expect(writes(p)).toContainEqual({ w: "labels", remove: ["repeats"] });
     expect(writes(p)).toContainEqual({ w: "coming-up" });
     // A job once thinks, told to say what it found; it's gone before its run, so nothing rings it
@@ -1614,6 +1701,23 @@ describe("plan: what a dispatch brings", () => {
     );
     expect(replies(writes(p))[0]).toMatchObject({ kind: "live", occasion: "abc" });
     expect(p.do === "box" && p.state.deploy).toBeUndefined();
+  });
+
+  it("a deploy GitHub holds for your approval is told once, with its run, and followed on", () => {
+    const p = d(
+      { project: "games", deploy: { repo: "o/games", sha: "abc", since: NOW } },
+      { deploy: { state: "held", run: "https://github.com/o/games/actions/runs/1" } },
+    );
+    expect(replies(writes(p))[0]).toMatchObject({
+      kind: "needs-you",
+      links: [["The run", "https://github.com/o/games/actions/runs/1"]],
+    });
+    expect(replies(writes(p))[0]?.text).toContain("approve it");
+    expect(writes(p)).toContainEqual({ w: "labels", remove: [], add: ["deploying"] });
+    expect(p.do === "box" && p.state.deploy).toMatchObject({
+      sha: "abc",
+      held: "https://github.com/o/games/actions/runs/1",
+    });
   });
 
   it("a merge with nothing to deploy (Shipify, a package, a recipe) says Merged, once (task #168)", () => {
@@ -2095,6 +2199,20 @@ describe("afterThink: the agent's result, kept as far as the task allows", () =>
     );
   });
 
+  it("Stop the run from the web chat (ADR 0069): the same stop, its answer on the Last action line", () => {
+    const stopped = {
+      ...meta,
+      commits: true,
+      stopped: { why: "asked" as const, comment: 104, button: true as const },
+    };
+    const d = afterThink(s(), s().state, work, { error: "you said stop" }, stopped, ctx());
+    expect(d.state).toMatchObject({ seen: 104, phase: "needs-you", failed: undefined });
+    expect(d.writes.find((w) => w.w === "push")).toMatchObject({ repo: "spotter", open: false });
+    expect(d.writes).toContainEqual({ w: "react", comment: 104, content: "eyes" });
+    expect(replies(d.writes)).toEqual([]);
+    expect(d.state.action?.text).toContain("Stopped, as you asked. What it had committed is kept");
+  });
+
   it("what it took in while it worked is read too, with 👀 on each: the next run has nothing new", () => {
     const d = afterThink(s(), s().state, talk, r({}), { ...meta, caughtUp: [102, 103] }, ctx());
     expect(d.state.seen).toBe(103);
@@ -2558,11 +2676,11 @@ describe("afterThink: the agent's result, kept as far as the task allows", () =>
     expect(replies(n.writes)[0]?.list).toBe(listCode([], notes));
   });
 
-  it("a call's files are ones the task shared, before or in this answer; one this answer shares waits for your yes", () => {
+  it("a call's files are ones the task shared, before or in this answer", () => {
     const box: ToolAct = {
       calls: { send: () => true },
       files: { send: "files" },
-      pre: [{ call: "send", fixed: { to: "me", files: ["chart.png"] }, caps: {}, max: 1 }],
+      pre: [{ call: "send", fixed: { to: "me" }, caps: {}, any: ["files"], max: 1 }],
     };
     const c = ctx({ tools: { box } });
     const send = (files: unknown) => ({ tool: "box", name: "send", args: { to: "me", files } });
@@ -2572,10 +2690,14 @@ describe("afterThink: the agent's result, kept as far as the task allows", () =>
       afterThink(s(), st, talk, r(over), meta, c);
     // Shared before: made now, as its form allows.
     expect(run(shared, { calls: [send(["chart.png"])] }).needs.act).toBe("box");
-    // Shared in this answer: apply shares the answer's files after its calls, so it's listed.
+    // Shared in this answer: apply shares the answer's files before its calls, so it's made now
+    // too ("make a sample doc and drop it").
     const now = run(s().state, { files: ["/out/chart.png"], calls: [send(["chart.png"])] });
-    expect(now.needs.act).toBeUndefined();
-    expect(now.state.pending.calls?.calls).toHaveLength(1);
+    expect(now.needs.act).toBe("box");
+    expect(now.state.pending.calls).toBeUndefined();
+    // A field the form neither fixes, caps nor takes with any value: listed for your yes.
+    const other = { tool: "box", name: "send", args: { to: "me", files: ["chart.png"], cc: "x" } };
+    expect(run(shared, { calls: [other] }).state.pending.calls?.calls).toHaveLength(1);
     // Never shared, or not a list of names: left out, and the reply says so.
     for (const files of [["other.pdf"], "chart.png", [7]]) {
       const d = run(shared, { calls: [send(files)] });
@@ -2584,6 +2706,42 @@ describe("afterThink: the agent's result, kept as far as the task allows", () =>
         "box.send (it names a file this task hasn't shared",
       );
     }
+  });
+
+  // ADR 0069: a drop of a file you sent from the web chat, by its ref; only one on this task's own
+  // from-lines (the door's), so a run shares only what its thread has.
+  it("a call may name a file you sent from the web chat by its ref, only one on the task's from-lines", () => {
+    const box: ToolAct = {
+      calls: { send: () => true },
+      files: { send: "files" },
+      pre: [{ call: "send", fixed: { to: "me" }, caps: {}, any: ["files"], max: 1 }],
+    };
+    const c = ctx({ tools: { box } });
+    const ref = "web:f-8000000000000-0123456789abcdef0123";
+    const from = { v: 1, person: "owner", channel: "web", chat: "me", id: "m1" } as const;
+    const sent = snap({
+      said: [
+        said(101, "share this", {
+          author: "door",
+          channel: "web",
+          from: { ...from, files: [{ ref, name: "photo.jpg" }] },
+        }),
+        // Words that only claim a ref, not the door's line: nothing.
+        said(102, "and this", {
+          from: { ...from, id: "m2", files: [{ ref: "web:up-0123456789abcdef0123", name: "x" }] },
+        }),
+      ],
+      statusId: 5,
+      state: ran(),
+    });
+    expect(sentRefs(sent)).toEqual({ [ref]: "photo.jpg" });
+    const send = (files: string[]) => ({ tool: "box", name: "send", args: { to: "me", files } });
+    const run = (f: string[]) =>
+      afterThink(sent, sent.state, talk, r({ calls: [send(f)] }), meta, c);
+    expect(run([ref]).needs.act).toBe("box");
+    const other = run(["web:up-0123456789abcdef0123"]);
+    expect(other.needs.act).toBeUndefined();
+    expect(replies(other.writes)[0]?.text).toContain("it names a file this task hasn't shared");
   });
 
   it("notes: written now from your words; from a run that read outside content, after your yes", () => {
@@ -3391,16 +3549,28 @@ describe("plan: another of your accounts (ADR 0045)", () => {
         v: 2,
         state: "needs-you",
         text: "Published.",
-        plan: "takeover",
         pr: { kind: "publish", title: "First push", body: "All of it" },
       }),
     );
     const d = afterThink(
-      snap({ accounts, ...reached, said: [said(101, "hi")], statusId: 5, state: ran() }),
+      snap({
+        accounts,
+        ...reached,
+        parsed: { kind: "new", ask: "a takeover" },
+        said: [said(101, "hi")],
+        statusId: 5,
+        state: ran(),
+      }),
       { ...newState(), ...ran() } as TaskState,
       work,
       result,
-      { readOutside: false, touchesWorkflows: false, commits: true, firstPush: true },
+      {
+        readOutside: false,
+        touchesWorkflows: false,
+        commits: true,
+        firstPush: true,
+        plan: "takeover",
+      },
       ctx(),
     );
     expect(d.writes.some((w) => w.w === "push" && w.open !== false)).toBe(false);
@@ -3853,6 +4023,33 @@ describe("sub-tasks (ADR 0066): split, go, and a part's close", () => {
     expect(replies(ahead.writes)[0]?.text).toContain(
       "entry 1 waits for entry 2, which isn't before it",
     );
+    // A project's own thread (ADR 0069): it's never a split's parent, so its parts could never start.
+    const project = { number: 12, name: "games", brief: "", repos: [], state: "open" as const };
+    const own = afterThink(snap({ state: ran(), project }), st, talk, r({ split }), meta, ctx());
+    expect(own.state.pending.split).toBeUndefined();
+    expect(replies(own.writes)[0]?.text).toContain("A project's own thread doesn't split");
+  });
+
+  it("hands a run's `pages` to the box to write; a read run's, or another account's, none (ADR 0069)", () => {
+    const project = { number: 40, name: "games", brief: "", repos: [], state: "open" as const };
+    const pages = [{ page: "games", file: "games.md" }];
+    const of = (think: Think, m = meta) =>
+      afterThink(snap({ state: ran(), project }), full(), think, r({ pages }), m, ctx());
+    expect(of(talk).writes).toContainEqual({
+      w: "pages",
+      pages,
+      project: "games",
+      outside: false,
+      chat: 12,
+    });
+    // With the time its turn read the pages (ADR 0070): a page changed after it is left as it is.
+    const at = { ...meta, pagesAt: NOW };
+    expect(of(talk, at).writes).toContainEqual(expect.objectContaining({ w: "pages", since: NOW }));
+    // A read run holds a repo outside your account: what it read is someone else's words.
+    const reading = of({ ...talk, profile: "read", web: false }, { ...meta, readOutside: true });
+    expect(reading.writes.some((w) => w.w === "pages")).toBe(false);
+    expect(replies(reading.writes)[0]?.text).toContain("Left out: pages");
+    expect(of({ ...talk, account: "acme" }).writes.some((w) => w.w === "pages")).toBe(false);
   });
 
   it("opens the parts on your yes, each naming its parent, and starts nothing", () => {
@@ -4153,6 +4350,59 @@ describe("sub-tasks (ADR 0066): split, go, and a part's close", () => {
         { w: "start", n: 23 },
       ]);
     });
+
+    it("a part the door closed, its `close` written as words: that word's run starts what waited, when the close's own run was replaced", () => {
+      const p = plan(
+        closedPart(21, "completed", family(parts(), ["started"]), {
+          trigger: { kind: "comment" },
+          said: [said(101, "close", { at: NOW })],
+        }),
+        ctx(),
+      );
+      expect(writes(p).filter((w) => w.w === "start")).toEqual([
+        { w: "start", n: 22 },
+        { w: "start", n: 23 },
+      ]);
+      expect(p.do === "box" && p.state.phase).toBe("done");
+    });
+
+    it("a part its own deploy closed (a new project's first push) starts what waited for it", () => {
+      const p = plan(
+        snap({
+          n: 21,
+          trigger: { kind: "dispatch", job: "run" },
+          statusId: 5,
+          state: ran({
+            project: "links",
+            phase: "needs-you",
+            deploy: { repo: "o/links", sha: "abc", production: true, staging: false, since: NOW },
+          }),
+          issue: { ...snap().issue, labels: ["sub-task"], author: "run" },
+          family: family(parts(), ["started"]),
+        }),
+        ctx({ deploy: { state: "live", url: "https://links.app" } }),
+      );
+      expect(writes(p)).toContainEqual({ w: "close", reason: "completed" });
+      expect(writes(p).filter((w) => w.w === "start")).toEqual([
+        { w: "start", n: 22 },
+        { w: "start", n: 23 },
+      ]);
+    });
+
+    it("a part a quiet day closed: its run, started by the due run, starts what waited for it", () => {
+      const p = plan(
+        closedPart(21, "completed", family(parts(), ["started"]), {
+          trigger: { kind: "dispatch", job: "run" },
+          state: { ...newState(), ...ran({ phase: "answered", closes: NOW }) } as TaskState,
+        }),
+        ctx(),
+      );
+      expect(replies(writes(p))).toHaveLength(0);
+      expect(writes(p).filter((w) => w.w === "start")).toEqual([
+        { w: "start", n: 22 },
+        { w: "start", n: 23 },
+      ]);
+    });
   });
 
   it("a part's first run the box started is a sub-task's, which doesn't stay; a second start does nothing", () => {
@@ -4202,6 +4452,22 @@ describe("sub-tasks (ADR 0066): split, go, and a part's close", () => {
       ctx(),
     );
     expect(pr.writes.find((w) => w.w === "push")).toMatchObject({ kind: "part-of" });
+  });
+
+  it("an answered task stays open; only an answered part closes a quiet day later (ADR 0069)", () => {
+    const task = afterThink(snap({ statusId: 5, state: ran() }), full(), talk, r({}), meta, ctx());
+    expect(task.state.phase).toBe("answered");
+    expect(task.state.closes).toBeUndefined();
+    const part = snap({
+      n: 22,
+      statusId: 5,
+      state: ran(),
+      issue: { ...snap().issue, labels: ["sub-task"], author: "run" },
+      family: family(parts()),
+    });
+    const done = afterThink(part, full(), talk, r({}), meta, ctx());
+    expect(done.state.phase).toBe("answered");
+    expect(done.state.closes).toBe(new Date(Date.parse(NOW) + 24 * 3600_000).toISOString());
   });
 
   it("a part's prompt has its parent's goal and its siblings; a parent's, its parts", () => {
@@ -4366,5 +4632,85 @@ describe("sub-tasks (ADR 0066): a part that waits starts by the box or your `go`
     expect(writes(close)).toContainEqual({ w: "close", reason: "completed" });
     const use = plan(onPart({ said: [said(101, "use opus")] }), ctx());
     expect(replies(writes(use)).map((r) => r.text)).toEqual(["From the next run: Opus."]);
+  });
+});
+
+describe("a clean start (ADR 0070): the chats to close, listed for your yes, read again on it", () => {
+  const chats = [
+    { n: 30, title: "an old question", labels: ["answered"], updatedAt: "2026-10-01T00:00:00Z" },
+    { n: 31, title: "a typo fix", labels: [], updatedAt: "2026-10-02T00:00:00Z" },
+  ];
+  const listed = chats.map(({ n, title }) => ({ n, title }));
+  const asked = (over: Partial<Snapshot> = {}) =>
+    snap({
+      trigger: { kind: "comment" },
+      statusId: 5,
+      state: ran(),
+      said: [said(101, "clean start")],
+      cleanable: chats,
+      ...over,
+    });
+  const stateOf = (p: Plan) => (p.do === "nothing" ? undefined : p.state) as TaskState;
+
+  it("lists them with no agent, each with its number and title, under its own code", () => {
+    const p = plan(asked(), ctx());
+    expect(p.do).toBe("box");
+    expect(stateOf(p).pending.clean).toEqual(listed);
+    expect(stateOf(p).phase).toBe("needs-you");
+    const r = replies(writes(p))[0];
+    expect(r?.list).toBe(listCode([], [], [], listed));
+    expect(listCode([], [], [], listed)).not.toBe(listCode([], []));
+    expect(r?.text).toContain(`${LIST_HEAD} (tap Yes, or say \`yes\`, within a day):`);
+    expect(r?.text).toContain("1. Close #30 an old question\n2. Close #31 a typo fix");
+    expect(r?.text).toContain("**Export everything**");
+    expect(kinds(writes(p))).not.toContain("close-chats");
+    // A new chat that's only the words lists them too.
+    const fresh = plan(
+      snap({
+        issue: { ...snap().issue, title: "clean start", body: "clean start" },
+        cleanable: chats,
+      }),
+      ctx(),
+    );
+    expect(stateOf(fresh).pending.clean).toEqual(listed);
+  });
+
+  it("says so when nothing is left to close, or the chats couldn't be read", () => {
+    const none = plan(asked({ cleanable: [] }), ctx());
+    expect(replies(writes(none))[0]?.text).toContain("Nothing to close");
+    expect(stateOf(none).pending.clean).toBeUndefined();
+    const unread = plan(asked({ cleanable: undefined }), ctx());
+    expect(replies(writes(unread))[0]?.text).toContain("couldn't be read");
+  });
+
+  it("on yes, closes the ones that didn't change since the list; one with new words stays open", () => {
+    const st = stateOf(plan(asked(), ctx()));
+    st.pending.list = { post: 200, at: NOW };
+    const later = "2026-10-05T11:00:00.000Z";
+    const yes = (cleanable?: Snapshot["cleanable"]) =>
+      plan(
+        snap({
+          trigger: { kind: "comment" },
+          statusId: 5,
+          state: { ...st, seen: 101 },
+          said: [said(201, "yes", { at: later })],
+          now: later,
+          ...(cleanable ? { cleanable } : {}),
+        }),
+        ctx(),
+      );
+    const p = yes([chats[0] as Cleanable, { ...(chats[1] as Cleanable), updatedAt: later }]);
+    expect(writes(p).find((w) => w.w === "close-chats")).toEqual({
+      w: "close-chats",
+      chats: [{ number: 30, labels: ["answered"] }],
+    });
+    expect(replies(writes(p))[0]?.text).toContain(
+      "Left open, as they changed since the list or something keeps them open now: #31.",
+    );
+    expect(stateOf(p).pending.clean).toBeUndefined();
+    // Read again with no answer: nothing closes, and the list waits for another yes.
+    const unread = yes(undefined);
+    expect(kinds(writes(unread))).not.toContain("close-chats");
+    expect(stateOf(unread).pending.clean).toEqual(listed);
   });
 });

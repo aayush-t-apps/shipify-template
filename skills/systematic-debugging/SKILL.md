@@ -72,6 +72,7 @@ You MUST complete each phase before proceeding to the next.
    - New dependencies, config changes
    - Environmental differences
    - A self-hosted run that "lost communication" may be the box, not the code: check its uptime and reset cause (on a Pi, the bootloader `rsts` value) first
+   - A tool's key "looks wrong": check the value the tool's process received before you blame the setting. A placeholder like `${NAME}` means the key never reached it
 
 4. **Gather Evidence in Multi-Component Systems**
 

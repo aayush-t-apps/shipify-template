@@ -20,8 +20,15 @@
       "starts": "task"
     },
     "remember": {
-      "says": "A note Shipify keeps in mind for every task, or forgets. Saved at once, with no AI.",
-      "words": ["remember: …", "remember <topic>: …", "forget: …"],
+      "says": "A note for every task, a thought, a find for a project, or a new project. Saved with no AI.",
+      "words": [
+        "remember: …",
+        "remember <topic>: …",
+        "forget: …",
+        "jot: …",
+        "add <project>: …",
+        "project: <name>"
+      ],
       "chat": "remember",
       "starts": "remember"
     },

@@ -68,7 +68,8 @@ export const ToolEntry = z
      * Each act call's arguments, as decide checks a proposed call (ADR 0031): the names it needs,
      * and the only names it takes. A call with none here takes any arguments. `target`: the
      * argument naming what it changes (a page, a parent), which a pre-approved form must fix.
-     * `warn`: what an argument does that its value doesn't show, said on the call's list line
+     * `new`: the call changes nothing there is, it only makes something new (a drop), so a form
+     * for it has no target to fix. `warn`: what an argument does that its value doesn't show, said on the call's list line
      * whenever the call has it ({"content": "replaces the page's whole body"}). `files`: the
      * argument that names files the task shared (a list of names): decide takes the call only when
      * each is one, and the box fetches them for the call into a folder its server reads
@@ -81,6 +82,7 @@ export const ToolEntry = z
           required: z.array(z.string()).optional(),
           properties: z.record(z.string(), z.unknown()).optional(),
           target: z.string().optional(),
+          new: z.literal(true).optional(),
           warn: z.record(z.string(), z.string().min(1).max(100)).optional(),
           files: z.string().optional(),
         }),
@@ -90,7 +92,8 @@ export const ToolEntry = z
      * Pre-approved calls (ADR 0031, ADR 0049): made with no `yes` when a run read nothing from
      * outside, or only the look calls of the tools named in `after`. Each names the call, the
      * arguments fixed to these values (its target always), the text arguments capped at these
-     * lengths (nothing else allowed), and the most such calls in one run. Merging this approves it.
+     * lengths, the arguments it takes with any value its call takes (`any`; nothing else
+     * allowed), and the most such calls in one run. Merging this approves it.
      */
     pre: z
       .array(
@@ -98,6 +101,7 @@ export const ToolEntry = z
           call: z.string(),
           fixed: z.record(z.string(), z.unknown()).default({}),
           caps: z.record(z.string(), z.number().int().positive().max(10_000)).default({}),
+          any: z.array(z.string()).default([]),
           max: z.number().int().min(1).max(20).default(1),
           after: z.array(z.string().regex(name)).optional(),
         }),
@@ -119,10 +123,12 @@ export const ToolEntry = z
       if (!t.act.includes(c)) say(`args.${c} isn't one of its act calls`);
     for (const p of t.pre ?? []) {
       if (!t.act.includes(p.call)) say(`a pre-approved "${p.call}" isn't one of its act calls`);
-      // No form writes wherever a capped string points: it fixes what its call changes.
-      const target = t.args?.[p.call]?.target;
-      if (!target) say(`a pre-approved "${p.call}" needs args.${p.call}.target, what it changes`);
-      else if (!(target in p.fixed))
+      // No form writes wherever a capped string points: it fixes what its call changes, unless
+      // its call only makes something new.
+      const { target, new: made } = t.args?.[p.call] ?? {};
+      if (!target && !made)
+        say(`a pre-approved "${p.call}" needs args.${p.call}.target, what it changes`);
+      else if (target && !(target in p.fixed))
         say(`a pre-approved "${p.call}" fixes its target: fixed.${target}`);
     }
     for (const [v, k] of Object.entries(t.keys)) {

@@ -1,0 +1,78 @@
+/* Status & setup (ADR 0039): loaded with setup.js. Now across the top, then the parts side by side
+   where there's room. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  align-items: start;
+  gap: 0.75rem;
+}
+.now {
+  border-color: var(--acc);
+}
+.now.bad {
+  border-color: var(--warn);
+}
+.strip .now {
+  grid-column: 1 / -1;
+}
+.now > p .st {
+  font-size: 0.875rem;
+}
+/* Agents and models: a row each, its name and login, then its Auto, then its models. */
+.agentlist {
+  display: grid;
+}
+.arow {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--line);
+}
+.aname {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.625rem;
+}
+.arow .pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+}
+.pills .chip {
+  font-weight: 400;
+  color: var(--muted);
+}
+/* How to change a part: the command to run on your PC, with Copy. */
+.how {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+.cmd {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+.how .cmd code {
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  background: var(--sunk);
+  font: 0.8125rem var(--mono);
+  color: var(--ink);
+}
+.cmd button {
+  min-height: 2rem;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8125rem;
+}
+/* A finger (ADR 0039): at least 44 px, as app.css says for the rest. */
+@media (pointer: coarse) {
+  .cmd button {
+    min-height: 2.75rem;
+  }
+}

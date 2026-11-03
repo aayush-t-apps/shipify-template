@@ -28,7 +28,13 @@ export function ghName(args: string[]): string {
         .slice(0, 2)
         .join(" ") || "gh"
     );
-  if (args[1] === "graphql") return "graphql";
+  // A query by what it reads first ("graphql issueOrPullRequest"), so a step's line tells its reads
+  // apart (ADR 0069: a run's start-up reads, timed).
+  if (args[1] === "graphql") {
+    const query = args.find((a) => a.startsWith("query="))?.slice(6) ?? "";
+    const first = /\{\s*(?:repository\([^)]*\)\s*\{\s*)?(?:\w+:\s*)?(\w+)/.exec(query)?.[1];
+    return first ? `graphql ${first}` : "graphql";
+  }
   // A path, not a flag's value: `api [-X POST] repos/…`, never `-H`'s or `-f`'s.
   const skip = new Set(["-X", "-H", "-f", "-F", "--input", "--jq"]);
   const path =

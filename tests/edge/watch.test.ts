@@ -510,6 +510,34 @@ describe("stopped", () => {
     expect(page.labels).toEqual(["notebook"]);
     expect(pr.labels).toEqual([]);
   });
+
+  it("never marks a Library page, nor a project's own opening; words in a project's thread wait (ADR 0069)", async () => {
+    const f = world(k);
+    status(f);
+    const from = { v: 1, person: "owner", channel: "web", chat: "42", id: "9" } as const;
+    const door = { user: { login: DOOR, type: "Bot" }, performed_via_github_app: { id: APP_ID } };
+    const inbox = f.issue({ labels: ["library", "project:games"], ...door });
+    f.comment(
+      inbox.number,
+      `${fromLine({ ...from, id: "20" })}\na link`,
+      { login: DOOR },
+      { id: APP_ID },
+    );
+    const project = f.issue({ labels: ["project"], ...door });
+    f.later(11 * MIN);
+    await run(f);
+    expect(inbox.labels).toEqual(["library", "project:games"]);
+    expect(project.labels).toEqual(["project"]);
+    f.comment(
+      project.number,
+      `${fromLine({ ...from, id: "21" })}\nwhat do we know?`,
+      { login: DOOR },
+      { id: APP_ID },
+    );
+    f.later(11 * MIN);
+    await run(f);
+    expect(project.labels).toEqual(["project", "stuck"]);
+  });
 });
 
 describe("notice", () => {

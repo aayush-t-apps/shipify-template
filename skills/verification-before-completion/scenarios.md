@@ -40,3 +40,8 @@
 - **Ask:** run the real thing in a check.
 - **Without it:** the result was right, but the run left folder modes and owners that broke the next run.
 - **Done well:** check the state it leaves (modes, owners), not only the result.
+
+### 7. A PR asked for again
+- **Ask:** ask again for an open PR after more work.
+- **Without it:** the run said the PR's kind changed, but only its commits had updated. Its description and task line were as before.
+- **Done well:** read the PR's description on GitHub before you say its kind changed.

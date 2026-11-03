@@ -307,13 +307,15 @@ changes the live app at once (taking an app down, bringing it back, a rollback) 
 | `start over` | closes the open PR and begins again from the repo's default branch | a PR is open, or not |
 | `preview` | a live preview of the open PR, with its checks run against it | a PR is open |
 | `publish` | a merged plan's repo, keys and build, or again after they stopped | the plan is merged |
-| `go` | builds a big change once its doc PR is merged; on a new project's task, the same as `publish`. On a split task, starts its ready sub-tasks; `go #n` starts that one now; on a sub-task that hasn't started, starts it now ([Sub-tasks](#sub-tasks-one-task-a-few-prs)) | the doc (or plan) is merged; the task has open sub-tasks; the sub-task never ran |
+| `go` | builds a big change once its doc PR is merged; on a new project's task until it's built, the same as `publish`. On a split task, starts its ready sub-tasks; `go #n` starts that one now; on a sub-task that hasn't started, starts it now ([Sub-tasks](#sub-tasks-one-task-a-few-prs)) | the doc (or plan) is merged; the task has open sub-tasks; the sub-task never ran |
 | `stop repeating` | ends a repeat and closes the task | it repeats |
 | `resume` | starts a paused repeat again | it's paused |
 | `close` | closes the task: its PRs stay, a repeat pauses (`resume` carries it on); write again to reopen it. From a chat, the door closes it at once with its state labels, the chat answers "Closed · #12", and no run starts: the next run that reads the task notes it (ADR 0040). On GitHub, a run closes it and says so | always |
 | `reopen` | reopens a closed task with no agent, and it waits for what you'd like next. From a chat, the door reopens it at once ("Reopened · #12") and no run starts: your next words do. On GitHub, a run reopens it, a minute or more after it closed, and says so | it's closed |
 | `stop` | stops the run that's going, within a minute: what it committed stays on the task's branch, and the run stays ([above](#a-run-that-stays)), so your next words carry on in the same session ([below](#words-while-a-run-works)). On a split task, no more sub-tasks start; the ones that run finish | always |
+| `clean start` | lists, with no agent, the open chats outside your projects that nothing keeps open (the 30-day close's rules, whatever their age: no repeat, errand, open PR or part, none at work or waiting on you), the oldest 100, but this one (ADR 0070). On `yes`, the box reads them again and closes each as done, as the 30-day close does: one with new words since the list stays open. Their files go 30 days later; your projects and pages stay. Export first what you want to keep | anywhere, as a whole message or a new chat |
 | `remember: …` · `forget: …` | keeps or removes a note in the notebook, with no agent ([notebook.md](notebook.md)) | always |
+| `jot: …` · `add <project>: …` · `project: <name>` | from a chat, the door saves them with no run (ADR 0069): a dated line in this month's Journal, an item in a project's Inbox, a new project ([knowledge.md](knowledge.md)) | from a chat, as a new message |
 | `/ping` · `/apps` · `/repos` · `/help` · `/notebook` · `/recipes` · `/models` | the same answer a chat gets, with no agent | anywhere |
 | `use <model>` | the model (or effort, or agent) for the task's runs: alone, from your next message (from a chat it starts no run; on GitHub a run says so); as a line in a message, from that message's run | anywhere |
 
@@ -407,8 +409,8 @@ A **repeat** is a task with a time. One you want to keep and review as a file is
   thread, and always says what it found), or "remind me in an hour to call Sam" (a reminder).
   - The soonest is in 5 minutes, the furthest 30 days ahead.
   - It isn't skipped while the task's PR waits: looking at that PR is often the point.
-  - After it fires, its `repeats` label comes off and the task is answered, so it closes after a
-    quiet day.
+  - After it fires, its `repeats` label comes off and the task is answered: it folds into Quiet
+    after a week, and you close it when you're done (ADR 0069).
   - One per task: asking again moves it. A task that repeats takes none; a check is never once.
   - The status line says "**Once** at Thu 15 Oct, 17:30 IST (a job for the agent)". Closing the
     task drops it, and `stop repeating` cancels it.
@@ -479,8 +481,18 @@ A **repeat** is a task with a time. One you want to keep and review as a file is
   and the web chat shows them as buttons; any answer is just your words.
 - **A lone thanks** (`ok`, `thanks`, 👍) answers a question waiting on you. After a PR to merge,
   a list for your `yes`, or an answer, it's a thanks: a 👍, and the agent isn't run.
-- **Answered and quiet for a day:** the task closes by itself (never a repeat's): the due run
-  closes it, with no run of its own (ADR 0040).
+- **Answered, then quiet:** the task stays open (ADR 0069). With no new word for 7 days it folds
+  into **Quiet** at the foot of the web chat's list, and comes back up when anyone writes. You
+  close it when you're done. Only a split's part still closes a day after it's answered (the due
+  run closes it, with no run of its own, and its close starts what waited for it). A chat outside
+  a project with no word for 30 days, no open PR, repeat, errand or open part, and not waiting on
+  you (`needs you`), is closed as completed by the weekly clean-up, its status line saying "Closed
+  after 30 quiet days: write on it to open it again"; a project and its chats never close this
+  way. Its files go 30 days after.
+- **Buttons that say nothing in the thread:** Close, Reopen, Stop and Stop repeating from the web
+  chat send their word marked as a button's: the thread doesn't show it. Close and Reopen show as
+  a faint "Closed · 13:40" from the task's own state; Stop's and Stop repeating's answer goes to
+  the status comment's **Last action** line instead of a reply. Typed words still get a reply.
 - **One run at a time, and one waiting:** words sent while a run works are read by it before it
   answers, or by the one run waiting after it; a newer run takes the waiting one's place (ADR 0040).
   A waiting run whose words the run before it already answered finds nothing new, and ends.
@@ -551,7 +563,12 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
    says what it skipped. `stop` takes `started` off: no new part starts, and the ones that run
    finish. `go` again carries on.
 4. **Next.** After your `go`, when a part's PR merges, its close run (no agent) starts each part
-   that waited only for it. No polling: nothing starts before your `go`.
+   that waited only for it. No polling: nothing starts before your `go`. A part the box closes
+   itself does the same: a new project's part when its first deploy is live, and an answered
+   part a day after its answer (the due run then starts its run, with no agent). So does your `close`
+   on a part: from a chat, the door writes that word as words, not a setting, so a run sees to
+   it even when a run was under way (GitHub keeps one waiting run per task, and the newest takes
+   its place).
 5. **End.** When every part is closed, the task says so ("All 3 sub-tasks are closed: #13 merged
    (PR #20), …") and closes.
 
@@ -573,7 +590,8 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
   starts as planned, and its run reads what you wrote. `go` on the part starts it now and says what
   it skipped; `stop`, `close` and `use` work as on any task.
 - **A dropped part** (closed as not planned) isn't done: what waits for it doesn't start, and the
-  task is told once: "`go #15` starts it anyway, or close it as not planned too."
+  task is told once: "`go #15` starts it anyway, or close it as not planned too." A chat shows
+  each `go #n` a reply names as a button.
 - **A part that fails or asks you** is `needs you` on its own thread; what waits for it waits.
 - **Closed as done by hand,** with no PR, a part counts as done. A link you add or take off on
   GitHub counts at once: the box reads the links each time. A sub-issue you add by hand has no
@@ -582,6 +600,26 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
 - **The parent closed:** no part starts. Its open parts stay open, for you to close or keep.
 - **In the web chat** ([channels.md](channels.md)): a bar and "2/4" on the task, its parts folded
   under it, a grey **Waiting** state, and a **Plan card** with Start, Start all ready and Stop.
+
+## Projects, and long threads (ADR 0069)
+
+- **A project you make** is an issue `Project: <name>` (`project: <name>` from any chat, or **New
+  project** in the web chat), with no run, made with its main page (its brief and an empty Map). Its chats are its sub-issues (**New chat here**, or
+  **Move to project**), 100 at most. Each chat's run gets the project's brief, its other chats'
+  titles and states (the newest 30 and every one at work, waiting on you or failed, the rest
+  counted; it reads the ones that bear on the ask), and its pages (the Library's pages labelled
+  `project:<name>`), read as data: what a run gets, step by step, is in
+  [knowledge.md](knowledge.md#what-a-run-gets). A
+  chat in a project splits as any task does; the project itself is never a split parent, and
+  never closes by itself. With one repo (`project: shop repos: shop-web`), a change asked in a
+  chat goes to it. The process, the Inbox and the Journal: [knowledge.md](knowledge.md).
+- **Progress:** where the task's work stands (Goal, Done, Next, Decisions, Open), up to 16,000
+  characters. The agent calls it its handoff: the next run starts with it in `out/handoff.md` and
+  edits it in place, and the web chat shows it above the thread, folded.
+- **A long thread:** past 40 KB of conversation, a run gets its Progress, the newest 8 messages
+  and every new one whole, and each older one as a line (its date, who, its first line and its
+  id); `ship task read <id>` prints one whole. At 200 messages a run reads about 85 KB instead of
+  500 KB. Every word stays on GitHub.
 
 ## PRs and Live
 
@@ -617,7 +655,7 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
    from them. Its reply reads as any question does; the same two exceptions apply, silently, and
    a push that fails (a workflow file among its edits, a key the scan finds, no write token) is in
    the run's log only, the question posted as before.
-   **Its handoff:** the agent keeps a short note for the next run as it works (Goal, Done, Next,
+   **Its handoff:** the agent keeps the task's Progress current as it works (Goal, Done, Next,
    Decisions, Open), and the box keeps it in the status comment however the run ends, even when
    it's stopped. The next run reads it, then checks the branch and the tests before trusting it.
    A run after a stay ends starts a fresh agent session: it reads the whole thread, this handoff,
@@ -632,7 +670,8 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
    Changes, Checked, Notes), then, below a line, the task it's for and what made it ("Made by
    Claude Code (Opus 5.5) with Shipify", with the run's link on Shipify's own account). Its commits
    carry the App's name (`<name>[bot]`), so GitHub shows them as Shipify's.
-4. **You review and merge.** Comment to change it: the next run updates the same PR.
+4. **You review and merge.** Comment to change it: the next run updates the same PR, its title
+   and description too (`Closes` or `Part of` as that run asked).
 5. **Live:** the run your merge starts follows the deploy itself and replies as soon as the
    pipeline marks it, usually within a minute or two: "**Live:** acme-site at <link>" ("On staging"
    for an app with staging), or that it failed, or that it never showed up after 30 minutes (the
@@ -640,7 +679,9 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
    dropped is live with the later deploy that holds it. A merge with nothing to deploy (Shipify
    itself, a package, a recipe) says "**Merged**". A staging release and a new project's first
    deploy have no event of their own: they're labelled `deploying` and followed by the watch's due
-   runs.
+   runs. GitHub can hold a deploy run for approval ("this workflow file may be malicious"), as it
+   did a new project's first push by the bot: the task says so once, with the run's link, for
+   you to look at it and approve it; then it follows the deploy on, and says Live.
 
 **A preview** (`preview`) deploys a live copy of the PR and runs its checks. Nothing
 follows them: look at the PR, and ask why they failed or to fix them (ADR 0046). A preview's link
@@ -653,7 +694,8 @@ its PR on the next run, with no new commits needed; an approved call that failed
 `start over` starts the new branch from `main`, never the old PR's commits.
 
 **A new app:** `new: …` → a plan PR → your merge → its repo and keys are made on GitHub's machines
-→ a box builds it → the first push → Live, and the task closes. Your merge starts it: a run that
+→ a box builds it → the first push → Live, and the task closes. The plan's `task:` line links it
+to its task, so the box finds it from the file, never from what a run said. Your merge starts it: a run that
 stays on the task leaves for it, and if a newer run took its place in the queue, that run starts it
 (once). If a key or permission was missing, the reply names it; fix it, then say `publish` (or
 `go`), from GitHub or a chat. If its first build fails its checks, `continue`
@@ -692,7 +734,7 @@ new branch, since a merge ends its branch.
 | words, markdown, code, tables | all of it, as written | — |
 | an image pasted on GitHub, a Telegram photo | the image, to look at (the newest 10, 10 MB each) | larger ones are named and left out |
 | a document from Telegram (PDF, `.md`, CSV, text, code) | the file | over 10 MB, or more than 5 a message: the rest are named |
-| a photo or file from the web chat (any type: PDF, documents, a screenshot) | the file (photos shrunk to 2,048 px in your browser) | over 10 MB, or more than 5 a message: refused before it's sent |
+| a photo or file from the web chat (any type: PDF, documents, a screenshot) | the file (photos shrunk to 2,048 px in your browser), kept while the chat is open and 30 days after (ADR 0069) | over 95 MB, or more than 5 a message: refused before it's sent |
 | more chat files on one task than a run takes | the newest 5 | the older ones are named: ask for one again |
 | a link to a file in your repos | the file, fetched before the agent starts (10 at most, 25 MB each) | — |
 | a link to a page or a gist | the page, read from the web | a page it can't reach: said |

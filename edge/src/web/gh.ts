@@ -6,6 +6,7 @@
 // tried once more: a moment's hiccup isn't shown to you.
 import type { Deps, Env } from "../env.ts";
 import { BudgetSpent, GitHubError, installationToken } from "../github.ts";
+import type { Get } from "../settings.ts";
 
 const API = "https://api.github.com";
 /** Answers kept for their ETags, at most this many (the oldest go first). */
@@ -63,6 +64,12 @@ async function once<T>(env: Env, deps: Pick<Deps, "fetch" | "now">, path: string
   }
   return data;
 }
+
+/** These reads as settings.ts takes them (the runners, the status task): with no bodies rendered. */
+export const reader =
+  (env: Env, deps: Pick<Deps, "fetch" | "now">): Get =>
+  (path) =>
+    read(env, deps, path, { html: false });
 
 /** The same, or null when it isn't there (404, 410). */
 export async function readOr<T>(

@@ -21,3 +21,8 @@
   runs nobody asked for, against a standing rule.
 - **Done well:** it reads why the rule exists, finds the stay doing the same, offers the simple
   option with that reason, and checks every option against the owner's standing rules first.
+
+### 2. A binding that cost the previews
+- **Ask:** "which Cloudflare binding should this app use for shared state?"
+- **Without it:** the run proposed a Durable Object. A Worker that implements one gets no version (preview) URLs, so the app lost its PR previews.
+- **Done well:** check that the stack's deploy and preview flow supports the binding before you propose it.

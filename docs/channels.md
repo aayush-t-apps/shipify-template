@@ -60,7 +60,7 @@ You don't need to know any word: type what you want, and tap the rest (ADR 0042)
 | `/ask …`, `/new …`, `/change …`, `/repeat …` | always a new task, even sent as a reply: a command never carries one on |
 | `remember: …`, `forget: …` | the notebook, at once, as on GitHub |
 | a photo or a file, with a caption | on the task, for the agent. An album lands on one task |
-| a reply that's a fixed word: `yes`, `no`, `continue`, `start over`, `preview`, `go`, `publish`, `stop`, `stop repeating`, `resume`, `close`, `reopen`, `use <model>`; or a lone `ok` to a question waiting on you | the same as on GitHub ([tasks.md](tasks.md#fixed-words)). **Yes** under a list sends yes and the list's code: it approves only that list |
+| a reply that's a fixed word: `yes`, `no`, `continue`, `start over`, `preview`, `go`, `publish`, `stop`, `stop repeating`, `resume`, `close`, `reopen`, `clean start`, `use <model>`; or a lone `ok` to a question waiting on you | the same as on GitHub ([tasks.md](tasks.md#fixed-words)). **Yes** under a list sends yes and the list's code: it approves only that list |
 | `/tasks` | your open tasks as buttons, grouped: **Working**, **Needs you**, **Repeating** (with each one's next time), **Answered**. A tap is `#12` alone. Up to 100 open issues are read; past that it says the rest are on GitHub |
 | `/use` | your model, or that task's as a reply or after its number (`#12 /use`): the model picker ([below](#picking-a-model-your-model)) |
 | `/ping`, `/apps`, `/repos`, `/notebook`, `/recipes`, `/models`, `/help` | answered at once, with no task |
@@ -85,9 +85,10 @@ You don't need to know any word: type what you want, and tap the rest (ADR 0042)
   GitHub.
 - **The run's one line:** "Sonnet · 48 s · 3 tool calls".
 - **Buttons that send words** (ADR 0042): a question's short answers; the fixed words a reply asks
-  for (Continue, Close…); **Another model** under a failure; **Stop repeating** under a reminder.
-  Under a list, only **Yes** and **No**: none of the others, so a tap can't drop the list by
-  mistake.
+  for (Continue, Close…); **Another model** under a failure; **Stop repeating** under a reminder;
+  **Keep on page** under an answer in a project's chat that kept nothing yet (it sends "keep this
+  on the page", ADR 0070). Under a list, only **Yes** and **No**: none of the others, so a tap
+  can't drop the list by mistake.
   A tap is the same as typing those words as a reply: the same checks, and a setting starts no run.
   The tapped message's buttons go once spent, so a tap can't be sent twice by mistake. A tap on a
   message Telegram no longer shows whole (so its task can't be read) is told, and nothing is
@@ -199,23 +200,69 @@ Access sign-in as the status page (`/admin/status`): no users, no accounts. Whoe
 sign-in writes as you.
 
 **One screen** (ADR 0039): on a PC, your tasks and the open thread side by side, and a doc you open
-beside them (ADR 0065); on a phone one at a time, with **Tasks, Repeats, Notebook, Files and Setup**
-as tabs at the foot (not in a thread). On a PC the same pages sit under the list.
+beside them (ADR 0065); on a phone one at a time, with **Desk, Projects, Files, Library and Setup**
+as tabs at the foot (not in a thread; Repeats is on the Desk). On a PC the same pages sit under the
+list. On a touch screen every button is at least 44 px tall, a finger's size.
 
-**Projects as workspaces** (ADR 0065): a task's project is the repo its title names (`shipify: …`,
-`links: …`, as **Change a repo** writes it); a task with none is **General**.
+**The Desk** (ADR 0069, `desk.js`): the first screen. **Needs you**, **Working**, your **Projects**
+with their open chats, the Library pages you opened last on this device, a **Jot** box (`jot: …`,
+no run), **New project** (a name, what it's for, its repos if any: it sends `project: …` and opens
+the project), and the new-chat box at its foot. It's drawn from what the page reads already, so a
+new phone or PC shows the same at once, and on a phone it reads the list again on each of the
+page's checks while it's on screen. The tabs keep the app's own history: Back never leaves the
+app.
+
+**What the first screen loads** (ADR 0069): the page with the Desk, 42 KB at most as sent. The
+rest loads the first time it's used, each with its own budget: the Library (`library.js`), Find
+in this chat (`find.js`), diagrams (`draw.js`), a file's shrink and upload (`attach.js`), New
+project's form (`project.js`), and the styles of the model picker, Status & setup and New repeat
+(`pick.css`, `setup.css`, `repeat.css`). One that can't load says so.
+
+**Projects you make** (ADR 0069, `project.js`; the process: [knowledge.md](knowledge.md)):
+- **In the list,** projects come first, each folded with its chats, then repos, then General. The
+  first time a project's fold opens, it reads the project's thread once, for chats past the list's
+  page. A project never folds into Quiet.
+- **A project's page** is its thread with a card on top, shut till you open it (its line counts
+  the chats and pages): its main page's **Now**, then one next step (ADR 0070: worked out on the
+  edge from counts its Library read has, with no run or extra call: a chat waiting on you, 10 finds
+  or more in the Inbox, a first question, a first answer kept, a check while questions are open,
+  Close when every chat is done), its chats (open first), its pages (the Inbox among them), **New
+  chat here**, **Export** and **Collate the inbox**. Its own words start no run, so it never says "Starting…" under them. Its box never writes
+  in the project's thread: **Send** opens a new chat in it, **Add** puts a find in its Inbox (`add
+  <name>: …`, words and one file) with no run. A file dropped on the page lands in that box.
+- **Move to project** is on the menu of every chat in no project. A chat moves once: one in a
+  project already, or a split task's part, is told so (GitHub gives an issue one parent). The list
+  and the chat's thread name its project from GitHub's link (one GraphQL call for all the moved
+  chats, each kept a day), so it folds
+  under its project on the list's next read.
+- **Export** builds the zip in your browser (`export.js`): it says the size, then **Download** or
+  **Share as a drop** (the zip in a new message, "share this as a drop", up to 95 MB). A project's
+  asks first whether to put each chat in whole. It reads every message of each chat, however long;
+  asks before it builds when the files come to over 50 MB; stores the files uncompressed in a
+  browser that can't compress; and names each file in the zip safely, once. Files has **Export
+  everything**.
+
+**Quiet, Progress and silent buttons** (ADR 0069): a task with no new word for 7 days folds into
+**Quiet** at the list's foot (opening it reads the next 50); nothing closes for quiet. A task's
+**Progress**, its last run's handoff, sits folded above its thread; open, it takes at most 40% of
+the screen and scrolls in itself, its **Progress** line kept at its top to fold it. Close, Reopen, Stop and Stop
+repeating from a button write no message in the thread: a close shows as a faint "Closed · 13:40",
+and a stop's answer is the status comment's **Last action**.
+
+**Repos as workspaces** (ADR 0065; ADR 0070 calls a repo Shipify builds an app, and keeps
+"project" for one you make): a task's repo is the one its title names (`shipify: …`, `links: …`,
+as **Change a repo** writes it); a task with none is **General**.
 - **The list by project:** under Open and Needs you, tasks sit in a group per project, each with
   its name, what needs you (amber) and what's working (teal), folded open or shut with a tap (kept
-  in your browser; open while you search). One group alone is a plain list. ▦ beside a group opens
-  its page.
-- **Tabs:** a project's tasks you open sit as tabs over the thread, as in an editor: each with its
-  state's dot and title, **✕** to close it (the open one goes to its neighbour), and **+** for a new
-  chat in the project (it writes `links: `). The first tab is the project's page. Your open tabs
-  are kept per project in your browser (12 at most), nowhere else. On a phone they scroll sideways.
-- **A project's page** (`#/p/<repo>`): **New chat here**; its open tasks, its numbers (open, needs
+  in your browser; open while you search). One group alone is a plain list. Beside a group, `</>`
+  opens a repo's page (`<Name> · repo`), and ▦ a project you made (its thread, ADR 0069). A page
+  that can't be read says why, with **Retry**, never placeholders for good.
+- **No tab row** (ADR 0069): a thread's header names its project, and the name opens the
+  project's page. **Ctrl+K** brings back a chat you had open (below), and so does Back. Tabs an
+  older page kept in your browser are deleted the first time it loads.
+- **A repo's page** (`#/p/<repo>`): **New chat here**; its open tasks, its numbers (open, needs
   you, working) and its app (up, failing or paused, from the watch's record); its docs: **In**
-  (what you sent on its tasks) and **Out** (what its runs made), the last 7 days', as Files keeps
-  them; and **Repo docs**, links to its spec, decisions (ADRs), changelog and README on GitHub
+  (what you sent on its tasks) and **Out** (what its runs made), as Files keeps them; and **Repo docs**, links to its spec, decisions (ADRs), changelog and README on GitHub
   (Shipify's own: its tour, design, decisions, plans, roadmap and changelog). Those open on
   GitHub: the door App can't read a repo's files.
 - **The doc pane:** a file you open (from a thread, a project's page or Files) shows beside the
@@ -226,9 +273,14 @@ as tabs at the foot (not in a thread). On a PC the same pages sit under the list
   takes. Only the first 200 KB shows; Download has all of it. **Ask about this** puts the file in
   your next message, here or in a new chat, as if you had attached it (a run's file too). ✕ or
   Back closes it; going to another task leaves it open.
-- **Ctrl+K** (⌘K) finds a project, a task or a doc by its name: the arrows move, Enter opens.
-  **Alt+1…9** picks a project's tab (1 is its page).
-- It reads nothing new: the list, the menu and Files' read (the project's page). The page you open
+- **Ctrl+K** (⌘K) finds a project, a repo, a task or a doc by its name: the arrows move, Enter
+  opens. With nothing typed, it lists the chats you opened last, open ones only, newest first, then
+  the projects and repos. Its list ends with **Find by meaning** (ADR 0070): picked (or Enter when
+  no name fits), the edge's `api/search` asks GitHub's hybrid issue search, with the door's token,
+  for your chats, projects and pages by what they mean, and each query's answer is kept a minute.
+  GitHub allows 10 a minute: past that, or when it answers by words, it searches by words and says
+  so. **Search on GitHub** under the results finds by words in comments too (an Inbox's items).
+- It reads nothing new as you type: the list, the menu and Files' read (the repo's page). The page you open
   every day carries none of it: `workspace.js` loads the first time one is needed, as **Status &
   setup**'s `setup.js` does.
 - **The list:** **Open** by default: the boxes (tap the line for Status & setup), then **For
@@ -259,15 +311,15 @@ as tabs at the foot (not in a thread). On a PC the same pages sit under the list
   still open is **Waiting**: a grey dash, not a dot (not the `waiting` label of an errand). A split
   task's thread has a **Plan card** under its header: each part with its state, project, PR and
   "waits for #C". **Start** on a ready part sends `go #n`, **Start all ready** sends `go`, **Stop**
-  (after `go`, with a confirm) sends `stop`, as a reply's buttons send words. **Open all as tabs**
-  puts the open parts in their projects' tabs. The plan is one GitHub read when the thread opens,
+  (after `go`, with a confirm) sends `stop`, as a reply's buttons send words. The plan is one GitHub read when the thread opens,
   kept 60 s, so a tap shows in it within a minute; `plan.js` loads only for a split task. On a phone
   the card is full width, rows 44 px, and folded until you tap it. A part's thread says "Part of
   #N" under its title, a link to its parent, and "Waiting" when it waits.
 - **A thread per task:** replies shown whole, a run line with its details one tap away, the reply's
   buttons and question, files and pictures, photos you sent on Telegram too. Tap a picture to see
   it full size. Once your words are in, the header and the bottom say "Starting…" (or "Waiting for
-  a box" with none online) until the run shows; a fixed word like `close` starts none, and the
+  a box" with none online) until the run shows; a fixed word like `close` starts none, nor do a
+  project's own words or any on a page (the thread marks them `norun`), and the
   run GitHub lists for one isn't shown as working. A run under
   way shows as "Queued" or "Working · 1m" in the header and at the
   bottom from when it starts (the list sees it first; a phone asks the list too while your words
@@ -290,7 +342,8 @@ as tabs at the foot (not in a thread). On a PC the same pages sit under the list
   number, kind, its runs added up from their replies' lines ("2 runs · $0.05 · 2m 32s · 38k
   tokens"; cost when the agent knew it) and its PRs; each reply's run line has its own (model,
   time, tools, cost), one tap from its details. There is no side pane: everything is in the thread. **Close** or **Reopen** sits in
-  the header (not on a repeat): it sends `close` or `reopen`, the door closes or reopens the task as
+  the header (not on a repeat; on a phone, in **⋯** with **Find in this chat**, so its header
+  holds only Back, the title, **↻** and **⋯**): it sends `close` or `reopen`, the door closes or reopens the task as
   it writes the word, and the thread and list show it at once. In the thread it's a quiet line
   ("Closed · 2m"), not a message, wherever it was said. Neither starts a run (ADR 0040): the door
   does it, a close takes the task's state labels off, and the next run that reads the task notes
@@ -355,10 +408,14 @@ as tabs at the foot (not in a thread). On a PC the same pages sit under the list
   Every few hours, or Your words; then only what that needs (a day, a date, the hours, an optional
   window) and the time. It says back what will run ("Runs every Monday at 09:00 IST"), in the
   words the box reads.
-- **Notebook:** your notes. Add sends `remember …`, Remove sends `forget …`; the page reads again
-  after each (a note a run writes, with no notebook page yet, shows once it's written).
-- **Files:** what was sent or made in the last 7 days, by project. A file opens here, never in a
-  new tab: in the doc pane (above). A thread's files open the same way.
+- **Library** (the Notebook): your notes, then "Journal and more" (Journal pages first), then a
+  group per project: its **Main page** first (or, for a project made before its main page came with it, a line saying none is written yet), then its
+  **Inbox**, whose items wait for "collate the inbox". Add sends `remember …`, Remove sends `forget …`; the page reads again after
+  each (a note a run writes, with no notebook page yet, shows once it's written).
+- **Files:** every file kept, newest first, by chat (a file with no chat under **No chat**), each
+  with its size and **Delete**, and the total at the top. A file opens here, never in a new tab: in
+  the doc pane (above). A thread's files open the same way. Drag one into a chat's box, or
+  **Share** it ("share this as a drop").
 - **Back** has one rule: Tasks is under every page. A tab from Tasks is a step; from another page it
   takes that page's place. A thread, New chat and an open file each add one step, so Back closes
   them first.
@@ -405,7 +462,8 @@ as tabs at the foot (not in a thread). On a PC the same pages sit under the list
   does: what's on screen is read at once, and a newer version of the page loads if nothing is
   typed. It turns until the read ends, and what you've typed stays. Dragging down is the
   browser's own reload of the whole page.
-- **Limits, said before you send:** up to 5 files a message, 10 MB each, kept 7 days; several land
+- **Limits, said before you send:** up to 5 files a message, 95 MB each, kept while their chat (or
+  its project) is open and 30 days after it closes (ADR 0069); several land
   on one task as an album. Photos are shrunk to 2,048 px in your browser, which drops their
   location and camera details. A message holds 16,000 characters: past that the box says how many
   over and doesn't send (attach it as a file instead). A run takes a task's newest 5 chat files
@@ -425,13 +483,21 @@ edge's one Worker on Cloudflare's free plan, and GitHub is the record:
   each message as the page shows it (its HTML cleaned), built once and again only when its
   comment is edited or a run reads it, so an open thread's refreshes stay well under the free
   plan's 10 ms of CPU. It's gone when the Worker restarts, and that loses nothing.
-- **Workers KV (`FILES`):** the files you attach here and those a run sends back to this chat,
-  each deleted by Cloudflare after 7 days; and the devices that get notifications, one small list
-  of 5 at most. Photos sent on Telegram aren't copied: Telegram keeps
-  them, and the edge fetches one when you look.
+- **R2 (`BUCKET`, the bucket `shipify-web-files`, ADR 0069):** the files you attach here and a
+  copy of those a run sends back to this chat (at most 50 MB a reply; the rest stay linked from
+  the branch), each with its chat's number. A file lives as long as its chat, or its project:
+  the weekly clean-up deletes a closed chat's files 30 days after it closes, so the bucket holds
+  open work and the last month's. 10 GB free (shared with Drop), then $0.015 per GB a month;
+  nothing is refused for space. A file dragged into another chat is copied once for it, so one
+  chat's clean-up never breaks another's message; a file you take off the box is deleted.
+- **Workers KV (`FILES`):** small settings only: your model, and the devices that get
+  notifications, one small list of 5 at most. Photos sent on Telegram aren't copied: Telegram
+  keeps them, and the edge fetches one when you look.
 - **Your browser:** the list, the menu (models, projects) and the last 30 threads you opened, so
-  the page opens at once, offline too; and each project's open tabs, the groups you folded and the
-  doc pane's width.
+  the page opens at once; the groups you folded and the doc pane's width. The page's service
+  worker keeps the page's own files (the page, its scripts, styles, manifest and icon), so it opens
+  offline too: each comes from the network first, and the last copy when that fails. What the
+  page reads (`api/…`) it never keeps.
 
 **Coming back to it** (another app, the phone asleep, the tab again): away, it asks for nothing.
 Back, it reads what's on screen at once (the list, the thread, or the page you're on, redrawn
@@ -445,9 +511,11 @@ list and a thread come from the last good copy the edge has. The page's timed po
 try again, slower each time (5 s, 10 s, 20 s, 40 s, then each minute). After about a minute, or on
 that last good copy, a calm line says "Can't reach GitHub · retrying", and it goes away by itself
 at the next good read. A read you waited for (a tap, ↻, opening a thread) still says what failed,
-in red, and the next good read takes that away too. A message that didn't go (offline, or GitHub
-not reached: nothing was saved) is sent again by itself, with its own id, so never twice: after
-10 s, 20 s and 40 s, and when the browser is online again. **Retry** stays on it.
+in red, and the next good read takes that away too. A message that didn't go (offline, no answer
+from the edge in 20 s, or GitHub not reached) is sent again by itself, with its own id, so never
+twice: after 10 s, 20 s and 40 s, and when the browser is online again. **Retry** stays on it.
+"Offline" means the browser's network is gone; an edge slow to answer says "The edge didn't
+answer in 20 s" instead.
 
 ### Notifications
 
@@ -480,10 +548,11 @@ Telegram is then optional: the web chat can stand alone.
   a 403 refuses the edge's signature, and the device is kept), and anything the store refused.
 - **What it costs:** nothing new. It rides on the call a run already makes to the door with each
   reply: one read of the store, and one request a device. The page's service worker (`sw.js`) lives
-  on your device, caches nothing, and sleeps until a notification or a share.
+  on your device, keeps the page's own files (never what it reads), and sleeps until a
+  notification, a share or the page loading.
 - **Android's share menu:** with the chat installed from Chrome, **Shipify** is in Android's share
   menu. Share a photo, a PDF or a link: New chat opens with it attached, as 📎 does (5 files,
-  10 MB each), and nothing is sent until you add words and tap **Send**. A file waits for the
+  95 MB each), and nothing is sent until you add words and tap **Send**. A file waits for the
   chat's menu to load; with the file store off, it says "Files aren't set up" instead. Not on an
   iPhone, or in Chrome on a PC.
 - **A new key** (`pnpm ship add webchat --new --yes`): each device turns them on again by itself
@@ -506,9 +575,10 @@ pnpm ship add webchat --yes  # does it, one checked step at a time
    itself, Access doesn't cover `/admin` yet: change the "shipify status" application's path to
    `admin/*`, then run it again.
 3. **you:** adds `"web": "me"` to your entry in `SHIPIFY_PEOPLE`.
-4. **files:** reads the deployed Worker's bindings from Cloudflare, with your deploy token. `FILES`
-   bound: files are on. Not bound: it says so, and words still work. The deploy creates the store;
-   the token needs **Workers KV Storage: Edit** ([setup.md](setup.md#tokens-and-secrets)).
+4. **files:** reads the deployed Worker's bindings from Cloudflare, with your deploy token. `BUCKET`
+   bound: files are on. Not bound: it says so, and words still work. The deploy creates the R2
+   bucket; the token needs **Workers R2 Storage: Edit**, and R2 a card on the account once
+   ([setup.md](setup.md#tokens-and-secrets)).
 5. **notify:** makes the notifications' key on your PC and puts it on the Worker (`WEB_PUSH_KEY`),
    unless it's there already (`--new` makes a new one). With no default channels yet, `web` becomes
    yours (`SHIPIFY_SEND`), so alerts, repeats and recipes notify you here too.
@@ -526,7 +596,7 @@ Each step checks itself first: run it again any time.
   there's no key of it to check: it runs a tool's check only when the tool has keys.
 - **Undo it:** `pnpm ship remove webchat --yes`. Your `web` id leaves `SHIPIFY_PEOPLE`, so nothing
   more comes in from the chat; `web` leaves `SHIPIFY_SEND`, and the notifications' key leaves the
-  edge. Its files expire by themselves after 7 days.
+  edge. Its files go with their chats, by the weekly clean-up; **Files → Delete** removes one now.
 - **A change to `executors.json` or `tools.json`** shows in the chat after the edge's next deploy
   ([troubleshooting.md](troubleshooting.md#the-web-chat)).
 

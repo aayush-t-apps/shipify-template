@@ -17,12 +17,13 @@ import tools from "../../../tools.json" with { type: "json" };
 import { CHANNELS } from "../channels/index.ts";
 import type { Deps, Env, Kept } from "../env.ts";
 import { devicesOf, kvOf, missing } from "../env.ts";
+import { cached } from "../cache.ts";
 import { github } from "../github.ts";
 import { publicKey, serviceOf } from "../push.ts";
 import { boxOf, runners, type Settings, statusTask, toBoxes } from "../settings.ts";
 import { MOST_BYTES, MOST_FILES } from "./files.ts";
 import { REPEAT_KINDS, REPEAT_WHEN, repeatModels } from "./forms.ts";
-import { read } from "./gh.ts";
+import { read, reader } from "./gh.ts";
 import { type Devices, type Menu, MOST_CHARS, type Setup } from "./shapes.ts";
 
 /** The tool in tools.json that sets the chat up: the one whose way in is the `web` door. */
@@ -98,8 +99,20 @@ export async function deviceId(endpoint: string) {
   return [...new Uint8Array(hash).slice(0, 4)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/**
+ * The status task, with its ETags, kept a minute: the menu, Setup and Repeats read it, and its
+ * record changes only when the watch writes it.
+ */
+export const statusOf = (env: Env, deps: Deps) =>
+  cached(
+    `web:status:${env.GITHUB_REPO}`,
+    60_000,
+    () => statusTask(github(env, deps), reader(env, deps)),
+    deps.now(),
+  );
+
 export async function menu(env: Env, deps: Deps, files: boolean): Promise<Menu> {
-  const record = await statusTask(github(env, deps))
+  const record = await statusOf(env, deps)
     .then((s) => s?.record)
     .catch(() => undefined);
   const key = pushKey(env);
@@ -136,7 +149,12 @@ export async function menu(env: Env, deps: Deps, files: boolean): Promise<Menu> 
 
 const list = (v: unknown) =>
   Array.isArray(v)
-    ? v.map((x) => (typeof x === "string" ? x : String((x as { name?: unknown })?.name ?? "")))
+    ? v.map((x) => {
+        if (typeof x === "string") return x;
+        // A pre-approved form names its call.
+        const o = x as { name?: unknown; call?: unknown };
+        return String(o?.name ?? o?.call ?? "");
+      })
     : v && typeof v === "object"
       ? Object.keys(v)
       : [];
@@ -145,8 +163,8 @@ export async function setup(env: Env, deps: Deps, s: Settings, chat: string): Pr
   const gh = github(env, deps);
   const kv = kvOf(env);
   const [raw, record, runs, devices] = await Promise.all([
-    runners(gh, deps.now(), 30_000).catch(() => []),
-    statusTask(gh)
+    runners(gh, deps.now(), 30_000, reader(env, deps)).catch(() => []),
+    statusOf(env, deps)
       .then((x) => x?.record)
       .catch(() => undefined),
     read<{ workflow_runs?: { id: number; status: string; display_title: string }[] }>(

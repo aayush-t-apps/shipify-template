@@ -29,9 +29,19 @@ to place each part quickly, not as a promise that it behaves the same in every d
 | **recipe** | a unit file in `/etc/cron.d`, under version control | a repeat written as a file, `recipes/<name>.md`: `when`, an optional `check` and `model`, the job as its body. Merging it approves it; its task, "Recipe: <name>", is its log ([recipes.md](recipes.md)) |
 | **example** | a sample config to copy | a recipe in `recipes/examples/`: not live until copied into `recipes/` |
 | **check** | a health probe | a reviewed script, `checks/<name>.mjs`, that prints one value to watch. A repeat or recipe runs it as the agent's user, with no keys, for a minute at most, and replies only when its output changes |
-| **pre-approved call** | a `sudoers` rule | a tool call `tools.json` allows with no `yes` (its `pre` forms, each fixing its call's target). Merging that file approves it. Never made after the web or a check; after a tool's reads only when its form names that tool in `after`, as a recipe that writes does |
+| **pre-approved call** | a `sudoers` rule | a tool call `tools.json` allows with no `yes` (its `pre` forms, each fixing its call's target, unless the call only makes something new). Merging that file approves it. Never made after the web or a check; after a tool's reads only when its form names that tool in `after`, as a recipe that writes does |
 | **profile** | a permission set | what the agent may touch in a run: **talk** (the web, the tools' look calls, and a project's or repo's code it clones itself when a question needs it), **work** (one project's or repo's clone, on its own branch, where it commits) or **read** (only the repos the task reads, files only: no command, no web, no key; a task that reads a repo outside your account, ADR 0044) |
 | **notebook** | your dotfiles | what Shipify remembers about you: issues labelled `notebook`, a page per topic, read by every run. `remember: …` adds a line, `forget: …` removes one, `/notebook` lists the pages |
+| **Library** | a home folder beside your dotfiles | the notebook with three reaches (ADR 0069): **always** (the notebook), a **project's** pages (`library` and `project:<name>`, read by its runs as data) and **on demand** (`library` alone: read only when a run asks). A run rewrites a Library page through `pages` in its result ([knowledge.md](knowledge.md)) |
+| **project** | a folder that holds related work | one you make: an issue `Project: <name>` labelled `project`, its brief its body (the goal, done when, not doing; `Repos: …` when it owns repos); its **chats** are its sub-issues (`Part of #n`, or moved in with `in-project`). It never closes by itself and is never a split parent. `project: <name>` makes one, and its main page, with no run. In what you read, "project" means only this; a repo Shipify builds is an **app** or a **package**, by its kind (ADR 0070). The code keeps its names (`work.project`, `projects/<id>`, the CLI's `<p>`), so nothing breaks |
+| **Now** · **Map** · **Log** | a status line · a table of contents · a changelog | the three blocks of a project's main page (`Notebook: <name>`), in this order (ADR 0070): **Now** (where it stands, what's next, open questions), kept by the runs that write the page; **Map** (what's where, each a link), read first with Now; **Log** at its foot, a dated line for each run's page writes, the newest 20, kept by the box alone |
+| **Sources** | a bibliography | a project's page `Notebook: <name>-sources`: each source once, with a short key (`[who-2024]`) that its facts cite, its link and the day it was read (ADR 0070). A research project's **matrix** (`<name>-matrix`: a row per source, a column per question) is built from it when you ask |
+| **Keep on page** · **check the project** | save to notes · a lint | words a project's chat takes (ADR 0070): **Keep on page** (the button under an answer, or "keep this on the page") files a reply's key facts on the project's pages, linked back, and updates Now; "check the project" lists contradictions, facts with no source, stale facts and findings that never reached a page, and writes nothing until "fix them" |
+| **clean start** | a fresh home folder | the fixed word that lists the open chats outside your projects that nothing keeps open, closed as done only after your `yes`, read again first; their files go 30 days later (ADR 0070) |
+| **Inbox** | a downloads folder | a project's page `Notebook: <name>-inbox`: `add <name>: …` and the web chat's **Add** put finds on it as comments, with no run; "collate the inbox" folds them into the project's page, each with its source |
+| **Journal** | a diary file | a Library page a month, `Journal 2026-11`: `jot: …` adds a dated line with no run; "organize my journal" proposes groups and projects, and moves nothing without your `yes` |
+| **Progress** | a long job's progress file | where a task's work stands (Goal, Done, Next, Decisions, Open): each run edits it in place as its `handoff.md` and the next starts from it; shown above its thread in the web chat, up to 16,000 characters (ADR 0069). One thing, two names: Progress to you, the handoff to the agent |
+| **Quiet** | an idle process, folded away | a task with no new word for 7 days: folded at the foot of the web chat's list, back up when anyone writes. Nothing closes after a quiet day; a chat outside a project closes after 30 quiet days (write on it to open it) |
 | **kept work** | a checkpoint | a failed or stopped work run's commits, pushed to the task's branch with no PR: where `continue` starts. Never into an open PR, never a new project's first push |
 | **stuck** (shown as **Stopped**) | a stopped process, waiting for `fg` | a task whose run ended before it finished (the box restarted), or whose words got no run at all: nothing starts it but your `continue`, and it alerts once |
 | **problem** | an error number with its message | an error, in one shape: what happened, and the one thing to do (`cli/contracts/problems.ts`) |
@@ -69,7 +79,7 @@ to place each part quickly, not as a promise that it behaves the same in every d
 | **registry** | the driver table | the one list where the core finds a kind's plug-ins: `agents/index.ts`, `channels/index.ts`, `tools.json`, `executors.json`, `stacks/` |
 | **conformance test** | a certification suite | the one test every plug-in of a kind passes (`tests/plugins/`, `tests/edge/channels.test.ts`, `tests/checks.test.ts`, `tests/recipes.test.ts`) |
 | **selftest** | the power-on self-test | `ship selftest`: each part's live check, end to end |
-| **app** | an installed program | what Shipify ships and hosts, keeping the project contract |
+| **app** | an installed program | what Shipify ships and hosts, keeping the app contract (`shipify.json`, the `make` targets, `/health`, its docs) |
 
 Words used only inside the code (decide, writes, apply, journal, cursor, snapshot, place):
 [design.md](design.md#inside-the-code).
@@ -83,7 +93,7 @@ Words used only inside the code (decide, writes, apply, journal, cursor, snapsho
 | **model** · **effort** | the CPU · its clock speed | what the agent thinks with (Claude Code's Haiku, Sonnet, Opus, Fable; pi's and OpenCode's through their gateway) · how hard (Claude Code's low to max, pi's and OpenCode's off to max). **Auto** is the agent's own: Sonnet, medium for Claude Code |
 | **gateway** | an upstream provider | where an agent's models are served, one key for many models (OpenRouter, Vercel's AI Gateway): `executors.json`'s `gateways`. Its key is that agent's login (`pnpm ship add openrouter`); its own list is searched by `/models <word>`. An agent goes through each gateway it lists: `pi` through its first, `pi-vercel` through the second |
 | **`result.json`** | a process's exit report | the only thing the agent hands the box: its reply, and what it asks for (a PR, calls, notes, a repeat) |
-| **handoff** | a shift handover note | the agent's note for the next run (`handoff.md` in its out folder: Goal, Done, Next, Decisions, Open), kept up to date as it works; the box keeps it in the status comment however the run ends |
+| **handoff** | a shift handover note | the task's **Progress** as the agent keeps it: `handoff.md` in its out folder, kept up to date as it works; the box keeps it in the status comment however the run ends |
 | **helper** | a child process | an agent's own subagent, started inside its run (Claude Code's). It works for the agent, under the same rules; its work counts once merged into the run's branch |
 | **tool** · **look** · **act** | a device · read · write | one of your apps a run can use (Notion, Drop): an MCP server in `tools.json`. **Look** calls read, while the agent thinks; **act** calls change, made by the box. `look at <repo>` is a look too: that repo read, depth 1, before the agent (ADR 0044) |
 | **bot** | a service account | the GitHub App that mints a run's one-hour tokens and opens its PRs on Shipify's own account (`ship bot`) |
@@ -92,11 +102,11 @@ Words used only inside the code (decide, writes, apply, journal, cursor, snapsho
 | **skill** · **playbook** | a man page · a runbook | how to do a kind of work well (`skills/`) · the steps for one job (`playbooks/`). A way of working you teach Shipify becomes a skill by PR, not a note |
 | **scenarios** | a skill's tests | a skill's `scenarios.md`: asks that should load it, near misses that shouldn't, and cases (what went wrong without it, what it does instead). Each lesson adds a case (`skills/writing-skills`) |
 
-## Projects
+## Apps and packages
 
 | Word | Like | Means |
 |---|---|---|
-| **project** | a package | one thing Shipify manages: a repo, a folder `projects/<id>`, a `shipify.json`. Its **kind** is `app` or `package` |
+| **app** · **package** | a package | one repo Shipify builds, by its **kind** in its `shipify.json`: an `app` (deployed and hosted) or a `package`. The code calls it a project (`projects/<id>`, `ship status <id>`); what you read says app or package (ADR 0070) |
 | **repo** | an outside package | a repo on any of your accounts with no `shipify.json` (named `<account>/<repo>` on another one): a change works on it its own way, its rules first, then Shipify's (a PR you merge, against its default branch), and adds nothing of Shipify's (ADR 0044, ADR 0045) |
 | **stack** | a base image | a project's starting point: language, framework, host, and its `make` targets. **Presets** are starting content |
 | **plan** | a proposal | a new project's one-page request (`plans/<id>.plan.md`). Merging its PR approves the build |

@@ -7,6 +7,286 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-11-03
+
+### Added
+
+- **One place for ideas, research and building (ADR 0070, task #655).** The pitch is "your own
+  assistant for ideas, research and building", with one loop: Capture, Keep, Think, Ship, Share
+  (`README.md`, `docs/product.md`, `docs/knowledge.md`: the desk, when to do what, growing a
+  project). Built in five parts, with no new service, key or store:
+  - **Keep it.** A run's page write leaves a page whose text changed after the run read it (your
+    edit, another chat's run), and says so: nothing of either is lost. A project's main page has
+    **Now** (where it stands, what's next, open questions), the **Map**, and at its foot a **Log**
+    the box keeps: a dated line for each run's page writes, the newest 20. A new project's main
+    page starts with an empty Now and Map. **Sources** (`<name>-sources`) keeps a key per source
+    that facts cite, and a synthesis matrix on ask (`skills/knowledge`). **Keep on page** sits
+    under an answer in a project's chat, on every channel; it and "keep this on the page" file the
+    reply's key facts on the pages, linked back, with Now updated.
+  - **See it.** A project's page in the web chat shows its Now and one next step, worked out on the
+    edge from counts its Library read has: a chat waiting on you, 10 finds in the Inbox (its
+    collate line now counts the items it took), a first question, a first answer kept, a check
+    while questions are open, Close. "check the project" lists contradictions, facts with no
+    source, stale facts and findings that never reached a page, and writes nothing until "fix
+    them". The weekly digest has a **Projects** line: finds to collate, chats waiting on you or
+    quiet a week, from one GraphQL read made only when it's said.
+  - **Find it.** Ctrl+K ends with **Find by meaning**: the edge's `api/search` asks GitHub's hybrid
+    issue search for your chats, projects and pages, kept a minute a query; past its 10 a minute
+    it searches by words and says so. It reads no comments, so an Inbox item is found by words.
+  - **Say it.** A repo Shipify builds is an **app** or a **package** in what you read, and
+    "project" means one you make (`docs/glossary.md`; Ctrl+K says Repo). The code keeps its names.
+  - **Start clean.** `clean start`, a fixed word, lists with no run the open chats outside your
+    projects that nothing keeps open; on `yes` the box reads them again and closes each as done, as
+    the 30-day close does. Nothing is deleted at once.
+- **Projects you make (ADR 0069, task #631).** `project: games` from any chat (or **New project**
+  in the web chat) opens an issue `Project: games`, labelled `project`, its brief its body, with no
+  run; `project: shop repos: shop-api, shop-web` names the repos it owns. Its chats are its
+  sub-issues (**New chat here**, or **Move to project** with the `in-project` label), 100 at most.
+  A chat's run gets the project's brief, its other chats and their states, and its pages; the
+  family read takes both levels and 100 sub-issues. A project never closes with its chats and is
+  never a split parent; a chat in it splits as any task does. With one repo, a change asked in a
+  chat goes to that repo.
+- **A project's pages, as data (ADR 0069).** Notebook pages labelled `library` and
+  `project:<name>` (`Notebook: games`, its Map first) reach that project's runs in a section of
+  their own, read as data, sharing the notebook's 16 KB after Preferences. `remember games: …`
+  adds a line to the main page. A run rewrites a page through `pages` in its result (the page's
+  whole text, in a file), and the box writes it with the notebook's checks: its own project's
+  pages; a Library page of no project only when the run read nothing from outside; never a page
+  every run reads.
+- **The Library and the Journal (ADR 0069).** A `library` page with no project reaches no prompt
+  until a run asks (`ship notebook list`, `ship notebook read`, which now read the Library too).
+  `jot: …` adds a dated line to this month's `Journal YYYY-MM` page, and `add <project>: …` an item
+  to the project's Inbox page: the door writes both at once, with no run. "collate the inbox" hands
+  the run the Inbox's items after its last `Collated up to item <id>` line, yours alone, and their
+  files. `docs/knowledge.md` is the process; `skills/knowledge` is how runs keep the pages.
+- **The web chat's files in R2, kept as long as their work (ADR 0069 part 1).** Every file you
+  send goes to one private R2 bucket, `shipify-web-files` (bound as `BUCKET`; the edge's deploy
+  makes it), streamed, up to 100 MB, with its chat's number; a new chat's files get theirs when
+  the door opens it. A file dragged into another chat is copied once for it; a file taken off the
+  box is deleted; Files lists every file newest first, by chat (and **No chat**), with its size,
+  **Delete** and the total. The weekly clean-up deletes a closed chat's files 30 days after it
+  closes (an open project keeps its own), through the door's `POST /door/files/forget`, which
+  takes only watch.yml's OIDC token. A run's files reach the edge up to 50 MB a reply. A file you
+  sent shares as a drop by its ref (`web:f-…`), with no copy on the `shipify-files` branch. The
+  files in KV are copied to R2 once, under their old keys, so old refs still open; KV keeps only
+  your model and your devices. The deploy token needs **Workers R2 Storage: Edit** (it had it).
+- **Drag and drop anywhere (ADR 0069 part 1).** A drop anywhere on the page attaches, with a
+  "Drop to attach" cue; on the list or a project's page it opens a new chat with it. A file in
+  Files or the doc pane drags into the box, **Share** sends it as a drop, and a paste over the
+  limit offers **Attach as a file**. A drop never sends.
+- **Progress and a lighter prompt for long threads (ADR 0069 part 3).** A run's handoff is seeded
+  with the last one (`out/handoff.md`), so a short run can't wipe it, and kept to 16,000
+  characters; the web chat shows it as **Progress**, folded above the thread. Past 40 KB of
+  conversation a run gets the newest 8 messages and every new one whole, and each older one as a
+  line; `ship task read <id>` prints one whole. A 200-message thread's prompt goes from 500 KB to
+  about 85 KB. The prompt lists the files earlier runs made. A run's start-up reads are one
+  GraphQL read (2 calls before the agent starts, from 5–6), and the playbook's rare how-tos moved
+  into skills (`new-project`, `own-rules-repo`, `repeats`, `recipes`): 3.7 KB less on every turn.
+- **Export (ADR 0069 part 7).** `export.js`, loaded on first use, builds a project's zip in the
+  browser with no library (README, `ALL.md`, pages, inbox, chats, files, `project.json`), and
+  **Export everything** of Files; no run. It says the size, then downloads, or puts the zip in a
+  new message to share as a drop.
+- **The Desk and projects in the web chat (ADR 0069 parts 4 to 8).** The first screen is the Desk
+  (`desk.js`): Needs you, Working, Projects with their open chats, the Library pages opened last,
+  Jot and New project; a phone's tabs are Desk, Projects, Files, Library, Setup. Projects come
+  first in the list, folded with their chats. A project's page (`project.js`) lists its chats and
+  pages, with **New chat here** (`under` on the send), **Add** to its Inbox, **Export** and
+  **Collate the inbox**; **Move to project** is on every chat's menu (`POST …/api/move`). The
+  Notebook view is the Library, grouped by project. The Repeats page and the Notebook view moved
+  out of the page into lazy parts, so the page stays at 40.8 of its 42 KB.
+- **A `do` option for Cloudflare apps: Durable Objects (ADR 0068, task #615).** `options: [do]`
+  in a plan gives a ts-worker or ts-static app live state and WebSockets in its own Worker: a
+  starter class `Counter` (binding `COUNTER`) in `src/worker/objects/`, declared in
+  `wrangler.jsonc`'s `exports` with SQLite storage (staging inherits it and gets its own bindings),
+  exported through one line of the entry, and a test. `localWorker()` (`tests/unit/support/`)
+  starts the whole Worker with wrangler's `unstable_startWorker`, with no new dependency; coverage
+  leaves `src/worker/objects/` out. Classes only add: the deploy stops before any change on a
+  deleted, renamed or moved class, non-SQLite storage, or `migrations`. Such an app gets no PR
+  previews (Cloudflare makes none), and the deploy token needs no new permission. ts-worker and
+  ts-static 1.2.0; nothing changes for an app without it.
+- **The Drop tool for Drop 0.3.0 (task #607).** `drop.list` shows each drop's link (Drop now
+  keeps it), or its people link; a `query` that finds one drop (by title or id) shows its files and
+  limits too. `drop.update` also takes `title`, `expiry` (from now), `limits` (`{"mb", "files"}`),
+  `files` to add (ones the task shared) and `delete_files`. A change of `share` keeps the link.
+  The `drop` skill gives the link from `list` instead of a new link, which stopped the old one.
+  Drop must be 0.3.0 or later.
+- **A new drop you ask for needs no second `yes` (task #607).** `drop.publish` is pre-approved in
+  `tools.json` (one a run, in a run that read nothing from outside): "make a sample doc and share
+  it" makes the drop in the same run, and the reply has its link. A pre-approved form takes `any`
+  (fields allowed with any value), and a call that only makes something new (`"new": true` in its
+  `args`) needs no target to fix. The box shares an answer's files before it makes the answer's
+  pre-approved calls, so such a call may name a file the same answer made. Changes and deletes
+  (`drop.update`, `drop.revoke`) still wait for your Yes.
+- **Answer who asks to open a drop (task #607).** `drop.list` with a query that finds one drop
+  shows who asks to open it, and `drop.update` takes `requests` (`{"<email>": "view", "add" or
+  "deny"}`), as Drop's Requests page answers them. The tool's requests were checked against the
+  admin page live Drop serves.
+- **`drop.list` shows the space your drops use (task #607)**, of Drop's cap ("Used 1.5 MB of 9 GB
+  in Drop."), each file's size when a query finds one drop, and an expired drop as expired. All
+  of it comes in the answers `list` already asks for.
+
+### Changed
+
+- **A run's context, simpler and said once (task #655).** A chat's prompt lists its project's
+  newest 30 chats and every one at work, waiting on you or failed; the rest are counted, with the
+  command that lists them. A page shown whole has no index line as well, and the rest are listed
+  by title and first line under how to read one. A project's run is pointed to your other
+  projects' pages (`ship notebook list`), with no new read. The task playbook points to the
+  prompt's notebook, pages and Finish sections instead of saying them again, and the glossary
+  names Progress and the handoff as one thing. `docs/knowledge.md` has a short "What a run gets".
+  ADR 0070, proposed, plans what comes next: Shipify as one place for ideas, research and building,
+  with ten upgrades on the same store (Keep on page, Now, Log, Sources, Check, search by meaning
+  through GitHub's own issue search, and more). Nothing in it is built until your `go`.
+- **Less waiting around a run (task #645).** Plan reads a task's open PRs and your repo lists at
+  the same time, and a box keeps the repo lists 10 minutes in the runner's own cache, so a run
+  soon after another skips two calls (about 2 s measured); a task that names a repo the kept list
+  hasn't got reads it again. Each step's timing line, with its `gh` calls, is in the job's log now
+  too, where GitHub's API reads it. The door reads a reply's comment, its 🚀 and its settings at
+  once.
+- **A run knows where its browser is (task #645).** The task playbook says a UI check or an e2e
+  test uses Playwright's headless Chromium in the slot's cache (`playwright install --only-shell
+  chromium`, once a slot, no `--with-deps`), beside its Containers rule.
+- **No task closes after a quiet day (ADR 0069 part 2, task #631).** An answered task stays open;
+  with no new word for 7 days it folds into **Quiet** at the foot of the web chat's list (opening
+  it reads the next page), and comes back up when anyone writes. Only a split's part still closes
+  a day after its answer; due lists only answered parts. The weekly clean-up closes, as completed,
+  a chat outside a project quiet for 30 days with no open PR, repeat, errand or open part, and not
+  waiting on you (`needs you`), its status line saying so; writing on it opens it again. Its two
+  new steps run once a week in all, however many boxes (the status record keeps their time).
+  "Closes by itself" is gone. A task's folder on a box goes after 7 unchanged days too, open or
+  not.
+- **Buttons that say nothing in the thread (ADR 0069 part 2).** Close, Reopen, Stop and Stop
+  repeating from the web chat send their word marked as a button's (`button` in its hidden line):
+  the thread doesn't show it, a close shows as a faint "Closed · 13:40", and Stop's answer goes to
+  the status comment's **Last action** line instead of a reply. Typed words get a reply, as before.
+- **The box skips Library pages and a project's opening (ADR 0069).** `task.yml` starts no job for
+  a page labelled `library`, or for a `project` opened or edited; the box runs no agent for one
+  either, and the watch marks neither Stopped.
+
+### Fixed
+
+- **A run is told what its prompt is missing (task #655).** When the box couldn't read the
+  notebook, a project's pages or a chat's project, or left a page out because someone other than
+  you or a run last edited it, the run's notes say so in a line, and the playbook tells it to say
+  so in its reply. Before, the gap was silent.
+- **The web chat's phone header and a project's page, cleaner (task #652).** On a phone a
+  thread's header held five round buttons, and its tags ran under them: now it keeps Back, the
+  title, ↻ and ⋯, with **Find in this chat** and **Close** or **Reopen** in ⋯, and the tags stop at
+  the title's edge. A project's card is shut till you open it. A chat's run in a project got only
+  the other chats' titles, and guessed what a word meant there: its prompt now tells it to read the
+  chats that bear on the ask, and the project's pages, before it answers, and to ask rather than
+  guess. In the Library, a project's pages say what they are: its **Main page** first, or a line
+  that none is written yet and how one comes, then its **Inbox**, whose items wait for "collate
+  the inbox". Making a project now makes its main page too (`Notebook: <name>`, your brief and an
+  empty Map), so every project starts the same; a page a closed project of that name left is
+  kept, not made twice.
+- **A new project said "Starting…" and nothing ran (task #645).** A project's own words, and any on
+  a Library page, start no run, but the page showed "Starting…" under them for 10 minutes and read
+  the list every 10 seconds. The thread now marks such words `norun`, and the page waits for no run
+  there. A task's **Progress**, open, keeps its line in sight at the top to fold it, scrolls in
+  itself without moving the thread, takes at most 40% of the screen, and reads in smaller text.
+- **A chat moved into a project stayed under General (task #645).** It has no `Part of` line, so
+  the list knew its project only once the project's fold read it, and that read was kept a minute
+  and never again. The list and the chat's thread now name its project from GitHub's link (one
+  GraphQL call for all the moved chats, each kept a day), and the page's own guess from the fold
+  is gone; a move forgets the project's kept chats. A project's page says in a line what to do
+  there: Send starts a chat, a chat below carries on, Add keeps a find.
+- **The web chat after ADR 0069's release (task #638).** No more "Something went wrong on this
+  page" on New chat, the Desk, the Library and every thread: a view with no Progress kept `false`
+  as its fold, and the next draw called `false.remove()`. An upload goes straight into R2, never
+  waiting for the one-time copy of KV's old files, and one whose answer doesn't come in 2 minutes
+  after it's sent fails with Retry, never "Uploading…" for good.
+- **A message with a photo failed as "Offline", every try (task #638).** It waited for a step of
+  the one-time copy of KV's files to R2 (each file a read of KV and two writes), past the page's
+  20 s, and a request cut off left its step unfinished for the requests after it. No request waits
+  for the copy now: it runs one step a cron tick, after the watch, and every read and send uses R2
+  alone. An answer late from the edge says "The edge didn't answer in 20 s" and is sent again by
+  itself (same id, so never twice); "Offline" is only a network that's gone. An upload with
+  nothing sent for a minute fails with Retry too.
+- **A repo's page that never opened (task #638).** The Shipify repo's page read Files, which waited
+  for the same copy, and a page whose read failed stayed grey placeholders for good. A page that
+  can't be read now says why, with Retry. A part of the page that didn't load once (offline) loads
+  again on the next tap, not only after a reload. A repo's group links its page with `</>` and
+  "<Name> · repo", apart from a project you made (▦). A note that ends with a date keeps it: never
+  "(2026-10-09) (2026-10-09)".
+- **ADR 0069's build, reviewed before its merge (task #631).** Project memory works:
+  - A run's page writes reach the box: it took out only the files named in `files`, so a page's
+    new text was never there to write. A page file that is one of the box's own is set aside.
+  - A rewrite keeps the door's hidden first line, which names you: a collated Inbox (or a Journal
+    after `remember` or `forget`) stays yours, and is read again.
+  - The agent's own `ship notebook` trusts what the door wrote for you: a run gets your login, your
+    people and the door App's slug (its public name; the sandbox lets that one through), never a
+    read run or one on another account.
+  - A split in a project's own thread is refused (its parts could never start), and a read run
+    writes no page. A read run gets a long thread whole: it has no command to read an older one.
+  - A full Progress keeps its goal and its newest end; the middle goes. `remember Preferences: …`
+    no longer reads the list of projects.
+  - The edge: `add <name>: …` with no open project of that name opens a task, as any words do
+    ("Add tests: …"). **Move to project** moves a chat once, and says why it can't (in a project
+    already, a split's part, an issue with a parent), saying "full" only for a 100-chat project. A
+    file is 95 MB at most, inside Cloudflare's 100 MB a request. A copy of a file no chat takes is
+    deleted. The copy from KV goes a step at a time from its mark, so it never starts over, and is
+    removed a week after it deploys (the roadmap). `ship door check` and `ship door setup` check the
+    R2 bucket, and name the fix when R2 is off or the token can't reach it.
+  - The weekly clean-up: a closed project takes only its closed chats' files and its pages'; an
+    open chat keeps its own. The quiet close is at 30 days, not 90 (your pick). It leaves a task
+    that needs you open, and its search leaves out what it never closes and reads the oldest
+    first, so projects and pages can't fill its 100. Its steps are timed from the clean-up's start, so they run every week, not every
+    second one. A task's folder on a box goes after 7 unchanged days. Its summary says what really
+    happened ("deleted 12 files (8 MB) of 4 closed chats").
+  - The web chat: the phone's Desk reads the list again while it shows (it never refreshed). A
+    project's fold keeps no ETag of the project page's own read, which showed a stale page. A
+    project's box sends with `under` from the page itself, so its Send never opens a chat outside
+    the project, or two. The tabs keep the app's history, so Back stays in it. Export reads every
+    message of a long chat, asks first past 50 MB of files, stores files where the browser can't
+    compress, and names each one safely. The page's budget counts the Desk, its first screen: with
+    it the page was 44.5 KB, over 42; the Library, Find in this chat, diagrams, a file's upload,
+    New project's form and three parts' styles now load when first used (41.5 KB).
+- **A split's part could never close a day after its answer:** the run's copy of its labels kept
+  only the state label, so decide never saw `sub-task`. It keeps them all now.
+- **The web chat, swept (ADR 0069's part 0, task #631).** A thread past 100 messages opened
+  almost empty (101 showed 1) and could skip a message landing at the 100 mark: it opens with its
+  newest 40 or more, and a poll past page 1 reads what's new by time. A project's tab row, which
+  kept closed chats, is gone: the project's name in the thread's header links to its page, and
+  Ctrl+K with nothing typed lists the chats opened last. The page opens offline (its worker keeps
+  its own files, network first, never `api/`). Drafts and attached files survive the app being
+  closed; times tick; ↓ shows whenever you're scrolled up; a thread has a search box, and code
+  blocks a Copy button; the timer is quiet for screen readers; a close no longer looks undone;
+  Safari's IME Enter doesn't send; the working dot honours reduced motion; touch targets are
+  44 px. Faster and lighter: the page's files answer 304; the edge keeps a read 8 s (past the
+  5-second poll), reads a thread's issue and comments at once, a PR's state for a minute, the
+  runners and status task with ETags, and caps its memory; the page writes each thread on its own
+  when idle, redraws a thread only when its task changed, keeps diagrams drawn, waits on search
+  keys, and frees its menus' listeners and object URLs. New repeat and the model picker load when
+  first used (`repeat.js`, `pick.js`), taking the page from 40.8 KB to 39.4.
+- **A part's `close` from a chat starts what waited for it (task #621).** The door closed the
+  part, then wrote the word as a setting. GitHub keeps one waiting run per task and the newest
+  takes its place, so while a run was under way the setting's run (which skips) replaced the
+  close's: no run saw to it, and #616 never started. A part's close is now written as words.
+- **A deploy GitHub holds for approval is told, with its run (task #621).** A new project's
+  first push by the bot was held ("this workflow file may be malicious"), and the task would
+  only have said, 30 minutes on, that the deploy never showed up. It now says so at once, with
+  the run's link, and follows the deploy on, so "Live" still comes after you approve it.
+- **A PR asked for again gets the run's title and description (task #621).** An open PR kept
+  its first description, so a `closes` PR asked again as `part-of` still said `Closes` and its
+  merge would close the task. A part's prompt and the playbook also say a `new:` plan, or a big
+  change's doc, is `part-of`.
+- **A merged plan always finds its task (task #614).** The plan file is the link: a `new:` run's
+  commits that write `plans/<id>.plan.md` set the task's plan, and its PR is the plan's (the
+  result's `plan` field is gone, so nothing is left to forget). `ship task plans` starts the task
+  the plan's `task:` line names, and `publish` and `go` find a merged plan the same way. Before,
+  a result with no `plan` recorded the plan's PR as a change doc: the merge started nothing, and
+  `go` took the big-change path.
+- **`drop.update` takes `limits.mb` up to 2000**, as Drop's Details form does: it allowed 10000,
+  more than Drop holds in one drop.
+- **The web chat's Setup shows a tool's pre-approved calls** ("Without asking"), by their call:
+  it showed blanks.
+- **A sub-task the box closes starts what waited for it (ADR 0066, task #605).** A new project's
+  part closed by its first deploy, or an answered part closed after a quiet day, started no close
+  run, so the parts after it never started and the parent never closed. The deploy's run now does
+  the part's close step itself, and the due run starts a part's run (no agent) after its quiet-day
+  close. A reply's `go #n` is a button in every chat.
+
 ## [0.1.17] - 2026-10-28
 
 ### Added
@@ -43,6 +323,10 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 - **Weekly lessons kept in their skills:** `systematic-debugging` checks the box's uptime and reset
   cause when a run loses communication. `verification-before-completion` has six new checks for
   work that repeats the product, and both skills have a `scenarios.md`.
+- **More weekly lessons kept in their skills:** `systematic-debugging` checks the value a tool's
+  process received before it blames a key's setting. `codebase-design` checks the stack's preview
+  flow before it proposes a Cloudflare binding. `verification-before-completion` reads a PR's
+  description before it says the PR's kind changed.
 
 ### Fixed
 

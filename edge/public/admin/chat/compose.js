@@ -1,6 +1,6 @@
 // @ts-check
-// Shipify chat: helpers, the box you write in (files, photos, / commands), New repeat, and the
-// model picker.
+// Shipify chat: helpers, and the box you write in (files, photos, / commands). The model picker
+// (pick.js), a file's upload (attach.js) and New repeat (repeat.js) load the first time they open.
 
 /**
  * An element: "tag.class", then attributes if any (`on…` listen), then children (falsy left out).
@@ -78,25 +78,30 @@ export function icon(n) {
   s.append(p);
   return s;
 }
-const fail = (j, off = false) =>
+export const fail = (j, off = false) =>
   Object.assign(new Error(j?.error || (off ? "Offline" : "The edge gave an odd answer")), {
     fix: j?.fix ?? "Try again in a minute.",
     off,
   });
 
 const tags = {};
-// GETs (or POSTs) JSON under api/; null means unchanged (304). Given up after 20s, as offline, so
-// a stalled network never stops the polling. The chat's routes never redirect: a redirect is
-// Access's sign-in, its session ended (followed, it would fail as if offline, and stay stale).
-export async function api(p, body) {
-  const headers = { "x-shipify-chat": "1", "if-none-match": (!body && tags[p]) || "" };
+// GETs (or POSTs) JSON under api/; null means unchanged (304). Given up after 20s, so a stalled
+// network never stops the polling: with the network up, that's the edge slow (`late`), never
+// "Offline". The chat's routes never redirect: a redirect is Access's sign-in, its session ended
+// (followed, it would fail as if offline, and stay stale).
+// A GET's ETag is kept by `k`, its path unless said: "" keeps none, for a read whose answer is
+// kept apart from the path's (a 304 is only for the copy that has its ETag).
+export async function api(p, body, k = p) {
+  const headers = { "x-shipify-chat": "1", "if-none-match": (!body && tags[k]) || "" };
   if (body) headers["content-type"] = "application/json";
   /** @type {RequestInit} */
   const init = { method: body ? "POST" : "GET", headers, body: body && JSON.stringify(body) };
   init.signal = AbortSignal.timeout(2e4);
   init.redirect = "manual";
-  const r = await fetch(`api/${p}`, init).catch(() => null);
-  if (!r) throw fail(null, true);
+  const r = await fetch(`api/${p}`, init).catch((e) => e);
+  if (r?.name === "TimeoutError" && navigator.onLine !== false)
+    throw Object.assign(fail({ error: "The edge didn't answer in 20 s" }), { late: true });
+  if (!r || r instanceof Error) throw fail(null, true);
   if (r.type === "opaqueredirect")
     throw Object.assign(fail({ error: "Your sign-in ended", fix: "Tap to sign in again." }), {
       signin: true,
@@ -104,53 +109,37 @@ export async function api(p, body) {
   if (r.status === 304) return null;
   const j = await r.json().catch(() => null);
   if (!r.ok || !j || j.error) throw Object.assign(fail(j), { status: r.status });
-  if (!body) tags[p] = r.headers.get("etag") || "";
+  if (!body && k) tags[k] = r.headers.get("etag") || "";
   return j;
 }
 
-function upload(f, onp) {
-  const x = new XMLHttpRequest();
-  const p = new Promise((ok, no) => {
-    x.open("POST", "api/file");
-    x.responseType = "json";
-    x.setRequestHeader("x-shipify-chat", "1");
-    x.setRequestHeader("content-type", f.type || "application/octet-stream");
-    x.setRequestHeader("x-file-name", encodeURIComponent(f.name));
-    x.upload.onprogress = (e) => onp(e.loaded / e.total);
-    x.onload = () => (x.status < 300 && x.response?.ref ? ok(x.response) : no(fail(x.response)));
-    x.onerror = () => no(fail(null, true));
-    x.onabort = x.onerror;
-    x.send(f);
-  });
-  return { p, abort: () => x.abort() };
-}
-
-// A photo at most 2048px, the right way up, without EXIF or location; small PNGs as they are.
-async function shrink(f) {
-  if (!/^image\/(jpeg|png|webp|heic|heif)$/.test(f.type)) return f;
-  try {
-    const b = await createImageBitmap(f, { imageOrientation: "from-image" });
-    const s = Math.min(1, 2048 / Math.max(b.width, b.height));
-    if (f.type === "image/png" && s === 1) return f;
-    const c = h("canvas", { width: Math.round(b.width * s), height: Math.round(b.height * s) });
-    const g = c.getContext("2d");
-    g.fillStyle = "#fff";
-    g.fillRect(0, 0, c.width, c.height);
-    g.drawImage(b, 0, 0, c.width, c.height);
-    const o = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.85));
-    return o ? new File([o], `${f.name.replace(/\.\w+$/, "")}.jpg`, { type: "image/jpeg" }) : f;
-  } catch {
-    return f;
+/** A file deleted (ADR 0069): Files' Delete, one taken off the box, an old draft's. */
+export const unfile = (ref) =>
+  fetch(`api/file/${ref}`, { method: "DELETE", headers: { "x-shipify-chat": "1" } });
+// A draft untouched for 30 days goes, with the files sent up for it.
+try {
+  for (const k of Object.keys(localStorage)) {
+    const d = /^shipify-draft-/.test(k) && JSON.parse(localStorage[k]);
+    if (Date.now() - (d?.t || Date.now()) > 2592e6) {
+      localStorage.removeItem(k);
+      for (const f of d.f || []) if (f.u) unfile(f.ref).catch(Boolean);
+    }
   }
-}
+} catch {}
 
 export function pop(at, items, cls = "") {
-  $(".pop")?.remove();
+  $(".pop")?.close();
   const m = h(`div.pop${cls && `.${cls}`}`, {
     role: "menu",
     onkeydown: (e) => e.key === "Escape" && close(),
   });
-  const close = () => m.remove() || removeEventListener("click", off, true);
+  // Closed, it lets go of what it listened with.
+  const close = () => {
+    m.remove();
+    ro.disconnect();
+    removeEventListener("click", off, true);
+  };
+  m.close = close;
   const off = (e) => m.contains(e.target) || close();
   const item = ([l, f]) => h("button", { type: "button", onclick: () => close() || f() }, l);
   // A string is a heading over the items; an element goes as it is.
@@ -168,9 +157,10 @@ export function pop(at, items, cls = "") {
       `${Math.max(4, Math.min(r.left, innerWidth - m.offsetWidth - 4))}px`,
     );
   left();
-  new ResizeObserver(left).observe(m);
+  const ro = new ResizeObserver(left);
+  ro.observe(m);
   m.querySelector("button")?.focus();
-  setTimeout(() => addEventListener("click", off, true));
+  setTimeout(() => m.isConnected && addEventListener("click", off, true));
   return item;
 }
 
@@ -185,21 +175,35 @@ const NONE = { models: [], commands: [], files: {} };
 
 /**
  * The box you write in; `o.send(body, previews, note)` takes over once it's sent.
- * @param {{menu:any, task?:number, model?:string, words?:string, root:any, send:Function, label?:Function, fill?:Function, attach?:Function, stop?:Function|false, state?:Function}} o
+ * @param {{menu:any, task?:number, dk?:number, model?:string, words?:string, root:any, send:Function, label?:Function, fill?:Function, attach?:Function, stop?:Function|false, state?:Function}} o
  */
 export function composer(o) {
   // The menu as it is now: a newer one comes in place (`o.menu`), the box kept as it is.
   const m = () => o.menu || NONE;
   const touch = matchMedia("(pointer:coarse)").matches;
-  let files = [];
+  // Your words and files sent up wait in the browser, a key a task, till they're sent: iOS closing
+  // the app loses neither. A project's box (ADR 0069) replies to none: its draft is by its number.
+  const DK = `shipify-draft-${o.dk || o.task || 0}`;
+  let kept = "";
+  let was = {};
+  try {
+    was = JSON.parse(localStorage.getItem(DK) || "{}");
+    if (was.w || was.f) kept = JSON.stringify({ w: was.w, f: was.f });
+  } catch {}
+  let files = (was.f || []).map((f) => ({ ...f, abort() {} }));
   let use = "";
   let warned = "";
   let msg = "";
   const ta = h("textarea", { rows: 1, "aria-label": "Message" });
   Object.assign(ta, {
     placeholder: o.task ? "Reply" : "Ask anything, or attach a file",
-    value: o.words || "",
+    value: o.words || was.w || "",
   });
+  // `u`: sent up from this box, so taking it off (or the draft going) deletes it.
+  const refs = () =>
+    files
+      .filter((f) => f.ref)
+      .map(({ ref, name, type, size, u }) => ({ ref, name, type, size, u }));
   const hint = h("p.hint", { "aria-live": "polite" });
   const tray = h("div.tray");
   const cmds = h("div.cmds", { hidden: true });
@@ -244,12 +248,28 @@ export function composer(o) {
     const sec =
       warned &&
       "This looks like a secret: use pnpm ship add <tool> on your PC instead. Send again to send it.";
-    hint.textContent =
-      msg || bad || (up && "Uploading…") || (bare && "Say what they're for.") || sec;
+    const as = long &&
+      m().files.on && [
+        " ",
+        h("button.btn", { type: "button", onclick: asFile }, "Attach as a file"),
+      ];
+    set(hint, msg || bad || (up && "Uploading…") || (bare && "Say what they're for.") || sec, as);
+    const f = refs();
+    const k = w || f.length ? JSON.stringify({ w: ta.value, f }) : "";
+    if (k === kept) return;
+    kept = k;
+    try {
+      // When it changed last (`t`): a draft untouched for 30 days goes (above).
+      if (k) localStorage.setItem(DK, JSON.stringify({ w: ta.value, f, t: Date.now() }));
+      else localStorage.removeItem(DK);
+    } catch {}
   };
   o.state = state;
+  // Taken off the box: one sent up from it is deleted at once (ADR 0069).
   const drop = (it) => {
     it.abort();
+    if (it.url) URL.revokeObjectURL(it.url);
+    if (it.u && it.ref) unfile(it.ref).catch(Boolean);
     files = files.filter((f) => f !== it);
     draw();
   };
@@ -261,6 +281,7 @@ export function composer(o) {
     );
     const retry = it.err && h("button", { type: "button", onclick: () => put(it) }, "Retry");
     const bar = !it.ref && !it.err && h("progress", { max: 1, value: it.p });
+    it.bar = bar;
     const name = h("span", it.name, h("small", it.err || size(it.size)));
     return h(
       "div.att",
@@ -272,8 +293,15 @@ export function composer(o) {
     );
   };
   const draw = () => set(tray, files.map(att)) || state();
-  const put = (it) => {
-    const u = upload(it.file, (p) => Object.assign(it, { p }) && draw());
+  // A file added is made smaller if a photo, then sent up: attach.js, loaded the first time.
+  const put = async (it) => {
+    const { upload } = await import("./attach.js");
+    if (!files.includes(it)) return;
+    // Its bar moves where it is: the tray isn't drawn again for each step.
+    const u = upload(it.file, o.task, (p) => {
+      it.p = p;
+      if (it.bar) it.bar.value = p;
+    });
     Object.assign(it, { err: "", p: 0, abort: u.abort });
     const no = (e) => Object.assign(it, { err: `${e.message}: ${e.fix}` });
     u.p.then((r) => Object.assign(it, r), no).finally(draw);
@@ -281,6 +309,14 @@ export function composer(o) {
   };
   const add = async (list) => {
     msg = "";
+    const shrink = await import("./attach.js").then(
+      (a) => a.shrink,
+      () => 0,
+    );
+    if (!shrink) {
+      msg = "Files didn't load: try again once you're online.";
+      return draw();
+    }
     for (const f0 of list) {
       if (files.length >= m().files.most) {
         msg = `At most ${m().files.most} files a message.`;
@@ -291,7 +327,7 @@ export function composer(o) {
       else {
         if (/^(audio|video)\//.test(f.type)) msg = "A run can't listen to or watch this.";
         const url = /^image\//.test(f.type) && URL.createObjectURL(f);
-        const it = { file: f, name: f.name, type: f.type, size: f.size, url };
+        const it = { file: f, name: f.name, type: f.type, size: f.size, url, u: 1, abort() {} };
         files.push(it);
         put(it);
       }
@@ -305,7 +341,9 @@ export function composer(o) {
     o.after?.();
   };
   // What's ticked is what the task's runs use; a pick stays until you pick again.
-  chip.onclick = () => picker(chip, m(), now, choose, o.task);
+  // The picker is pick.js, loaded the first time, with its stylesheet.
+  chip.onclick = () =>
+    import("./pick.js").then((p) => p.init().then(() => p.picker(chip, m(), now, choose, o.task)));
   // A reply's Another model: the same picker.
   o.pick = () => chip.onclick();
   const fill = (c) => {
@@ -330,13 +368,12 @@ export function composer(o) {
       warned = words;
       return state();
     }
-    const refs = files.map(({ ref, name, type, size }) => ({ ref, name, type, size }));
     // A new chat on the default agent's Auto needs no `use` line.
     const p = read(m(), use);
     const plain = !o.task && p.a === (m().agents?.[0] || p.a) && p.model === "auto" && !p.effort;
     const u = plain ? undefined : use || undefined;
     const prev = files.filter((f) => f.url).map((f) => f.url);
-    o.send({ id: uid(), task: o.task, words, use: u, files: refs }, prev);
+    o.send({ id: uid(), task: o.task, words, use: u, files: refs() }, prev);
     o.model = use || o.model;
     Object.assign(ta, { value: "" }).style.height = "";
     files = [];
@@ -353,12 +390,21 @@ export function composer(o) {
     state();
   };
   ta.onkeydown = (e) => {
-    if (e.key !== "Enter" || e.shiftKey || touch || e.isComposing) return;
+    // Safari ends a word being composed (Japanese, Chinese…) with an Enter of its own: 229.
+    if (e.key !== "Enter" || e.shiftKey || touch || e.isComposing || e.keyCode === 229) return;
     e.preventDefault();
     submit();
   };
-  const shot = () => `screenshot-${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}.png`;
-  const named = (x) => (x.type === "image/png" ? new File([x], shot(), { type: x.type }) : x);
+  const now14 = () => new Date().toISOString().replace(/\D/g, "").slice(0, 14);
+  const named = (x) =>
+    x.type === "image/png" ? new File([x], `screenshot-${now14()}.png`, { type: x.type }) : x;
+  // A paste over the limit: the words go as a file, and the box is free for a line about it.
+  function asFile() {
+    const f = new File([ta.value], `message-${now14()}.txt`, { type: "text/plain" });
+    ta.value = "";
+    ta.oninput();
+    add([f]);
+  }
   ta.onpaste = (e) => {
     const f = [...(e.clipboardData?.files || [])];
     if (!f.length || !m().files.on) return;
@@ -382,10 +428,8 @@ export function composer(o) {
   o.add = (l) => held.push(...l) && state();
   pick.onchange = () => add([...pick.files]) && Object.assign(pick, { value: "" });
   clip.onclick = () => pick.click();
-  o.root.ondragover = (e) => e.preventDefault();
-  o.root.ondrop = (e) => e.preventDefault() || (m().files.on && add([...e.dataTransfer.files]));
   o.label();
-  state();
+  draw();
   if (!touch) setTimeout(() => ta.focus());
   const field = h("div.field", tray, ta, h("div.under", clip, chip, go));
   const f = h("form.compose", cmds, field, hint, pick);
@@ -394,151 +438,7 @@ export function composer(o) {
   return f;
 }
 
-/** "1st", "2nd", "3rd", "4th"… */
-const nth = (n) =>
-  `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`;
-const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-/** How often, each as the words its schedule starts with. */
-const OFTEN = [
-  ["day", "Daily"],
-  ["weekday", "Weekdays"],
-  ["week", "Weekly"],
-  ["month", "Monthly"],
-  ["hours", "Every few hours"],
-  ["own", "Your words"],
-];
-
-/**
- * When a repeat runs, picked rather than typed: how often, then only what that needs (a day, a
- * date, the hours) and the time, said back as the words the box reads ("every Monday at 09:00")
- * in your time zone. "Your words" takes any schedule the box reads, with examples.
- */
-function whenPicker(r) {
-  let often = "day";
-  const time = h("input", { type: "time", value: "09:00", step: 60 });
-  const day = h(
-    "select",
-    DAYS.map((d) => h("option", d)),
-  );
-  const date = h(
-    "select",
-    Array.from({ length: 28 }, (_, i) => h("option", { value: String(i + 1) }, nth(i + 1))),
-  );
-  const every = h(
-    "select",
-    [1, 2, 3, 4, 6, 8, 12].map((n) =>
-      h("option", { value: String(n) }, n === 1 ? "every hour" : `every ${n} hours`),
-    ),
-  );
-  const from = h("input", { type: "time" });
-  const to = h("input", { type: "time" });
-  const own = h("input", { placeholder: "every Monday at 9" });
-  const eg = (x) => {
-    const pick = () => {
-      own.value = x;
-      draw();
-    };
-    return h("button.chip", { type: "button", onclick: pick }, x);
-  };
-  const egs = h("p.links", r.when.split(", ").filter(Boolean).map(eg));
-  const at = h("label", "At", time);
-  const parts = {
-    day: [at],
-    weekday: [at],
-    week: [h("label", "On", day), at],
-    month: [h("label", "On the", date), at],
-    hours: [
-      h("label", "How often", every),
-      h("label", "From (optional)", from),
-      h("label", "To", to),
-    ],
-    own: [h("label.wide", "Say it", own), egs],
-  };
-  const words = () => {
-    const t = time.value || "09:00";
-    if (often === "day") return `every day at ${t}`;
-    if (often === "weekday") return `every weekday at ${t}`;
-    if (often === "week") return `every ${day.value} at ${t}`;
-    if (often === "month") return `on the ${nth(Number(date.value))} of every month at ${t}`;
-    if (often === "hours") {
-      const n = Number(every.value);
-      const base = n === 1 ? "every hour" : `every ${n} hours`;
-      return from.value && to.value ? `${base} from ${from.value} to ${to.value}` : base;
-    }
-    return own.value.trim();
-  };
-  const box = h("div.parts");
-  const said = h("p.hint", { "aria-live": "polite" });
-  const chips = OFTEN.map(([k, label]) => {
-    const choose = () => {
-      often = k;
-      draw();
-    };
-    return h("button.chip", { type: "button", onclick: choose }, label);
-  });
-  const draw = () => {
-    box.replaceChildren(...parts[often]);
-    for (const [i, c] of chips.entries())
-      c.setAttribute("aria-pressed", String(OFTEN[i][0] === often));
-    const w = words();
-    // A time of day is your zone's: said, so "09:00" is never read as another zone's.
-    const zone = /\d:\d\d$/.test(w) && r.zone ? ` ${r.zone}` : "";
-    said.textContent = w ? `Runs ${w}${zone}.` : "Say when it runs.";
-  };
-  for (const x of [time, day, date, every, from, to, own]) x.oninput = x.onchange = draw;
-  draw();
-  return { root: h("div.when", h("b", "When"), h("p.links.often", chips), box, said), words };
-}
-
-/** The New repeat form, checked here first; `done(task)` once it's made. */
-export function repeatForm(menu, done) {
-  const r = menu?.repeat || { kinds: [], models: [], when: "", zone: "" };
-  const id = uid();
-  const opts = (a) => a.map((k) => h("option", k));
-  const what = h("textarea", { rows: 2 });
-  const when = whenPicker(r);
-  const check = h("input");
-  const kind = h("select", opts(r.kinds));
-  const model = h(
-    "select",
-    r.models.map((o) => h("option", { value: o.words }, o.label)),
-  );
-  const cw = h("label", "Check", check);
-  const mw = h("label", "Model", model);
-  const err = h("p.hint", { "aria-live": "polite" });
-  const b = h("button.primary", "Create");
-  kind.onchange = () => {
-    cw.hidden = !/^A check/i.test(kind.value);
-    mw.hidden = /^A (check|reminder)/i.test(kind.value);
-  };
-  kind.onchange();
-  const f = h("form.card.form", h("label", "What", what), when.root);
-  f.append(h("label", "Kind", kind), cw, mw, b, err);
-  f.onsubmit = async (e) => {
-    e.preventDefault();
-    const v = { id, what: what.value.trim(), when: when.words(), kind: kind.value };
-    if (!cw.hidden) v.check = check.value.trim();
-    if (!mw.hidden && model.value) v.model = model.value;
-    err.textContent =
-      (!v.what && "Say what it should do.") ||
-      (!v.when && "Say when it runs.") ||
-      (!v.kind && "Pick a kind.") ||
-      (v.check === "" && "Name the check.") ||
-      "";
-    if (err.textContent) return;
-    b.disabled = true;
-    const s = await api("repeat", v).catch(
-      (x) => Object.assign(err, { textContent: `${x.message}: ${x.fix}` }) && 0,
-    );
-    b.disabled = false;
-    if (s?.task) done(s.task);
-    else if (s) err.textContent = s.text;
-  };
-  return f;
-}
-
-// ---------------------------------------------------------------- the model picker
-// Who thinks, with what and how hard: the agent (tabs), its models (and a search), the effort.
+// ---------------------------------------------------------------- a pick, as the chip says it
 
 /** A pick ("pi z-ai/glm-5.3 high", "opus", "auto") read against the menu: agent, model, effort. */
 export function read(m, s) {
@@ -551,15 +451,6 @@ export function read(m, s) {
   return { a, model: w[0] || "auto", effort: w[1] === "auto" ? "" : w[1] || "" };
 }
 
-/**
- * A pick as a `use` line says it: its agent named when there's a choice, so it holds from either,
- * and `auto` said, so Auto (or, as an effort, the default) resets what was picked before.
- */
-const say = (m, p, reset = false) =>
-  [m.agents?.[1] && p.a.id, p.model, p.effort || (reset && p.model !== "auto" && "auto")]
-    .filter(Boolean)
-    .join(" ");
-
 /** The chip's words: "Opus · High", "Pi · glm-5.3", "Auto · Sonnet" (what Auto runs, if short). */
 export function label(m, p) {
   const A = p.a.auto?.model;
@@ -567,225 +458,4 @@ export function label(m, p) {
   return [p.a !== m.agents?.[0] && (p.a.name || cap(p.a.id)), name, p.effort && cap(p.effort)]
     .filter(Boolean)
     .join(" · ");
-}
-
-/** A model's efforts: its own, or, for any other its gateway has, the agent's. */
-const efforts = (a, id) =>
-  id === "auto" ? [] : (a.models?.find((x) => x.id === id) || (a.gateway && a))?.efforts || [];
-
-// What a gateway says of its models (name, maker, price, size, what each can do), read once a
-// page for the agent's listed ones when its tab first opens; a search's come with it.
-const FACTS = {};
-const big = (n) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}K`);
-const cost = (p) => p && (p[0] + p[1] ? `$${p[0].toFixed(2)} · $${p[1].toFixed(2)}` : "free");
-const FILTERS = {
-  Free: (f) => f.price && !(f.price[0] + f.price[1]),
-  Tools: 0,
-  Reasoning: 0,
-  Images: 0,
-};
-
-/** A small toggle: its words, whether it's on, what it does. */
-const chip = (words, on, onclick) => {
-  const b = h("button.chip", { type: "button", onclick }, words);
-  b.ariaPressed = String(on);
-  return b;
-};
-
-/**
- * Opens the picker at `at`. `now()` is the pick; `choose(words)` makes one. A model closes the
- * panel; an effort keeps it open. The agents as tabs, then a search with filters, the models with
- * what tells them apart, and the effort the picked one takes.
- */
-export function picker(at, m, now, choose, task) {
-  let tab = now().a;
-  let item = (/** @type {any} */ x) => x;
-  let found = /** @type {any} */ (null);
-  let t = 0;
-  const want = new Set();
-  const q = h("input.q", { type: "search", placeholder: "Search models", "aria-label": "Search" });
-  const agents = h("div.agents", { role: "tablist" });
-  const via = h("div.chips");
-  const chips = h("div.chips");
-  const list = h("div.list");
-  const foot = h("div.effort");
-  const done = h("button.btn.primary", { type: "button" }, "Done");
-  const known = (id) => FACTS[tab.id]?.get(id) || found?.models?.find((x) => x.id === id) || {};
-  // What a model takes: the agent's efforts for it, as far as its gateway's list says it has them.
-  const takes = (id) =>
-    efforts(tab, id).filter((x) => !known(id).efforts || known(id).efforts.includes(x));
-  const fits = (id) =>
-    [...want].every((k) => {
-      const f = known(id);
-      return FILTERS[k] ? FILTERS[k](f) : f.can?.includes(k.toLowerCase());
-    });
-  const row = (id, p, on) => {
-    const f = known(id);
-    const about = tab.models?.find((x) => x.id === id)?.about;
-    const can = f.can?.join(", ");
-    const sub = [
-      f.maker || (id.includes("/") && id.split("/")[0]),
-      f.context && `${big(f.context)} context`,
-      can || about,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    return item([
-      [
-        h("span.opt", h("span", id === "auto" ? "Auto" : f.name || nm(id)), sub && h("small", sub)),
-        h("span.cost", id === "auto" ? cost(known(tab.auto?.model).price) : cost(f.price)),
-        on && h("span.ck", icon("check")),
-      ],
-      () => choose(say(m, p)),
-    ]);
-  };
-  const draw = () => {
-    const p = now();
-    const mine = p.a === tab;
-    const w = q.value.trim().toLowerCase();
-    const keep = (id) => (takes(id).includes(p.effort) ? p.effort : "");
-    const opt = (id) => row(id, { a: tab, model: id, effort: keep(id) }, mine && p.model === id);
-    const listed = (tab.models || []).map((x) => x.id).filter((id) => id.includes(w) && fits(id));
-    const more = (found?.models || [])
-      .map((x) => x.id)
-      .filter((id) => !listed.includes(id) && fits(id));
-    const A = tab.auto || {};
-    // The agents as tabs; one through more than one gateway shows them in a row below.
-    const root = (a) => m.agents.find((x) => x.id === a.of) || a;
-    const kin = m.agents.filter((x) => root(x) === root(tab));
-    const tabs = m.agents.filter((a) => !a.of);
-    const go = (a) => () => {
-      tab = a;
-      q.value = "";
-      found = null;
-      want.clear();
-      load();
-    };
-    set(
-      agents,
-      tabs[1] &&
-        tabs.map((a) =>
-          h(
-            "button",
-            {
-              type: "button",
-              role: "tab",
-              "aria-selected": String(a === root(tab)),
-              onclick: go(root(p.a) === a ? p.a : a),
-            },
-            h("b", a.name || cap(a.id)),
-            h("small", a === root(m.agents[0]) ? "default" : a.via || ""),
-          ),
-        ),
-    );
-    via.hidden = !kin[1];
-    set(via, kin[1] && kin.map((a) => chip(a.via, a === tab, go(a))));
-    q.hidden = chips.hidden = !tab.gateway;
-    set(
-      chips,
-      Object.keys(FILTERS).map((k) =>
-        chip(k, want.has(k), () => {
-          if (!want.delete(k)) want.add(k);
-          draw();
-        }),
-      ),
-    );
-    set(
-      list,
-      !w &&
-        !want.size && [
-          row("auto", { a: tab, model: "auto", effort: "" }, mine && p.model === "auto"),
-          h(
-            "small.sec",
-            `Auto runs ${[known(A.model).name || nm(A.model || ""), A.effort].filter(Boolean).join(", ")}`,
-          ),
-        ],
-      // A model picked from a search stays in view, ticked.
-      !w &&
-        mine &&
-        p.model !== "auto" &&
-        !listed.includes(p.model) &&
-        fits(p.model) &&
-        opt(p.model),
-      listed.length > 0 && tab.gateway && h("small.sec", "Your list"),
-      listed.map(opt),
-      w && !listed.length && !tab.gateway && h("small.sec", "No model matches"),
-      found && [
-        h(
-          "small.sec",
-          found.say || (more.length ? `More on ${tab.gateway}` : `Nothing else for “${w}”`),
-        ),
-        more.map(opt),
-      ],
-      tab.gateway &&
-        h("small.sec.note", "Prices per million tokens, in · out, as the gateway lists them."),
-    );
-    // The efforts the picked model takes.
-    const e = mine ? takes(p.model) : [];
-    set(
-      foot,
-      e.length > 0 &&
-        h(
-          "div.seg",
-          { role: "group", "aria-label": "Effort" },
-          ["", ...e].map((x) =>
-            h(
-              "button",
-              {
-                type: "button",
-                "aria-pressed": String(p.effort === x),
-                onclick: () => {
-                  choose(say(m, { ...p, effort: x }, true));
-                  draw();
-                },
-              },
-              x ? cap(x) : "Default",
-            ),
-          ),
-        ),
-      h("div.row", h("small", task ? "Goes with your next message" : "For this chat's runs"), done),
-    );
-  };
-  // An agent's listed models' facts, once a page; then drawn again.
-  const load = async () => {
-    draw();
-    if (!tab.gateway || FACTS[tab.id]) return;
-    const a = tab;
-    const r = await api(`models?agent=${a.id}`).catch(() => 0);
-    // Kept only when it came: a failed read is asked again the next time the picker opens.
-    if (r) FACTS[a.id] = new Map((r.models || []).map((x) => [x.id, x]));
-    if (tab === a) draw();
-  };
-  // Typing narrows the list at once; a gateway's own list is searched once you pause.
-  q.oninput = () => {
-    const w = q.value.trim();
-    clearTimeout(t);
-    found = tab.gateway && w.length > 1 ? { say: "Searching…" } : null;
-    draw();
-    if (found)
-      t = setTimeout(async () => {
-        const r = await api(`models?agent=${tab.id}&q=${encodeURIComponent(w)}`).catch(() => 0);
-        if (q.value.trim() !== w) return;
-        found = r || { say: "Couldn't search just now: try again" };
-        draw();
-      }, 300);
-  };
-  // Enter in the search takes the first match; the arrows move through the list.
-  q.onkeydown = list.onkeydown = (e) => {
-    if (e.key === "Enter" && e.target === q) return list.querySelector("button")?.click();
-    const all = [q, ...list.querySelectorAll("button")].filter((x) => !x.hidden);
-    const i = all.indexOf(/** @type {any} */ (document.activeElement));
-    const d = { ArrowDown: 1, ArrowUp: -1 }[e.key];
-    if (!d || i < 0) return;
-    e.preventDefault();
-    all[Math.max(0, Math.min(all.length - 1, i + d))]?.focus();
-  };
-  const head = h("header", h("strong", "Who thinks"));
-  item = pop(at, [head, agents, via, q, chips, list, foot], "pick");
-  done.onclick = () => $(".pop")?.remove();
-  load();
-  (matchMedia("(pointer:fine)").matches && !q.hidden
-    ? q
-    : list.querySelector(".ck")?.parentElement
-  )?.focus();
 }

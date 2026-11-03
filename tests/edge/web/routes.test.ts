@@ -19,9 +19,10 @@ import { handle } from "../../../edge/src/app.ts";
 import { clearCaches } from "../../../edge/src/cache.ts";
 import { web } from "../../../edge/src/channels/web.ts";
 import { alertOf } from "../../../edge/src/chat.ts";
-import type { Env } from "../../../edge/src/env.ts";
+import type { Bucket, Env } from "../../../edge/src/env.ts";
+import { COPY_STEP, MOVED, moveFromKv } from "../../../edge/src/store.ts";
 import { clearSeen } from "../../../edge/src/web/gh.ts";
-import { clearBuilt } from "../../../edge/src/web/reads.ts";
+import { clearBuilt, INBOX_FULL, nextStep } from "../../../edge/src/web/reads.ts";
 import { MERMAID } from "../../../edge/src/web/routes.ts";
 import { ROOT } from "../../helpers.ts";
 import { browser, pushKey } from "../browser.ts";
@@ -40,6 +41,7 @@ import {
   world,
 } from "../fake.ts";
 import { memoryKv } from "../kv.ts";
+import { memoryR2 } from "../r2.ts";
 
 const TEAM = "myteam.cloudflareaccess.com";
 const AUD = "b".repeat(64);
@@ -79,8 +81,12 @@ async function token(now: number, aud = AUD) {
 }
 
 const PAGE = "<!doctype html><title>Shipify</title>";
+/** The page's files' tag and time, as Workers static assets answer them. */
+const TAG = '"v1"';
+const MODIFIED = "Sun, 04 Oct 2026 10:00:00 GMT";
 
 function setUp() {
+  clearCaches();
   clearCertsCache();
   clearSeen();
   clearBuilt();
@@ -92,18 +98,31 @@ function setUp() {
   f.w.apps[`https://${TEAM}/cdn-cgi/access/certs`] = { body: { keys: [jwk] } };
   const store = memoryKv(() => f.w.at);
   const assets = {
-    fetch: async (r: Request) =>
-      [
-        "/admin/chat/index.html",
-        "/draw/index.html",
-        "/draw/draw.js",
-        "/note/icon.png",
-        "/note/badge.png",
-      ].includes(new URL(r.url).pathname)
-        ? new Response(PAGE, { headers: { "content-type": "text/html" } })
-        : new Response("nope", { status: 404 }),
+    fetch: async (r: Request) => {
+      if (
+        ![
+          "/admin/chat/index.html",
+          "/draw/index.html",
+          "/draw/draw.js",
+          "/note/icon.png",
+          "/note/badge.png",
+        ].includes(new URL(r.url).pathname)
+      )
+        return new Response("nope", { status: 404 });
+      const headers = { "content-type": "text/html", etag: TAG, "last-modified": MODIFIED };
+      // The browser's copy unchanged: its tag, or with none its time.
+      const tag = r.headers.get("if-none-match");
+      if (tag === TAG || (!tag && r.headers.get("if-modified-since") === MODIFIED))
+        return new Response(null, { status: 304, headers });
+      return new Response(PAGE, { headers });
+    },
   };
-  const env = envFor(k, { FILES: store.kv, ASSETS: assets } as unknown as Partial<Env>);
+  const r2 = memoryR2();
+  const env = envFor(k, {
+    FILES: store.kv,
+    BUCKET: r2.bucket,
+    ASSETS: assets,
+  } as unknown as Partial<Env>);
   const call = async (path: string, init: RequestInit = {}, signed: boolean | string = true) => {
     const headers = new Headers(init.headers);
     if (signed)
@@ -124,18 +143,26 @@ function setUp() {
       },
       body: JSON.stringify(body),
     });
-  const upload = (name: string, type: string, bytes: string) =>
+  // As a browser sends a file: its length said first.
+  const upload = (name: string, type: string, bytes: string, task?: number) =>
     call("/admin/chat/api/file", {
       method: "POST",
       headers: {
         origin: ORIGIN,
         "x-shipify-chat": "1",
         "content-type": type,
+        "content-length": String(Buffer.byteLength(bytes)),
         "x-file-name": encodeURIComponent(name),
+        ...(task ? { "x-file-task": String(task) } : {}),
       },
       body: bytes,
     });
-  return { f, env, store, call, post, upload };
+  const remove = (ref: string, more: Record<string, string> = {}) =>
+    call(`/admin/chat/api/file/${ref}`, {
+      method: "DELETE",
+      headers: { origin: ORIGIN, "x-shipify-chat": "1", ...more },
+    });
+  return { f, env, store, r2, call, post, upload, remove };
 }
 
 describe("the sign-in and the page", () => {
@@ -191,6 +218,31 @@ describe("the sign-in and the page", () => {
     expect((await t.call("/admin/chat/app.js")).status).toBe(404);
     expect((await t.call("/admin/chat/sub/dir.js")).status).toBe(404);
     expect((await t.call("/admin/chat/x", { method: "POST" })).status).toBe(405);
+  });
+
+  it("the page's files unchanged are a 304 with no body, still with the page's headers", async () => {
+    const t = setUp();
+    const first = await t.call("/admin/chat");
+    expect(first.headers.get("etag")).toBe(TAG);
+    const asks: Record<string, string>[] = [
+      { "if-none-match": TAG },
+      { "if-modified-since": MODIFIED },
+    ];
+    for (const headers of asks) {
+      const again = await t.call("/admin/chat", { headers });
+      expect(again.status).toBe(304);
+      expect(await again.text()).toBe("");
+      expect(again.headers.get("cache-control")).toBe("private, no-cache");
+      expect(again.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+      expect(again.headers.get("x-content-type-options")).toBe("nosniff");
+    }
+    // Changed since: the whole file. A HEAD has no body either way.
+    const changed = await t.call("/admin/chat", { headers: { "if-none-match": '"v0"' } });
+    expect(changed.status).toBe(200);
+    expect(await changed.text()).toBe(PAGE);
+    const head = await t.call("/admin/chat", { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
   });
 
   it("/ and /admin send you to the chat; nothing else moves", async () => {
@@ -302,6 +354,35 @@ describe("what you send goes through the door", () => {
     });
     await t.post("/admin/chat/api/send", { id: "msg00000003", task: 1, words: "again" });
     expect(t.f.w.comments.map((c) => withoutLine(c.body))).toEqual(["use opus high", "again"]);
+  });
+
+  it("a button's word (Stop, Close, Reopen, Stop repeating) is marked, and its thread hides it; a typed one shows (ADR 0069)", async () => {
+    const t = setUp();
+    const i = t.f.issue({ title: "a task", user: { login: "owner" } });
+    const send = (id: string, words: string, button?: true) =>
+      t.post("/admin/chat/api/send", { id, task: i.number, words, ...(button ? { button } : {}) });
+    expect((await send("msg00000031", "stop", true)).status).toBe(200);
+    expect((await send("msg00000032", "close", true)).status).toBe(200);
+    const froms = t.f.w.comments.map((c) => readFrom(c.body));
+    expect(froms.map((f) => f?.button)).toEqual([true, true]);
+    // Close is still the door's at once, and written as a setting: no run answers it.
+    expect(froms[1]?.setting).toBe(true);
+    expect(i.state).toBe("closed");
+    t.f.later(10_000);
+    const closed = await (await t.call(`/admin/chat/api/task/${i.number}`)).json();
+    expect(
+      closed.messages.filter((m: { tap?: true }) => m.tap).map((m: { md: string }) => m.md),
+    ).toEqual(["stop", "close"]);
+    // The thread shows the close from the issue's own state.
+    expect(closed.task).toMatchObject({ open: false, closed: i.closed_at });
+    await send("msg00000033", "reopen");
+    expect(readFrom(t.f.w.comments.at(-1)?.body)?.button).toBeUndefined();
+    t.f.later(10_000);
+    const open = await (await t.call(`/admin/chat/api/task/${i.number}`)).json();
+    expect(open.task.open).toBe(true);
+    expect(open.task.closed).toBeUndefined();
+    expect(open.messages.at(-1)).toMatchObject({ md: "reopen" });
+    expect(open.messages.at(-1).tap).toBeUndefined();
   });
 
   it("a `use` alone with no task is your model here too: kept, and the next new task starts with it", async () => {
@@ -482,13 +563,14 @@ describe("what you send goes through the door", () => {
 });
 
 describe("files the chat keeps", () => {
-  it("pictures show inline; anything else downloads, never sniffed; past 7 days it's gone", async () => {
+  it("pictures show inline; anything else downloads, never sniffed; kept past 7 days", async () => {
     const t = setUp();
     const png = await (await t.upload("shot.png", "image/png", "png")).json();
     const svg = await (await t.upload("evil.svg", "image/svg+xml", "<svg onload=x>")).json();
     const a = await t.call(`/admin/chat/api/file/${png.ref}`);
     expect(a.headers.get("content-type")).toBe("image/png");
     expect(a.headers.get("content-disposition")).toMatch(/^inline/);
+    expect(await a.text()).toBe("png");
     const b = await t.call(`/admin/chat/api/file/${svg.ref}`);
     expect(b.headers.get("content-type")).toBe("application/octet-stream");
     expect(b.headers.get("content-disposition")).toMatch(/^attachment/);
@@ -499,8 +581,252 @@ describe("files the chat keeps", () => {
       "evil.svg",
       "shot.png",
     ]);
+    // R2 keeps a file as long as its chat (ADR 0069): no 7 days.
     t.f.later(8 * 86_400_000);
-    expect((await t.call(`/admin/chat/api/file/${png.ref}`)).status).toBe(410);
+    expect((await t.call(`/admin/chat/api/file/${png.ref}`)).status).toBe(200);
+  });
+
+  it("keeps a file in R2 with its chat's number; Files lists the newest first, each size, the total", async () => {
+    const t = setUp();
+    const a = await (await t.upload("a.png", "image/png", "aaa", 12)).json();
+    expect(a.ref).toMatch(/^f-\d{13}-[a-z0-9]{32}$/);
+    t.f.later(60_000);
+    const b = await (await t.upload("b.txt", "text/plain", "bbbbb")).json();
+    // A ref is its key: the newer one sorts first, as R2 lists them.
+    expect(b.ref < a.ref).toBe(true);
+    expect(t.r2.items.get(a.ref)?.meta).toMatchObject({ name: "a.png", task: "12", by: "you" });
+    expect(t.r2.items.get(b.ref)?.meta.task).toBeUndefined();
+    const listed = await (await t.call("/admin/chat/api/files")).json();
+    expect(listed).toMatchObject({ v: 1, count: 2, bytes: 8 });
+    expect(listed.files.map((f: { name: string }) => f.name)).toEqual(["b.txt", "a.png"]);
+    expect(listed.files[1]).toMatchObject({ task: 12, size: 3, by: "you" });
+    expect(listed.files[0].task).toBeUndefined();
+    expect(JSON.stringify(listed)).not.toContain("until");
+  });
+
+  it("streams a 95 MB file into R2; over 95 MB, or with no length said, is refused", async () => {
+    const t = setUp();
+    // As the page counts them (compose.js): 1 MB is 1,000,000 bytes. 95 of them leave room under the
+    // 100 MB Cloudflare takes in a request (either count) before the Worker runs.
+    const MB = 1_000_000;
+    const chunk = new Uint8Array(MB);
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (sent++ < 95) c.enqueue(chunk);
+        else c.close();
+      },
+    });
+    const res = await t.call("/admin/chat/api/file", {
+      method: "POST",
+      headers: {
+        origin: ORIGIN,
+        "x-shipify-chat": "1",
+        "content-type": "video/mp4",
+        "content-length": String(95 * MB),
+        "x-file-name": "talk.mp4",
+      },
+      body,
+      duplex: "half",
+    } as RequestInit);
+    expect(res.status).toBe(200);
+    const { ref } = await res.json();
+    expect(t.r2.items.get(ref)?.bytes.byteLength).toBe(95 * MB);
+    expect(95 * MB).toBeLessThan(100 * 1000 * 1000);
+    const over = await t.call("/admin/chat/api/file", {
+      method: "POST",
+      headers: {
+        origin: ORIGIN,
+        "x-shipify-chat": "1",
+        "content-length": String(95 * MB + 1),
+      },
+      body: "x",
+    });
+    expect(over.status).toBe(413);
+    expect((await over.json()).error).toBe("That file is over 95 MB.");
+    const unsaid = await t.call("/admin/chat/api/file", {
+      method: "POST",
+      headers: { origin: ORIGIN, "x-shipify-chat": "1" },
+      body: new Blob(["x"]).stream(),
+      duplex: "half",
+    } as RequestInit);
+    expect(unsaid.status).toBe(411);
+    expect([...t.r2.items.keys()].filter((k) => k.startsWith("f-"))).toEqual([ref]);
+  });
+
+  it("a new chat's files get its number once the door opens it", async () => {
+    const t = setUp();
+    const up = await (await t.upload("plan.pdf", "application/pdf", "%PDF")).json();
+    const sent = await (
+      await t.post("/admin/chat/api/send", {
+        id: "newchat001",
+        words: "read this",
+        files: [{ ref: up.ref, name: "plan.pdf", type: "application/pdf", size: 4 }],
+      })
+    ).json();
+    expect(sent.task).toBe(1);
+    // The same file, its ref unchanged on the from-line, now with its chat.
+    expect(readFrom(t.f.w.issues[0]?.body)?.files?.map((f) => f.ref)).toEqual([`web:${up.ref}`]);
+    expect(t.r2.items.get(up.ref)?.meta.task).toBe("1");
+    const listed = await (await t.call("/admin/chat/api/files")).json();
+    expect(listed.files[0]).toMatchObject({ ref: up.ref, task: 1 });
+  });
+
+  it("an Inbox item's file is kept with its Inbox page, and the page isn't opened (ADR 0069)", async () => {
+    const t = setUp();
+    t.f.issue({ title: "Project: games", body: "Offline games.", labels: ["project"] });
+    const up = await (await t.upload("shot.png", "image/png", "png")).json();
+    const sent = await (
+      await t.post("/admin/chat/api/send", {
+        id: "inbox00001",
+        words: "add games: this engine",
+        files: [{ ref: up.ref, name: "shot.png", type: "image/png", size: 3 }],
+      })
+    ).json();
+    const inbox = t.f.w.issues.find((i) => i.title === "Notebook: games-inbox");
+    expect(sent.text).toMatch(`Added to the games Inbox · #${inbox?.number}.`);
+    expect(sent.task).toBeUndefined();
+    expect(t.r2.items.get(up.ref)?.meta.task).toBe(String(inbox?.number));
+  });
+
+  it("a file from another chat is copied for this one; Delete deletes it, from the page only", async () => {
+    const t = setUp();
+    const task = t.f.issue({ title: "the other chat", user: { login: "owner" } });
+    const theirs = await (await t.upload("a.png", "image/png", "png", 99)).json();
+    const sent = await t.post("/admin/chat/api/send", {
+      id: "copyfor001",
+      task: task.number,
+      words: "and this",
+      files: [{ ref: theirs.ref, name: "a.png", type: "image/png", size: 3 }],
+    });
+    expect(sent.status).toBe(200);
+    const refs = t.f.w.comments.flatMap((c) => readFrom(c.body)?.files?.map((x) => x.ref) ?? []);
+    expect(refs).toHaveLength(1);
+    const mine = refs[0]?.replace(/^web:/, "") ?? "";
+    expect(mine).not.toBe(theirs.ref);
+    expect(t.r2.items.get(mine)?.meta.task).toBe(String(task.number));
+    expect(t.r2.items.get(theirs.ref)?.meta.task).toBe("99");
+    // Only from the page: its origin and its header.
+    expect((await t.remove(mine, { "x-shipify-chat": "0" })).status).toBe(403);
+    expect((await t.remove("..%2Fetc")).status).toBe(404);
+    expect((await t.remove(mine)).status).toBe(200);
+    expect(t.r2.items.has(mine)).toBe(false);
+    expect((await t.call(`/admin/chat/api/file/${mine}`)).status).toBe(410);
+    const gone = await (await t.call(`/admin/chat/api/file/${mine}`)).json();
+    expect(gone.error).toBe("That file is gone.");
+    const listed = await (await t.call("/admin/chat/api/files")).json();
+    expect(listed.files.map((f: { ref: string }) => f.ref)).toEqual([theirs.ref]);
+  });
+
+  it("the cron copies KV's files to R2 once: an old message's ref opens; devices stay in KV", async () => {
+    const t = setUp();
+    const meta = { name: "old.png", type: "image/png", size: 3, by: "you", at: t.f.w.at - 9e5 };
+    const bytes = new TextEncoder().encode("old").buffer as ArrayBuffer;
+    await t.store.kv.put("up-0123456789abcdef0123", bytes, {
+      expirationTtl: 86_400,
+      metadata: meta,
+    });
+    await t.store.kv.put("run-7-0123456789abcdef0123", bytes, {
+      expirationTtl: 86_400,
+      metadata: { ...meta, name: "made.md", by: "run" },
+    });
+    await t.store.kv.put("push:web:me", "[]");
+    await moveFromKv(t.env, t.f.deps);
+    const old = await t.call("/admin/chat/api/file/up-0123456789abcdef0123");
+    expect(old.status).toBe(200);
+    expect(await old.text()).toBe("old");
+    expect(t.r2.items.get("run-7-0123456789abcdef0123")?.meta.task).toBe("7");
+    expect(t.r2.items.get("up-0123456789abcdef0123")?.meta.task).toBeUndefined();
+    expect(t.r2.items.has("push:web:me")).toBe(false);
+    expect(t.r2.items.has("_moved-from-kv")).toBe(true);
+    const listed = await (await t.call("/admin/chat/api/files")).json();
+    expect(listed.count).toBe(2);
+    // Once: a file put in KV after the copy isn't read.
+    await t.store.kv.put("up-9999999999abcdef0123", bytes, { metadata: meta });
+    await moveFromKv(t.env, t.f.deps);
+    expect((await t.call("/admin/chat/api/file/up-9999999999abcdef0123")).status).toBe(410);
+  });
+
+  // A request that waited for a step of the copy took longer than the page's 20 s: a message with
+  // a photo failed as "Offline", every try, while words alone went.
+  it("nothing you do waits for KV's copy: an upload, a message with a file, its read, Files", async () => {
+    const t = setUp();
+    const meta = { name: "old.png", type: "image/png", size: 3, by: "you", at: t.f.w.at - 9e5 };
+    const bytes = new TextEncoder().encode("old").buffer as ArrayBuffer;
+    await t.store.kv.put("up-0123456789abcdef0123", bytes, { metadata: meta });
+    const lists = t.store.state.lists;
+    const up = await t.upload("new.png", "image/png", "new");
+    expect(up.status).toBe(200);
+    const { ref } = await up.json();
+    const file = { ref, name: "new.png", type: "image/png", size: 3 };
+    const sent = await t.post("/admin/chat/api/send", {
+      id: "nowait001",
+      words: "what's this",
+      files: [file],
+    });
+    expect(sent.status).toBe(200);
+    expect((await t.call(`/admin/chat/api/file/${ref}`)).status).toBe(200);
+    expect((await t.call("/admin/chat/api/files")).status).toBe(200);
+    expect(t.store.state.lists).toBe(lists);
+    expect(t.r2.items.has(MOVED)).toBe(false);
+    // Not copied yet: an old ref is gone till the cron's step, then it opens.
+    expect((await t.call("/admin/chat/api/file/up-0123456789abcdef0123")).status).toBe(410);
+    await moveFromKv(t.env, t.f.deps);
+    expect((await t.call("/admin/chat/api/file/up-0123456789abcdef0123")).status).toBe(200);
+  });
+
+  it("the cron copies KV's files a step a tick, on from its mark after a failure; done, one look a tick", async () => {
+    const t = setUp();
+    const meta = { name: "old.png", type: "image/png", size: 3, by: "you", at: t.f.w.at - 9e5 };
+    const bytes = new TextEncoder().encode("old").buffer as ArrayBuffer;
+    const keys = Array.from(
+      { length: 2 * COPY_STEP.files + 5 },
+      (_, i) => `up-${String(i).padStart(3, "0")}3456789abcdef0123`,
+    );
+    expect(COPY_STEP.files).toBeGreaterThan(3);
+    for (const key of keys) await t.store.kv.put(key, bytes, { metadata: meta });
+    // The first is big: its step ends with it.
+    const big = new Uint8Array(COPY_STEP.bytes).buffer;
+    await t.store.kv.put(keys[0] ?? "", big, { metadata: { ...meta, size: COPY_STEP.bytes } });
+    await t.store.kv.put("push:web:me", "[]");
+    // R2 as the cron's tick has it: it counts its writes, and refuses one key when told.
+    const writes: string[] = [];
+    let refuse: string | undefined = keys[3];
+    const bucket: Bucket = { ...t.r2.bucket };
+    bucket.put = async (key, value, options) => {
+      if (key === refuse) throw new Error("R2: refused");
+      writes.push(key);
+      return t.r2.bucket.put(key, value, options);
+    };
+    const tick = () =>
+      moveFromKv({ FILES: t.store.kv, BUCKET: bucket } as unknown as Env, t.f.deps);
+    const copied = () => keys.filter((key) => t.r2.items.has(key));
+    // A step a tick: the big file alone, then on from its mark.
+    await tick();
+    expect(copied()).toEqual(keys.slice(0, 1));
+    expect(t.r2.items.get(keys[0] ?? "")?.bytes.byteLength).toBe(COPY_STEP.bytes);
+    // R2 refuses the fourth file: the step stops there, the third marked as the last copied, said.
+    await tick();
+    expect(copied()).toEqual(keys.slice(0, 3));
+    expect(t.r2.items.get(MOVED)?.meta).toEqual({ after: keys[2] });
+    expect(t.f.w.logs.join("\n")).toContain("KV's files not copied to R2 this tick");
+    // The next tick carries on from the mark, COPY_STEP.files a tick, never from the start.
+    refuse = undefined;
+    writes.length = 0;
+    await tick();
+    expect(copied()).toEqual(keys.slice(0, 3 + COPY_STEP.files));
+    await tick();
+    await tick();
+    expect(copied()).toEqual(keys);
+    expect(writes.filter((key) => key !== MOVED)).toEqual(keys.slice(3));
+    // Done, and marked so: a tick's one look at the mark is all it costs, no read of KV.
+    expect(t.r2.items.get(MOVED)?.meta).toEqual({});
+    const after = { lists: t.store.state.lists, r2: t.r2.state.lists, writes: writes.length };
+    await tick();
+    expect(t.store.state.lists).toBe(after.lists);
+    expect(t.r2.state.lists).toBe(after.r2);
+    expect(writes).toHaveLength(after.writes);
+    expect(t.r2.items.has("push:web:me")).toBe(false);
   });
 
   // The doc pane (ADR 0065): a PDF in the browser's own viewer, which refuses a sandbox; framed only
@@ -570,18 +896,16 @@ describe("files the chat keeps", () => {
     expect(b.kind).toBe("md");
   });
 
-  it("Ask about this: a run's file the store keeps goes with your words, as yours do", async () => {
+  it("Ask about this: a run's file the store keeps goes with your words, copied for the new chat", async () => {
     const t = setUp();
-    const ref = "run-7-0123456789abcdef0123";
-    await t.store.kv.put(ref, new TextEncoder().encode("made").buffer as ArrayBuffer, {
-      metadata: {
-        name: "out.md",
-        type: "text/markdown",
-        size: 4,
-        by: "run",
-        at: t.f.w.at,
-        task: 7,
-      },
+    const ref = "f-8000000000000-0123456789abcdef0123";
+    await t.r2.keep(ref, "made", {
+      name: "out.md",
+      type: "text/markdown",
+      size: 4,
+      by: "run",
+      at: t.f.w.at,
+      task: 7,
     });
     const sent = await t.post("/admin/chat/api/send", {
       id: "askabout01",
@@ -590,7 +914,12 @@ describe("files the chat keeps", () => {
     });
     expect(sent.status).toBe(200);
     const files = readFrom(t.f.w.issues[0]?.body)?.files ?? [];
-    expect(files.map((f) => f.ref)).toEqual([`web:${ref}`]);
+    expect(files).toHaveLength(1);
+    const copy = files[0]?.ref.replace(/^web:/, "") ?? "";
+    expect(copy).toMatch(/^f-/);
+    expect(copy).not.toBe(ref);
+    expect(t.r2.items.get(copy)?.meta).toMatchObject({ name: "out.md", by: "run", task: "1" });
+    expect(t.r2.items.get(ref)?.meta.task).toBe("7");
     // Only a ref the store could keep: never a path or another chat's.
     const bad = await t.post("/admin/chat/api/send", {
       id: "askabout02",
@@ -600,14 +929,55 @@ describe("files the chat keeps", () => {
     expect(bad.status).toBe(400);
   });
 
-  it("over 10 MB is refused at the edge", async () => {
+  it("a copy no chat takes is deleted: the send failed, or the door wrote it on no chat", async () => {
     const t = setUp();
-    const res = await t.upload(
-      "big.bin",
-      "application/octet-stream",
-      "x".repeat(10 * 1024 * 1024 + 1),
-    );
-    expect(res.status).toBe(413);
+    const theirs = await (await t.upload("a.png", "image/png", "png", 99)).json();
+    const files = [{ ref: theirs.ref, name: "a.png", type: "image/png", size: 3 }];
+    const kept = () => [...t.r2.items.keys()].filter((key) => key.startsWith("f-"));
+    // The door closed: nothing is written, and the page keeps the message to send again.
+    t.f.w.variables.SHIPIFY_DOOR = "closed";
+    clearCaches();
+    const shut = await t.post("/admin/chat/api/send", { id: "copygone01", words: "x", files });
+    expect(shut.status).toBe(503);
+    expect(kept()).toEqual([theirs.ref]);
+    // On a task too: its copy was made with the task's number, and goes the same way.
+    const task = t.f.issue({ title: "the other chat", user: { login: "owner" } });
+    const on = await t.post("/admin/chat/api/send", {
+      id: "copygone02",
+      task: task.number,
+      words: "and this",
+      files,
+    });
+    expect(on.status).toBe(503);
+    expect(kept()).toEqual([theirs.ref]);
+    // Saved with no chat (a Journal line), or answered at once: no chat holds the copy.
+    delete t.f.w.variables.SHIPIFY_DOOR;
+    clearCaches();
+    for (const [id, words] of [
+      ["copygone03", "jot: look at this"],
+      ["copygone04", "project: Games!"],
+    ] as const) {
+      const sent = await t.post("/admin/chat/api/send", { id, words, files });
+      expect(sent.status).toBe(200);
+      expect((await sent.json()).task).toBeUndefined();
+      expect(kept()).toEqual([theirs.ref]);
+    }
+    // A second file that's gone: nothing is sent, and the first one's copy goes too.
+    const gone = { ...files[0], ref: "f-8000000000000-0123456789abcdef0123", name: "b.png" };
+    const half = await t.post("/admin/chat/api/send", {
+      id: "copygone06",
+      words: "both",
+      files: [...files, gone],
+    });
+    expect(half.status).toBe(410);
+    expect(kept()).toEqual([theirs.ref]);
+    // Written onto a new chat: the copy gets its number, and stays.
+    const ok = await (
+      await t.post("/admin/chat/api/send", { id: "copygone05", words: "what's this?", files })
+    ).json();
+    const copy = kept().find((key) => key !== theirs.ref) ?? "";
+    expect(t.r2.items.get(copy)?.meta.task).toBe(String(ok.task));
+    expect(kept()).toHaveLength(2);
   });
 });
 
@@ -748,8 +1118,9 @@ describe("what the page reads", () => {
     });
     t.f.w.comments.splice(0, 1);
     const thread = await (await t.call("/admin/chat/api/task/1")).json();
-    // Reading a thread asks nothing of the file store: KV's lists are 1,000 a day on the free plan.
+    // Reading a thread asks nothing of the stores: KV's lists are 1,000 a day on the free plan.
     expect(t.store.state.lists).toBe(0);
+    expect(t.r2.state.lists).toBe(0);
     expect(thread.task).toMatchObject({ n: 1, from: "web", model: "opus high", open: true });
     expect(thread.writable).toBe(true);
     const [mine, reply] = thread.messages;
@@ -815,7 +1186,7 @@ describe("what the page reads", () => {
     const t = setUp();
     const ago = new Date(t.f.w.at - 300_000).toISOString();
     const i = t.f.issue({ title: "done with", state: "closed", ...{ closed_at: ago } });
-    // Each read past the edge's 5 seconds of memory.
+    // Each read past the edge's 8 seconds of memory.
     const wakes = async () => {
       t.f.later(10_000);
       return (await (await t.call(`/admin/chat/api/task/${i.number}`)).json()).task;
@@ -871,7 +1242,7 @@ describe("what the page reads", () => {
     const i = t.f.issue({ title: "one ask" });
     const c = t.f.comment(i.number, "make it faster", { login: OWNER });
     c.html = "<p>make it faster</p>";
-    // Each read past the edge's 5 seconds of memory, as an open thread's refreshes are.
+    // Each read past the edge's 8 seconds of memory, as an open thread's refreshes are.
     const mine = async () => {
       t.f.later(10_000);
       const thread = await (await t.call(`/admin/chat/api/task/${i.number}`)).json();
@@ -925,6 +1296,174 @@ describe("what the page reads", () => {
     // Never shown as a message, on any page.
     const older = await (await t.call("/admin/chat/api/task/1?page=1")).json();
     expect(older.messages.some((m: { md?: string }) => m.md?.includes("shipify-task"))).toBe(false);
+  });
+
+  it("a task's Progress (ADR 0069): its run's handoff, rendered once by GitHub and cleaned, pictures inert", async () => {
+    const t = setUp();
+    await t.post("/admin/chat/api/send", { id: "progress01", words: "research this" });
+    // No handoff yet: no Progress.
+    expect((await (await t.call("/admin/chat/api/task/1")).json()).task.progress).toBeUndefined();
+    const notes =
+      "## Goal\nRead it all.\n![seen](https://evil.example/?d=1) <img src=https://evil.example/>";
+    t.f.comment(1, `<!-- shipify-task ${JSON.stringify({ v: 2, notes })} -->\nAnswered.`, RUN);
+    t.f.later(10_000);
+    const before = t.f.w.rendered;
+    const { task } = await (await t.call("/admin/chat/api/task/1")).json();
+    expect(task.progress).toContain("<h2>markdown</h2>");
+    expect(task.progress).toContain("Read it all.");
+    // Its pictures are links, its fetching tags text: GitHub gets `\![` and `&lt;img`.
+    expect(task.progress).toContain("\\![seen]");
+    expect(task.progress).not.toMatch(/<img|script|steal/);
+    expect(t.f.w.rendered).toBe(before + 1);
+    // Unchanged, it's not rendered again (the thread itself read again).
+    t.f.later(10_000);
+    expect((await (await t.call("/admin/chat/api/task/1")).json()).task.progress).toBe(
+      task.progress,
+    );
+    expect(t.f.w.rendered).toBe(before + 1);
+    // An older page has none: the newest view shows it.
+    for (let i = 0; i < 150; i++) t.f.comment(1, `note ${i}`, RUN);
+    t.f.later(10_000);
+    const newest = await (await t.call("/admin/chat/api/task/1")).json();
+    expect(newest).toMatchObject({ earlier: true, page: 2 });
+    expect(newest.task.progress).toBe(task.progress);
+    const older = await (await t.call("/admin/chat/api/task/1?page=1")).json();
+    expect(older.page).toBe(1);
+    expect(older.task.progress).toBeUndefined();
+  });
+
+  it("a Progress GitHub can't render just now shows as its words, never failing the thread", async () => {
+    const t = setUp();
+    await t.post("/admin/chat/api/send", { id: "progress02", words: "research this" });
+    const notes = "## Goal\n<b>bold</b> & more";
+    t.f.comment(1, `<!-- shipify-task ${JSON.stringify({ v: 2, notes })} -->\nAnswered.`, RUN);
+    const markdown = t.f.deps.fetch;
+    t.f.deps.fetch = async (input, init) =>
+      input.endsWith("/markdown") ? new Response(null, { status: 502 }) : markdown(input, init);
+    const { task } = await (await t.call("/admin/chat/api/task/1")).json();
+    expect(task.progress).toBe("<pre>## Goal\n&lt;b&gt;bold&lt;/b&gt; &amp; more</pre>");
+    t.f.deps.fetch = markdown;
+    t.f.later(10_000);
+    const again = await (await t.call("/admin/chat/api/task/1")).json();
+    expect(again.task.progress).toContain("<h2>markdown</h2>");
+  });
+
+  it("a thread just past 100 opens full: a newest page under 40 brings the one before it", async () => {
+    const t = setUp();
+    await t.post("/admin/chat/api/send", { id: "long00003", words: "a long one" });
+    for (let i = 0; i < 101; i++) t.f.comment(1, `note ${i}`, RUN);
+    const thread = await (await t.call("/admin/chat/api/task/1")).json();
+    expect(thread).toMatchObject({ earlier: false, page: 1 });
+    expect(thread.messages).toHaveLength(102);
+    expect(thread.messages[0].md).toBe("a long one");
+    expect(thread.messages.at(-1).md).toBe("note 100");
+    // 150: the newest page has 50, enough alone.
+    for (let i = 101; i < 150; i++) t.f.comment(1, `note ${i}`, RUN);
+    t.f.later(10_000);
+    const longer = await (await t.call("/admin/chat/api/task/1")).json();
+    expect(longer).toMatchObject({ earlier: true, page: 2 });
+    expect(longer.messages).toHaveLength(50);
+    expect(longer.messages.at(-1).md).toBe("note 149");
+  });
+
+  it("a message at the 100 mark between two polls still comes: what's newer is read by time, not page", async () => {
+    const t = setUp();
+    await t.post("/admin/chat/api/send", { id: "long00004", words: "a long one" });
+    for (let i = 0; i < 99; i++) {
+      t.f.later(1_000);
+      t.f.comment(1, `note ${i}`, RUN);
+    }
+    const open = await (await t.call("/admin/chat/api/task/1")).json();
+    expect(open.messages).toHaveLength(100);
+    const since = open.messages.at(-1).at;
+    // Two between polls: the 100th ends page 1, the 101st starts page 2.
+    t.f.later(1_000);
+    t.f.comment(1, "the 100th", RUN);
+    t.f.later(1_000);
+    t.f.comment(1, "the 101st", RUN);
+    t.f.later(10_000);
+    t.f.w.calls.length = 0;
+    const poll = await (
+      await t.call(`/admin/chat/api/task/1?since=${encodeURIComponent(since)}`)
+    ).json();
+    expect(poll.messages.map((m: { md: string }) => m.md)).toEqual(["the 100th", "the 101st"]);
+    // GitHub sends only what's new: asked with `since`, not for the newest page whole.
+    const asked = t.f.gh().filter((c) => c.includes("issues/1/comments"));
+    expect(asked.some((c) => c.includes(`since=${since}`))).toBe(true);
+    expect(asked.some((c) => c.includes("page=2"))).toBe(false);
+  });
+
+  it("a thread reads its task and its comments at once", async () => {
+    const t = setUp();
+    t.f.issue({ title: "from GitHub", user: { login: "owner" } });
+    const open = new Set<string>();
+    let together = false;
+    const fetch = t.f.deps.fetch;
+    t.f.deps.fetch = async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      const mine = /\/issues\/1(\/comments)?$/.test(path);
+      if (mine) {
+        open.add(path);
+        together ||= open.size > 1;
+      }
+      try {
+        await new Promise((r) => setTimeout(r, 1));
+        return await fetch(input, init);
+      } finally {
+        open.delete(path);
+      }
+    };
+    expect((await t.call("/admin/chat/api/task/1")).status).toBe(200);
+    expect(together).toBe(true);
+  });
+
+  it("a read is kept 8 s, past the page's 5-second poll, so a run's polls seldom reach GitHub", async () => {
+    const t = setUp();
+    t.f.issue({ title: "from GitHub", user: { login: "owner" } });
+    const reads = () => t.f.gh().filter((c) => c.endsWith("issues/1")).length;
+    await t.call("/admin/chat/api/task/1");
+    t.f.later(6_000);
+    await t.call("/admin/chat/api/task/1");
+    expect(reads()).toBe(1);
+    t.f.later(3_000);
+    await t.call("/admin/chat/api/task/1");
+    expect(reads()).toBe(2);
+  });
+
+  it("a thread's PRs: each one's state read once a minute, not on every poll", async () => {
+    const t = setUp();
+    t.f.issue({ title: "a task", user: { login: "owner" } });
+    const pr = t.f.issue({
+      title: "the fix",
+      body: "Closes o/shipify#1",
+      user: { login: "shipify-bot[bot]", type: "Bot" },
+      pull_request: { merged_at: null },
+    });
+    const url = `https://github.com/${REPO}/pull/${pr.number}`;
+    t.f.reply(
+      1,
+      replyLine({
+        v: 1,
+        kind: "answer",
+        state: "Done",
+        title: "x",
+        links: [["PR", url]],
+        to: ["web:me"],
+        key: "k",
+      }),
+    );
+    const prs = async () => {
+      t.f.later(10_000);
+      return (await (await t.call("/admin/chat/api/task/1")).json()).task.prs;
+    };
+    const reads = () => t.f.gh().filter((c) => c.endsWith(`issues/${pr.number}`)).length;
+    expect(await prs()).toEqual([{ n: pr.number, url, state: "open" }]);
+    Object.assign(pr, { state: "closed", pull_request: { merged_at: "2026-10-04T12:00:30Z" } });
+    expect((await prs())[0].state).toBe("open");
+    expect(reads()).toBe(1);
+    t.f.later(60_000);
+    expect((await prs())[0].state).toBe("merged");
+    expect(reads()).toBe(2);
   });
 
   it("the list: shipify's open PRs for review, with their task; 50 at a time, without rendered bodies", async () => {
@@ -1074,6 +1613,217 @@ describe("what the page reads", () => {
     expect(pr.messages[0].md).toContain("Reopen from the chat.");
   });
 
+  it("lists a project with its name and chats, folds a chat under it, and hides Library pages (ADR 0069)", async () => {
+    const t = setUp();
+    const p = t.f.issue({ title: "Project: games", body: "Offline games.", labels: ["project"] });
+    const chat = t.f.issue({
+      title: "which engine?",
+      body: `Part of #${p.number}\n\nwhich engine?`,
+    });
+    p.subIssues = [chat.number];
+    t.f.issue({ title: "Notebook: games", body: "## Map", labels: ["library", "project:games"] });
+    const list = await (await t.call("/admin/chat/api/list")).json();
+    const rows = list.tasks.map((r: { n: number }) => r.n);
+    expect(rows).toEqual([chat.number, p.number]);
+    const project = list.tasks.find((r: { n: number }) => r.n === p.number);
+    expect(project).toMatchObject({ project: { name: "games", chats: 1 } });
+    expect(project.parts).toBeUndefined();
+    expect(project.labels).toBeUndefined();
+    expect(list.tasks.find((r: { n: number }) => r.n === chat.number).parent).toBe(p.number);
+  });
+
+  it("a project's thread has its chats and pages, and no Plan card (ADR 0069)", async () => {
+    const t = setUp();
+    const p = t.f.issue({ title: "Project: games", body: "Offline games.", labels: ["project"] });
+    const chat = t.f.issue({ title: "which engine?", body: `Part of #${p.number}\n\nwhich?` });
+    p.subIssues = [chat.number];
+    const page = t.f.issue({
+      title: "Notebook: games",
+      body: "## Map",
+      labels: ["library", "project:games"],
+    });
+    t.f.issue({ title: "Notebook: other", body: "- x", labels: ["library", "project:other"] });
+    const th = await (await t.call(`/admin/chat/api/task/${p.number}`)).json();
+    expect(th.task.plan).toBeUndefined();
+    expect(th.task.project).toMatchObject({
+      name: "games",
+      chats: [{ n: chat.number, title: "which engine?" }],
+      pages: [{ n: page.number, topic: "games", first: "Map" }],
+    });
+    // Its next step, from counts (ADR 0070): an empty Map asks for a first fact kept.
+    expect(th.task.project.step).toContain("Keep on page");
+  });
+
+  it("a project's page shows its Now first, and one next step from counts it read already (ADR 0070)", async () => {
+    const t = setUp();
+    const p = t.f.issue({ title: "Project: games", body: "Offline games.", labels: ["project"] });
+    const chat = t.f.issue({ title: "which engine?", body: `Part of #${p.number}\n\nwhich?` });
+    p.subIssues = [chat.number];
+    t.f.issue({
+      title: "Notebook: games",
+      body: "# games\n\n## Now\n\n- Now: picking an engine\n- Open questions: Defold's licence?\n\n## Map\n\n- [engines](#2)\n",
+      labels: ["library", "project:games"],
+    });
+    const inbox = t.f.issue({
+      title: "Notebook: games-inbox",
+      body: "Collated up to item 3 (2 items).",
+      labels: ["library", "project:games"],
+    });
+    const th = await (await t.call(`/admin/chat/api/task/${p.number}`)).json();
+    expect(th.task.project.now).toEqual([
+      "Now: picking an engine",
+      "Open questions: Defold's licence?",
+    ]);
+    expect(th.task.project.step).toContain("say “check the project”");
+    // Ten finds since the last collate come first: the Library's one read counts them.
+    for (let i = 0; i < 12; i++) t.f.comment(inbox.number, "a find", { login: "owner" });
+    clearCaches();
+    t.f.later(120_000);
+    const full = await (await t.call(`/admin/chat/api/task/${p.number}`)).json();
+    expect(full.task.project.step).toBe("10 finds wait in the Inbox: Collate the inbox.");
+  });
+
+  it("finds chats and pages by meaning when you pick it, by words when GitHub is busy, each kept a minute (ADR 0070)", async () => {
+    const t = setUp();
+    const p = t.f.issue({ title: "Project: clinic", body: "A clinic.", labels: ["project"] });
+    const page = t.f.issue({
+      title: "Notebook: clinic-licences",
+      body: "- a licence from the state health office",
+      labels: ["library", "project:clinic"],
+    });
+    t.f.issue({ title: "which licence does a clinic need?", body: `Part of #${p.number}` });
+    const found = await (await t.call("/admin/chat/api/search?q=health+permits")).json();
+    expect(found.words).toBeUndefined();
+    expect(found.items).toEqual([
+      { n: page.number, title: "clinic-licences", kind: "page", open: true },
+    ]);
+    expect(t.f.w.searches).toEqual([`repo:${REPO} is:issue health permits`]);
+    // The same words within the minute: no second search.
+    await t.call("/admin/chat/api/search?q=health+permits");
+    expect(t.f.w.searches).toHaveLength(1);
+    // Its 10 a minute spent: words, and the answer says so.
+    t.f.w.searchBusy = true;
+    const words = await (await t.call("/admin/chat/api/search?q=clinic")).json();
+    expect(words.words).toBe(true);
+    expect(words.items.map((i: { kind: string }) => i.kind).sort()).toEqual([
+      "chat",
+      "page",
+      "project",
+    ]);
+    expect((await t.call("/admin/chat/api/search?q=")).status).toBe(400);
+  });
+
+  it("works out a project's one next step: you first, then a full Inbox, a first question, a fact kept, a check, Close (ADR 0070)", () => {
+    const step = (p: Partial<Parameters<typeof nextStep>[0]>) =>
+      nextStep({ chats: [], inbox: 0, map: 0, now: [], ...p });
+    const chat = (n: number, state: string) => ({ n, state });
+    expect(step({ chats: [chat(3, "needs-you")], inbox: 40 })).toBe(
+      "#3 waits on you: open it below.",
+    );
+    expect(step({ chats: [chat(3, "open")], inbox: INBOX_FULL })).toContain("Collate the inbox");
+    expect(step({ inbox: 9 })).toContain("Ask a first question");
+    expect(step({ chats: [chat(3, "open")] })).toContain("Keep on page");
+    expect(step({ chats: [chat(3, "open")], map: 4, now: ["Open questions: none"] })).toContain(
+      "check the project",
+    );
+    expect(step({ chats: [chat(3, "closed")], map: 4 })).toContain("Close the project");
+    expect(step({ chats: [chat(3, "open")], map: 4 })).toContain("Send starts a chat here");
+  });
+
+  // A project made from the Desk showed "Starting…" for ten minutes under its own words, and no run
+  // ever came (task.yml skips them): those, and a page's, are marked, and the page waits for none.
+  it("marks your words that start no run: a project's own, a page's (ADR 0069)", async () => {
+    const t = setUp();
+    const p = t.f.issue({ title: "Project: games", body: "Offline games.", labels: ["project"] });
+    const page = t.f.issue({ title: "Notebook: games", body: "## Map", labels: ["library"] });
+    const read = async (n: number) =>
+      (await (await t.call(`/admin/chat/api/task/${n}`)).json()).messages;
+    expect((await read(p.number))[0]).toMatchObject({ who: "you", norun: true });
+    expect((await read(page.number))[0]).toMatchObject({ who: "you", norun: true });
+    // Words on the project after it (`collate the inbox`) start a run, as on any task.
+    t.f.w.comments.push(t.f.comment(p.number, "collate the inbox", { login: OWNER }));
+    t.f.later(10_000);
+    expect((await read(p.number))[1]).toMatchObject({ who: "you", md: "collate the inbox" });
+    expect((await read(p.number))[1].norun).toBeUndefined();
+    const task = t.f.issue({ title: "fix the header", body: "fix it" });
+    expect((await read(task.number))[0].norun).toBeUndefined();
+  });
+
+  it("New chat here opens a chat in the project; Move to project links one in, from the page only (ADR 0069)", async () => {
+    const t = setUp();
+    const p = t.f.issue({ title: "Project: games", body: "Offline games.", labels: ["project"] });
+    const res = await t.post("/admin/chat/api/send", {
+      id: "msg0000under1",
+      words: "which engine?",
+      under: p.number,
+    });
+    expect(await res.json()).toMatchObject({ v: 1, task: 2 });
+    expect(withoutLine(t.f.w.issues[1]?.body ?? "")).toBe(`Part of #${p.number}\n\nwhich engine?`);
+    expect(p.subIssues).toEqual([2]);
+    // On a task, `under` is nothing: the words are a comment, as ever.
+    await t.post("/admin/chat/api/send", {
+      id: "msg0000under2",
+      task: 2,
+      words: "try godot",
+      under: 1,
+    });
+    expect(t.f.w.issues).toHaveLength(2);
+    expect(t.f.w.comments).toHaveLength(1);
+    // Move to project: linked, labelled, its words untouched.
+    const old = t.f.issue({ title: "make it faster", body: "make it faster" });
+    const moved = await t.post("/admin/chat/api/move", { task: old.number, project: p.number });
+    expect(await moved.json()).toEqual({
+      v: 1,
+      text: `Moved #${old.number} into games · #${p.number}. Its next run reads the project's pages.`,
+    });
+    expect(old.labels).toEqual(["in-project"]);
+    expect(old.body).toBe("make it faster");
+    expect(p.subIssues).toEqual([2, old.number]);
+    // The list and its thread name its project at once (it was left under General, task #645):
+    // one GitHub read for all the moved chats, kept, not one each on every read.
+    const listed = (await (await t.call("/admin/chat/api/list")).json()).tasks;
+    expect(listed.find((x: { n: number }) => x.n === old.number)?.parent).toBe(p.number);
+    const th = await (await t.call(`/admin/chat/api/task/${old.number}`)).json();
+    expect(th.task.parent).toBe(p.number);
+    t.f.later(60_000);
+    await t.call("/admin/chat/api/list");
+    expect(t.f.w.parentReads).toBe(1);
+    // Not a project: said, nothing changed.
+    const not = await t.post("/admin/chat/api/move", { task: 2, project: old.number });
+    expect((await not.json()).text).toBe(`#${old.number} isn't a project.`);
+    // From another site, a body that doesn't read, or the door closed: refused.
+    const body = { task: 2, project: p.number };
+    const evil = { origin: "https://evil.example" };
+    expect((await t.post("/admin/chat/api/move", body, evil)).status).toBe(403);
+    expect((await t.post("/admin/chat/api/move", { ...body, task: "2" })).status).toBe(400);
+    expect((await t.post("/admin/chat/api/move", { ...body, more: 1 })).status).toBe(400);
+    const c = setUp();
+    c.f.w.variables.SHIPIFY_DOOR = "closed";
+    const q = c.f.issue({ title: "Project: games", body: "Offline games.", labels: ["project"] });
+    c.f.issue({ title: "make it faster" });
+    const shut = await c.post("/admin/chat/api/move", { task: 2, project: q.number });
+    expect(shut.status).toBe(503);
+    expect((await shut.json()).error).toContain("closed");
+    expect(q.subIssues ?? []).toEqual([]);
+  });
+
+  it("Notebook lists the Library's pages beside the notebook's, each with its project (ADR 0069)", async () => {
+    const t = setUp();
+    t.f.issue({ title: "Notebook: Preferences", body: "- short answers", labels: ["notebook"] });
+    t.f.issue({
+      title: "Notebook: games",
+      body: "## Map\n\n- Godot",
+      labels: ["library", "project:games"],
+    });
+    t.f.issue({ title: "Notebook: Journal 2026-11", body: "- a thought", labels: ["library"] });
+    const nb = await (await t.call("/admin/chat/api/notebook")).json();
+    expect(nb.pages.map((p: { topic: string }) => p.topic)).toEqual(["Preferences"]);
+    expect(nb.library).toEqual([
+      expect.objectContaining({ topic: "Journal 2026-11", first: "a thought" }),
+      expect.objectContaining({ topic: "games", first: "Map", project: "games" }),
+    ]);
+  });
+
   it("menu, repeats, notebook and setup answer in their shapes, with nothing secret", async () => {
     const t = setUp();
     for (const route of ["menu", "repeats", "notebook", "setup", "files"]) {
@@ -1101,7 +1851,8 @@ describe("what the page reads", () => {
     expect(vercel.models[0].efforts).toEqual(pi.efforts);
     // An agent's name for people reaches the chip and Who thinks (OpenCode, not Opencode).
     expect(menu.agents.find((a: { id: string }) => a.id === "opencode")?.name).toBe("OpenCode");
-    expect(menu.files).toEqual({ on: true, most: 5, bytes: 10 * 1024 * 1024 });
+    // The page says the limit as it counts it: "over 95.0 MB".
+    expect(menu.files).toEqual({ on: true, most: 5, bytes: 95_000_000 });
     // "Change a repo" offers the record's repos (ADR 0047): none read yet here.
     expect(menu.repos).toEqual([]);
     // The repeat form's zone is your copy's variable as it is now, the deployed one only until set.
@@ -1120,6 +1871,8 @@ describe("what the page reads", () => {
     const got = await (await t.call("/admin/chat/api/setup")).json();
     // Tools are what a run uses; the chats (a door is their way in) are under Chats.
     expect(got.tools.map((x: { id: string }) => x.id)).toEqual(["notion", "drop"]);
+    // "Without asking": each pre-approved form by its call.
+    expect(got.tools[1].pre).toEqual(["publish"]);
     const setup = JSON.stringify(got);
     expect(setup).not.toContain("PRIVATE KEY");
     expect(setup).not.toContain("4242");
@@ -1318,6 +2071,54 @@ describe("what the page reads", () => {
       projects: ["links"],
       apps: [{ id: "links", url: "https://links.example.com", failing: true, paused: false }],
     });
+  });
+
+  it("the runners and the status task are read with their ETags, the status task kept a minute", async () => {
+    const t = setUp();
+    t.f.issue({
+      title: "Shipify status",
+      body: `${STATUS_MARK}{"v":2} -->`,
+      labels: ["shipify-status"],
+    });
+    // GitHub's tags on these two: the same answer is a 304.
+    const asked: { what: string; status: number }[] = [];
+    const fetch = t.f.deps.fetch;
+    t.f.deps.fetch = async (input, init = {}) => {
+      const url = String(input);
+      const what = url.includes("/actions/runners")
+        ? "runners"
+        : url.includes("labels=shipify-status")
+          ? "status"
+          : "";
+      const res = await fetch(input, init);
+      if (!what) return res;
+      const body = await res.text();
+      const etag = `"${body.length}"`;
+      const status = new Headers(init.headers).get("if-none-match") === etag ? 304 : res.status;
+      asked.push({ what, status });
+      return new Response(status === 304 ? null : body, {
+        status,
+        headers: { etag, "content-type": "application/json" },
+      });
+    };
+    const of = (what: string) => asked.filter((x) => x.what === what);
+    await t.call("/admin/chat/api/setup");
+    const reads = of("status").length;
+    expect(reads).toBeGreaterThan(0);
+    expect(of("runners")).toHaveLength(1);
+    // The menu and Repeats a moment later: the status task as Setup read it.
+    for (const route of ["menu", "repeats"])
+      expect((await t.call(`/admin/chat/api/${route}`)).status).toBe(200);
+    expect(of("status")).toHaveLength(reads);
+    // Past a minute, read again: unchanged, each a 304.
+    t.f.later(61_000);
+    expect((await t.call("/admin/chat/api/setup")).status).toBe(200);
+    expect(
+      of("status")
+        .slice(reads)
+        .map((x) => x.status),
+    ).toEqual(Array(reads).fill(304));
+    expect(of("runners").map((x) => x.status)).toEqual([200, 304]);
   });
 });
 

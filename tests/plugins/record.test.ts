@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { githubQueue, githubRecord } from "../../cli/lib/github.ts";
-import type { Queue, TaskRecord } from "../../cli/lib/plugins/record.ts";
+import type { Queue, RecordComment, TaskRecord } from "../../cli/lib/plugins/record.ts";
 import { ROOT } from "../helpers.ts";
 
 type FakeIssue = {
@@ -159,6 +159,50 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
     expect(record.commentWriters(c as { id: number; node_id?: string }).editor).toBe(
       "shipify-bot[bot]",
     );
+  });
+
+  it("reads a task in one call: its issue and comments as issue and comments do, each with its editor (ADR 0069)", () => {
+    const { record } = make();
+    const first = record.comment(12, "the status");
+    record.comment(12, "more words");
+    record.editComment(first, "the status, again");
+    fake.set((f) => {
+      f.issue.labels = [{ name: "working" }];
+    });
+    const before = fake.read().calls.length;
+    const { issue, comments } = record.task(12);
+    // One call, where issue, comments and commentWriters took three.
+    expect(fake.read().calls.length - before).toBe(1);
+    const rest = record.issue(12);
+    expect(issue).toMatchObject({
+      number: rest.number,
+      title: rest.title,
+      state: rest.state,
+      labels: rest.labels,
+      user: rest.user,
+    });
+    // What a run reads of each, the same either way.
+    const seen = (c: RecordComment) => [c.id, c.body, c.user.login, c.created_at, c.updated_at];
+    expect(comments.map(seen)).toEqual(record.comments(12).map(seen));
+    expect(comments.map((c) => c.editor)).toEqual(["github-actions[bot]", undefined]);
+    expect(comments[0]?.user.login).toBe("github-actions[bot]");
+  });
+
+  it("reads a long task's comments page by page, all of them", () => {
+    const { record } = make();
+    fake.set((f) => {
+      f.comments = Array.from({ length: 230 }, (_, i) => ({
+        id: 1000 + i,
+        body: `c${i}`,
+        user: { login: "owner" },
+        created_at: "2026-11-01T12:00:00Z",
+      }));
+    });
+    const before = fake.read().calls.length;
+    const { comments } = record.task(12);
+    expect(fake.read().calls.length - before).toBe(3);
+    expect(comments.map((c) => c.body)).toEqual(record.comments(12).map((c) => c.body));
+    expect(comments).toHaveLength(230);
   });
 
   it("reads only the comments written or edited since a time, when asked", () => {
@@ -339,6 +383,96 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
     });
     expect(record.family(201)?.parts[1]?.blockedBy).toEqual([
       { number: 200, state: "closed", reason: "completed" },
+    ]);
+  });
+
+  it("reads what the weekly clean-up needs in one read, and a closed project's chats and pages (ADR 0069)", () => {
+    const { record } = make();
+    const at = (n: number, over: Record<string, unknown>) => ({
+      issue: {
+        number: n,
+        title: `task ${n}`,
+        body: "",
+        state: "open",
+        labels: [],
+        user: { login: "owner" },
+        ...over,
+      },
+      comments: [],
+    });
+    fake.set((f) => {
+      Object.assign(f.issue, { updated_at: "2026-07-01T10:00:00Z" });
+      f.others = {
+        "40": at(40, {
+          title: "Project: trip",
+          labels: [{ name: "project" }],
+          state: "closed",
+          closed_at: "2026-09-20T10:00:00Z",
+        }),
+        "41": at(41, { parent: 40, state: "closed", closed_at: "2026-08-01T10:00:00Z" }),
+        "42": at(42, { labels: [{ name: "library" }, { name: "project:trip" }] }),
+        "43": at(43, { parent: 40 }),
+        "44": at(44, { state: "closed", closed_at: "2026-09-05T10:00:00Z" }),
+        "45": at(45, { updated_at: "2026-06-01T10:00:00Z" }),
+        "46": at(46, { labels: [{ name: "needs you" }], updated_at: "2026-06-15T10:00:00Z" }),
+        "50": at(50, { title: "Project: shop", labels: [{ name: "project" }] }),
+        "51": at(51, { parent: 50, state: "closed", closed_at: "2026-09-25T10:00:00Z" }),
+        "60": at(60, { updated_at: "2026-07-15T10:00:00Z", pr: "https://x/pull/1" }),
+        "61": at(61, { parent: 60, updated_at: "2026-10-30T10:00:00Z" }),
+      };
+    });
+    const read = record.sweep({
+      closedFrom: "2026-09-03",
+      closedTo: "2026-10-03",
+      quietBefore: "2026-08-04",
+      quietWithout: ["project", "needs you"],
+    });
+    // The oldest first, so a missed week catches up before they leave the window.
+    expect(read.closed.map((i) => [i.number, i.closedAt, i.parent?.number])).toEqual([
+      [44, "2026-09-05T10:00:00Z", undefined],
+      [40, "2026-09-20T10:00:00Z", undefined],
+      [51, "2026-09-25T10:00:00Z", 50],
+    ]);
+    expect(read.closed[2]?.parent).toEqual({ number: 50, state: "open", labels: ["project"] });
+    expect(read.projects.map((i) => [i.number, i.title])).toEqual([[50, "Project: shop"]]);
+    // The oldest first too, and none with a label the 30-day close leaves open (#46).
+    expect(read.quiet.map((i) => [i.number, i.openParts, i.openPrs])).toEqual([
+      [45, 0, 0],
+      [12, 0, 0],
+      [60, 1, 1],
+    ]);
+    // Each chat with its state: only a closed one's files go with its project (ADR 0069).
+    expect(record.projectItems(40, "project:trip")).toEqual({
+      chats: [
+        { number: 41, state: "closed" },
+        { number: 43, state: "open" },
+      ],
+      pages: [42],
+    });
+    // The weekly digest's one read (ADR 0070): the open projects with their chats, and the open
+    // Inbox pages with their items.
+    fake.set((f) => {
+      f.others ??= {};
+      f.others["52"] = at(52, { parent: 50, labels: [{ name: "needs you" }] });
+      f.others["53"] = {
+        ...at(53, {
+          title: "Notebook: shop-inbox",
+          labels: [{ name: "library" }, { name: "project:shop" }],
+          body: "Collated up to item 9 (1 items).",
+        }),
+        comments: [
+          { id: 9, body: "a find", user: { login: "owner" }, created_at: "2026-10-01T10:00:00Z" },
+        ],
+      };
+    });
+    const live = record.liveProjects();
+    expect(live.projects.map((p) => [p.number, p.title])).toEqual([[50, "Project: shop"]]);
+    expect(live.projects[0]?.chats.map((c) => [c.number, c.state, c.labels])).toEqual([
+      [51, "closed", []],
+      [52, "open", ["needs you"]],
+    ]);
+    expect(live.inboxes).toEqual([
+      { title: "Notebook: shop-inbox", body: "Collated up to item 9 (1 items).", items: 1 },
     ]);
   });
 

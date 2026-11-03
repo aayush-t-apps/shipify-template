@@ -82,4 +82,16 @@ describe("a deploy's state, when merges land close together", () => {
     });
     expect(deployState(d).state).toBe("waiting");
   });
+
+  it("with no mark, a run GitHub holds for approval is held, with its link", () => {
+    api({
+      "repos/o/links/commits/abc/status": JSON.stringify({ statuses: [] }),
+      "repos/o/links/compare/abc...main": "identical",
+      "repos/o/links/actions/runs?head_sha=abc": "https://github.com/o/links/actions/runs/7",
+    });
+    expect(deployState(d)).toEqual({
+      state: "held",
+      run: "https://github.com/o/links/actions/runs/7",
+    });
+  });
 });

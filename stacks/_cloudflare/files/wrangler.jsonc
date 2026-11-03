@@ -32,6 +32,13 @@
   // #if OPTION_R2
   "r2_buckets": [{ "binding": "R2", "bucket_name": "{{SERVICE_NAME}}-r2" }],
   // #endif
+  // #if OPTION_DO
+  // Durable Objects (AGENTS.md, "Storage"): classes only add. Each class in src/worker/objects/
+  // is in `exports` (staging inherits it); a deploy stops on a deleted or renamed class.
+  // No PR previews: Cloudflare makes none for a Worker with Durable Objects.
+  "durable_objects": { "bindings": [{ "name": "COUNTER", "class_name": "Counter" }] },
+  "exports": { "Counter": { "type": "durable-object", "storage": "sqlite" } },
+  // #endif
   // #if STAGING
   "vars": { "APP_ID": "{{APP_ID}}", "APP_ENV": "production", "GIT_SHA": "dev" },
   "env": {
@@ -48,6 +55,9 @@
       // #endif
       // #if OPTION_R2_STAGING
       "r2_buckets": [{ "binding": "R2", "bucket_name": "{{SERVICE_NAME_STAGING}}-r2" }],
+      // #endif
+      // #if OPTION_DO_STAGING
+      "durable_objects": { "bindings": [{ "name": "COUNTER", "class_name": "Counter" }] },
       // #endif
       // #if STAGING
       "vars": { "APP_ID": "{{APP_ID}}", "APP_ENV": "staging", "GIT_SHA": "dev" }

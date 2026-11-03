@@ -1,13 +1,19 @@
 // What the chat shows (ADR 0036, "What it looks like"): every read is GitHub's record, as the door
 // App sees it, shaped for the page (shapes.ts). Nothing here writes. A list is three calls (50
 // open tasks and PRs, without their rendered bodies; the task runs; the runners), and an older page
-// of it, or of the closed ones, one; a thread two (the task or PR and its newest 100 comments; past
-// 100, its first page too, for the run's status comment) and one per PR of shipify's it names, at
-// most three; a split task's (ADR 0066) one GraphQL read more, for its parts, kept 60 s.
+// of it, or of the closed ones, one; a thread two at once (the task or PR, and its first 100
+// comments: all of most threads, and the run's status comment), past 100 its newest page too (and
+// the one before, when that's short) or only what's new since the page's last, and one per PR of
+// shipify's it names, at most three, kept 60 s; a split task's (ADR 0066) one GraphQL read more,
+// for its parts, kept 60 s; its Progress (ADR 0069) one render, kept a day by its words.
 import {
   AFTER_CLOSE_MS,
   acknowledgement,
+  IN_PROJECT_LABEL,
+  LIBRARY_LABEL,
   NEEDS_YOU_LABEL,
+  PROJECT_LABEL,
+  projectNameOf,
   pickIn,
   readFrom,
   readReply,
@@ -24,25 +30,27 @@ import {
   withZone,
 } from "../../../cli/contracts/index.ts";
 import pkg from "../../../package.json" with { type: "json" };
-import { cached } from "../cache.ts";
+import { cached, recall, remember } from "../cache.ts";
 import { channelOf } from "../channels/index.ts";
 import type { Deps, Env } from "../env.ts";
-import { byDoor, byRun, type GitHub, github, RUN_WRITER } from "../github.ts";
+import { byDoor, byRun, type GitHub, GitHubError, github, RUN_WRITER } from "../github.ts";
 import {
+  libraryPages,
   NOTEBOOK_LABEL,
   notebookPages,
   runners,
   type Settings,
   STATUS_LABEL,
-  statusTask,
   toBoxes,
 } from "../settings.ts";
 import { clean, esc, splitDetails, withoutEchoes, withoutPick } from "./clean.ts";
+import { render } from "./docs.ts";
 import { PICTURE } from "./files.ts";
-import { read, readOr } from "./gh.ts";
-import { defaultAgentId } from "./setup.ts";
+import { read, readOr, reader } from "./gh.ts";
+import { defaultAgentId, statusOf } from "./setup.ts";
 import type {
   FileSeen,
+  Found,
   List,
   Msg,
   Notebook,
@@ -118,13 +126,16 @@ const SAID = new Set([
   "waiting",
   SUB_TASK_LABEL,
   STARTED_LABEL,
+  PROJECT_LABEL,
+  IN_PROJECT_LABEL,
 ]);
 /** A task's other labels (yours from GitHub, "failed", "deploying"): the list filters by them. */
 const tagsOf = (i: Issue) => labelsOf(i).filter((l) => !SAID.has(l));
 
-/** Not a task the chat lists: a PR, the status task, a notebook page. */
+/** Not a task the chat lists: a PR, the status task, a notebook or Library page (ADR 0069). */
 const hidden = (i: Issue) =>
-  Boolean(i.pull_request) || labelsOf(i).some((l) => l === STATUS_LABEL || l === NOTEBOOK_LABEL);
+  Boolean(i.pull_request) ||
+  labelsOf(i).some((l) => l === STATUS_LABEL || l === NOTEBOOK_LABEL || l === LIBRARY_LABEL);
 
 /** Where a task started. */
 function originOf(gh: GitHub, i: Issue): Origin {
@@ -151,11 +162,48 @@ function stateOf(i: Issue, running: boolean): State {
   return "open";
 }
 
-/** A part's parent (ADR 0066): its body's first line, `Part of #<n>`, on a task labelled so. */
+/**
+ * A part's parent (ADR 0066), or a chat's project (ADR 0069): its body's first line after the
+ * door's hidden one, `Part of #<n>`.
+ */
 const parentOf = (i: Issue) =>
-  (labelsOf(i).includes(SUB_TASK_LABEL) &&
-    Number(/^Part of #(\d+)[ \t]*(?:\r?\n|$)/.exec(i.body ?? "")?.[1])) ||
-  undefined;
+  Number(/^Part of #(\d+)[ \t]*(?:\r?\n|$)/.exec(withoutLine(i.body ?? ""))?.[1]) || undefined;
+
+/** How long a moved chat's project is kept: a move is once (capture.ts `moveToProject`). */
+const MOVED_MS = 86_400_000;
+
+/**
+ * Each one's parent, as `parentOf` reads it, or for a chat moved into a project (its `in-project`
+ * label, no `Part of` line) GitHub's link: those in one GraphQL call for all, each kept a day, so
+ * the list folds it under its project at once and a read costs one call more at most.
+ */
+async function parentsOf(gh: GitHub, deps: Deps, issues: Issue[]) {
+  const now = deps.now();
+  const key = (n: number) => `web:moved:${gh.repo}:${n}`;
+  const out = new Map<number, number>();
+  const ask: number[] = [];
+  for (const i of issues) {
+    const was = parentOf(i) ?? recall<number>(key(i.number), now);
+    if (was) out.set(i.number, was);
+    else if (was === undefined && labelsOf(i).includes(IN_PROJECT_LABEL)) ask.push(i.number);
+  }
+  if (!ask.length) return out;
+  const [owner, name] = gh.repo.split("/");
+  const each = ask.map((n) => `i${n}: issue(number: ${n}) { parent { number } }`).join(" ");
+  const d = await gh
+    .graphql<{ repository?: Record<string, { parent?: { number: number } | null } | null> }>(
+      `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${each} } }`,
+      { owner, name },
+    )
+    .catch(() => undefined);
+  for (const n of d ? ask : []) {
+    // None (0) is kept too, so a label with no link isn't asked on every read.
+    const p = d?.repository?.[`i${n}`]?.parent?.number ?? 0;
+    remember(key(n), p, MOVED_MS, now);
+    if (p) out.set(n, p);
+  }
+  return out;
+}
 
 /** A split task's parts, closed of all: GitHub's count, on the issue already. */
 const partsOf = (i: Issue) => {
@@ -178,7 +226,7 @@ interface PartNode {
 }
 
 const PLAN = `query($owner: String!, $name: String!, $n: Int!) {
-  repository(owner: $owner, name: $name) { issue(number: $n) { subIssues(first: 50) { nodes {
+  repository(owner: $owner, name: $name) { issue(number: $n) { subIssues(first: 100) { nodes {
     number title state stateReason labels(first: 20) { nodes { name } }
     blockedBy(first: 20) { nodes { number state stateReason } }
     closedByPullRequestsReferences(first: 1, includeClosedPrs: false) { nodes { number url } }
@@ -280,30 +328,33 @@ export async function list(env: Env, deps: Deps, page = 1, closed = false): Prom
     ),
     first ? liveRuns(env, deps, gh) : new Map<number, Running>(),
     first
-      ? runners(gh, deps.now(), 30_000)
+      ? runners(gh, deps.now(), 30_000, reader(env, deps))
           .then(toBoxes)
           .catch(() => [])
       : [],
   ]);
-  const tasks = issues
-    .filter((i) => !hidden(i))
-    .map((i) => {
-      const labels = tagsOf(i);
-      const parts = partsOf(i);
-      const parent = parentOf(i);
-      return {
-        n: i.number,
-        title: i.title,
-        state: stateOf(i, live.has(i.number)),
-        from: originOf(gh, i),
-        updated: i.updated_at,
-        url: i.html_url,
-        ...(staying(i) ? { staying: true as const } : {}),
-        ...(labels.length ? { labels } : {}),
-        ...(parts ? { parts } : {}),
-        ...(parent ? { parent } : {}),
-      };
-    });
+  const shown = issues.filter((i) => !hidden(i));
+  const parents = await parentsOf(gh, deps, shown);
+  const tasks = shown.map((i) => {
+    const labels = tagsOf(i);
+    // A project's chats aren't a split's parts (ADR 0069): it says its name and how many.
+    const name = labelsOf(i).includes(PROJECT_LABEL) ? projectNameOf(i.title) : undefined;
+    const parts = name ? undefined : partsOf(i);
+    const parent = parents.get(i.number);
+    return {
+      n: i.number,
+      title: i.title,
+      state: stateOf(i, live.has(i.number)),
+      from: originOf(gh, i),
+      updated: i.updated_at,
+      url: i.html_url,
+      ...(staying(i) ? { staying: true as const } : {}),
+      ...(labels.length ? { labels } : {}),
+      ...(parts ? { parts } : {}),
+      ...(name ? { project: { name, chats: i.sub_issues_summary?.total ?? 0 } } : {}),
+      ...(parent ? { parent } : {}),
+    };
+  });
   const review = issues
     .filter((i) => first && i.pull_request && i.state === "open")
     .map((i) => {
@@ -439,6 +490,8 @@ function message(gh: GitHub, owner: string | undefined, c: Comment & { id: numbe
     ...(use ? { use } : {}),
     // 👀 from a run: it read these words (GitHub's count comes with the comment, no extra read).
     ...(who === "you" && (c.reactions?.eyes ?? 0) > 0 ? { read: true as const } : {}),
+    // A button's word (ADR 0069): kept for what follows from it, never drawn as a message.
+    ...(from?.button ? { tap: true as const } : {}),
     url: c.html_url,
   };
 }
@@ -472,14 +525,116 @@ function writable(gh: GitHub, s: Settings, i: Issue) {
   );
 }
 
+/** A newest page with fewer comments has the one before it read too. */
+const FULL = 40;
+/** How long a PR's state, named in a thread, is kept. */
+const PR_MS = 60_000;
+
+/** How long a Progress, once rendered, is kept: by its words, so a changed one renders again. */
+const PROGRESS_MS = 86_400_000;
+/** HTML tags that fetch something when shown (as cli/lib/task.ts `FETCHES`). */
+const FETCHES =
+  /<(?=\/?\s*(?:img|picture|source|video|audio|svg|image|iframe|object|embed|input|link)\b)/gi;
+
+/**
+ * A task's Progress (ADR 0069): its run's handoff, rendered by GitHub as the doc pane's Markdown is
+ * and cleaned. A run that read the web may write anything, and a Progress needs no pictures: every
+ * `![` is escaped and every tag that fetches is text before GitHub sees it (as `inertImages`).
+ * GitHub can't render it just now: its words as text, not kept, so a later read renders it.
+ */
+async function progressOf(env: Env, deps: Deps, notes: string) {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(notes));
+  const key = `web:progress:${[...new Uint8Array(hash).slice(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+  const inert = notes
+    .replace(/(\\*)!\[/g, (_, bs: string) => `${bs}${bs.length % 2 ? "" : "\\"}![`)
+    .replace(FETCHES, "&lt;");
+  return cached(key, PROGRESS_MS, () => render(env, deps, inert), deps.now()).catch(
+    () => `<pre>${esc(notes)}</pre>`,
+  );
+}
+
 /** A PR's state, from its issue: open, merged or closed. */
 const prState = (i: Issue) =>
   i.pull_request?.merged_at ? "merged" : i.state === "closed" ? "closed" : "open";
 
+/** How long one search's answer is kept: GitHub allows 10 by meaning a minute (ADR 0070). */
+const SEARCH_MS = 60_000;
+
 /**
- * A thread: the task and its newest page of messages (only those after `since`, when given), or an
- * older page (`page`, for "Earlier messages"). A PR of shipify's reads the same way, to review in
- * the chat: its description and comments, and the task it's for; it takes no words from here.
+ * Find by meaning (ADR 0070): GitHub's hybrid issue search on your shipify repo, its chats,
+ * projects and pages (an Inbox's items are comments, which it doesn't search). When GitHub refuses
+ * it (its 10 a minute) or answers by words, the answer is words', and says so. Kept a minute.
+ */
+export async function search(env: Env, deps: Deps, words: string): Promise<Found> {
+  const q = encodeURIComponent(`repo:${env.GITHUB_REPO} is:issue ${words}`);
+  type Hits = { items?: Issue[]; search_type?: string };
+  const look = async (): Promise<Hits> => {
+    try {
+      return await read<Hits>(env, deps, `search/issues?q=${q}&search_type=hybrid&per_page=10`, {
+        html: false,
+      });
+    } catch (e) {
+      if (!(e instanceof GitHubError) || ![403, 422, 429].includes(e.status)) throw e;
+      return read<Hits>(env, deps, `search/issues?q=${q}&per_page=10`, { html: false });
+    }
+  };
+  const r = await cached(
+    `web:search:${env.GITHUB_REPO}:${words.toLowerCase()}`,
+    SEARCH_MS,
+    look,
+    deps.now(),
+  );
+  return {
+    v: 1,
+    ...(r.search_type === "hybrid" ? {} : { words: true as const }),
+    items: (r.items ?? [])
+      .filter((i) => !i.pull_request)
+      .map((i) => {
+        const labels = labelsOf(i);
+        const page = /^Notebook: /.test(i.title);
+        return {
+          n: i.number,
+          title: page ? i.title.slice("Notebook: ".length) : i.title,
+          kind: page ? "page" : labels.includes(PROJECT_LABEL) ? "project" : "chat",
+          open: i.state === "open",
+        };
+      }),
+  };
+}
+
+/** Finds waiting in an Inbox that make a collate the next step: the one number here (ADR 0070). */
+export const INBOX_FULL = 10;
+
+/**
+ * A project's one next step (ADR 0070), from counts its page reads already, with no run: a chat
+ * waiting on you, a full Inbox, a first question, a first fact kept, a check before a decision,
+ * and Close when every chat is done.
+ */
+export function nextStep(p: {
+  chats: { n: number; state: string }[];
+  inbox: number;
+  map: number;
+  now: string[];
+}): string {
+  const open = p.chats.filter((c) => c.state !== "closed");
+  const you = open.find((c) => c.state === "needs-you" || c.state === "stuck");
+  if (you) return `#${you.n} waits on you: open it below.`;
+  if (p.inbox >= INBOX_FULL) return `${p.inbox} finds wait in the Inbox: Collate the inbox.`;
+  if (!p.chats.length)
+    return "Ask a first question in the box below, or Add a find: no run starts.";
+  if (!p.map)
+    return "A good answer in a chat? Keep on page, under it, puts it on the project's page.";
+  if (p.now.some((l) => /^open questions?:\s*\S/i.test(l)))
+    return "Questions are open in Now: before you decide, say “check the project” in a chat.";
+  if (!open.length) return "Every chat is done: Close the project when it is too. Its pages stay.";
+  return "Send starts a chat here; open one below to carry it on. Add keeps a find, with no run.";
+}
+
+/**
+ * A thread: the task and its newest page of messages (and the page before, when the newest has
+ * few), or only those after `since`, when given; or an older page (`page`, for "Earlier
+ * messages"). A PR of shipify's reads the same way, to review in the chat: its description and
+ * comments, and the task it's for; it takes no words from here.
  */
 export async function thread(
   env: Env,
@@ -490,22 +645,68 @@ export async function thread(
   older?: number,
 ): Promise<Thread | null> {
   const gh = github(env, deps);
-  const issue = await readOr<Issue>(env, deps, `repos/${gh.repo}/issues/${n}`);
-  if (!issue) return null;
-  const count = issue.comments ?? 0;
-  const newest = Math.max(1, Math.ceil(count / 100));
-  const last = older && older < newest ? older : newest;
-  // The newest page by default. The run's status comment is the first a run wrote (findStatus), so
-  // it's on page 1: read too when the page shown is a later one. Unchanged, each is a 304.
-  const page = (p: number) =>
-    read<Comment[]>(env, deps, `repos/${gh.repo}/issues/${n}/comments?per_page=100&page=${p}`);
-  const [comments, first, plan] = await Promise.all([
-    page(last),
-    // Only for the Working line: a page 1 that can't be read leaves it out, never the thread.
-    last > 1 ? page(1).catch(() => [] as Comment[]) : Promise.resolve([] as Comment[]),
-    // A split task's Plan card (ADR 0066): a plan that can't be read leaves the card out.
-    partsOf(issue) && !issue.pull_request ? planOf(gh, deps, n).catch(() => undefined) : undefined,
+  const path = `repos/${gh.repo}/issues/${n}/comments?per_page=100`;
+  const page = (p: number) => read<Comment[]>(env, deps, `${path}&page=${p}`);
+  // The task and its first page at once: the newest too for most threads, and the run's status
+  // comment for all (the first a run wrote, findStatus). Unchanged, each is a 304.
+  const one = page(1);
+  // Only for the Working line, when page 1 isn't shown: one that can't be read leaves it out.
+  const first = one.catch(() => [] as Comment[]);
+  const [issue] = await Promise.all([
+    readOr<Issue>(env, deps, `repos/${gh.repo}/issues/${n}`),
+    first,
   ]);
+  if (!issue) return null;
+  const newest = Math.max(1, Math.ceil((issue.comments ?? 0) / 100));
+  const at = (p: number) => (p === 1 ? one : page(p));
+  const earlierPage = older && older < newest ? older : undefined;
+  // What's shown, from its page on: an older page (`page`); past page 1, only what's new since
+  // `since`, by time, so none landing as a page fills is missed; else the newest page, with the one
+  // before when it has under FULL, so a thread just past 100 opens with its last messages.
+  const shown = async (): Promise<[number, Comment[]]> => {
+    if (earlierPage) return [earlierPage, await at(earlierPage)];
+    if (since && newest > 1)
+      return [
+        newest,
+        await read<Comment[]>(env, deps, `${path}&since=${new Date(since).toISOString()}`),
+      ];
+    const last = await at(newest);
+    if (newest === 1 || last.length >= FULL) return [newest, last];
+    return [newest - 1, [...(await at(newest - 1)), ...last]];
+  };
+  // A project (ADR 0069) is no split parent: its chats and pages instead of a Plan card.
+  const projectName = labelsOf(issue).includes(PROJECT_LABEL)
+    ? projectNameOf(issue.title)
+    : undefined;
+  const [[last, comments], plan, pages] = await Promise.all([
+    shown(),
+    // A split task's Plan card (ADR 0066): a plan that can't be read leaves the card out.
+    (projectName || partsOf(issue)) && !issue.pull_request
+      ? planOf(gh, deps, n).catch(() => undefined)
+      : undefined,
+    projectName
+      ? cached(`web:library:${gh.repo}`, PLAN_MS, () => libraryPages(gh), deps.now()).catch(
+          () => [],
+        )
+      : undefined,
+  ]);
+  // Its main page's Now, and its one next step from counts (ADR 0070).
+  const theirs = (pages ?? []).filter((p) => p.project === projectName);
+  const main = theirs.find((p) => p.now);
+  const project = projectName
+    ? {
+        name: projectName,
+        chats: plan ?? [],
+        pages: theirs.map(({ n, topic, first, url }) => ({ n, topic, first, url })),
+        ...(main?.now?.length ? { now: main.now } : {}),
+        step: nextStep({
+          chats: plan ?? [],
+          inbox: theirs.find((p) => p.waiting !== undefined)?.waiting ?? 0,
+          map: main?.map ?? 0,
+          now: main?.now ?? [],
+        }),
+      }
+    : undefined;
   const owner = s.owner?.toLowerCase();
   // A task written on GitHub with only a title: its first message is that title, not an empty one.
   const words = Boolean(issue.body?.trim());
@@ -527,14 +728,21 @@ export async function thread(
   };
   const all = [...(last > 1 ? [] : [own]), ...comments];
   const after = since ? Date.parse(since) : Number.NEGATIVE_INFINITY;
+  // Your words that start no run (task.yml): on a PR or a page, and a project's own (its body).
+  const norun = (m: Msg) => m.who === "you" && (hidden(issue) || (projectName && m.id === 0));
   const messages = all
     .filter((c) => !since || Date.parse(c.created_at) > after)
-    .flatMap((c) => messageOnce(gh, owner, c) ?? []);
+    .flatMap((c) => messageOnce(gh, owner, c) ?? [])
+    .map((m) => (norun(m) ? { ...m, norun: true as const } : m));
   // The run under way, from its status comment (the run writes it first, and clears it at the end).
-  const status = [...first, ...comments].find(
+  const status = [...(await first), ...comments].find(
     (c) => (c.body ?? "").startsWith(TASK_MARK) && byRun(c),
   );
-  const working = readTaskSeen(status?.body)?.working;
+  const seen = readTaskSeen(status?.body);
+  const working = seen?.working;
+  // Its Progress, from there too: in a task's newest view, not an older page or a PR's.
+  const notes = !earlierPage && !issue.pull_request && seen?.notes?.trim();
+  const progress = notes ? progressOf(env, deps, notes) : undefined;
   const running = working
     ? {
         n,
@@ -552,22 +760,27 @@ export async function thread(
       ),
     ),
   ];
+  // Each one's state kept a minute, not read again on every poll.
   const prs = await Promise.all(
     prUrls.slice(0, 6).map(async (url, i) => {
       const pr = Number(/\/pull\/(\d+)$/.exec(url)?.[1]);
       const ours = url.startsWith(`https://github.com/${gh.repo}/pull/`) && i < 3;
-      const it = ours
-        ? await readOr<Issue>(env, deps, `repos/${gh.repo}/issues/${pr}`, { html: false }).catch(
-            () => null,
-          )
-        : null;
-      return { n: pr, url, state: it ? prState(it) : "" };
+      const look = async () => {
+        const it = await readOr<Issue>(env, deps, `repos/${gh.repo}/issues/${pr}`, {
+          html: false,
+        });
+        return it ? prState(it) : "";
+      };
+      const state = ours
+        ? await cached(`web:pr:${gh.repo}:${pr}`, PR_MS, look, deps.now()).catch(() => "")
+        : "";
+      return { n: pr, url, state };
     }),
   );
   const model = choiceOf(gh, owner, all, status);
   const labels = labelsOf(issue);
   const forTask = issue.pull_request ? taskOfPr(issue.body) : undefined;
-  const parent = issue.pull_request ? undefined : parentOf(issue);
+  const parent = issue.pull_request ? undefined : (await parentsOf(gh, deps, [issue])).get(n);
   return {
     v: 1,
     task: {
@@ -576,7 +789,8 @@ export async function thread(
       state: stateOf(issue, Boolean(running)),
       from: originOf(gh, issue),
       open: issue.state === "open",
-      ...(last === newest && wakes(gh, owner, issue, all) ? { wakes: true } : {}),
+      ...(issue.state === "closed" && issue.closed_at ? { closed: issue.closed_at } : {}),
+      ...(!earlierPage && wakes(gh, owner, issue, all) ? { wakes: true } : {}),
       repeats: labels.includes("repeats"),
       ...(staying(issue) ? { staying: true as const } : {}),
       url: issue.html_url,
@@ -587,7 +801,8 @@ export async function thread(
       ...(forTask ? { for: forTask } : {}),
       ...(parent ? { parent } : {}),
       ...(labels.includes(STARTED_LABEL) ? { started: true as const } : {}),
-      ...(plan ? { plan } : {}),
+      ...(project ? { project } : plan ? { plan } : {}),
+      ...(progress ? { progress: await progress } : {}),
     },
     messages,
     earlier: last > 1 && !since,
@@ -610,7 +825,7 @@ export async function repeats(env: Env, deps: Deps): Promise<Repeats> {
     read<Issue[]>(env, deps, `repos/${gh.repo}/issues?labels=waiting&state=all&per_page=50`, {
       html: false,
     }).catch(() => [] as Issue[]),
-    statusTask(gh).catch(() => undefined),
+    statusOf(env, deps).catch(() => undefined),
   ]);
   const rec = status?.record;
   const next = new Map((rec?.upcoming ?? []).map((u) => [u.n, u]));
@@ -660,7 +875,9 @@ export async function repeats(env: Env, deps: Deps): Promise<Repeats> {
   };
 }
 
-/** Notebook (the page): its pages. */
+/** Notebook (the page): its pages, and the Library's (ADR 0069). */
 export async function notebook(env: Env, deps: Deps): Promise<Notebook> {
-  return { v: 1, pages: await notebookPages(github(env, deps)) };
+  const gh = github(env, deps);
+  const [pages, library] = await Promise.all([notebookPages(gh), libraryPages(gh)]);
+  return { v: 1, pages, library };
 }

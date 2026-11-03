@@ -40,6 +40,10 @@ const DESCRIBED: Record<string, TaskTitle["kind"]> = {
   "look at <repo> …": "none",
   // remember's other half: a note taken off, with no agent either (ADR 0032).
   "forget: …": "forget",
+  // Saved by the door with no run (ADR 0069): typed on GitHub as a title, it's plain words.
+  "jot: …": "none",
+  "add <project>: …": "none",
+  "project: <name>": "none",
 };
 /** A word as someone would type it. */
 const typed = (w: string) =>

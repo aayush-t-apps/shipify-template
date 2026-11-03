@@ -39,16 +39,26 @@ export interface RecordPart {
   pr?: string;
 }
 
-/** A split task and its parts (ADR 0066), in one read: the parent is the task, or the one it's a part of. */
+/** An issue above another: a split's parent, or a project (ADR 0069). */
+export interface RecordAbove {
+  number: number;
+  title: string;
+  body: string;
+  state: "open" | "closed";
+  labels: string[];
+}
+
+/**
+ * A task's family in one read (ADR 0066, 0069): the parent is the task, or the one it's under,
+ * with that one's sub-issues (100 at most, as GitHub allows). For a task that has a parent and
+ * sub-issues of its own (a chat in a project, split), its own too; and the parent's parent (a
+ * project above a split chat's part).
+ */
 export interface RecordFamily {
-  parent: {
-    number: number;
-    title: string;
-    body: string;
-    state: "open" | "closed";
-    labels: string[];
-  };
+  parent: RecordAbove;
   parts: RecordPart[];
+  own?: RecordPart[];
+  above?: RecordAbove;
 }
 
 /** A part to open (ADR 0066): its words, and what it waits for. */
@@ -83,6 +93,9 @@ export interface RecordPage {
   /** As the record names them; editor is none for one never edited. */
   author: string;
   editor?: string;
+  /** When its text last changed: its last edit, or when it was made (ADR 0070). A comment on it
+   * (an Inbox's item) changes nothing here. */
+  editedAt?: string;
 }
 
 export interface RecordLabel {
@@ -119,6 +132,52 @@ export interface IssuePatch {
   state_reason?: "completed" | "not_planned";
   title?: string;
   body?: string;
+}
+
+/** An issue as the weekly clean-up reads it (ADR 0069). */
+export interface SweptIssue {
+  number: number;
+  title: string;
+  labels: string[];
+  /** When it closed, for a closed one. */
+  closedAt?: string;
+  /** Its last change: a word on it, or a label (a clean start's list keeps what changed since). */
+  updatedAt?: string;
+  /** The issue it's a sub-issue of: a project's, for a chat in one; a split's, for a part. */
+  parent?: { number: number; state: "open" | "closed"; labels: string[] };
+  /** Its open sub-issues. */
+  openParts: number;
+  /** Its open PRs that close it. */
+  openPrs: number;
+}
+
+/** The weekly clean-up's one read (ADR 0069): 100 at most each, the rest the next week. */
+export interface SweepRead {
+  /** Closed on a day from `closedFrom` to `closedTo`, both in; the oldest first. */
+  closed: SweptIssue[];
+  /** Open, and labelled `project`. */
+  projects: SweptIssue[];
+  /**
+   * Open, with no word or change since before `quietBefore`, and none of `quietWithout`'s labels;
+   * the oldest first.
+   */
+  quiet: SweptIssue[];
+}
+
+/** A project's chats and pages, as the weekly clean-up reads them (ADR 0069). */
+export interface ProjectItems {
+  /** Its sub-issues: an open one is still yours, so it keeps its files. */
+  chats: { number: number; state: "open" | "closed" }[];
+  /** The issues with its `project:<name>` label, open or closed. */
+  pages: number[];
+}
+
+/** An open project as the weekly digest reads it (ADR 0070): its number, title and chats. */
+export interface LiveProject {
+  number: number;
+  title: string;
+  /** Its sub-issues, 100: each one's state, labels and last change. */
+  chats: { number: number; state: "open" | "closed"; labels: string[]; updatedAt: string }[];
 }
 
 export interface TaskRecord {
@@ -211,6 +270,38 @@ export interface TaskRecord {
    * a run wrote it and no one else edited it since). The ghost when unknown.
    */
   commentWriters(comment: { id: number; node_id?: string }): { author: string; editor?: string };
+  /**
+   * What the weekly clean-up reads (ADR 0069), in one read: the issues closed in a window of days,
+   * the open projects, and the open issues quiet since a day with none of the labels it leaves open
+   * (`quietWithout`), each with its labels, its parent and what it has open. Days as YYYY-MM-DD.
+   * Pull requests are none of them.
+   */
+  sweep(q: {
+    closedFrom: string;
+    closedTo: string;
+    quietBefore: string;
+    quietWithout: string[];
+  }): SweepRead;
+  /**
+   * A project's chats (its sub-issues), each with its state, and pages (the issues with its
+   * `project:<name>` label, open or closed), 100 each, in one read (ADR 0069).
+   */
+  projectItems(n: number, label: string): ProjectItems;
+  /**
+   * What the weekly digest says of your projects (ADR 0070), in one read: the open projects (50)
+   * with their chats, and the open Inbox pages (50), each with its text and how many items
+   * (comments) it has.
+   */
+  liveProjects(): {
+    projects: LiveProject[];
+    inboxes: { title: string; body: string; items: number }[];
+  };
+  /**
+   * A task in one read (ADR 0069, a run's start-up reads): the issue as `issue(n)` gives it, and
+   * every comment as `comments(n)` does, each with who last edited its text (none for one never
+   * edited), as `commentWriters` says it.
+   */
+  task(n: number): { issue: RecordIssue; comments: (RecordComment & { editor?: string })[] };
 }
 
 /** One run in the queue, as the record shows it. */

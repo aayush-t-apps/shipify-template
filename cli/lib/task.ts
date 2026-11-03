@@ -26,7 +26,7 @@ export const TASK_LABELS = {
   answered: {
     name: "answered",
     color: "1a7f37",
-    description: "Answered: comment to carry on; it closes by itself after a quiet day",
+    description: "Answered: comment to carry on, or close it when you're done",
   },
 } as const;
 export type LabelKey = keyof typeof TASK_LABELS;
@@ -132,6 +132,10 @@ export function parseTitle(title: string): TaskTitle {
   if (/^remember$/i.test(t)) return { kind: "remember", ask: "" };
   // A recipe's task (ADR 0032): its file says what it does, never a project's name.
   if (/^Recipe: [a-z0-9][a-z0-9-]*$/.test(t)) return { kind: "none", ask: t };
+  // A project you made (ADR 0069), and the words that save into it with no run, typed on GitHub:
+  // never a repo's name. Words in a project's thread are a talk run's.
+  if (/^(?:project|jot)\s*:/i.test(t) || /^add\s+[a-z0-9-]+\s*:/i.test(t))
+    return { kind: "none", ask: t };
   // `forget: …` takes one note off your pages, by its words, with no agent either.
   const gone = /^forget\s*:\s*(.*)$/is.exec(t);
   if (gone || /^forget$/i.test(t)) return { kind: "forget", ask: (gone?.[1] ?? "").trim() };
@@ -326,6 +330,11 @@ export const TaskState = z.object({
       notes: z.array(z.object({ topic: z.string(), line: z.string() })).optional(),
       /** A split a run proposed (ADR 0066): its parts open only after your yes. */
       split: z.array(SplitEntry).optional(),
+      /** A clean start's chats (ADR 0070): closed only after your yes, read again first. */
+      clean: z
+        .array(z.object({ n: z.number().int().positive(), title: z.string() }))
+        .max(100)
+        .optional(),
       /** The list of those calls and notes: the reply that showed it, and when. A yes counts only
        * after that reply, and within a day of it (ADR 0049). */
       list: z.object({ post: z.number(), at: z.string() }).optional(),
@@ -372,8 +381,16 @@ export const TaskState = z.object({
   prepared: z.string().optional(),
   run: z.string().optional(),
   updated: z.string().optional(),
-  /** An answered task closes by itself at this time, unless the owner says more first. */
+  /**
+   * An answered part (ADR 0066) closes by itself at this time, unless the owner says more first; no
+   * other task closes for quiet (ADR 0069).
+   */
   closes: z.string().optional(),
+  /**
+   * What a button's word did (ADR 0069: Stop, Stop repeating from the web chat), or a close the
+   * weekly clean-up made: said on the status's Last action line, not as a reply in the thread.
+   */
+  action: z.object({ text: z.string().max(500), at: z.string() }).optional(),
   /**
    * A merged PR's deploy, followed until it's up (ADR 0030 §5): the watch's due run reads the
    * pipeline's mark on the commit and tells you "Live: <link>". Gone once told.
@@ -389,6 +406,8 @@ export const TaskState = z.object({
       /** A release's production deploy (marked shipify/production), not main's. */
       production: z.boolean().optional(),
       since: z.string(),
+      /** The run GitHub held for your approval, told once: followed on from then. */
+      held: z.string().optional(),
     })
     .optional(),
   /** The newest reply, so the status comment links it. */
@@ -547,7 +566,7 @@ const HELP: Record<Phase, string> = {
   failed:
     "Comment “continue” (or anything) to try again, “use opus” (or another model) first for a stronger one, or close this task to end it.",
   answered:
-    "Comment to ask more or change something, or “remember …” to keep something for every task. After a quiet day it closes by itself, and a comment later carries on.",
+    "Comment to ask more or change something, or “remember …” to keep something for every task. Close it when you're done: a comment later carries on.",
   done: "Comment to carry on. On a release or a take-down, “again” runs it again.",
   dropped: "Comment to carry on.",
   repeating:
@@ -628,9 +647,7 @@ export function renderStatus(s: TaskState, view: StatusView = {}): string {
     stateLine(s),
     `${HEADLINE[s.phase]}${facts ? ` · ${facts}` : ""}`,
     view.repeat,
-    s.phase === "answered" && s.closes
-      ? `Closes by itself ${formatWhen(s.closes, tz)} if there's nothing more.`
-      : undefined,
+    s.action ? `**Last action:** ${s.action.text} (${formatWhen(s.action.at, tz)})` : undefined,
     [said, more].filter(Boolean).join(" ") || undefined,
     view.question ? quoted("Question", view.question) : undefined,
     [...prLines(s), ...links.map(([l, u]) => `- ${l}: ${u}`)].join("\n") || undefined,

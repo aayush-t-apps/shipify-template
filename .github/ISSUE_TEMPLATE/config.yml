@@ -8,6 +8,7 @@
 #   new: …             a new project, as a plan first
 #   remember: …        a note for the notebook (`remember People: …` for another page)
 #   forget: …          that note taken off again
+#   jot: … / add <project>: … / project: <name>   a thought, a find, a project: the door saves them, no run (ADR 0069)
 #   repeat: …          a reminder, a job or a check, on a schedule
 #   <app>: release     release it to production (or use the Operate form)
 blank_issues_enabled: true

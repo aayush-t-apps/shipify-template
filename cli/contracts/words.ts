@@ -61,6 +61,10 @@ export const WORDS = {
     re: /^\s*stop(\s+(it|this|now))?[.!]?\s*$/i,
     does: "stop the run that's going, within a minute; its commits stay on the task's branch; on a split task, start no more sub-tasks",
   },
+  "clean start": {
+    re: /^\s*clean\s+start[.!]?\s*$/i,
+    does: "list the open chats outside your projects that nothing keeps open, to close as done after your `yes` (ADR 0070); their files go 30 days later",
+  },
 } as const satisfies Record<string, FixedWord>;
 
 /** The sub-task a `go #n` names (ADR 0066), or none for a plain `go`. */
@@ -89,12 +93,16 @@ const entries = Object.entries(WORDS) as [Word, FixedWord][];
 export const CHAT_WORDS: string[] = entries.flatMap(([w, d]) => [w, ...(d.also ?? [])]);
 
 /**
- * The fixed words a reply's markdown names in backticks, in the order of the list: never a list's
- * `yes` or `no`, which only its own buttons send.
+ * The fixed words a reply's markdown names in backticks, in the order of the list, then each
+ * sub-task's `go #n` it names (ADR 0066): never a list's `yes` or `no`, which only its own buttons
+ * send.
  */
 export function asked(md: string): string[] {
-  const named = new Set([...md.matchAll(/`([a-z ]{2,20})`/gi)].map((m) => m[1]?.toLowerCase()));
-  return CHAT_WORDS.filter((w) => named.has(w) && !LIST_WORDS.includes(w as Word));
+  const named = new Set(
+    [...md.matchAll(/`([a-z ]{2,20}|go #\d+)`/gi)].map((m) => m[1]?.toLowerCase() ?? ""),
+  );
+  const parts = [...named].filter((w) => goPartOf(w) !== undefined);
+  return [...CHAT_WORDS.filter((w) => named.has(w) && !LIST_WORDS.includes(w as Word)), ...parts];
 }
 
 // ---------------------------------------------------------------- buttons (ADR 0042 §2)
@@ -124,7 +132,7 @@ const button = (words: string, label = title(words)): Button => ({ label, words 
  * list alone) and No: none for a list too long for a chat to show whole, approved on GitHub.
  */
 export function replyButtons(
-  r: Pick<ReplyLine, "kind" | "state" | "question" | "choices" | "list">,
+  r: Pick<ReplyLine, "kind" | "state" | "question" | "choices" | "list" | "keep">,
   md: string,
 ): { rows: Button[][]; asks: boolean } {
   const asks = Boolean(r.question);
@@ -147,6 +155,8 @@ export function replyButtons(
   if (r.kind === "failed") words.push(button(PICKER, "Another model"));
   if (r.state === REMINDER && !words.some((b) => b.words === "stop repeating"))
     words.push(button("stop repeating"));
+  // An answer in a project's chat (ADR 0070): its key facts filed on the project's pages.
+  if (r.keep) words.push(button("keep this on the page", "Keep on page"));
   return {
     rows: [answers, words].filter((row) => row.length),
     // A question always asks: a chat opens its reply box on it when none of its buttons fit.

@@ -7,6 +7,8 @@
 // name (a KV namespace is "<worker>-<binding>", a database its database_name) or makes it, applies
 // the D1 migrations, then deploys with the ids filled in. An R2 bucket has a name, not an id: a
 // deploy makes it when missing and sets its lifecycle rules from r2-lifecycle.json. Nothing is left to wrangler's guessing.
+// Durable Objects are code in this Worker (ADR 0068): their classes are in wrangler.jsonc's
+// `exports`, which `wrangler deploy` applies. They only add, and Cloudflare makes no previews for them.
 // One address (ADR 0024): the app lives where shipify.json's urls say. A URL on your own domain
 // means that name is attached (through Cloudflare's API, after a check that nothing else answers
 // there, so a deploy never replaces one) and workers.dev stays off; a workers.dev URL means no
@@ -404,6 +406,40 @@ async function ensureBuckets(onStaging, { setRules = true } = {}) {
   }
 }
 
+/** A config's Durable Object classes: its `exports` entries of that type, as [name, entry]. */
+const objectsOf = (c) =>
+  Object.entries(c?.exports ?? {}).filter(([, e]) => e?.type === "durable-object");
+/** Whether this Worker implements Durable Objects, in `exports` or the legacy `migrations`. */
+const hasObjects = () =>
+  [config, config.env?.staging].some((c) => objectsOf(c).length > 0 || c?.migrations?.length > 0);
+
+/**
+ * Classes only add (ADR 0068), checked before any change: a deploy stops on a class that `exports`
+ * deletes, renames or moves (its data goes, and a rollback can't cross it), on storage other than
+ * SQLite (the free plan's only one), and on `migrations` (one way to declare them: `exports`).
+ */
+function checkObjects() {
+  for (const [where, c] of [
+    ["wrangler.jsonc", config],
+    ["env.staging", config.env?.staging],
+  ]) {
+    if (c?.migrations?.length)
+      fail(
+        `${where} has "migrations": declare Durable Object classes in "exports" instead (ADR 0068). Nothing was changed.`,
+      );
+    for (const [name, e] of objectsOf(c)) {
+      if (e.state && e.state !== "created")
+        fail(
+          `${where}: exports.${name} is "${e.state}", but classes only add (ADR 0068): that would delete or move its data, and a rollback can't cross it. Keep the class exported. Nothing was changed.`,
+        );
+      if (e.storage !== "sqlite")
+        fail(
+          `${where}: exports.${name} needs "storage": "sqlite", the free plan's only storage (ADR 0068). Nothing was changed.`,
+        );
+    }
+  }
+}
+
 /** D1 migrations, applied to the Worker's databases (each runs once; wrangler keeps the list). */
 function migrate(onStaging, configFile) {
   for (const b of storageOf(onStaging).d1)
@@ -425,6 +461,7 @@ function migrate(onStaging, configFile) {
 async function deploy() {
   const toStaging = env.SHIPIFY_ENV === "staging";
   if (toStaging && !staging) fail("SHIPIFY_ENV is staging, but this app has no staging Worker.");
+  checkObjects();
   const sha = need("SHIPIFY_SHA", env.SHIPIFY_SHA);
   const version = need("SHIPIFY_VERSION", env.SHIPIFY_VERSION);
   // The Shipify page and `rollback` read these messages: "release v1.2.0 <sha>".
@@ -503,6 +540,13 @@ async function preview() {
   const sha = need("SHIPIFY_SHA", env.SHIPIFY_SHA);
   // PR code runs on the staging Worker when there is one, so it never touches production.
   const worker = staging ? workers.staging : workers.production;
+  // A preview is a version of its Worker, and Cloudflare makes no version URLs for Durable Objects.
+  if (hasObjects()) {
+    console.log(
+      "No preview: this app has Durable Objects, and Cloudflare makes no preview URLs for them. Try it with `make dev`, or on staging after the merge.",
+    );
+    return;
+  }
   // A preview is a version of its Worker, with that Worker's data: without staging, production's.
   if (!staging && keepsData(false)) {
     console.log(

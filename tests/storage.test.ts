@@ -325,3 +325,79 @@ describe("storage: R2 (ADR 0067)", () => {
     expect(a.api().calls).toEqual([]);
   });
 });
+
+describe("storage: Durable Objects (ADR 0068)", () => {
+  const counter = '"Counter": { "type": "durable-object", "storage": "sqlite" }';
+  const bindings =
+    '"durable_objects": { "bindings": [{ "name": "COUNTER", "class_name": "Counter" }] }';
+  /** A DO app: its classes in `exports` (staging inherits them), and staging's own when given. */
+  const objects = (
+    a: ReturnType<typeof app>,
+    exports: string,
+    opts: { staging?: string; extra?: string } = {},
+  ) =>
+    writeFileSync(
+      join(a.dir, "wrangler.jsonc"),
+      `{\n  "name": "notes",\n  ${bindings},\n  "exports": { ${exports} },${opts.extra ?? ""}\n  "env": { "staging": { "name": "notes-staging", ${bindings}${
+        opts.staging ? `, "exports": { ${opts.staging} }` : ""
+      } } },\n  "vars": {}\n}\n`,
+    );
+
+  it("deploys with the classes in exports, as wrangler.jsonc has them", () => {
+    const a = app({ staging: true });
+    objects(
+      a,
+      `${counter}, "Room": { "type": "durable-object", "state": "created", "storage": "sqlite" }`,
+    );
+    for (const env of [{}, { SHIPIFY_ENV: "staging" }] as Record<string, string>[]) {
+      const r = a.run("deploy", env);
+      expect(r.status, r.stderr).toBe(0);
+    }
+    const deploys = a.calls().filter((c) => c.args[2] === "deploy");
+    expect(deploys).toHaveLength(2);
+    expect(deploys[1]?.args).toContain("--env");
+  });
+
+  it.each([
+    ["a deleted class", `${counter}, "Old": { "type": "durable-object", "state": "deleted" }`, {}],
+    [
+      "a renamed class",
+      '"Counter": { "type": "durable-object", "state": "renamed", "renamed_to": "Tally" }',
+      {},
+    ],
+    [
+      "a moved class",
+      '"Counter": { "type": "durable-object", "state": "transferred", "transferred_to": "other" }',
+      {},
+    ],
+    ["a class with no SQLite", '"Counter": { "type": "durable-object", "storage": "kv" }', {}],
+    [
+      "migrations",
+      counter,
+      { extra: '\n  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Counter"] }],' },
+    ],
+    [
+      "staging's own deleted class",
+      counter,
+      { staging: '"Counter": { "type": "durable-object", "state": "deleted" }' },
+    ],
+  ])("stops before any change on %s", (_, exports, opts) => {
+    const a = app({ staging: true });
+    objects(a, exports, opts);
+    const r = a.run("deploy");
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("ADR 0068");
+    expect(a.calls()).toEqual([]);
+    expect(a.api().calls).toEqual([]);
+  });
+
+  it.each([true, false])("makes no preview, with staging %s", (staging) => {
+    const a = app({ staging });
+    objects(a, counter);
+    const p = a.run("preview");
+    expect(p.status, p.stderr).toBe(0);
+    expect(p.stdout).toContain("No preview: this app has Durable Objects");
+    expect(a.calls()).toEqual([]);
+    expect(a.api().calls).toEqual([]);
+  });
+});

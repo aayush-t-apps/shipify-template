@@ -1,8 +1,11 @@
 // The weekly digest (ADR 0053): one short message to your default chats at the time you set
 // (SHIPIFY_DIGEST, `every monday at 9:00` by default, or `off`), even when all is clear, so a quiet
 // week never looks like a fault. What's wrong is still said at once (the watch's alerts); this
-// only gathers the week, from what the due run already reads. Nothing in it acts.
+// only gathers the week, from what the due run already reads, and one read of your projects
+// (ADR 0070). Nothing in it acts.
 
+import { inboxTopic, NEEDS_YOU_LABEL, projectNameOf, waitingItems } from "../../contracts/index.ts";
+import type { TaskRecord } from "../../lib/plugins/record.ts";
 import { nextRun, parseSchedule } from "../../lib/repeat.ts";
 
 export const DIGEST_EVERY = "every monday at 9:00";
@@ -37,6 +40,54 @@ export interface DigestFacts {
   keys: { name: string; date: string; days: number }[];
   /** The skills the week's runs loaded, when there were runs to count. */
   skills?: SkillsWeek;
+  /** Each open project you made with something to say (ADR 0070), as `projectsWeek` counts it. */
+  projects?: ProjectWeek[];
+}
+
+/** A project's week (ADR 0070): its Inbox's items to collate, its chats waiting on you, and its
+ * open chats with no change for 7 days. */
+export interface ProjectWeek {
+  name: string;
+  collate: number;
+  waiting: number;
+  quiet: number;
+}
+
+/** The open projects with something to say this week, from the digest's one read of them. */
+export function projectsWeek(
+  read: ReturnType<TaskRecord["liveProjects"]>,
+  at: Date,
+): ProjectWeek[] {
+  const quietFrom = at.getTime() - WEEK;
+  return read.projects.flatMap((p) => {
+    const name = projectNameOf(p.title);
+    if (!name) return [];
+    const inbox = read.inboxes.find((i) => i.title === `Notebook: ${inboxTopic(name)}`);
+    const open = p.chats.filter((c) => c.state === "open");
+    const week = {
+      name,
+      collate: inbox ? waitingItems(inbox.body, inbox.items) : 0,
+      waiting: open.filter((c) => c.labels.includes(NEEDS_YOU_LABEL)).length,
+      quiet: open.filter(
+        (c) => !c.labels.includes(NEEDS_YOU_LABEL) && Date.parse(c.updatedAt) < quietFrom,
+      ).length,
+    };
+    return week.collate || week.waiting || week.quiet ? [week] : [];
+  });
+}
+
+/** The projects' line: each with something to say, in a few words. */
+function projectLines(ps?: ProjectWeek[]): string[] {
+  if (!ps?.length) return [];
+  const one = (p: ProjectWeek) =>
+    `${p.name}: ${[
+      p.collate ? `${p.collate} find${p.collate === 1 ? "" : "s"} to collate` : "",
+      p.waiting ? `${p.waiting} chat${p.waiting === 1 ? "" : "s"} waiting on you` : "",
+      p.quiet ? `${p.quiet} chat${p.quiet === 1 ? "" : "s"} quiet a week` : "",
+    ]
+      .filter(Boolean)
+      .join(", ")}`;
+  return [`- **Projects:** ${list(ps.map(one))}`];
 }
 
 /** What the week's agent runs loaded, from their tasks' run rows. */
@@ -104,6 +155,7 @@ export function digestText(f: DigestFacts, when: (iso: string) => string): strin
     ...(f.waiting.length
       ? [`- **Waiting on you:** ${list(f.waiting.map((t) => `#${t.n} ${t.title}`))}`]
       : []),
+    ...projectLines(f.projects),
     ...(behind.length ? [`- **Behind its stack:** ${list(behind)}`] : []),
     ...(f.keys.length
       ? [`- **Keys due:** ${list(f.keys.map((k) => `${k.name} on ${k.date} (${k.days} days)`))}`]

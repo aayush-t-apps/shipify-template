@@ -64,6 +64,7 @@ When designing an interface, ask:
 - **The interface is the test surface.** Callers and tests cross the same seam. If you want to test *past* the interface, the module is probably the wrong shape.
 - **One adapter means a hypothetical seam. Two adapters means a real one.** Don't introduce a seam unless something actually varies across it.
 - **A rule's reason before you rule an option out.** When a rule seems to forbid the simplest option ("never in this step"), read why the rule exists and search for where the code already does the same thing. The reason is the boundary, not the wording: a place that already does it, behind the same wall, shows the option is open. Then check each option against the owner's standing rules (decision records, what the roadmap says isn't wanted, their notes) before offering it.
+- **The stack's flow before a Cloudflare binding.** Before you propose a binding for an app, check that the stack's deploy and preview flow supports it. A Worker that implements a Durable Object gets no version (preview) URLs, so it gets no PR previews.
 
 ## Designing for testability
 

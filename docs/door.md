@@ -87,6 +87,17 @@ one gets no answer.
 - **An album:** its first photo opens the task, or goes on the one it names. The rest land on that
   task quietly.
 
+- **Saving, with no run** (ADR 0069), as a new message (never on a task, where they're words):
+
+  | You send | It writes |
+  |---|---|
+  | `project: games` (a line after the name, or lines below, are its brief; `repos: a, b` after the name names its repos) | a new issue `Project: games`, labelled `project`, its brief its body, and its main page `Notebook: games` (labelled `library` and `project:games`: the brief, then an empty `## Map`; one a closed project of that name left is kept). Said "Project games made · #40, its main page · #41"; no run starts (the box skips a project's opening). Already there: said, nothing written |
+  | `add games: <words>`, with a file too | a comment on the project's Inbox page `Notebook: games-inbox` (labelled `library` and `project:games`, made the first time). No open project of that name: they're words, and open a task as any do ("Add tests: …") |
+  | `jot: <words>` | a dated line (`- <words> (2026-11-02 13:40)`, in your time zone) on this month's Journal page, `Notebook: Journal 2026-11` (labelled `library`, made the first time) |
+
+  Each write carries your hidden line, so the box trusts the page as yours; a Library page starts no
+  run.
+
 **4. It answers "Got it · #12",** the number a link to the task, adding "No box is online: it runs
 when one is back" when that's so.
 
@@ -117,7 +128,8 @@ Telegram never sends your message again behind your back, and never holds later 
 ## Out: replies to your chat
 
 After a run writes a reply, its apply step calls `POST /door/replied` with the task, the comment's
-number and up to 10 files it made (10 MB each).
+number and up to 10 files it made (50 MB in all, under Cloudflare's 100 MB a request; the rest stay
+linked from the reply, on the `shipify-files` branch).
 
 1. **The token:** the run's GitHub OIDC token, checked against GitHub's published keys: RS256, the
    issuer, the edge's own address as the audience, shipify's repository and owner (by numeric id),
@@ -125,7 +137,8 @@ number and up to 10 files it made (10 MB each).
    boxes and the door.
 2. **The comment:** the door reads it from GitHub itself. It must be on that task, written by a run
    (`github-actions[bot]`), carry a hidden `reply` line, and never have been edited by anyone but a
-   run. Otherwise: 409, nothing sent.
+   run. Otherwise: 409, nothing sent. The door reads the comment, its own 🚀 on it and its
+   settings at the same time, so a reply waits for one round trip to GitHub, not three.
 3. **Where:** each chat in the reply's `to` (`<channel>:<id>`) that belongs to a person in
    `SHIPIFY_PEOPLE`, on a channel whose keys are set. Any other id is dropped.
 4. **The words, the mark, then the files:** each chat's adapter renders the reply its own way.
@@ -137,7 +150,8 @@ number and up to 10 files it made (10 MB each).
    ("2 files didn't send · On GitHub"). The web chat reads the task in place, so it sends no words:
    its `send` notifies your devices that a reply came ([channels.md](channels.md#notifications)),
    started before the other chats' and awaited after them, and its answer never counts toward the
-   🚀; it keeps the run's files in its store for 7 days. A reply that has the door's 🚀 already
+   🚀; it keeps a copy of the run's files in its R2 bucket, with the chat's number, as long as
+   the chat (ADR 0069). A reply that has the door's 🚀 already
    isn't sent again, so it doesn't notify again either.
 
 Nothing is ever sent twice (ADR 0042). When a reply doesn't reach you, you're told once:
@@ -198,7 +212,7 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
   build step, about 120 KB, 40 KB of its 42 KB budget compressed, its service worker apart),
   served as the Worker's static assets with `run_worker_first`, so every file is behind the same
   token check. Two parts load the first time they're needed, each with a budget of its own (ADR
-  0065): `workspace.js` and `workspace.css` (a project's tabs and page, the doc pane, Files,
+  0065): `workspace.js` and `workspace.css` (a project's page, the doc pane, Files,
   Ctrl+K) and `setup.js` (Status & setup).
 - **Diagrams:** a `mermaid` code block is drawn in `/draw/` (`edge/public/draw/`), a static page
   with no data, outside the sign-in, shown in a sandboxed frame (`allow-scripts`, no same-origin).
@@ -232,8 +246,15 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
   the Worker, with no webhook: the person check, the closed door, commands, `#12`, dedupe and albums
   are the door's. The web adapter (`edge/src/channels/web.ts`) proves those calls with an HMAC of
   the door App's key, which only the Worker has, so `POST /door/web` from outside gets 401.
-- **Files** live in Workers KV, bound as `FILES` (the deploy creates it; `edge/wrangler.jsonc` has
-  no id), for 7 days. A run fetches one through `GET /door/file/web:<ref>`. Only PNG, JPEG, GIF and
+- **Files** live in R2, the bucket `shipify-web-files` bound as `BUCKET` (the deploy creates it),
+  one key a file (`f-<time counted down>-<id>`, so a list is newest first; older `up-…` and
+  `run-…` refs still open), each with its chat's number, kept as long as the chat or its project
+  and deleted by the weekly clean-up 30 days after it closes (ADR 0069). Uploads stream in, 95 MB
+  at most (inside Cloudflare's 100 MB a request). A file used in a second chat is copied for it;
+  a copy no chat takes (the door refused the message, or it named no chat) is deleted at once. KV (`FILES`) keeps only your model and your devices. A run fetches one through
+  `GET /door/file/web:<ref>`, 100 MB at most. **`POST /door/files/forget`** `{"chats": [n, …]}`
+  is the weekly clean-up's: it takes only watch.yml's OIDC token (task.yml's gets 403), deletes
+  those chats' files, and answers what it deleted. Only PNG, JPEG, GIF and
   WebP show inline; anything else, HTML and SVG too, downloads
   ([security.md](security.md#the-web-chat)). The doc pane (ADR 0065) reads one through
   `…/api/doc/<ref>`: Markdown rendered by GitHub (`POST /markdown`, once a file, kept a day in the
@@ -296,6 +317,10 @@ Run again once it's set up, it says so and changes nothing, but for a deploy key
 ([channels.md](channels.md)).
 
 **`pnpm ship door check`** says each plainly:
+- the web chat's R2 bucket, `shipify-web-files`, is there (ADR 0069): with R2 off on the account,
+  it says to turn R2 on in Cloudflare's dashboard and deploy the edge again; a token that can't
+  read it needs **Workers R2 Storage: Edit**. `ship door setup` checks it too, and starts no deploy
+  that would fail on it;
 - shipify's variables for the edge are set;
 - `/health` answers `shipify-edge` with its version, and says whether its commit is main's;
 - the door App reaches shipify alone, with exactly its permissions;

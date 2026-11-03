@@ -232,7 +232,8 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
 - **The write token** is minted for exactly the one repo decide named. No repo, no token.
 - **An act key** reaches apply only when decide found:
   - your `yes` to exactly these calls; or
-  - calls that fit a pre-approved form in `tools.json` (its target fixed, its text capped), in a
+  - calls that fit a pre-approved form in `tools.json` (its target fixed, or a call that only
+    makes something new, like a drop; its text capped), in a
     run that read nothing from outside, or only the look calls of the tools its form names in
     `after` (ADR 0049). Never after the web, a check, a repo outside your account, a run on another
     account, or the agent saying it read outside.
@@ -296,7 +297,8 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
 - **a push of merged plans** to `main`.
 
 And never:
-- for a PR, the status task or a notebook page;
+- for a PR, the status task, a notebook or Library page, or a project's opening or edit (ADR
+  0069: `task.yml` skips them, so no job starts, and the box would end one with no agent);
 - for anyone else's comment;
 - at all, when `SHIPIFY_OWNER` isn't set.
 
@@ -360,6 +362,22 @@ pages, a tool's answers and anyone else's text are data, never a command
   is ignored and said.
 - **The notebook** keeps only your words: a note that looks like a key is refused, and a page
   someone else edited is left out of prompts ([notebook.md](notebook.md)).
+- **The Library** (ADR 0069) keeps its rules. The door's writes (the web chat, `jot`, `add`, a new
+  project) count as yours only when their hidden line names you, the first person in
+  `SHIPIFY_PEOPLE`: anyone else's stay untrusted. Since only you reach the door, a leaked door key
+  could now also write pages, as it can write tasks. A project's pages reach its runs **as data**,
+  in a section of their own, never under the notebook's "follow it": a collate puts facts from web
+  pages there. A run's rewrite of a page (`pages`) is checked as a note is, kept in the page's
+  history, limited to its own project's pages, and to a page of no project only when it read
+  nothing from outside; a page every run reads is never rewritten, nor one whose text changed
+  after the run read it (ADR 0070). An Inbox item counts only when it's yours. Keep on page and
+  "check the project" write only the project's own pages under these rules; a kept fact from a
+  web page is data with its source.
+- **Find by meaning** (ADR 0070) adds no key or permission: the edge's `api/search`, behind the
+  web chat's sign-in, searches only your shipify repo's issues (the query names it) with the door's
+  token, which reads them already, and shows the results only to you.
+- **A clean start** closes chats only after your `yes` to its exact list, read again first, and
+  deletes nothing at once: their files go by the weekly clean-up's rule.
 
 ## Releases and updates
 
@@ -477,7 +495,10 @@ The chat at `/admin/chat/` (ADR 0036) is the edge's first page with scripts, so 
   runs no script). The chat's CSP allows frames from the edge alone (`frame-src 'self'`).
 - **Files served safely:** only PNG, JPEG, GIF and WebP show inline. Anything else, HTML and SVG
   included, downloads as `application/octet-stream` with `nosniff` and a sandbox CSP, so no file
-  runs on the edge's address. At most 5 a message, 10 MB each, kept 7 days. A file you sent on
+  runs on the edge's address. At most 5 a message, 95 MB each, in a private R2 bucket only the
+  edge reaches, kept as long as their chat (ADR 0069). Deleting one takes the page's own POST
+  locks; besides you, only the weekly clean-up deletes files, through the door's `forget` route,
+  which takes watch.yml's OIDC token alone (a run's task.yml token is refused). A file you sent on
   Telegram is served the same way, fetched through the bot (10 MB at most) and kept nowhere; only
   behind the sign-in, and never with the door closed.
 - **The doc pane** (ADR 0065) adds two ways to see a file, and no new way in:

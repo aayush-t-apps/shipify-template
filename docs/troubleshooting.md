@@ -74,8 +74,11 @@ chat, the file store and the notifications' key ([channels.md](channels.md#the-w
 | a 403 at `/admin/chat/`, though you're signed in | Access's application path isn't `admin/*`, so it doesn't cover the chat, and the edge refuses it itself | change the "shipify status" application's path to `admin/*` (Zero Trust → Access → Applications), then `pnpm ship add webchat --yes` again |
 | a diagram shows as its source | it didn't draw: the source has a mistake, or jsDelivr didn't answer | fix the source, or reload the page later |
 | "The web chat is off" | your entry in `SHIPIFY_PEOPLE` has no `"web"` | `pnpm ship add webchat --yes` |
-| 📎 is off: "Files aren't set up" | the deployed Worker has no `FILES` binding (step 4 of `ship add webchat` says so) | the deploy token needs **Workers KV Storage: Edit**; then deploy the edge again (Actions → ci → Run workflow). Words still go meanwhile |
+| 📎 is off: "Files aren't set up" | the deployed Worker has no `BUCKET` binding, the R2 bucket `shipify-web-files` (step 4 of `ship add webchat` says so; `pnpm ship door check` says whether R2 is off, the token is refused, or the bucket isn't made yet) | the deploy token needs **Workers R2 Storage: Edit**, and R2 needs a card on the Cloudflare account once; then deploy the edge again (Actions → ci → Run workflow). Words still go meanwhile |
 | A deploy stops: "can't list R2 buckets" or "make R2 bucket" (HTTP 403) | the deploy log | the deploy token needs **Workers R2 Storage: Edit**; if R2 was never turned on for the account, turn it on once in the dashboard (it asks for a card), then re-run |
+| A deploy stops: "classes only add (ADR 0068)", "needs \"storage\": \"sqlite\"" or "has \"migrations\"" | `exports` in `wrangler.jsonc` (and `env.staging`) | put the class back as `{ "type": "durable-object", "storage": "sqlite" }`, and declare classes in `exports` only; nothing was changed (`stacks/_cloudflare/storage.md`, "Durable Objects") |
+| A rollback is refused after a new Durable Object class | Cloudflare doesn't roll back across a class change | roll forward: merge a fix as a new PR |
+| A PR on an app with Durable Objects says "No preview" | expected: Cloudflare makes no preview URLs for them | try it with `make dev`, then on staging after the merge |
 | the model picker or Status & setup shows an old `executors.json` or `tools.json` | both are built into the edge when it deploys, and a change to them alone doesn't deploy it | run the edge job by hand (Actions → ci → Run workflow), or wait for the next edge change |
 | "The door is closed" | the variable `SHIPIFY_DOOR` | delete it to open the door ([door.md](door.md#the-kill-switch)) |
 | Setup says "Notifications aren't set up" | the edge has no `WEB_PUSH_KEY` | `pnpm ship add webchat --yes` |
@@ -85,6 +88,8 @@ chat, the file store and the notifications' key ([channels.md](channels.md#the-w
 | none since a new key (`--new`) | each device subscribes again when it next opens the chat | open the chat on each device once |
 | a tap on one opens the sign-in, then the list | Access's session had ended, and its sign-in drops the thread's address | open the thread from the list; a longer session on the "shipify status" application helps |
 | "Can't reach GitHub · retrying" | nothing: the edge serves its last good copy and the page tries again by itself ([channels.md](channels.md#the-web-chat)). Long or often? [githubstatus.com](https://www.githubstatus.com), and the edge's logs (`page.refused`, or `page.served` "last good copy", each with GitHub's status) | it goes away by itself. A message that didn't go is sent again by itself; **Retry** sends it now |
+| "The edge didn't answer in 20 s" on a message | the edge's logs at that time (Workers → shipify → Logs): a request that ran long, or `page.refused` | the message is sent again by itself, with the same id, so never twice; **Retry** sends it now. Often? Say so in a task, with the time |
+| a file stays at "Uploading…" | nothing: one with nothing sent for a minute, or no answer 2 minutes after it's sent, fails by itself | **Retry** on the file, or take it off; words still go |
 | "Your sign-in ended" often | Access's session for the chat (24 hours unless you set it) | Zero Trust → Access → Applications → "shipify status" → **Session Duration**, for example 1 month |
 
 ## Boxes

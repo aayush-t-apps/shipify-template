@@ -34,7 +34,7 @@
     }
   },
   "drop": {
-    "description": "Your Drop: share files a task made as a drop and its link, change who may open it, and revoke it",
+    "description": "Your Drop: share files a task made as a drop and its link, change it (its files, who may open it, title, expiry, limits), and revoke it",
     "run": ["node_modules/.bin/tsx", "tools/drop/server.ts"],
     "keys": {
       "DROP_URL": {
@@ -63,21 +63,31 @@
           "expiry": {},
           "pin": {}
         },
-        "files": "files"
+        "files": "files",
+        "new": true
       },
       "update": {
         "required": ["drop"],
         "properties": {
           "drop": {},
+          "title": {},
+          "expiry": {},
+          "limits": {},
+          "files": {},
+          "delete_files": {},
           "share": {},
           "people": {},
           "remove": {},
+          "requests": {},
           "pin": {},
           "new_link": {}
         },
+        "files": "files",
         "target": "drop",
         "warn": {
-          "share": "a change may make a new link; me stops its link and every person's access",
+          "expiry": "counted from now",
+          "delete_files": "deletes these files from the drop",
+          "share": "its link stays the same and gets the new rights (me: only you can open it)",
           "new_link": "the old link stops at once",
           "pin": "true makes a new PIN, and the old one stops"
         }
@@ -89,6 +99,13 @@
         "warn": { "drop": "deletes the drop and its files: its links stop at once" }
       }
     },
+    "pre": [
+      {
+        "call": "publish",
+        "caps": { "title": 120 },
+        "any": ["files", "share", "people", "expiry", "pin"]
+      }
+    ],
     "check": ["node_modules/.bin/tsx", "tools/drop/server.ts", "--check"],
     "setup": {
       "needs": [

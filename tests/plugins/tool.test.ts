@@ -99,6 +99,9 @@ describe("a tool's entry", () => {
       'a pre-approved "create" fixes its target: fixed.parent',
     );
     expect(why({ ...targeted, pre: [{ ...form, fixed: { parent: "daily" } }] })).toEqual([]);
+    // A call that only makes something new (a drop) has no target to fix.
+    const made = { ...tool, args: { create: { new: true } } };
+    expect(why({ ...made, pre: [{ ...form, any: ["files"] }] })).toEqual([]);
   });
 });
 

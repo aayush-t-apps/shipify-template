@@ -182,7 +182,8 @@ You write `new: a tip calculator`.
    (`playbooks/plan-app.md`, checked by `ship plan check`) and asks for a `part-of` PR. Apply opens
    it, and replies `needs-you`.
 2. **You merge it.** The push to `main` touches `plans/`, so `task.yml` runs `ship task plans`. That
-   starts the task's `github` job.
+   starts the `github` job of the task the plan's `task:` line names. The plan file is the link:
+   decide reads it too (`publish`, `go`), and a run's commits that write the plan set its id.
 3. **Prepare,** on GitHub's machines: `ship run github` makes the repo, its settings, variables and
    secrets (`github-job.ts`, `cli/commands/task/plans.ts`). A missing key stops it and is named;
    `publish` (or `go`, from GitHub or a chat) starts it again. Then it dispatches the build.

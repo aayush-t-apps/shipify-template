@@ -92,7 +92,10 @@ const edit = (thing, patch) => {
   Object.assign(thing, patch);
   const last = Date.parse(thing.updated_at ?? thing.created_at ?? "") || 0;
   thing.updated_at = new Date(Math.max(Date.now(), last + 1000)).toISOString();
-  if (text) thing.editor = state.bot;
+  if (text) {
+    thing.editor = state.bot;
+    thing.edited_at = thing.updated_at;
+  }
   return thing;
 };
 
@@ -179,8 +182,17 @@ if (args[0] === "pr" && args[1] === "create") {
   const url = `https://github.com/${repo}/pull/${n}`;
   state.prs[url] = "OPEN";
   state.heads[url] = args[args.indexOf("--head") + 1];
+  state.bodies ??= {};
+  state.bodies[url] = args[args.indexOf("--body") + 1];
   save();
   out(url);
+  process.exit(0);
+}
+// A PR's body written again (state.bodies, by its URL).
+if (args[0] === "pr" && args[1] === "edit") {
+  state.bodies ??= {};
+  if (args.includes("--body")) state.bodies[args[2]] = args[args.indexOf("--body") + 1];
+  save();
   process.exit(0);
 }
 if (args[0] === "pr" && args[1] === "close") {
@@ -307,8 +319,59 @@ if (args[1] === "graphql") {
     labels: { nodes: i.labels },
     author: actor(i.user.login),
     editor: actor(i.editor),
+    // When its text last changed (ADR 0070): `edited_at`, as an edit sets it; null when never.
+    createdAt: i.created_at ?? null,
+    lastEditedAt: i.edited_at ?? null,
   });
-  if (query.includes("timelineItems")) {
+  if (query.includes("issueOrPullRequest(")) {
+    // A task in one read (ADR 0069): the issue and a page of 100 comments a call ($after: where the
+    // last page ended), each with who wrote and last edited it, as GraphQL names them.
+    const n = Number(vars.n);
+    if (n === state.issue.number && state.issueError) fail(state.issueError);
+    const at = n === state.issue.number ? state : state.others[String(n)];
+    const i = at?.issue;
+    if (!i || i.unreadable) fail(`GraphQL: Could not resolve to an issue or pull request #${n}.`);
+    const from = Number(vars.after ?? 0);
+    const list = at.comments ?? [];
+    const page = list.slice(from, from + 100);
+    const fields = {
+      id: `I_${i.number}`,
+      number: i.number,
+      title: i.title,
+      body: i.body ?? "",
+      state: i.state === "closed" ? (i.pull_request && i.merged ? "MERGED" : "CLOSED") : "OPEN",
+      closedAt: i.closed_at ?? null,
+      createdAt: i.created_at ?? "2026-01-01T00:00:00Z",
+      author: actor(i.user.login),
+      labels: { nodes: i.labels },
+      comments: {
+        pageInfo: { hasNextPage: from + 100 < list.length, endCursor: String(from + 100) },
+        nodes: page.map((c) => ({
+          id: `IC_${c.id}`,
+          fullDatabaseId: String(c.id),
+          body: c.body,
+          createdAt: c.created_at,
+          updatedAt: c.updated_at ?? null,
+          author: actor(c.user.login),
+          editor: actor(c.editor),
+        })),
+      },
+    };
+    out({
+      data: {
+        repository: {
+          issueOrPullRequest: i.pull_request
+            ? { __typename: "PullRequest", ...fields }
+            : {
+                __typename: "Issue",
+                ...fields,
+                stateReason: i.state_reason ? String(i.state_reason).toUpperCase() : null,
+                subIssuesSummary: i.sub_issues_summary ?? { total: 0, completed: 0 },
+              },
+        },
+      },
+    });
+  } else if (query.includes("timelineItems")) {
     // What closed the issue (state.closer: a PR's URL), as its last ClosedEvent names it.
     const closer = state.closer ? { url: state.closer } : null;
     const jq = args.includes("--jq");
@@ -317,6 +380,89 @@ if (args[1] === "graphql") {
         ? (state.closer ?? "")
         : { data: { repository: { issue: { timelineItems: { nodes: [{ closer }] } } } } },
     );
+  } else if (query.includes("search(query:")) {
+    // The weekly clean-up's one read (ADR 0069): each search's words matched as GitHub would, on
+    // the issues here: is:open or is:closed, label: and -label: (a name with a space in quotes),
+    // closed:<from>..<to>, updated:<<day> and sort:updated-asc, by each issue's closed_at and
+    // updated_at (a close is a change). An issue's open PR is `pr`.
+    const gstate = (i) => (i.state === "closed" ? "CLOSED" : "OPEN");
+    const day = (t) => String(t ?? "").slice(0, 10);
+    // One with no time of its own was just changed.
+    const updated = (i) => i.updated_at ?? i.closed_at ?? "9999";
+    const hasLabel = (i, name) => i.labels.some((l) => l.name === name.replace(/^"(.*)"$/, "$1"));
+    const fits = (i, w) => {
+      if (w.startsWith("repo:") || w === "is:issue" || w === "sort:updated-asc") return true;
+      if (w === "is:open") return i.state !== "closed";
+      if (w === "is:closed") return i.state === "closed";
+      if (w.startsWith("label:")) return hasLabel(i, w.slice(6));
+      if (w.startsWith("-label:")) return !hasLabel(i, w.slice(7));
+      // The digest's Inbox pages (ADR 0070): a word in the title.
+      if (w === "in:title") return true;
+      if (!w.includes(":")) return i.title.toLowerCase().includes(w.toLowerCase());
+      const c = /^closed:(.+)\.\.(.+)$/.exec(w);
+      if (c) return i.state === "closed" && day(i.closed_at) >= c[1] && day(i.closed_at) <= c[2];
+      const u = /^updated:<(.+)$/.exec(w);
+      return Boolean(u) && day(updated(i)) < u[1];
+    };
+    // Every field either read asks for: the clean-up's, and the digest's (ADR 0070: each chat's
+    // number, labels and last change; an Inbox's text and its comments' count).
+    const swept = (i) => {
+      const p = all.find((x) => x.number === i.parent);
+      const at = state.issue.number === i.number ? state : state.others[String(i.number)];
+      return {
+        number: i.number,
+        title: i.title,
+        body: i.body,
+        closedAt: i.closed_at ?? null,
+        updatedAt: i.updated_at ?? null,
+        labels: { nodes: i.labels },
+        parent: p ? { number: p.number, state: gstate(p), labels: { nodes: p.labels } } : null,
+        subIssues: {
+          nodes: all
+            .filter((k) => k.parent === i.number)
+            .map((k) => ({
+              number: k.number,
+              state: gstate(k),
+              updatedAt: updated(k),
+              labels: { nodes: k.labels },
+            })),
+        },
+        comments: { totalCount: (at?.comments ?? []).length },
+        closedByPullRequestsReferences: { nodes: i.pr ? [{ state: "OPEN" }] : [] },
+      };
+    };
+    const find = (q) => {
+      const words = String(q).match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+      const found = all.filter((i) => words.every((w) => fits(i, w)));
+      if (words.includes("sort:updated-asc"))
+        found.sort((a, b) => updated(a).localeCompare(updated(b)));
+      return found.map(swept);
+    };
+    out({
+      data: Object.fromEntries(
+        ["closed", "projects", "quiet", "inboxes"]
+          .filter((k) => vars[k])
+          .map((k) => [k, { nodes: find(vars[k]) }]),
+      ),
+    });
+  } else if (query.includes("pages: issues(")) {
+    // A project's chats (its sub-issues, each with its state) and its pages (by their
+    // `project:<name>` label).
+    const i = all.find((x) => x.number === Number(vars.n));
+    const kids = i ? all.filter((k) => k.parent === i.number) : [];
+    const chat = (k) => ({ number: k.number, state: k.state === "closed" ? "CLOSED" : "OPEN" });
+    out({
+      data: {
+        repository: {
+          issue: i ? { subIssues: { nodes: kids.map(chat) } } : null,
+          pages: {
+            nodes: all
+              .filter((k) => k.labels.some((l) => l.name === vars.label))
+              .map((k) => ({ number: k.number })),
+          },
+        },
+      },
+    });
   } else if (query.includes('object(expression:"HEAD:shipify.json")')) {
     // Each repo's shipify.json (state.files, as the contents API reads it), one alias a repo, and
     // null for one it doesn't know: GitHub answers what it could, and gh exits 1 when any wasn't.
@@ -441,11 +587,20 @@ if (args[1] === "graphql") {
           })),
       },
     });
+    // Its own sub-issues too, and its parent's parent (ADR 0069: a project above a split chat).
     const i = all.find((x) => x.number === Number(vars.n));
     const parent = i?.parent ? all.find((x) => x.number === i.parent) : undefined;
+    const grand = parent?.parent ? all.find((x) => x.number === parent.parent) : undefined;
     out({
       data: {
-        repository: { issue: i ? { ...fam(i), parent: parent ? fam(parent) : null } : null },
+        repository: {
+          issue: i
+            ? {
+                ...fam(i),
+                parent: parent ? { ...fam(parent), parent: grand ? fam(grand) : null } : null,
+              }
+            : null,
+        },
       },
     });
   } else if (query.includes("issue(number:")) {

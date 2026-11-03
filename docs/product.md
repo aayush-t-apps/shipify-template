@@ -1,19 +1,35 @@
 # Shipify, the product
 
-**Your own AI engineer on GitHub.** You run it yourself, for free. You ask in plain words, from
-GitHub, Telegram or its web chat. It reads any repo you point it at and works in that repo's own
-way. When there's a change to make, it opens a PR, and a person merges it.
+**Your own assistant for ideas, research and building. It keeps what you find, thinks with you,
+and ships what you decide: one place, free, and yours** (ADR 0070). You run it yourself, for
+free. You ask in plain words, from GitHub, Telegram or its web chat. It keeps your projects'
+finds and facts on pages, reads any repo you point it at and works in that repo's own way. When
+there's a change to make, it opens a PR, and a person merges it.
+
+One loop says what it does:
+
+| Step | What you get | You say or tap |
+|---|---|---|
+| **Capture** | a thought, a link or a screenshot saved in a second, with no run | `jot: …`, `add games: …`, **Add** |
+| **Keep** | a project's pages: its Now, its Map, its facts with their sources, its Log | `project: games`, "collate the inbox", **Keep on page** |
+| **Think** | answers, research and plans in chats that read the project first | **New chat here**, "check the project", "split it" |
+| **Ship** | a PR, a new app, a deploy, a repeat, a change in Notion | `shop-web: add login`, `new: …`, `yes` |
+| **Share** | a zip of a project, or a link to its files | **Export**, "share this as a drop" |
 
 This page is the picture: what Shipify looks like as a product anyone can set up, and the road
 there. Each step on that road is an ADR. [The road](#the-road) says which parts are live today.
 
 ## Who it's for
 
+One person who builds, researches or learns. Not a team's tracker (no assignees, sprints or
+boards), a paid service, or a second store.
+
 | You are | You use it for |
 |---|---|
 | **A developer, on your own repos** | questions about your code, fixes and features as PRs, chores on a schedule, all from your phone |
 | **A developer at work** | the same on your company's repos. An admin installs Shipify's small App on them, or you request it. PRs follow the team's rules and format |
-| **A builder of apps** | the projects add-on: an idea becomes a plan, then a repo, a deploy and a live app, each step approved by you |
+| **A founder, a researcher or a student** | a project per idea or question: its finds in an Inbox, its facts and sources on pages, a chat per question, a check before you decide ([knowledge.md](knowledge.md)) |
+| **A builder of apps** | the apps add-on: an idea becomes a plan, then a repo, a deploy and a live app, each step approved by you |
 | **Anyone who wants their own** | a copy of Shipify and one guided setup. Your Shipify is yours: your repo, your machine, your agent's login, your data |
 
 ## Where it lives: one home
@@ -40,8 +56,8 @@ Six kinds of ask, the same words on every channel:
 | **a change** | `acme/api: rate-limit /login` | it works in the repo's own way, runs its tests, and commits on its own branch | a PR to review and merge |
 | **a repeat** | `repeat: every Monday 9:00, list stale PRs in acme/api` | a job on a schedule | a reply each time |
 | **a note** | `remember: small PRs, in bullets` | saved at once, with no AI; every later run reads it | "Saved" |
-| **a new app** | `new: a tip calculator` | the projects add-on: a plan to approve, then a build and a deploy | a plan PR, then a live app |
-| **an operation** | `tips: release` | the projects add-on: release, take down, bring back or roll back an app | the release PR, or the app's new state |
+| **a new app** | `new: a tip calculator` | the apps add-on: a plan to approve, then a build and a deploy | a plan PR, then a live app |
+| **an operation** | `tips: release` | the apps add-on: release, take down, bring back or roll back an app | the release PR, or the app's new state |
 
 `acme` can be your own account, another org of yours, or your company's, once you've added it.
 

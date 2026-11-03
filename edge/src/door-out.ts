@@ -1,6 +1,6 @@
 // The door's way out (ADR 0031, "The door: out"): POST /door/replied. Right after a run writes a
 // reply, its apply step calls here with the comment's number, the files it made (multipart, up to
-// 10, 10 MB each) and its GitHub OIDC token. The door checks the token, then the comment: written
+// 10, 50 MB in all) and its GitHub OIDC token. The door checks the token, then the comment: written
 // by a run (github-actions[bot]), with a reply line, not edited by anyone else, and with no 🚀 of
 // the door App's yet. It sends the reply's words to each chat in `to` that belongs to a person in
 // SHIPIFY_PEOPLE, through that chat's channel adapter (ADR 0032), each once, then marks it as the
@@ -18,7 +18,7 @@ import {
   withoutLine,
 } from "../../cli/contracts/index.ts";
 import { emptyFindings, sayFindings } from "./alerts.ts";
-import { MAX_FILE_BYTES, type Outgoing as Out } from "./channels/channel.ts";
+import type { Outgoing as Out } from "./channels/channel.ts";
 import { channelOf } from "./channels/index.ts";
 import { alertOf, outgoingOf } from "./chat.ts";
 import type { Deps, Env } from "./env.ts";
@@ -45,7 +45,12 @@ import {
 } from "./settings.ts";
 
 const MAX_FILES = 10;
-const MAX_BODY_BYTES = MAX_FILES * MAX_FILE_BYTES + 256 * 1024;
+/**
+ * A reply's files in all, as the box sends them (cli/kernel/door.ts): well inside the 100 MB a
+ * request to a Worker may be, so the reply's words always get in. The rest are on the branch.
+ */
+const MAX_FILES_BYTES = 50 * 1024 * 1024;
+const MAX_BODY_BYTES = MAX_FILES_BYTES + 256 * 1024;
 
 /** What a run hands the door: the task, its reply's comment, and the files it made. */
 export interface Outgoing {
@@ -84,8 +89,8 @@ export async function readOutgoing(
   }
   if (!task || !comment) return { why: "task and comment are numbers", status: 400 };
   if (files.length > MAX_FILES) return { why: `${MAX_FILES} files at most`, status: 413 };
-  if (files.some((f) => f.size > MAX_FILE_BYTES))
-    return { why: "10 MB a file at most", status: 413 };
+  if (files.reduce((n, f) => n + f.size, 0) > MAX_FILES_BYTES)
+    return { why: "50 MB of files in all at most", status: 413 };
   return { task, comment, files };
 }
 
@@ -211,9 +216,16 @@ export async function replied(req: Request, env: Env, deps: Deps): Promise<Respo
   if ("why" in out) return json({ error: out.why }, out.status);
   const gh = github(env, deps);
   try {
-    const s = await settings(gh, deps.now());
+    // Its reads at once: the settings, the comment, and whether the door App marked it already. A
+    // mark that couldn't be read (a comment that isn't there) is read again after the checks.
+    const marked = (c: number) =>
+      appLogin(env, deps).then((door) => markedBy(gh, door, c, "rocket"));
+    const [s, got, early] = await Promise.all([
+      settings(gh, deps.now()),
+      gh.call("GET", `repos/${gh.repo}/issues/comments/${out.comment}`),
+      marked(out.comment).catch(() => undefined),
+    ]);
     if (s.closed) return json({ door: "closed" }, 503);
-    const got = await gh.call("GET", `repos/${gh.repo}/issues/comments/${out.comment}`);
     if (got.status === 404) return json({ error: "no such comment" }, 404);
     if (got.status !== 200) return json({ error: `GitHub answered ${got.status}` }, 503);
     const c = got.data as RunComment;
@@ -226,8 +238,7 @@ export async function replied(req: Request, env: Env, deps: Deps): Promise<Respo
       log.warn("door.out.failed", { task: out.task, why: "edited" });
       return json({ error: "edited after it was written" }, 409);
     }
-    const door = await appLogin(env, deps);
-    if (await markedBy(gh, door, c.id, "rocket")) return json({ sent: 0, already: true });
+    if (early ?? (await marked(c.id))) return json({ sent: 0, already: true });
     const chats = chatsIn(reply.to, s.people).filter((x) => ready(env, x.channel));
     if (!chats.length) {
       log.info("door.out.sent", { task: out.task, sent: 0, why: "no chat in to" });

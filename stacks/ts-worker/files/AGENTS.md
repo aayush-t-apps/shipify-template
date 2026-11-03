@@ -52,12 +52,31 @@ This app keeps data on Cloudflare: its stack options, in `shipify.json`. Shipify
   `{"tmp/": 7}`: each deploy makes the bucket if it is missing and replaces its expiry rules with
   this file. Free: 10 GB, 1 million writes and 10 million reads a month.
 <!-- #endif -->
+<!-- #if OPTION_DO -->
+- **Durable Objects** (`env.COUNTER`, the starter class `Counter`): live state and WebSockets, one
+  object per name (a room, a chat), each with its own SQLite storage. Classes live in
+  `src/worker/objects/` (yours), each exported from its `index.ts` and named in `wrangler.jsonc`'s
+  `exports` with `"storage": "sqlite"`; `src/worker/index.ts` gives them to the runtime. Rename or
+  replace `Counter` before the first deploy: after that, **classes only add**. The deploy stops on
+  a deleted or renamed class, non-SQLite storage, or `migrations`; a class you no longer use stays
+  and costs nothing.
+- A deploy closes every WebSocket: clients reconnect by themselves (with backoff), and the object
+  keeps what it needs in storage, not only in memory. A rollback can't cross a new class: merge a
+  fix instead.
+- **No PR previews** (Cloudflare makes none for Durable Objects): try a change with `make dev`, then
+  on staging after the merge.
+- Tests: `localWorker()` in `tests/unit/support/` starts the whole Worker, as `wrangler dev` does,
+  with `fetch` and `url` (for a WebSocket). That code runs outside Node, so coverage leaves
+  `src/worker/objects/` out: put logic that needs branch tests in plain modules beside it.
+- Free: 100,000 requests and 13,000 GB-s a day; an object that sleeps (hibernating WebSockets)
+  costs nothing.
+<!-- #endif -->
 <!-- #if OPTIONS -->
 - Unit tests get real local storage, empty on each run: `localBindings()` in `tests/unit/support/`.
 - `wrangler.jsonc` names the bindings without ids: each deploy finds or makes them.
 <!-- #endif -->
 <!-- #if !OPTIONS -->
-None. To keep data, add a stack option (KV for key-value, D1 for SQL, R2 for files) as a change: Shipify's
+None. To keep data, add a stack option (KV for key-value, D1 for SQL, R2 for files, DO for live state and WebSockets) as a change: Shipify's
 `stacks/_cloudflare/storage.md` says how.
 <!-- #endif -->
 

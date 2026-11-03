@@ -251,7 +251,7 @@ function notebookPrompt(): Check[] {
   return [
     {
       name: "a run's prompt carries the notebook",
-      ok: section.includes("- **Preferences**: Sonnet for questions"),
+      ok: section.includes("### Preferences\n\n- Sonnet for questions"),
     },
   ];
 }

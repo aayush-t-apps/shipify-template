@@ -8,6 +8,7 @@ import { type Device, deviceOf } from "../../edge/src/push.ts";
 import { browser, pushKey } from "./browser.ts";
 import { CHAT, DOOR, envFor, type Keys, keys, runToken, world } from "./fake.ts";
 import { memoryKv } from "./kv.ts";
+import { memoryR2 } from "./r2.ts";
 
 let k: Keys;
 beforeAll(async () => {
@@ -188,6 +189,32 @@ describe("POST /door/replied", () => {
     expect((await call(f, tooMany)).status).toBe(413);
   });
 
+  it("takes up to 50 MB of files in all; the web chat keeps a copy in R2 with its chat", async () => {
+    const f = world(k);
+    f.w.variables.SHIPIFY_PEOPLE = JSON.stringify([
+      { name: "owner", on: { github: "owner", web: "me" } },
+    ]);
+    const r2 = memoryR2();
+    const env = envFor(k, { BUCKET: r2.bucket } as unknown as Partial<Env>);
+    const task = f.issue();
+    const c = f.reply(task.number, line({ to: ["web:me"] }));
+    const big = new FormData();
+    big.set("task", String(task.number));
+    big.set("comment", String(c.id));
+    big.append("file", new File([new Uint8Array(30 * 1024 * 1024)], "a.bin"));
+    big.append("file", new File([new Uint8Array(21 * 1024 * 1024)], "b.bin"));
+    expect((await call(f, big, undefined, env)).status).toBe(413);
+    expect(await (await call(f, withFiles(task.number, c.id), undefined, env)).json()).toEqual({
+      sent: 0,
+      refused: 0,
+    });
+    const kept = [...r2.items].filter(([key]) => key.startsWith("f-")).map(([, v]) => v.meta);
+    expect(kept.map((m) => [m.name, m.by, m.task])).toEqual([
+      ["phone.png", "run", String(task.number)],
+      ["report.md", "run", String(task.number)],
+    ]);
+  });
+
   it("says in one short message which files didn't send, and never sends one a second way", async () => {
     const f = world(k);
     const task = f.issue();
@@ -354,6 +381,33 @@ describe("POST /door/replied", () => {
     expect(status.labels).toContain("watch:alert");
   });
 
+  it("reads the comment and its mark at once, not one after the other", async () => {
+    const f = world(k);
+    const task = f.issue();
+    const c = f.reply(task.number, line());
+    const real = f.deps.fetch;
+    let flying = 0;
+    let most = 0;
+    const gets: string[] = [];
+    f.deps.fetch = async (input, init) => {
+      if (input.includes(`/issues/comments/${c.id}`) && (init?.method ?? "GET") === "GET")
+        gets.push(input.includes("/reactions") ? "mark" : "comment");
+      flying++;
+      most = Math.max(most, flying);
+      await new Promise((r) => setTimeout(r, 5));
+      try {
+        return await real(input, init);
+      } finally {
+        flying--;
+      }
+    };
+    expect(await (await call(f, { task: task.number, comment: c.id })).json()).toMatchObject({
+      sent: 1,
+    });
+    expect(gets.sort()).toEqual(["comment", "mark"]);
+    expect(most).toBeGreaterThan(1);
+  });
+
   it("is shut while the door is closed", async () => {
     const f = world(k);
     f.w.variables.SHIPIFY_DOOR = "closed";
@@ -393,12 +447,70 @@ describe("GET /door/file/<ref>", () => {
     expect((await get(f, "telegram:not a ref!")).status).toBe(404);
   });
 
-  it("refuses a file over 10 MB", async () => {
+  it("refuses a file over 100 MB", async () => {
     const f = world(k);
     f.w.telegramFails.getFile = {
-      body: { ok: true, result: { file_path: "documents/big.pdf", file_size: 11 * 1024 * 1024 } },
+      body: { ok: true, result: { file_path: "documents/big.pdf", file_size: 101 * 1024 * 1024 } },
     };
     expect((await get(f, "telegram:BQAC")).status).toBe(413);
+  });
+});
+
+describe("POST /door/files/forget", () => {
+  const watch = (f: ReturnType<typeof world>) =>
+    runToken(k, f.w.at, { workflow_ref: "o/shipify/.github/workflows/watch.yml@refs/heads/main" });
+  const forget = async (f: ReturnType<typeof world>, body: unknown, token: string, more = {}) =>
+    handle(
+      new Request("https://shipify.example.com/door/files/forget", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      envFor(k, more),
+      f.deps,
+    );
+  const kept = () => {
+    const r2 = memoryR2();
+    void r2.keep("f-8000000000003-0123456789abcdef0123", "aaa", { name: "a", by: "you", task: 4 });
+    void r2.keep("f-8000000000002-0123456789abcdef0123", "bbbb", { name: "b", by: "run", task: 4 });
+    void r2.keep("f-8000000000001-0123456789abcdef0123", "c", { name: "c", by: "you", task: 5 });
+    void r2.keep("up-0123456789abcdef0123", "dd", { name: "d", by: "you" });
+    return r2;
+  };
+
+  it("deletes only the files of the chats it names, with watch.yml's token alone", async () => {
+    const f = world(k);
+    const r2 = kept();
+    const env = { BUCKET: r2.bucket } as unknown as Partial<Env>;
+    const res = await forget(f, { chats: [4, 9] }, await watch(f), env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ deleted: 2, bytes: 7 });
+    // Chat 5's stays, and a file with no chat.
+    expect([...r2.items.keys()].sort()).toEqual([
+      "f-8000000000001-0123456789abcdef0123",
+      "up-0123456789abcdef0123",
+    ]);
+    // A second pass over the same chats deletes nothing more.
+    expect(await (await forget(f, { chats: [4] }, await watch(f), env)).json()).toEqual({
+      deleted: 0,
+      bytes: 0,
+    });
+  });
+
+  it("refuses a task.yml token (any agent's run), and anything that isn't a list of chats", async () => {
+    const f = world(k);
+    const r2 = kept();
+    const env = { BUCKET: r2.bucket } as unknown as Partial<Env>;
+    const task = await runToken(k, f.w.at);
+    expect((await forget(f, { chats: [4] }, task, env)).status).toBe(403);
+    const branch = await runToken(k, f.w.at, {
+      workflow_ref: "o/shipify/.github/workflows/watch.yml@refs/heads/x",
+      ref: "refs/heads/x",
+    });
+    expect((await forget(f, { chats: [4] }, branch, env)).status).toBe(401);
+    for (const body of [{}, { chats: [0] }, { chats: ["4"] }, { chats: Array(501).fill(1) }])
+      expect((await forget(f, body, await watch(f), env)).status, JSON.stringify(body)).toBe(400);
+    expect(r2.items.size).toBe(4);
   });
 });
 

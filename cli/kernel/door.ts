@@ -1,11 +1,14 @@
 // The run and the door (ADR 0031). A run proves itself with its own GitHub OIDC token (shipify's
 // main, task.yml or watch.yml): no key is shared between boxes and the door.
-//   POST <door>/door/replied     a new reply: the task, its comment, the files the run made. The door
+//   POST <door>/door/replied     a new reply: the task, its comment, the files the run made (50 MB in
+//                                all; the rest are on the branch, linked from the reply). The door
 //                                reads the reply from GitHub itself; this only says where to look. A
 //                                failed nudge isn't tried again: the watch tells you of the reply.
-//   GET  <door>/door/file/<ref>  a file you sent through a chat, for the agent (10 MB at most)
+//   GET  <door>/door/file/<ref>  a file you sent through a chat, for the agent (100 MB at most)
+//   POST <door>/door/files/forget  closed chats' files deleted from the web chat's store: the weekly
+//                                clean-up's, from watch.yml (the door takes no other workflow's)
 // SHIPIFY_DOOR_URL is the edge's origin.
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import { logger } from "../contracts/index.ts";
 import { defaultChannels } from "../lib/channels.ts";
@@ -71,6 +74,12 @@ export function outward() {
   return { defaults: defaultChannels(), ...(owner ? { owner } : {}), tellDoor };
 }
 
+/** A reply's files sent to the door in all: one request stays well inside the edge's 100 MB. */
+export const MOST_SENT_BYTES = 50 * 1024 * 1024;
+/** The most files a reply sends the door, and the most bytes a file fetched for a run. */
+const MOST_SENT = 10;
+const MOST_FETCHED_BYTES = 100 * 1024 * 1024;
+
 export async function tellDoor(task: number, comment: number, files: string[]): Promise<void> {
   const log = logger({ task, step: "apply" }, (l) => process.stderr.write(`${l}\n`));
   const d = await door();
@@ -78,9 +87,21 @@ export async function tellDoor(task: number, comment: number, files: string[]): 
   const form = new FormData();
   form.set("task", String(task));
   form.set("comment", String(comment));
-  for (const f of files.slice(0, 10))
+  // In order, while they fit: one too big for what's left stays on the branch, linked from the reply.
+  let room = MOST_SENT_BYTES;
+  let left = 0;
+  for (const f of files.slice(0, MOST_SENT)) {
+    const size = statSync(f).size;
+    if (size > room) {
+      left++;
+      continue;
+    }
+    room -= size;
     form.append("file", new Blob([readFileSync(f)], { type: typeOf(f) }), basename(f));
-  const r = await within(30_000, (signal) =>
+  }
+  if (left) log.info("door.out.sent", { comment, why: "on the branch only: over 50 MB", left });
+  // 50 MB takes a while from a home line: words alone are quick.
+  const r = await within(room < MOST_SENT_BYTES ? 120_000 : 30_000, (signal) =>
     fetch(`${d.origin}/door/replied`, {
       method: "POST",
       headers: { Authorization: `Bearer ${d.token}` },
@@ -93,15 +114,48 @@ export async function tellDoor(task: number, comment: number, files: string[]): 
   else log.warn("door.out.failed", { comment, status: r.status, ...said });
 }
 
-/** A file you sent through a chat (its `from` line's ref), from the door: undefined if it can't. */
+/**
+ * A file you sent through a chat (its `from` line's ref), from the door, 100 MB at most: undefined
+ * if it can't.
+ */
 export async function doorFile(ref: string): Promise<Buffer | undefined> {
   const d = await door();
   if (!d) return undefined;
-  const r = await within(60_000, (signal) =>
-    fetch(`${d.origin}/door/file/${encodeURIComponent(ref)}`, {
+  return within(120_000, async (signal) => {
+    const r = await fetch(`${d.origin}/door/file/${encodeURIComponent(ref)}`, {
       headers: { Authorization: `Bearer ${d.token}` },
+      signal,
+    });
+    if (!r.ok || Number(r.headers.get("content-length") ?? 0) > MOST_FETCHED_BYTES) {
+      await r.body?.cancel().catch(() => {});
+      return undefined;
+    }
+    const body = Buffer.from(await r.arrayBuffer());
+    return body.length > MOST_FETCHED_BYTES ? undefined : body;
+  }).catch(() => undefined);
+}
+
+/**
+ * The weekly clean-up's step (ADR 0069, section 15): these closed chats' files deleted from the web
+ * chat's store, proven by this job's OIDC token (watch.yml's: the door takes no other). How many
+ * went and their bytes, or undefined when there's no door, no token here, or the door refused.
+ */
+export async function forgetFiles(
+  chats: number[],
+): Promise<{ deleted: number; bytes: number } | undefined> {
+  const d = await door();
+  if (!d) return undefined;
+  const r = await within(60_000, (signal) =>
+    fetch(`${d.origin}/door/files/forget`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${d.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ chats }),
       signal,
     }),
   ).catch(() => undefined);
-  return r?.ok ? Buffer.from(await r.arrayBuffer()) : undefined;
+  const said = (await r?.json().catch(() => null)) as { deleted?: unknown; bytes?: unknown } | null;
+  const n = (v: unknown) => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : -1);
+  const deleted = n(said?.deleted);
+  const bytes = n(said?.bytes);
+  return r?.ok && deleted >= 0 && bytes >= 0 ? { deleted, bytes } : undefined;
 }

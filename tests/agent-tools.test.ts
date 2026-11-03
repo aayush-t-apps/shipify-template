@@ -31,6 +31,8 @@ const SOURCES = [
   "playbooks/task.md",
   "cli/kernel/prompt.ts",
   "cli/lib/notebook.ts",
+  // The playbook's rare how-tos, moved into skills it points at.
+  ...["new-project", "own-rules-repo", "repeats", "recipes"].map((s) => `skills/${s}/SKILL.md`),
   ...readdirSync(join(ROOT, "recipes/examples")).map((f) => `recipes/examples/${f}`),
   ...readdirSync(join(ROOT, "recipes"))
     .filter((f) => f.endsWith(".md") && f !== "README.md")

@@ -2,11 +2,25 @@
 // pages you or a run wrote are read, and last edited: a page anyone else touched (the agent's own
 // token can edit issues) is left out until you save it again, so nothing can slip instructions
 // into every later run. Notes are written by the box after a run (or for `remember: …`), never by
-// the agent.
+// the agent; a Library page's whole text too, from a run's `pages` (ADR 0069).
+import { existsSync, readFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import {
+  LIBRARY_LABEL,
+  PROJECT_LABEL,
+  PROJECT_NAME,
+  projectLabel,
+  projectNameOf,
+  projectOfLabels,
+  readFrom,
+  withoutLine,
+} from "../../contracts/index.ts";
+import { doorLogin } from "../../kernel/snapshot.ts";
 import { platformRepo, RECORD_WRITER } from "../../lib/github.ts";
 import {
   dated,
   hasHidden,
+  libraryLabels,
   linesWith,
   looksSecret,
   MAX_PAGE,
@@ -21,9 +35,11 @@ import {
   sameTopic,
   topicOf,
   topicTitle,
+  withLog,
   withNote,
   withoutNote,
 } from "../../lib/notebook.ts";
+import { readPeople } from "../../lib/people.ts";
 import { isBot } from "../../lib/task.ts";
 import { owner, rec, timeZone } from "./context.ts";
 
@@ -38,29 +54,73 @@ export interface Notebook {
   skipped: string[];
 }
 
-/** Whether a login may write what every round reads: you, or a run's own token. */
-function trusted(login: string | undefined): boolean {
+/**
+ * Whether a login may write what every round reads: you, or a run's own token. The door App counts
+ * as you (ADR 0069: the web chat's edits) only when the page's hidden line names you, the first
+ * person: words it took from anyone else in SHIPIFY_PEOPLE stay untrusted.
+ */
+function trusted(login: string | undefined, body = ""): boolean {
   if (!login) return false;
   if (login === RECORD_WRITER) return true;
+  if (login === doorLogin()) return readFrom(body)?.person === readPeople().people[0]?.name;
   const who = owner();
   return who ? login === who : !isBot(login);
 }
 
-/** The notebook's pages that you or a run wrote and last edited, oldest first. */
-export function readNotebook(): Notebook {
+/** The pages under a label that you or a run (or the door, for you) wrote and last edited. */
+function readPages(label: string): Notebook {
   const pages: Page[] = [];
   const skipped: string[] = [];
-  for (const p of rec().pages(NOTEBOOK_LABEL.name)) {
+  for (const p of rec().pages(label)) {
     const topic = topicOf(p.title);
     if (!topic) continue;
-    if (!trusted(p.author) || (p.editor && !trusted(p.editor))) {
+    if (!trusted(p.author, p.body) || (p.editor && !trusted(p.editor, p.body))) {
       skipped.push(topic);
       continue;
     }
-    // As its title says it: a repo's page keeps the repo's name (ADR 0047).
-    pages.push({ number: p.number, topic, body: p.body, url: p.url });
+    // As its title says it: a repo's page keeps the repo's name (ADR 0047). The door's hidden line
+    // is no part of its words.
+    const labels = p.labels.map((l) => l.name);
+    const project = projectOfLabels(labels);
+    const from = readFrom(p.body) ? p.body.split("\n", 1)[0] : undefined;
+    pages.push({
+      number: p.number,
+      topic,
+      body: withoutLine(p.body),
+      url: p.url,
+      ...(labels.includes(LIBRARY_LABEL) ? { library: true } : {}),
+      ...(project ? { project } : {}),
+      ...(from ? { from } : {}),
+      ...(p.editedAt ? { editedAt: p.editedAt } : {}),
+    });
   }
   return { pages, skipped };
+}
+
+/** A page's new words, the door's hidden line kept first when it had one. */
+const withFrom = (page: Page | undefined, body: string) =>
+  page?.from ? `${page.from}\n${body}` : body;
+
+/** The notebook's pages that every run reads (the `notebook` label), oldest first. */
+export const readNotebook = (): Notebook => readPages(NOTEBOOK_LABEL.name);
+
+/** A project's pages (ADR 0069): the Library's pages labelled `project:<name>`. */
+export const readProjectPages = (name: string): Notebook => readPages(projectLabel(name));
+
+/**
+ * The Library's pages a run reads on demand (ADR 0069): the always pages, then the `library` pages
+ * of no project, or of this one (`*`: every project's); another project's pages stay out.
+ */
+export function readLibrary(project?: string): Notebook {
+  const always = readNotebook();
+  const library = readPages(LIBRARY_LABEL);
+  return {
+    pages: [
+      ...always.pages,
+      ...library.pages.filter((p) => !p.project || project === "*" || p.project === project),
+    ],
+    skipped: [...always.skipped, ...library.skipped],
+  };
 }
 
 /**
@@ -74,6 +134,21 @@ export function remember(notes: unknown[], canWrite: boolean, repos: string[] = 
   if (!canWrite) return ["(Nothing was noted: this run doesn't add to the notebook.)"];
   const record = rec();
   const nb = readNotebook();
+  // Your projects (ADR 0069), read once when a topic could name one: `remember games: …` goes on
+  // the project's main page, which its runs read, and no other run does. A page you have already
+  // (Preferences, People) is that page: no read for it.
+  let projects: string[] | undefined;
+  const projectNamed = (topic: string) => {
+    const name = topic.trim().toLowerCase();
+    if (!PROJECT_NAME.test(name) || nb.pages.some((p) => !p.project && sameTopic(p.topic, name)))
+      return undefined;
+    projects ??= record.pages(PROJECT_LABEL).flatMap((p) => projectNameOf(p.title) ?? []);
+    if (!projects.includes(name)) return undefined;
+    const theirs = readProjectPages(name);
+    nb.pages.push(...theirs.pages.filter((p) => !nb.pages.some((q) => q.number === p.number)));
+    nb.skipped.push(...theirs.skipped);
+    return name;
+  };
   const said: string[] = [];
   for (const raw of notes.slice(0, 5)) {
     const parsed = Note.safeParse(raw);
@@ -85,8 +160,9 @@ export function remember(notes: unknown[], canWrite: boolean, repos: string[] = 
     const repo = repoPage(parsed.data.topic, repos)
       ? (repos.find((r) => sameTopic(r, parsed.data.topic)) ?? parsed.data.topic.toLowerCase())
       : undefined;
-    const topic = repo ?? parsed.data.topic;
-    const title = repo ?? topicTitle(topic);
+    const project = repo ? undefined : projectNamed(parsed.data.topic);
+    const topic = repo ?? project ?? parsed.data.topic;
+    const title = repo ?? project ?? topicTitle(topic);
     const line = text.replace(/<!--/g, "&lt;!--");
     if (hasHidden(line)) {
       said.push(
@@ -106,7 +182,9 @@ export function remember(notes: unknown[], canWrite: boolean, repos: string[] = 
       );
       continue;
     }
-    const page = nb.pages.find((p) => sameTopic(p.topic, topic));
+    const page = nb.pages.find(
+      (p) => sameTopic(p.topic, topic) && (project ? p.project === project : !p.project),
+    );
     const words = noteWords(line).toLowerCase();
     if (
       page?.body
@@ -125,23 +203,26 @@ export function remember(notes: unknown[], canWrite: boolean, repos: string[] = 
     }
     let at: { number: number; url?: string };
     if (page) {
-      record.updateIssue(page.number, { body });
+      record.updateIssue(page.number, { body: withFrom(page, body) });
       page.body = body;
       at = page;
     } else {
-      record.makeLabel(NOTEBOOK_LABEL);
+      const labels = project ? libraryLabels(project) : [NOTEBOOK_LABEL];
+      for (const l of labels) record.makeLabel(l);
       const made = record.createIssue({
-        title: repo ? `${PAGE_PREFIX}${repo}` : pageTitle(topic),
+        title: repo || project ? `${PAGE_PREFIX}${repo ?? project}` : pageTitle(topic),
         body,
-        labels: [NOTEBOOK_LABEL.name],
+        labels: labels.map((l) => l.name),
       });
-      nb.pages.push({ number: made.number, topic: title, body });
+      nb.pages.push({ number: made.number, topic: title, body, ...(project ? { project } : {}) });
       at = made;
     }
     said.push(
       repo
         ? `Noted for ${repo}: ${line}. Every task on ${repo} follows it from now on: ${pageUrl(at)}`
-        : `Noted under ${title}: ${line}. Every task from now on follows it: ${pageUrl(at)}`,
+        : project
+          ? `Noted on the project ${project}'s page: ${line}. Its chats read it from now on: ${pageUrl(at)}`
+          : `Noted under ${title}: ${line}. Every task from now on follows it: ${pageUrl(at)}`,
     );
   }
   return said;
@@ -171,11 +252,103 @@ export function forget(words: string): string[] {
   const body = withoutNote(p.body, line);
   // A page with no note left closes: nothing stays behind (a later note opens a new one).
   const empty = !body.split("\n").some((l) => l.trim() && !l.trim().startsWith("<!--"));
-  rec().updateIssue(p.number, empty ? { body, state: "closed" } : { body });
+  const kept = withFrom(p, body);
+  rec().updateIssue(p.number, empty ? { body: kept, state: "closed" } : { body: kept });
   p.body = body;
   return [
     `Forgot, from ${p.topic}: ${noteWords(line)}.${empty ? " The page is empty now, so it's closed." : ""} ${pageUrl(p)}`,
   ];
+}
+
+/**
+ * A run's `pages` (ADR 0069): each page's whole new text, from a file in its out folder, written
+ * with the notebook's checks (its size, no key, no hidden characters). A page of the run's own
+ * project is written, or made with the project's labels; a Library page of no project (a Journal)
+ * only when the run read nothing from outside. Never a page every run reads (only your words change
+ * those) or another project's, nor one whose text changed after the run read the pages (`since`,
+ * ADR 0070): the later write would drop the earlier one's lines. GitHub keeps each edit in the
+ * page's history, so one is easy to undo. A project's writes get a line on its main page's Log
+ * (`chat`: the task they came from). Returns what the reply says, a line each.
+ */
+export function writePages(
+  pages: { page: string; file: string }[],
+  o: { dir?: string; project?: string; outside: boolean; since?: string; chat?: number },
+): string[] {
+  if (!o.dir) return ["(No page was written: the run's files weren't there.)"];
+  const record = rec();
+  const lib = readLibrary(o.project);
+  const said: string[] = [];
+  const read = o.since ? Date.parse(o.since) : Number.NaN;
+  const ok: { topic: string; text: string; page?: Page; mine: boolean }[] = [];
+  for (const { page: topic, file } of pages.slice(0, 5)) {
+    const path = join(o.dir, basename(file));
+    const not = (why: string) => said.push(`Not written, the page ${topic}: ${why}.`);
+    if (!existsSync(path)) {
+      not(`its file \`${basename(file)}\` isn't in the out folder`);
+      continue;
+    }
+    const text = `${readFileSync(path, "utf8")
+      .replace(/\r\n/g, "\n")
+      .replace(/<!--\s*shipify-/g, "&lt;!-- shipify-")
+      .trim()}\n`;
+    const page = lib.pages.find((p) => sameTopic(p.topic, topic));
+    const changed = page?.editedAt ? Date.parse(page.editedAt) > read : false;
+    if (text.length > MAX_PAGE)
+      not(`it's over ${MAX_PAGE.toLocaleString("en")} characters: split it into two pages`);
+    else if (hasHidden(text)) not("it holds characters you can't see");
+    else if (looksSecret(text)) not("it looks like it holds a key or a password");
+    else if (lib.skipped.some((t) => sameTopic(t, topic)))
+      not("someone other than you or a run last edited it, so it's left alone");
+    else if (page && !page.library)
+      not("every run reads it, so only your words change it (`remember`, or GitHub's Edit)");
+    else if (changed)
+      not(
+        'it changed after this run read it, so it\'s left as it is, and nothing of either is lost: ask again ("keep it again"), and the next run writes it from the new page',
+      );
+    else {
+      const mine = Boolean(o.project) && (!page || page.project === o.project);
+      if (!mine && o.outside)
+        not(
+          "this run read outside content, so it writes only its project's pages: edit it on GitHub, or ask in a run that reads nothing from outside",
+        );
+      else if (!ok.some((w) => sameTopic(w.topic, topic))) ok.push({ topic, text, page, mine });
+    }
+  }
+  // The project's Log (ADR 0070): one dated line for this run's writes, on its main page, kept by
+  // the box. With the main page in the writes, the line goes in that one write; else one edit more.
+  const project = o.project;
+  const theirs = ok.filter((w) => w.mine);
+  const main = project
+    ? lib.pages.find((p) => p.project === project && sameTopic(p.topic, project))
+    : undefined;
+  const line =
+    project && theirs.length
+      ? `${today()} · ${theirs.map((w) => w.topic.trim()).join(", ")}${o.chat ? ` · from #${o.chat}` : ""}`
+      : undefined;
+  for (const w of ok) {
+    const isMain = Boolean(project) && w.mine && sameTopic(w.topic, project ?? "");
+    const text = line && isMain ? withLog(w.text, w.page?.body ?? "", line) : w.text;
+    let at: { number: number; url?: string };
+    if (w.page) {
+      record.updateIssue(w.page.number, { body: withFrom(w.page, text) });
+      at = w.page;
+    } else {
+      const labels = libraryLabels(w.mine ? project : undefined);
+      for (const l of labels) record.makeLabel(l);
+      at = record.createIssue({
+        title: w.mine ? `${PAGE_PREFIX}${w.topic.trim()}` : pageTitle(w.topic),
+        body: text,
+        labels: labels.map((l) => l.name),
+      });
+    }
+    said.push(
+      `Wrote the page ${w.topic}${w.page ? " (GitHub keeps its old text in the page's history)" : ", new"}: ${pageUrl(at)}`,
+    );
+  }
+  // A main page someone else last edited isn't read (`skipped`), so it gets no line either.
+  if (line && main?.library && !theirs.some((w) => sameTopic(w.topic, main.topic)))
+    record.updateIssue(main.number, { body: withFrom(main, withLog(main.body, main.body, line)) });
+  return said;
 }
 
 /** Pages nearly full, for the weekly clean-up to say. */

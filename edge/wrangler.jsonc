@@ -25,7 +25,7 @@
   // The watch (src/watch.ts): one tick every 5 minutes.
   "triggers": { "crons": ["*/5 * * * *"] },
   // The web chat (ADR 0036): its page's files, served only after the Worker checks the status
-  // page's sign-in (run_worker_first), and its file store, which the deploy creates (no id here).
+  // page's sign-in (run_worker_first), and its two stores, which the deploy creates (no ids here).
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -33,6 +33,10 @@
     "html_handling": "none",
     "not_found_handling": "none"
   },
+  // Its files, in R2 (ADR 0069): kept as long as their chat. Not `shipify-files`: that's the branch.
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "shipify-web-files" }],
+  // Model picks and devices only (its files moved to R2). The binding keeps its name: a new one
+  // would make the deploy create an empty namespace, and both would go.
   "kv_namespaces": [{ "binding": "FILES" }],
   "vars": { "GIT_SHA": "dev" }
 }

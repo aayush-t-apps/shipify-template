@@ -5,6 +5,29 @@
 
 const memo = new Map<string, { until: number; value: unknown }>();
 const last = new Map<string, unknown>();
+/** Kept at most, in each: a thread's key holds its `since`, so each new message adds one. */
+const MOST = 200;
+
+/** One more kept, as the newest; past MOST, the oldest goes. */
+function put<V>(map: Map<string, V>, key: string, value: V) {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > MOST) map.delete(map.keys().next().value as string);
+}
+
+/** Remembered for `ms`: past MOST, what's past its time goes before anything fresh. */
+function keep(key: string, value: unknown, ms: number, now: number) {
+  if (!memo.has(key) && memo.size >= MOST)
+    for (const [k, v] of memo) if (v.until <= now) memo.delete(k);
+  put(memo, key, { until: now + ms, value });
+}
+
+/** What's under `key` and still fresh; one past its time is dropped as it's read. */
+function fresh(key: string, now: number) {
+  const hit = memo.get(key);
+  if (hit && hit.until <= now) memo.delete(key);
+  return hit && hit.until > now ? hit : undefined;
+}
 
 /**
  * fn's value, remembered `ms` milliseconds under `key`. A failure isn't remembered. A read still
@@ -12,11 +35,11 @@ const last = new Map<string, unknown>();
  * that request.
  */
 export async function cached<T>(key: string, ms: number, fn: () => Promise<T>, now = Date.now()) {
-  const hit = memo.get(key);
-  if (hit && hit.until > now) return hit.value as T;
+  const hit = fresh(key, now);
+  if (hit) return hit.value as T;
   const value = await fn();
-  memo.set(key, { until: now + ms, value });
-  last.set(key, value);
+  keep(key, value, ms, now);
+  put(last, key, value);
   return value;
 }
 
@@ -28,14 +51,12 @@ export const stale = <T>(key: string): T | undefined => last.get(key) as T | und
 
 /** Kept as is, for `ms`: a value the edge made itself (a write it just did, a token). */
 export function remember(key: string, value: unknown, ms: number, now = Date.now()) {
-  memo.set(key, { until: now + ms, value });
+  keep(key, value, ms, now);
 }
 
 /** What's remembered under `key` and still fresh. */
-export function recall<T>(key: string, now = Date.now()): T | undefined {
-  const hit = memo.get(key);
-  return hit && hit.until > now ? (hit.value as T) : undefined;
-}
+export const recall = <T>(key: string, now = Date.now()): T | undefined =>
+  fresh(key, now)?.value as T | undefined;
 
 export function forget(key: string) {
   memo.delete(key);

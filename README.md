@@ -1,11 +1,25 @@
 # Shipify
 
-**Your own AI engineer on GitHub. Ask from anywhere; a machine of yours does the work; you merge.**
+**Your own assistant for ideas, research and building. It keeps what you find, thinks with you,
+and ships what you decide: one place, free, and yours.**
 
 You write to Shipify on Telegram, its web chat, or GitHub. A machine of yours (a **box**) picks it
 up, the agent works, and you get a reply: an answer, a pull request, a plan, or changes to approve.
-It works on any repo you point it at, on any of your accounts, in that repo's own way. Nothing is
-merged, deployed or changed in your tools until you say yes.
+It works on any repo you point it at, on any of your accounts, in that repo's own way, and keeps
+what you find in projects you make, with pages it keeps current. Nothing is merged, deployed or
+changed in your tools until you say yes.
+
+```
+ Capture ──► Keep ──► Think ──► Ship ──► Share
+ jot, add,   pages,   chats,    PRs,     export,
+ files       the Map  research  deploys  drops
+```
+
+One loop ([docs/knowledge.md](docs/knowledge.md)): `jot:` a thought or `add <project>: …` a find,
+with no run; a project's pages keep its Now, its Map and each fact with its source; its chats
+research and decide, and **Keep on page** files a good answer; a change becomes a PR; **Export** or
+a drop shares it. All of it lives in your own GitHub repo's issues and one free R2 bucket: no
+second store.
 
 It runs on GitHub, your own machines, your Claude subscription (or a free model gateway) and
 Cloudflare's free plan. Nothing is paid. MIT licensed.
@@ -44,6 +58,7 @@ and rules).
 | to read any repo | `look at owner/name …` | an answer from its code |
 | a change in a tool (Notion, Drop) | ask, then tap Yes on the exact calls | the box makes exactly those calls |
 | a note it keeps in mind | `remember: …` | saved at once |
+| a project to think through (research, an idea, an app) | `project: clinic`, then `add clinic: …` and chats in it | its pages, kept current; **Keep on page** files an answer ([docs/knowledge.md](docs/knowledge.md)) |
 | a reminder or a regular job | `repeat: every Monday at 9, …` | a reply each time |
 | a check-back, once | "check PR #12's CI in 15 minutes and tell me" | one reply, then it ends |
 | something when a PR lands | "when #12 merges, tell me" | one reply when it happens |

@@ -10,7 +10,8 @@ import { queue, rec, thisRun, timeZone } from "../commands/task/context.ts";
 import { publishedDeploy } from "../commands/task/deploys.ts";
 import { fileHash, publishMade } from "../commands/task/files.ts";
 import { Status, type StatusIssue } from "../commands/task/issue.ts";
-import { forget, remember } from "../commands/task/notebook.ts";
+import { forget, remember, writePages } from "../commands/task/notebook.ts";
+import { CLEAN_CLOSED, closeQuiet } from "../commands/task/sweep.ts";
 import {
   asProblem,
   errorLine,
@@ -35,7 +36,7 @@ import { type RunDetails, recordRun, renderRunDetails } from "../lib/runs.ts";
 import { secretFindings } from "../lib/secret-scan.ts";
 import { dropRepeat, tryStatusIssue, upsertRepeat } from "../lib/status-issue.ts";
 import { findStatus, inertImages, MAX_REPLY, safeMarkdown, type TaskState } from "../lib/task.ts";
-import { cursorOf, sharedNow } from "./decide.ts";
+import { cursorOf, sentRefs, sharedNow } from "./decide.ts";
 import { replyKey } from "./keys.ts";
 import { makeCalls } from "./mcp-client.ts";
 import { openedText, SUB_TASK } from "./parts.ts";
@@ -155,6 +156,30 @@ export async function apply(
     if (line) line.done = true;
   };
 
+  /**
+   * A reply's files, shared once (shipify-files): before this run's calls, so a pre-approved one
+   * can name a file this answer made (a drop of it), else as the reply is written.
+   */
+  const shares = new Map<Write, { out: string[]; made?: ReturnType<typeof publishMade> }>();
+  const share = (w: Extract<Write, { w: "reply" }>) => {
+    const was = shares.get(w);
+    if (was) return was;
+    const out =
+      w.files?.length && env.out
+        ? w.files.map((f) => join(env.out as string, basename(f))).filter(existsSync)
+        : [];
+    // Each file's hash as the agent left it (publishMade hides keys in a text one first).
+    const hashes = out.map(fileHash);
+    const made =
+      out.length && env.tokens.files
+        ? withToken(env.tokens.files, () => publishMade(s.n, out))
+        : undefined;
+    if (made) st.shared = sharedNow(st.shared, out, hashes, made.links);
+    const got = { out, ...(made ? { made } : {}) };
+    shares.set(w, got);
+    return got;
+  };
+
   for (const w of writes) {
     // A reply's words, once it's about to be written: kept for the next reply if GitHub refuses it.
     let unsaid = "";
@@ -191,12 +216,41 @@ export async function apply(
         case "forget":
           outcomes.push(...forget(w.words));
           break;
+        case "pages":
+          outcomes.push(...writePages(w.pages, { ...w, dir: env.out }));
+          break;
+        case "close-chats":
+          // A clean start's yes (ADR 0070): each closed as the 30-day close does it.
+          await journal(
+            `close-chats:${s.state.seen}:${s.run.id}`,
+            `closing ${w.chats.length} chat(s)`,
+            async () => {
+              const shut: string[] = [];
+              const left: string[] = [];
+              for (const c of w.chats)
+                ((await closeQuiet(c, s.now, CLEAN_CLOSED)) ? shut : left).push(`#${c.number}`);
+              outcomes.push(
+                ...(shut.length
+                  ? [
+                      `Closed ${shut.length} chat${shut.length === 1 ? "" : "s"} as done: ${shut.join(", ")}. Writing on one opens it again; their files go 30 days after.`,
+                    ]
+                  : []),
+                ...(left.length
+                  ? [
+                      `Not closed, as GitHub refused: ${left.join(", ")}. Say \`clean start\` again.`,
+                    ]
+                  : []),
+              );
+            },
+          );
+          break;
         case "calls":
           await journal(
             `calls:${w.fingerprint}`,
             `the ${w.calls.length} approved call(s)`,
             async () => {
-              const done = await makeCalls(w.calls, process.env, st.shared);
+              for (const r of writes) if (r.w === "reply") share(r);
+              const done = await makeCalls(w.calls, process.env, st.shared, fetch, sentRefs(s));
               outcomes.push(
                 ...done.map(
                   (r: ToolResult, i: number) =>
@@ -352,18 +406,8 @@ export async function apply(
           });
           if (written.has(key)) break;
           unsaid = body;
-          const out =
-            r.files?.length && env.out
-              ? r.files.map((f) => join(env.out as string, basename(f))).filter(existsSync)
-              : [];
-          // Each file's hash as the agent left it (publishMade hides keys in a text one first).
-          const hashes = out.map(fileHash);
-          const made =
-            out.length && env.tokens.files
-              ? withToken(env.tokens.files, () => publishMade(s.n, out))
-              : undefined;
+          const { out, made } = share(w);
           const filesBlock = made?.text ?? "";
-          if (made) st.shared = sharedNow(st.shared, out, hashes, made.links);
           const allLinks = [...(r.links ?? []), ...links];
           const to = replyTo({
             kind: r.kind,
@@ -384,6 +428,7 @@ export async function apply(
             ...(question ? { question: question.slice(0, 2_000) } : {}),
             ...(question && choices?.length ? { choices } : {}),
             ...(r.list ? { list: r.list } : {}),
+            ...(r.keep ? { keep: true as const } : {}),
             to,
             key,
           });
@@ -408,6 +453,8 @@ export async function apply(
           written.add(key);
           replies.push(id);
           st.reply = id;
+          // A reply says what's new: a button's Last action (ADR 0069) is behind it now.
+          st.action = undefined;
           // Told at once (ADR 0057): the writes after it never hold your reply back.
           await tellDoor(id, out);
           // The list this reply asks a yes for: only a yes after it counts.
@@ -680,6 +727,12 @@ function pushFromBundle(
       ]).trim(),
     );
     const body = prBody(s, w, env.details, accountOf(repo) === undefined);
+    // Open already: its title and body as this run asked for them, so its task line (`Closes` or
+    // `Part of`) is the kind asked for now, never the first run's.
+    if (existing)
+      withToken(token, () =>
+        gh(["pr", "edit", existing, "-R", repo, "--title", maskSecrets(w.title), "--body", body]),
+      );
     // Never with a label: a repo without it would refuse the whole PR.
     const url =
       existing ||

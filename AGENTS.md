@@ -44,9 +44,10 @@ Projects live in `../projects/<id>`, each its own repo with its own `AGENTS.md`.
 | the watch, the status task, a box offline, an app failing | `docs/watch.md` · `edge/` · `.github/workflows/watch.yml` · `cli/commands/watch.ts` |
 | task, repeat, recipe or check: which one, or writing one | the table in `README.md` ("Task, repeat, recipe or check?") · `docs/tasks.md` · a check: `checks/<name>.mjs`, from `checks/example.mjs`, in a PR (`checks/README.md`) · a recipe: `recipes/<name>.md`, from `recipes/examples/`, in a PR (`docs/recipes.md`) |
 | the status page | `docs/door.md` ("The status page") · `pnpm ship door page` (show it, then `--yes`) · `edge/src/page.ts` |
-| Telegram, the web chat, or another channel | `docs/channels.md` · `pnpm ship add telegram` / `pnpm ship add webchat` (show it, then `--yes`) · `pnpm ship selftest chat` · the web chat's code: `edge/src/web/`, `edge/public/admin/chat/` (its service worker `sw.js`; its parts loaded when needed, `workspace.js` and `setup.js`, ADR 0065; its diagram frame: `edge/public/draw/`), `edge/src/channels/web.ts`, its notifications `edge/src/push.ts` · every word, task and release works the same from a chat; only merges, and taking an app down, bringing it back or a rollback (`AT_ONCE`), stay on GitHub (ADR 0049) · a new chat: an adapter in `edge/src/channels/` (`plugins/_template/channel/`) |
+| Telegram, the web chat, or another channel | `docs/channels.md` · `pnpm ship add telegram` / `pnpm ship add webchat` (show it, then `--yes`) · `pnpm ship selftest chat` · the web chat's code: `edge/src/web/`, `edge/public/admin/chat/` (its service worker `sw.js`; its parts loaded when needed, `workspace.js` and `setup.js`, ADR 0065, and `desk.js` (on the first screen), `project.js`, `export.js`, `repeat.js`, `library.js`, `find.js`, `draw.js`, `attach.js` and their styles, ADR 0069; its files in R2: `edge/src/store.ts`; its diagram frame: `edge/public/draw/`), `edge/src/channels/web.ts`, its notifications `edge/src/push.ts` · every word, task and release works the same from a chat; only merges, and taking an app down, bringing it back or a rollback (`AT_ONCE`), stay on GitHub (ADR 0049) · a new chat: an adapter in `edge/src/channels/` (`plugins/_template/channel/`) |
 | what anyone can ask | `intents.json` (six intents, chat commands, fixed words) · `cli/kernel/words.ts` · `docs/tasks.md` |
 | the notebook | `docs/notebook.md` · `pnpm ship notebook` (on a box) · `remember: …` and `forget: …` (no agent, from any channel), or notes in a run's `result.json` · a repo's own notes: `remember <repo>: …`, read only by runs on that repo · `/notebook` · a way of working is a skill PR, not a note |
+| a project you make, its pages, Inbox and Journal (the Library) | `docs/knowledge.md` (the loop) · `project: <name>`, `add <name>: …`, `jot: …` (the door saves them, no agent: `edge/src/capture.ts`) · a run's `pages` and the Log (`cli/commands/task/notebook.ts`) · Keep on page and "check the project" (`cli/kernel/projects.ts`) · a project's next step and Find by meaning (`edge/src/web/reads.ts`) · `clean start` (`cli/kernel/decide.ts`, `cli/commands/task/sweep.ts`) · `skills/knowledge` · ADR 0069, ADR 0070 |
 | the door, or a chat with no answer | `docs/door.md` · `pnpm ship door check` · `pnpm ship door setup` (show it, then `--yes`; `--new` for a new key) |
 | main moved under a branch | `pnpm ship refresh <p>` (merges main, redoes the version bump) |
 
@@ -67,7 +68,12 @@ start:
 | `security-and-hardening` | input, auth, secrets, anything exposed |
 | `notion` | a task that reads or changes the owner's Notion (`tools/notion`) |
 | `drop` | a task that shares files as a link, or changes the owner's drops (`tools/drop`) |
+| `knowledge` | a run in a project, a reply kept on its pages, a check of them, a collate of its Inbox, the Journal organized, a project's pages written (`docs/knowledge.md`) |
 | `plug-ins` | adding or changing any plug-in, through its contract and conformance test |
+| `new-project` | a `new: …` task: its plan's PR, then its build |
+| `own-rules-repo` | a change to a repo that isn't a Shipify project, or one on another account |
+| `repeats` | a task that repeats, a check back once, or an errand |
+| `recipes` | turning on or making a recipe, a routine that runs by itself |
 | `writing-skills` | adding a skill, putting a lesson into one, or changing one (`scenarios.md`) |
 
 ## Changing Shipify itself

@@ -18,6 +18,7 @@ import {
   THINK_MINUTES,
   type ThinkIn,
   think,
+  yoursEnv,
 } from "../cli/kernel/think.ts";
 import type { Said, Snapshot, Think } from "../cli/kernel/types.ts";
 import { ADAPTERS } from "../cli/lib/agents.ts";
@@ -349,6 +350,25 @@ describe("a repo that keeps its own rules (ADR 0044)", () => {
   });
 });
 
+describe("what a run's prompt is missing (task #655)", () => {
+  it("is said in the box's notes: a family the box couldn't read, and a notebook it couldn't", async () => {
+    remote({ "README.md": "notes\n", Makefile: MAKEFILE }, "notes");
+    process.env.FAKE_WORK = "ok";
+    const s: Snapshot = {
+      ...snap(),
+      parsed: { kind: "app", project: "notes", ask: "fix the typo" },
+      repos: [{ name: "notes", repo: "o/notes", sizeKB: 1, project: false, branch: "main" }],
+      familyUnread: true,
+    };
+    const { placeOut } = await run(s, {}, { ...work, project: "notes", ownRules: true });
+    const prompt = readFileSync(placeOut("first-prompt.md"), "utf8");
+    const notes = prompt.slice(prompt.indexOf("## Notes from the box"));
+    expect(notes).toContain("This task is in a project or a split, and the box couldn't read it");
+    // No GitHub here: the notebook's read fails, and the run is told so.
+    expect(notes).toContain("The notebook couldn't be read");
+  });
+});
+
 describe("the box's checks on a task's work", () => {
   it("gives the agent one round in its session to fix a failed make verify, then asks for the PR", async () => {
     remote({ "shipify.json": manifest, Makefile: MAKEFILE });
@@ -667,12 +687,49 @@ describe("work that's never lost (ADR 0041)", () => {
     expect(out.meta.handoff).toBe("Goal: blue buttons\nDone: the button\nNext: the docs");
   }, 30_000);
 
+  it("starts from the last handoff, so a run that leaves it alone keeps the Progress (ADR 0069)", async () => {
+    remote({ "shipify.json": manifest, Makefile: MAKEFILE });
+    process.env.FAKE_WORK = "crash";
+    const progress = "Goal: a games list\nDone: 40 engines read\nNext: the offline ones";
+    const s = { ...snap(), state: { ...newState(), notes: progress } as TaskState };
+    const { out, placeOut } = await run(s);
+    expect(readFileSync(placeOut("first-prompt.md"), "utf8")).toContain(
+      "handoff.md` is seeded with the last one",
+    );
+    // A short run that never touched it: the last one stands, not an empty one.
+    expect(out.meta.handoff).toBe(progress);
+    // One that edits it in place keeps its edit.
+    process.env.FAKE_HANDOFF = `${progress}\nDecisions: Godot first`;
+    expect((await run(s)).out.meta.handoff).toBe(`${progress}\nDecisions: Godot first`);
+  }, 30_000);
+
   it("a handoff as the status keeps it: cut to fit, masked; none when it's empty", () => {
-    const long = handoffOf(`Goal: ${"x".repeat(5_000)}`) as string;
+    // The task's Progress (ADR 0069): 16,000 characters, not the 2,000 it was.
+    expect(HANDOFF_MAX).toBe(16_000);
+    // Full, its goal and its newest end stay; the oldest of what's done goes from the middle.
+    const done = Array.from({ length: 400 }, (_, i) => `- step ${i} done ${"x".repeat(40)}`);
+    const long = handoffOf(
+      `## Goal\nShip it\n\n## Done\n${done.join("\n")}\n\n## Next\n- the newest step`,
+    ) as string;
     expect(long.length).toBeLessThanOrEqual(HANDOFF_MAX);
-    expect(long.endsWith("…")).toBe(true);
+    expect(long.startsWith("## Goal\nShip it")).toBe(true);
+    expect(long.endsWith("## Next\n- the newest step")).toBe(true);
+    expect(long).toContain("- step 399 done");
+    expect(long).not.toContain("- step 0 done");
+    expect(long).toContain("… (older lines cut to fit)");
+    // Every line it keeps is whole.
+    for (const l of long.split("\n").filter((l) => l.startsWith("- step")))
+      expect(l).toMatch(/^- step \d+ done x{40}$/);
     expect(handoffOf(undefined)).toBeUndefined();
     expect(handoffOf("  \n ")).toBeUndefined();
+  });
+
+  it("hands a run who's yours, for its own notebook reads; a read run, or one on another account, none (ADR 0069)", () => {
+    process.env.SHIPIFY_OWNER = "owner";
+    process.env.SHIPIFY_DOOR_SLUG = "shipify-door";
+    process.env.SHIPIFY_PEOPLE = "";
+    expect(yoursEnv(true)).toEqual({ SHIPIFY_OWNER: "owner", SHIPIFY_DOOR_SLUG: "shipify-door" });
+    expect(yoursEnv(false)).toEqual({});
   });
 
   it("a checkout inside the clone is never committed, whatever its name or whoever made it", async () => {

@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #582; the owner's `go` on 2026-10-28 took the three decisions as recommended) and built in one PR (task #581); see [As built](#as-built-2026-10-28). From the owner's words of 2026-10-27 and 2026-10-28.
+status: accepted (merged #582; the owner's `go` on 2026-10-28 took the three decisions as recommended) and built in one PR (task #581); see [As built](#as-built-2026-10-28). From the owner's words of 2026-10-27 and 2026-10-28. Amended by 0069 (a project is a parent that never closes with its chats and is no split parent; the family read takes both levels and 100 sub-issues)
 date: 2026-10-28
 amends: 0040 and 0046 (a sub-task's merge may start the next sub-task, only after your `go`), 0053 (§1: the close of a sub-task starts a run with no agent), 0060 (a sub-task's run that the box started does not stay), 0039 and 0065 (the web chat: a Waiting state, sub-tasks under their parent, a Plan card)
 ---
@@ -201,6 +201,7 @@ labels, and each sibling's state, `stateReason`, labels and blockers. Then:
 | The last two parts close at the same time | Both may see "all closed". The "all closed" reply has a fixed key and the close checks that the parent is open, so at most a second short reply, never a lost one |
 | A part fails or asks you a question | It is `needs you` on its own thread. What waits for it waits. You answer there |
 | A part is a big change | Its run makes a doc PR (`part-of`). You merge it and say `go` on the part. The part is done when its build PR merges |
+| The box closes a part itself (a new project's first deploy is live, or an answered part is quiet for a day) | The box's own close starts no close run (`GITHUB_TOKEN`). So the deploy's run does the part's close step itself, and the due run starts the part's run, with no agent, after its quiet-day close (task #605) |
 | You close a part as completed by hand, with no PR | It counts as done: what waits for it may start |
 | You reopen a merged part | Nothing starts or stops (a reopen starts no run). Parts that already started go on |
 | You close the parent | No new part starts (the close runs see it closed). Open parts stay open, for you to close or keep |

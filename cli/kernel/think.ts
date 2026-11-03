@@ -6,11 +6,12 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { z } from "zod";
-import { tryOr } from "../commands/task/context.ts";
-import { readNotebook } from "../commands/task/notebook.ts";
+import { rec, tryOr } from "../commands/task/context.ts";
+import { readNotebook, readProjectPages } from "../commands/task/notebook.ts";
 import {
   canonicalJson,
   errorLine,
+  inboxTopic,
   MAX_FILES_OUT,
   maskSecrets,
   modelFacts,
@@ -23,7 +24,9 @@ import { cloneArgs, gitConfig, githubUrl, keyFor } from "../lib/clones.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
 import { copyValues } from "../lib/generate.ts";
 import { ghRun, platformRepo } from "../lib/github.ts";
-import { notebookSection, pagesFor } from "../lib/notebook.ts";
+import { libraryGaps, librarySections, pagesFor, sameTopic } from "../lib/notebook.ts";
+import { readPeople } from "../lib/people.ts";
+import { planOfFile } from "../lib/plan.ts";
 import type { Adapter, AgentReport, SessionUsed } from "../lib/plugins/agent.ts";
 import { repoFor } from "../lib/projects-on-github.ts";
 import type { RunDetails } from "../lib/runs.ts";
@@ -33,6 +36,8 @@ import { choiceFor, defaultAgent, executors, promptTools, Stopwatch, taskChoice 
 import { laterWords } from "./decide.ts";
 import { hash8 } from "./keys.ts";
 import { familyLines } from "./parts.ts";
+import { collateNotes, pageWordNotes, projectLines } from "./projects.ts";
+import { doorLogin } from "./snapshot.ts";
 import { binDir, type Place, placeFor } from "./place.ts";
 import { asksOf, buildPrompt, coverEach } from "./prompt.ts";
 import { type ReadIo, readRepos } from "./reads.ts";
@@ -85,8 +90,8 @@ const DROP_HALF_MERGE =
  */
 const FRESH =
   'n=$1; shift; chmod -R u+w -- "$@" 2>/dev/null; rm -rf -- "$@" || exit 1; shift "$n"; [ "$#" -eq 0 ] || mkdir -p -m 555 -- "$@"';
-/** The most of its handoff the task's status keeps (ADR 0041). */
-export const HANDOFF_MAX = 2_000;
+/** The most of its handoff the task's status keeps (ADR 0041): the task's Progress (ADR 0069). */
+export const HANDOFF_MAX = 16_000;
 /** The lines of failed checks the reply shows and the agent is told: a test runner's summary. */
 const VERIFY_TAIL = 60;
 const CHECK_SECONDS = 60;
@@ -239,6 +244,11 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       );
     };
     giveFiles();
+    // Its handoff starts as the last one (ADR 0069 section 8): the run edits the Progress in place,
+    // so a short run can't wipe a long one. A stay's turn carries on with the file it left.
+    const reading = t.profile === "read";
+    if (!reading && !io.resume && s.state.notes?.trim())
+      place.give({ "out/handoff.md": `${s.state.notes.trim()}\n` });
     // The run's notes name its files where the agent reads them: its in/files, not the runner's.
     const asGiven = (note: string) =>
       io.files ? note.split(io.files).join(join(place.in, "files")) : note;
@@ -252,7 +262,6 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     const ex = executors()[executor];
     const adapter = ex ? adapterOf(ex) : undefined;
     const gateway = ex?.gateway ? harness.gateways[ex.gateway] : undefined;
-    const reading = t.profile === "read";
     // A run on another of your accounts (ADR 0045) holds that repo's key and Shipify's rules, and
     // none of the tools, nor of the notebook but that repo's own page (ADR 0047): that account's
     // repos are written by others too.
@@ -368,20 +377,54 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       notes.push(...(await filesOf(early)));
       takeIn(early);
     }
+    // When the pages were read (ADR 0070): the box writes none of this turn's that changed after.
+    const pagesAt = new Date().toISOString();
     const nb = tryOr(readNotebook, undefined);
-    const pages =
-      nb && !reading
-        ? pagesFor(nb.pages, {
-            repos: s.repos.map((r) => r.name),
-            on: [t.project, ...(t.reads ?? []).map((r) => r.name)].filter((n): n is string =>
-              Boolean(n),
-            ),
-            away,
+    // A run in a project (ADR 0069) gets its pages, and its repos' own pages, as a run on them does.
+    const inProject = s.project && !reading && !away ? s.project : undefined;
+    const theirs = inProject ? tryOr(() => readProjectPages(inProject.name), undefined) : undefined;
+    // A stay's turn (ADR 0057) carries on with the pages its session read before: a page written
+    // whole starts from the page as it is now.
+    if (io.resume && theirs)
+      notes.push(
+        `The project's pages may have changed since your session read them: before you write one whole, read it again (\`<ship> notebook read "<topic>"\`).`,
+      );
+    const pagesRun = {
+      repos: s.repos.map((r) => r.name),
+      on: [t.project, ...(t.reads ?? []).map((r) => r.name), ...(inProject?.repos ?? [])].filter(
+        (n): n is string => Boolean(n),
+      ),
+      away,
+    };
+    const pages = nb && !reading ? pagesFor(nb.pages, pagesRun) : [];
+    // What the prompt can't carry is said, never missing quietly: a read that failed, and the
+    // pages left out as someone else last edited them.
+    if (!reading) {
+      if (s.familyUnread)
+        notes.push(
+          "This task is in a project or a split, and the box couldn't read it: its brief, chats and pages aren't below. Say so in your reply, and ask rather than guess what it holds.",
+        );
+      notes.push(
+        ...libraryGaps(
+          pagesRun,
+          nb,
+          inProject ? { name: inProject.name, read: theirs } : undefined,
+        ),
+      );
+    }
+    const library =
+      pages.length || (nb && !reading && !away) || theirs
+        ? librarySections(pages, {
+            canWrite: !away,
+            ...(inProject && theirs
+              ? { project: { name: inProject.name, pages: theirs.pages } }
+              : {}),
           })
-        : [];
+        : undefined;
     const conversation = [...s.said, ...early]
       .filter((c) => c.author !== "other")
       .map((c) => ({
+        id: c.id,
         who: c.author === "run" ? "Shipify" : "the owner",
         at: c.at,
         text: c.text,
@@ -393,6 +436,26 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     let asks = io.resume
       ? fresh.map((c) => c.text.trim())
       : asksOf({ why: t.why, body: s.issue.body, title: s.issue.title, conversation });
+    // "collate the inbox" in a project (ADR 0069): its new items as data, their files fetched.
+    const inbox =
+      inProject && theirs && asks.some((a) => /\bcollate\b/i.test(a))
+        ? theirs.pages.find((p) => sameTopic(p.topic, inboxTopic(inProject.name)))
+        : undefined;
+    if (inbox) {
+      const c = collateNotes(
+        inProject?.name ?? "",
+        inbox,
+        tryOr(() => rec().comments(inbox.number), []),
+        {
+          login: process.env.SHIPIFY_OWNER || undefined,
+          person: readPeople().people[0]?.name,
+          door: doorLogin(),
+        },
+      );
+      notes.push(...c.notes, ...(c.said.length ? await filesOf(c.said) : []));
+    }
+    // "keep this on the page" and "check the project" (ADR 0070): what the run does with the pages.
+    if (!reading && !away) notes.push(...pageWordNotes(asks, inProject?.name));
     const prompt = buildPrompt({
       repo: platformRepo(),
       n: s.n,
@@ -426,9 +489,8 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       // Your notebook is yours: a read run (ADR 0044) gets none of it, so nothing private is in
       // reach. A repo's own page goes only to runs on that repo, and a run on another of your
       // accounts gets that page alone (ADR 0047), adding nothing to it.
-      ...(pages.length || (nb && !reading && !away)
-        ? { notebook: notebookSection(pages, { canWrite: !away }) }
-        : {}),
+      ...(library ? { notebook: library.notebook } : {}),
+      ...(library?.project ? { projectPages: library.project } : {}),
       // A read run has no tool's calls (ADR 0044), nor a run on another account: none to name.
       ...(reading || away ? {} : { tools: promptTools(executor) }),
       ...(t.account ? { account: t.account } : {}),
@@ -436,7 +498,9 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       playbook: readFileSync(join(PLATFORM_ROOT, "playbooks", "task.md"), "utf8"),
       ...(t.recipe ? { recipe: t.recipe } : {}),
       // A split task's parent and parts (ADR 0066), as plan read them: data, but for its parent's goal.
-      ...(s.family && !reading ? { family: familyLines(s) } : {}),
+      ...((s.family || s.project) && !reading
+        ? { family: [...projectLines(s, platformRepo()), ...familyLines(s)] }
+        : {}),
       thinksWith: [adapter.name, choice.model ?? "its default model", choice.effort]
         .filter(Boolean)
         .join(" · ")
@@ -543,6 +607,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
           ...(held.login !== undefined ? { login: held.login } : {}),
           env: {
             ...env,
+            ...yoursEnv(!reading && !away),
             ...(adapter.env?.(own) ?? {}),
             ...held.env,
           },
@@ -624,6 +689,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     let result = readResult(raw?.toString("utf8"));
     if (raw) keep("result.json", raw);
     let touchesWorkflows = false;
+    let plan: string | undefined;
     // A question answered in words, not in the result's shape (a smaller model): its words are the
     // reply. A change still needs the result, with what it asks for, so it fails as before.
     if (!raw && t.profile !== "work" && report.said && !report.error) {
@@ -743,7 +809,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     // A slip in its answer's shape, with its session alive, isn't a stop: it finished, the reply says
     // what didn't fit, and the run stays for your next words (ADR 0061).
     const stopped: Stop | undefined = stopBy
-      ? { why: "asked", comment: stopBy.id }
+      ? { why: "asked", comment: stopBy.id, ...(stopBy.from?.button ? { button: true } : {}) }
       : "error" in result && !(result.wrong && session)
         ? stopOf(outcome, report, modelBy(report.model ?? choice.model, adapter.name, gateway))
         : undefined;
@@ -772,9 +838,14 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       if (b) keep("work.bundle", b);
       commits = Boolean(b) && changed.length > 0;
       touchesWorkflows = changed.some((f) => f.startsWith(".github/workflows/"));
+      plan = changed.map(planOfFile).find(Boolean);
     }
+    // Its files for you, and each page's new text (ADR 0069), which the box writes after it.
     if (!("error" in result))
-      for (const f of (result.files ?? []).slice(0, MAX_FILES_OUT)) {
+      for (const f of [
+        ...(result.files ?? []).slice(0, MAX_FILES_OUT),
+        ...(result.pages ?? []).map((p) => p.file),
+      ]) {
         const name = f.split("/").pop() ?? "";
         const body = place.take(name);
         if (body) keep(name, body);
@@ -799,6 +870,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       ...(looked.length ? { looked } : {}),
       ...(elsewhere ? { elsewhere } : {}),
       touchesWorkflows,
+      pagesAt,
       ...(checked?.checkHash
         ? { checkOutput: checked.checkOutput, checkHash: checked.checkHash }
         : {}),
@@ -806,6 +878,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       ...(caughtUp.length && !stopBy ? { caughtUp } : {}),
       ...(commits ? { commits } : {}),
       ...(commits && newRepo ? { firstPush: true } : {}),
+      ...(commits && plan ? { plan } : {}),
       ...(handoff ? { handoff } : {}),
       ...(session ? { session } : {}),
       ...(session && timing.sessionUsed ? { used: timing.sessionUsed } : {}),
@@ -833,11 +906,30 @@ export function modelBy(
   return `${name}${gateway ? ` at ${new URL(gateway.url).hostname}` : ""}`;
 }
 
-/** A handoff as the status keeps it: masked, and cut to HANDOFF_MAX. None when it's empty. */
+/** The most of a full handoff's start that stays: its goal. */
+const HANDOFF_HEAD = 2_000;
+const HANDOFF_CUT = "\n\n… (older lines cut to fit)\n\n";
+
+/**
+ * A handoff as the status keeps it: masked, and cut to HANDOFF_MAX. None when it's empty. A full
+ * one keeps its goal (its first `##` section, or its first lines) and its newest end: the middle
+ * goes, the oldest of what's done (ADR 0069: the task's Progress), each line kept whole.
+ */
 export function handoffOf(text: string | undefined): string | undefined {
   const t = maskSecrets(text ?? "").trim();
   if (!t) return undefined;
-  return t.length > HANDOFF_MAX ? `${t.slice(0, HANDOFF_MAX - 1).trimEnd()}…` : t;
+  if (t.length <= HANDOFF_MAX) return t;
+  const second = [...t.matchAll(/^## /gm)][1]?.index;
+  const head = (
+    second !== undefined && second <= HANDOFF_HEAD
+      ? t.slice(0, second)
+      : t.slice(0, HANDOFF_HEAD).replace(/\n[^\n]*$/, "")
+  ).trimEnd();
+  const tail = t
+    .slice(t.length - (HANDOFF_MAX - head.length - HANDOFF_CUT.length))
+    .replace(/^[^\n]*\n/, "")
+    .trimStart();
+  return `${head}${HANDOFF_CUT}${tail}`;
 }
 
 /**
@@ -899,6 +991,20 @@ async function check(
   };
   return { out, meta };
 }
+
+/** Who's yours: your login, your people, and the door's App that writes for you. */
+const YOURS = ["SHIPIFY_OWNER", "SHIPIFY_PEOPLE", "SHIPIFY_DOOR_SLUG"];
+
+/**
+ * Who's yours, for the agent's own `<ship> notebook` (ADR 0069), as the box reads them: so a page
+ * the door wrote for you (a Journal, an Inbox) reads as yours there too. On a box the agent starts
+ * from an empty environment. None for a read run, or one on another of your accounts: nothing of
+ * your notebook is theirs.
+ */
+export const yoursEnv = (mine: boolean): Record<string, string> =>
+  mine
+    ? Object.fromEntries(YOURS.flatMap((k) => (process.env[k] ? [[k, process.env[k]]] : [])))
+    : {};
 
 /** What a run's own commands start with: its `<ship>` calls name your Shipify repo as the run
  * does, and lay out a project with your copy's settings (ADR 0047), so no file says them. */

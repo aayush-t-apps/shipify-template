@@ -108,7 +108,8 @@ export const ALREADY = (task: number, open: boolean) =>
   `Already ${open ? "open" : "closed"} · #${task}`;
 /** The task the door wrote your words onto (GOT_IT, TURNED); none when it answered at once. */
 export const writtenTo = (text: string) =>
-  Number(/^(?:Got it|Reopened|Closed) · #(\d+)/.exec(text)?.[1]) || undefined;
+  Number(/^(?:Got it|Reopened|Closed|Project [a-z0-9-]+ made) · #(\d+)/.exec(text)?.[1]) ||
+  undefined;
 export const NO_SUCH_TASK = (task: number) =>
   `There's no task #${task} to carry on: nothing was written. Reply to one of my messages, or start with the right number.`;
 /** Why #n can't take your words: said at once, and nothing is written. */

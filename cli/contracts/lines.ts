@@ -25,6 +25,11 @@ export const From = z.object({
    * next run, which starts no run of its own (task.yml skips it, the watch doesn't wait on it).
    */
   setting: z.literal(true).optional(),
+  /**
+   * A button's word (ADR 0069: Close, Reopen, Stop the run, Stop repeating from the web chat): the
+   * web chat shows no message for it, and its answer goes on the status's Last action line.
+   */
+  button: z.literal(true).optional(),
 });
 export type From = z.infer<typeof From>;
 
@@ -61,6 +66,8 @@ export const ReplyLine = z.object({
    * than LIST_MAX, approved only there.
    */
   list: z.union([z.string().regex(/^[0-9a-f]{8}$/), z.literal("github")]).optional(),
+  /** An answer in a project's chat (ADR 0070): a chat shows **Keep on page** under it. */
+  keep: z.literal(true).optional(),
   to: z.array(z.string().max(120)).max(10).default([]),
   key: z.string().min(1).max(200),
 });

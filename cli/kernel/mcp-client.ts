@@ -2,7 +2,7 @@
 // here with the tool's act key, one call at a time. No agent and no guard: the calls are exactly the
 // ones you approved (or a tool's pre-approved forms), checked before they get here.
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -10,19 +10,25 @@ import { readBlob } from "../commands/task/files.ts";
 import { maskSecrets, type ToolCall, type ToolResult } from "../contracts/index.ts";
 import type { TaskState } from "../lib/task.ts";
 import { command, loadTools } from "../lib/tools.ts";
+import { doorFile } from "./door.ts";
 
 const TIMEOUT_MS = 60_000;
 
 /**
  * Makes these calls on their tool, in order; each answers ✓ or ✗ with the tool's own words. Files a
  * call names (its tool's `args.<call>.files`) come from the task's `shared` files, read with the
- * run's read key into a folder of their own for the server (SHIPIFY_FILES), removed after.
+ * run's read key, or are ones you sent through a chat on this task, named by their ref (its
+ * from-lines' in `sent`, `<channel>:<id>`) and fetched from the door (ADR 0069): nothing goes to
+ * the branch. Each lands in a folder of their own for the server (SHIPIFY_FILES), removed after; a
+ * ref is named in the call by its file's name there.
  */
 export async function makeCalls(
   calls: ToolCall[],
   env: NodeJS.ProcessEnv = process.env,
   shared: NonNullable<TaskState["shared"]> = {},
   get: typeof fetch = fetch,
+  sent: Record<string, string> = {},
+  fromDoor: (ref: string) => Promise<Buffer | undefined> = doorFile,
 ): Promise<ToolResult[]> {
   const tool = calls[0]?.tool;
   if (!tool) return [];
@@ -44,18 +50,28 @@ export async function makeCalls(
       }),
     ),
   ];
-  const unshared = names.filter((n) => !Object.hasOwn(shared, n));
+  const isSent = (n: string) => !Object.hasOwn(shared, n) && Object.hasOwn(sent, n);
+  const unshared = names.filter((n) => !Object.hasOwn(shared, n) && !isSent(n));
   if (unshared.length)
     return none(`${unshared.join(", ")}: not among this task's shared files, so nothing was made`);
   let files: string | undefined;
+  // A ref's file, by the name it was written under.
+  const named = new Map<string, string>();
   if (names.length) {
     files = mkdtempSync(join(tmpdir(), "shipify-call-files-"));
     try {
-      for (const n of names)
+      for (const n of names.filter((n) => !isSent(n)))
         writeFileSync(
           join(files, n),
           await readBlob((shared[n] as { url: string }).url, env.GH_TOKEN ?? "", get),
         );
+      for (const n of names.filter(isSent)) {
+        const body = await fromDoor(n);
+        if (!body) throw new Error(`${sent[n]} couldn't be fetched from the door`);
+        const name = freeName(files, sent[n] ?? "file");
+        writeFileSync(join(files, name), body);
+        named.set(n, name);
+      }
     } catch (e) {
       rmSync(files, { recursive: true, force: true });
       return none(
@@ -64,10 +80,32 @@ export async function makeCalls(
     }
   }
   try {
-    return await callTool(calls, entry, env, files);
+    return await callTool(named.size ? byName(calls, entry, named) : calls, entry, env, files);
   } finally {
     if (files) rmSync(files, { recursive: true, force: true });
   }
+}
+
+/** A file's name made safe, and free in this folder: a second `photo.jpg` is `2-photo.jpg`. */
+function freeName(dir: string, raw: string) {
+  const base = raw.replace(/[^\w.-]+/g, "-").replace(/^[.-]+/, "") || "file";
+  let name = base;
+  for (let i = 2; existsSync(join(dir, name)); i++) name = `${i}-${base}`;
+  return name;
+}
+
+/** The calls with each ref in their files named as its file was written. */
+function byName(
+  calls: ToolCall[],
+  entry: NonNullable<ReturnType<typeof loadTools>[string]>,
+  named: Map<string, string>,
+): ToolCall[] {
+  return calls.map((c) => {
+    const arg = entry.args?.[c.name]?.files;
+    const v = arg ? c.args[arg] : undefined;
+    if (!arg || !Array.isArray(v)) return c;
+    return { ...c, args: { ...c.args, [arg]: v.map((f) => named.get(String(f)) ?? f) } };
+  });
 }
 
 async function callTool(

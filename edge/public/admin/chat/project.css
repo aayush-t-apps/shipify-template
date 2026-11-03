@@ -1,0 +1,31 @@
+/* A project's page (ADR 0069): loaded with project.js. Its card folds under the header, as a
+   task's Progress does; Add sits beside Send in the box at its foot. */
+.pj summary {
+  padding: 0.25rem 0;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.pj .links {
+  margin: 0.25rem 0 0.75rem;
+}
+.pj h4 {
+  margin: 0.75rem 0 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pj .items li {
+  padding: 0.5rem 0.875rem;
+}
+.pj .mark {
+  flex: none;
+}
+.under .add {
+  margin-left: auto;
+}
+.under .add + .send {
+  margin-left: 0.25rem;
+}

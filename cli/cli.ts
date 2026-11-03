@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 // ship: the one interface to Shipify for humans, agents and CI. Run `pnpm ship help`.
-import { appendFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { doorCheck, doorSetup } from "../edge/setup/door.ts";
 import { doorPage } from "../edge/setup/page.ts";
@@ -81,6 +80,8 @@ const HELP = `ship: plan, build, ship and maintain Shipify projects (apps and pa
                                             application for /admin/*, its two public values saved, the
                                             sign-in checked
   notebook [list] | notebook read "<topic>"   the notebook (docs/notebook.md): its pages, one in full (on a box)
+  task read <id> [--task <n>]               one message of a run's task, whole, by its id (0: its own
+                                            words): a long thread's older ones (ADR 0069, on a box)
   add <name> [--new] [--yes] · remove <name> [--yes]
                                             set up a plug-in from its entry's setup (tools.json), one checked
                                             step at a time (--new: paste every key again), or a gateway's key
@@ -393,17 +394,11 @@ async function main(argv: string[]): Promise<Result> {
       return botSetup(values.yes, values.code);
     case "run": {
       const n = Number(need(a2, "<n>"));
-      const { isStep, runFailed, runStep, stepLine } = await import("./kernel/run.ts");
-      // One timing line per step on the run's summary (ADR 0051 B0): what the fixed part costs.
+      const { isStep, logStep, runFailed, runStep } = await import("./kernel/run.ts");
+      // One timing line per step (ADR 0051 B0): what the fixed part costs.
       const timed = (step: string, run: () => Promise<Result>): Promise<Result> => {
         const started = Date.now();
-        return run().finally(() => {
-          const summary = process.env.GITHUB_STEP_SUMMARY;
-          // Only a measure: a summary it can't write never hides the step's own outcome.
-          try {
-            if (summary) appendFileSync(summary, `\n${stepLine(step, Date.now() - started)}\n`);
-          } catch {}
-        });
+        return run().finally(() => logStep(step, Date.now() - started));
       };
       if (isStep(a1)) return timed(a1, () => runStep(a1, n));
       if (a1 === "failed") return timed("failed", () => runFailed(n));
@@ -415,8 +410,10 @@ async function main(argv: string[]): Promise<Result> {
     case "task": {
       // A push of merged plans: each one's task gets its repo and keys made, then its build.
       if (a1 === "plans") return taskPlans(need(a2, "<before>"), need(a3, "<after>"));
+      // One message of a run's task, whole (ADR 0069): a long thread's prompt lists the older ones.
+      if (a1 === "read") return (await import("./commands/task/read.ts")).taskRead(a2, values.task);
       throw new ShipError(
-        "Use: task plans <before> <after> (a run's steps are `ship run`)",
+        "Use: task plans <before> <after> | task read <id> [--task <n>] (a run's steps are `ship run`)",
         "blocked",
       );
     }

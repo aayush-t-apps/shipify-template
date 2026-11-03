@@ -359,6 +359,10 @@ describe("the sandbox: a command as the agent", () => {
     // Your Shipify repo's name, for the agent's own `ship` calls; nothing else of GitHub's.
     expect(at({ GITHUB_REPOSITORY: "o/shipify" })).not.toThrow();
     expect(at({ GITHUB_REPOSITORY_OWNER: "o" })).toThrow(/never reaches an agent/);
+    // The door's App's slug, its public name (ADR 0069); nothing else of the door's.
+    expect(at({ SHIPIFY_DOOR_SLUG: "o-shipify-door" })).not.toThrow();
+    expect(at({ SHIPIFY_DOOR_APP_ID: "42" })).toThrow(/never reaches an agent/);
+    expect(at({ SHIPIFY_DOOR_URL: "https://door" })).toThrow(/never reaches an agent/);
     expect(at({}, { CLAUDE_CODE_OAUTH_TOKEN: "x", GH_TOKEN: "y" })).not.toThrow();
     // Where to read the login is a plain name: a file descriptor's number, never a key.
     expect(at({ CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: "3" })).not.toThrow();

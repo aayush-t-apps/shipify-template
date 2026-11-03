@@ -88,7 +88,7 @@ say what's wrong.
 | `oneKey` | `true` when the provider has no read-only key: both verbs name one secret |
 | `look` · `act` | its calls, sorted: reads the agent makes, and changes the box makes after your `yes`. A call in neither is never offered |
 | `args` | per act call, its argument schema (`required`, `properties`): a proposal that doesn't fit is dropped and said |
-| `pre` | pre-approved forms: `{ call, fixed, caps, max }`. A call whose `fixed` fields match, whose other text fields fit their `caps`, at most `max` a run, needs no `yes`, unless the run read outside content. Merging the file approves them |
+| `pre` | pre-approved forms: `{ call, fixed, caps, any, max, after }`. A call whose `fixed` fields match, whose other text fields fit their `caps`, whose other fields are in `any`, at most `max` a run, needs no `yes`, unless the run read outside content (but the tools in `after`). Merging the file approves them |
 | `in` | a chat channel: `{"door": "<route>"}`, the edge's `/door/<route>` |
 | `check` | a command that checks its keys once, for `ship doctor`, `ship add` and `ship selftest <name>` |
 | `setup` | how `ship add <name>` sets it up: `needs` (what you need first), `keys` (each one you paste: `ask`, and `to`: `shipify`, or `edge` for a channel's keys the edge holds), `steps` (each `say` and `run`), `remove` |

@@ -67,14 +67,20 @@ describe("the web chat's setup: what it reads", () => {
     expect(signinVerdict(URL_, 200, null)).toMatchObject({ ok: false });
   });
 
-  it("finds FILES among the Worker's bindings, and only a KV namespace by that name", () => {
+  it("finds BUCKET among the Worker's bindings, and only an R2 bucket by that name", () => {
     const answer = (bindings: unknown[]) => ({ success: true, errors: [], result: { bindings } });
     expect(
-      filesVerdict(200, answer([{ type: "kv_namespace", name: "FILES", namespace_id: "n" }])).kind,
+      filesVerdict(
+        200,
+        answer([{ type: "r2_bucket", name: "BUCKET", bucket_name: "shipify-web-files" }]),
+      ).kind,
     ).toBe("bound");
-    const off = filesVerdict(200, answer([{ type: "plain_text", name: "FILES" }]));
+    const off = filesVerdict(200, answer([{ type: "kv_namespace", name: "FILES" }]));
     expect(off).toEqual({ kind: "unbound", line: FILES_OFF });
-    expect(FILES_OFF).toContain("Workers KV Storage: Edit");
+    expect(filesVerdict(200, answer([{ type: "plain_text", name: "BUCKET" }])).kind).toBe(
+      "unbound",
+    );
+    expect(FILES_OFF).toContain("Workers R2 Storage: Edit");
     expect(filesVerdict(200, answer([])).kind).toBe("unbound");
   });
 

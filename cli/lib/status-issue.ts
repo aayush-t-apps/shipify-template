@@ -53,6 +53,11 @@ export const StatusIssueState = z.object({
       run: z.string().optional(),
       /** When the weekly digest comes next (ADR 0053): `next` is never later than it. */
       digest: z.string().optional(),
+      /**
+       * When the weekly clean-up's own steps last ran (ADR 0069: closed chats' files, the 30-day
+       * close): each box runs a clean-up, and these run once a week in all.
+       */
+      sweep: z.string().optional(),
     })
     .default({}),
   upcoming: z.array(Upcoming).default([]),

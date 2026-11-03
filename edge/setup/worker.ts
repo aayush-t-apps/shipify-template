@@ -90,6 +90,54 @@ export function cloudflareMissing(): string | undefined {
     : undefined;
 }
 
+/** The edge's file store (ADR 0069): the R2 bucket every edge deploy binds as BUCKET (wrangler.jsonc). */
+export const EDGE_BUCKET = "shipify-web-files";
+
+/** What Cloudflare says of the edge's R2 bucket; `why` for a refusal, and the fix when it can't say. */
+export type EdgeBucket =
+  | { is: "there" }
+  | { is: "none" }
+  | { is: "r2-off" }
+  | { is: "refused"; why: string }
+  | { is: "unknown"; why: string };
+
+/**
+ * The edge's R2 bucket, asked of Cloudflare with this PC's deploy token: there, not made yet (the
+ * next deploy makes it), R2 off on the account (Cloudflare's 10042: every deploy fails until it's
+ * on), the token refused, or no answer.
+ */
+export async function edgeBucket(fetchFn: typeof fetch): Promise<EdgeBucket> {
+  const missing = cloudflareMissing();
+  if (missing) return { is: "unknown", why: missing };
+  const values = loadCredentials().values;
+  const account = credential(values, "CLOUDFLARE_ACCOUNT_ID");
+  try {
+    const r = await fetchFn(
+      `https://api.cloudflare.com/client/v4/accounts/${account}/r2/buckets/${EDGE_BUCKET}`,
+      {
+        headers: { authorization: `Bearer ${credential(values, "CF_DEPLOY_TOKEN") ?? ""}` },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    const said = (await r.json().catch(() => ({}))) as {
+      errors?: { code?: number; message?: string }[];
+    };
+    const errors = said.errors ?? [];
+    if (r.ok) return { is: "there" };
+    if (errors.some((e) => e.code === 10042 || /enable R2/i.test(e.message ?? "")))
+      return { is: "r2-off" };
+    if (r.status === 404) return { is: "none" };
+    const why = maskSecrets(errors[0]?.message ?? `HTTP ${r.status}`).slice(0, 200);
+    if (r.status === 401 || r.status === 403) return { is: "refused", why };
+    return { is: "unknown", why: `Cloudflare said ${why}: run it again in a minute` };
+  } catch (e) {
+    return {
+      is: "unknown",
+      why: `Cloudflare didn't answer (${(e as Error).message}): check this PC's network, then run it again`,
+    };
+  }
+}
+
 /** wrangler for the edge's Worker, with the deploy token (SHIPIFY_WRANGLER: a test's own). */
 export function wrangler(args: string[], input?: string): RunResult {
   const values = loadCredentials().values;

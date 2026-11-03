@@ -2,6 +2,8 @@
 //   POST /door/<channel>     your messages from a chat (its adapter's proof: channels/)
 //   POST /door/replied       a run's reply to copy to your chats (the run's GitHub OIDC token)
 //   GET  /door/file/<ref>    a file you sent the bot, for a run (its OIDC token)
+//   POST /door/files/forget  closed chats' files deleted, by the weekly clean-up (watch.yml's
+//                            OIDC token only, ADR 0069)
 //   *    /admin/…            what's private, behind one Cloudflare Access application (path
 //                            admin/*), whose token each route checks too (ADR 0036):
 //     GET  /admin/status     the status page: read-only (page.ts)
@@ -26,7 +28,7 @@ import { doorIn } from "./door-in.ts";
 import { replied } from "./door-out.ts";
 import type { Deps, Env } from "./env.ts";
 import { GITHUB_NEEDS, json, logOf, missing, obj } from "./env.ts";
-import { fileOut } from "./files.ts";
+import { fileOut, forgetFiles } from "./files.ts";
 import { appJwt, DoorKeyRefused, github } from "./github.ts";
 import { statusPage } from "./page.ts";
 import { zoneOf } from "./settings.ts";
@@ -109,6 +111,8 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
     if (home && (req.method === "GET" || req.method === "HEAD"))
       return new Response(null, { status: 302, headers: { location: home } });
     if (req.method === "POST" && path === "/door/replied") return await replied(req, env, deps);
+    if (req.method === "POST" && path === "/door/files/forget")
+      return await forgetFiles(req, env, deps);
     const file = /^\/door\/file\/([^/]{1,600})$/.exec(path);
     if (req.method === "GET" && file?.[1])
       return await fileOut(req, decodeURIComponent(file[1]), env, deps);

@@ -1,6 +1,6 @@
 // Our Drop tool (docs/tools.md, Drop), end to end against a fake Drop: its server over MCP with the
 // read token, and the box's approved calls (makeCalls) with the write token and the task's shared
-// files. The fake answers as docs/tools.md says Drop's /api does (Drop 0.2.0, as its admin page
+// files. The fake answers as docs/tools.md says Drop's /api does (Drop 0.3.0, as its admin page
 // calls it), and as Access does for a token it doesn't know (its sign-in page).
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -18,12 +18,15 @@ interface FakeDrop {
   address: string;
   title: string;
   expires: string | null;
+  expired?: boolean;
   gate: string;
   pin: string | null;
-  link: { role: string; secret: string } | null;
+  /** A link made before Drop 0.3.0 has no secret kept: only its hash. */
+  link: { role: string; secret: string | null } | null;
   people: Record<string, string>;
   requests: string[];
   files: Record<string, string>;
+  limits: { mb: number; files: number };
 }
 let drops: Record<string, FakeDrop> = {};
 let seen: string[] = [];
@@ -71,9 +74,16 @@ beforeAll(async () => {
       gate: x.gate,
       pin: Boolean(x.pin),
       expires: x.expires,
+      expired: Boolean(x.expired),
       peopleCount: Object.keys(x.people).length,
-      requestCount: x.requests.length,
-      link: x.link ? { role: x.link.role, ref: "ab12cd34" } : null,
+      requestCount: x.requests.filter(Boolean).length,
+      link: x.link
+        ? {
+            role: x.link.role,
+            ref: "ab12cd34",
+            ...(x.link.secret ? { path: `/d/${x.address}.${x.link.secret}` } : {}),
+          }
+        : null,
     });
     const detail = (x: FakeDrop) => ({
       ...summary(x),
@@ -82,17 +92,33 @@ beforeAll(async () => {
         const p = people.find((p) => p.id === key);
         return { key, role, ...(p ? { name: p.name, email: p.email } : { email: key }) };
       }),
-      requests: x.requests.map((email, i) => ({ id: `r${i}`, email })),
-      limits: { mb: 2000, files: 500 },
+      requests: x.requests.flatMap((email, i) => (email ? [{ id: `r${i}`, email }] : [])),
+      limits: x.limits,
     });
-    // A link is a path: the drop's address and a secret Drop keeps only the hash of.
+    // A link is a path: the drop's address and a secret Drop keeps, so it shows it again.
     const link = (x: FakeDrop, role: string) => {
       x.link = { role, secret: `secret${++next}` };
       return `/d/${x.address}.${x.link.secret}`;
     };
     if (url.pathname === "/api/people") return send(200, { people });
-    if (url.pathname === "/api/drops" && req.method === "GET")
-      return send(200, { drops: Object.values(drops).map(summary) });
+    // A request is "<drop>.<its id>": allow takes a role (view by default), deny none.
+    if (parts[1] === "requests" && req.method === "POST") {
+      const [address, rid] = (parts[2] ?? "").split(".");
+      const x = drops[address ?? ""];
+      const at = Number(rid?.slice(1));
+      const email = x?.requests[at];
+      if (!x || !email) return send(404, { error: "not_found", message: "No such request." });
+      if (parts[3] === "allow") x.people[email] = json().role ?? "view";
+      x.requests[at] = "";
+      return send(200, { ok: true });
+    }
+    if (url.pathname === "/api/drops" && req.method === "GET") {
+      const bytes = Object.values(drops).flatMap((x) => Object.values(x.files));
+      return send(200, {
+        drops: Object.values(drops).map(summary),
+        usage: { bytes: bytes.join("").length, capBytes: 9e9 },
+      });
+    }
     if (url.pathname === "/api/drops" && req.method === "POST") {
       const b = json();
       if (!["me", "view", "add", "people", "collect"].includes(b.gate))
@@ -107,6 +133,7 @@ beforeAll(async () => {
         people: {},
         requests: [],
         files: {},
+        limits: { mb: 2000, files: 500 },
       };
       drops[x.address] = x;
       const made = ROLE[x.gate] ? link(x, ROLE[x.gate] as string) : undefined;
@@ -116,8 +143,10 @@ beforeAll(async () => {
     if (parts[3] === "files" && req.method === "PUT") {
       if (parts[4] === "too-big.bin")
         return send(413, { error: "too_big", message: "A file can be 100 MB at most." });
-      d.files[parts[4] as string] = raw.toString();
-      return send(201, { name: parts[4], ticket: "t1" });
+      // A name already there gets a number.
+      const name = (parts[4] as string) in d.files ? `2-${parts[4]}` : (parts[4] as string);
+      d.files[name] = raw.toString();
+      return send(201, { name, ticket: "t1" });
     }
     if (parts[3] === "links" && req.method === "POST")
       return send(201, { link: link(d, json().role) });
@@ -126,19 +155,26 @@ beforeAll(async () => {
       const b = json();
       let made: string | undefined;
       if (b.gate) {
-        // Only me ends the link and every person's access; a gate that gives more makes a new link.
+        // A drop keeps its link through every gate; one with a link role and no link gets one.
         const role = ROLE[b.gate];
-        if (!role) d.link = null;
-        if (b.gate === "me") d.people = {};
-        if (role && d.link?.role === "add" && role === "view") d.link.role = "view";
-        else if (role && d.link?.role !== role) made = link(d, role);
+        if (role && !d.link) made = link(d, role);
+        else if (role && d.link) d.link.role = role;
         d.gate = b.gate;
       }
       for (const [who, role] of Object.entries(b.people ?? {}))
         if (role === null) delete d.people[who];
         else d.people[who] = role as string;
       if ("pin" in b) d.pin = b.pin;
+      if ("title" in b) d.title = b.title;
+      if (b.limits) d.limits = b.limits;
+      if (b.expiry) d.expires = b.expiry === "keep" ? null : "2026-11-29T08:00:00.000Z";
       return send(200, { drop: detail(d), ...(made ? { link: made } : {}) });
+    }
+    if (parts[3] === "files" && req.method === "DELETE") {
+      if (!((parts[4] as string) in d.files))
+        return send(404, { error: "not_found", message: "No such file." });
+      delete d.files[parts[4] as string];
+      return send(204);
     }
     if (req.method === "DELETE") {
       delete drops[d.address];
@@ -248,6 +284,7 @@ const fake = (x: Partial<FakeDrop> & { address: string; title: string; gate: str
     people: {},
     requests: [],
     files: {},
+    limits: { mb: 2000, files: 500 },
     ...x,
   };
 };
@@ -262,6 +299,7 @@ describe("tools: our Drop server, against a fake Drop", () => {
       pin: "123456",
       link: { role: "view", secret: "x" },
       requests: ["aunt@example.com"],
+      files: { "a.jpg": "x", "b.jpg": "y" },
     });
     fake({
       address: "k000000000002",
@@ -269,20 +307,51 @@ describe("tools: our Drop server, against a fake Drop", () => {
       gate: "people",
       people: { p1: "view", "dad@example.com": "add" },
     });
-    const [all, one] = await look(READ, [
+    fake({
+      address: "a000000000003",
+      title: "Old",
+      expires: "2026-10-01T08:00:00.000Z",
+      expired: true,
+      gate: "add",
+      link: { role: "add", secret: null },
+    });
+    fake({
+      address: "m000000000004",
+      title: "Mine",
+      gate: "me",
+      link: { role: "view", secret: "y" },
+    });
+    const [all, one, byId] = await look(READ, [
       ["list", {}],
       ["list", { query: "ladakh" }],
+      ["list", { query: "a000000000003" }],
     ]);
     expect(all).toBe(
       [
-        "2 drops:",
-        '- "Ladakh 2026" · id w000000000001 · anyone with the link can view, with a PIN · until 2026-11-04 · 1 request to answer',
-        '- "Diwali" · id k000000000002 · the people on it · 2 people · kept',
+        "4 drops:",
+        `- "Ladakh 2026" · id w000000000001 · anyone with the link can view, with a PIN · until 2026-11-04 · 1 request to answer · link ${base}/d/w000000000001.x`,
+        `- "Diwali" · id k000000000002 · the people on it · 2 people · kept · people link ${base}/d/k000000000002`,
+        '- "Old" · id a000000000003 · anyone with the link can view and add · expired · its link is from before Drop kept links: new_link makes one to copy',
+        '- "Mine" · id m000000000004 · only you · kept',
+        "Used 2 B of 9 GB in Drop.",
         "People in Drop: Mom, Dad.",
       ].join("\n"),
     );
-    expect(one).toContain('1 drop with "ladakh":');
-    expect(one).not.toContain("Diwali");
+    // One drop found: its files and limits too.
+    expect(one).toBe(
+      [
+        '1 drop with "ladakh":',
+        all?.split("\n")[1],
+        "Its 2 files: a.jpg (1 B), b.jpg (1 B).",
+        "It holds up to 2000 MB and 500 files.",
+        "Asking to open it: aunt@example.com.",
+        "Used 2 B of 9 GB in Drop.",
+        "People in Drop: Mom, Dad.",
+      ].join("\n"),
+    );
+    expect(byId).toContain('- "Old" · id a000000000003');
+    expect(byId).toContain("No files in it yet.");
+    expect(all).not.toContain("Its ");
   }, 60_000);
 
   it("makes a drop from the task's shared files on your yes, with its link and PIN, and leaves none by half", async () => {
@@ -339,6 +408,46 @@ describe("tools: our Drop server, against a fake Drop", () => {
     expect(seen).toEqual([]);
   }, 60_000);
 
+  // ADR 0069: a file you sent from the web chat, by the ref on this task's own from-line, fetched
+  // from the door: no copy on the shipify-files branch.
+  it("makes a drop of a file you sent, by its ref, fetched from the door; only a ref on the task", async () => {
+    const ref = "web:f-8000000000000-0123456789abcdef0123";
+    const asked: string[] = [];
+    const fromDoor = async (r: string) => {
+      asked.push(r);
+      return Buffer.from("the bytes you sent");
+    };
+    const call = (refs: Record<string, string>) =>
+      makeCalls(
+        [{ tool: "drop", name: "publish", args: { title: "Sent", files: [ref], share: "me" } }],
+        {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          GH_TOKEN: "read-token",
+          SHIPIFY_DROP_URL: base,
+          SHIPIFY_DROP_WRITE_ID: WRITE.id,
+          SHIPIFY_DROP_WRITE_SECRET: WRITE.secret,
+        },
+        shared,
+        github,
+        refs,
+        fromDoor,
+      );
+    fetched.length = 0;
+    const [made] = await call({ [ref]: "my photo.jpg" });
+    expect(made?.ok).toBe(true);
+    const d = Object.values(drops).find((x) => x.title === "Sent") as FakeDrop;
+    expect(d.files).toEqual({ "my-photo.jpg": "the bytes you sent" });
+    expect(asked).toEqual([ref]);
+    // Nothing read from the branch.
+    expect(fetched).toEqual([]);
+    // A ref not on this task's from-lines: nothing is fetched.
+    asked.length = 0;
+    const [other] = await call({});
+    expect(other?.text).toBe(`${ref}: not among this task's shared files, so nothing was made`);
+    expect(asked).toEqual([]);
+  }, 60_000);
+
   it("shares with people by name or email, and collects files with no files of its own", async () => {
     const [made, collect, nobody] = await act([
       {
@@ -392,6 +501,7 @@ describe("tools: our Drop server, against a fake Drop", () => {
         `- Anyone with the link can view: ${linkTo()}`,
       ].join("\n"),
     );
+    const kept = linkTo();
     const [again, more, less, renewed] = await act([
       // The same option again, by its link: nothing changes.
       { name: "update", args: { drop: `${base}/d/${a}.whatever`, share: "view" } },
@@ -402,13 +512,16 @@ describe("tools: our Drop server, against a fake Drop", () => {
     expect(again?.text).toBe(
       `Updated "Plans" (drop ${a}):\n- who may open it: anyone with the link can view, as before`,
     );
-    expect(more?.text).toContain("- who may open it: anyone with the link can view and add\n");
-    expect(more?.text).toMatch(
-      /- Anyone with the link can view and add: .*\(the old link stops now\)$/,
+    // Drop 0.3.0 keeps the link through a change of who may open it; new_link ends it.
+    expect(kept).not.toBe(linkTo());
+    expect(more?.text).toBe(
+      [
+        `Updated "Plans" (drop ${a}):`,
+        "- who may open it: anyone with the link can view and add",
+        `- Anyone with the link can view and add: ${kept} (the same link)`,
+      ].join("\n"),
     );
-    expect(less?.text).toContain(
-      "- its link stays the same: new_link makes a new one, and the old one stops",
-    );
+    expect(less?.text).toContain(`- Anyone with the link can view: ${kept} (the same link)`);
     expect(renewed?.text).toBe(
       [
         `Updated "Plans" (drop ${a}):`,
@@ -425,6 +538,80 @@ describe("tools: our Drop server, against a fake Drop", () => {
     expect(gone?.ok).toBe(false);
     expect(gone?.text).toBe("No such drop: it was revoked, or it expired.");
     expect(drops).toEqual({});
+  }, 60_000);
+
+  it("changes a drop's title, expiry and limits in one request, and adds and deletes its files", async () => {
+    const a = "w000000000001";
+    fake({ address: a, title: "Plans", gate: "view", files: { "old.txt": "x", "notes.md": "y" } });
+    const [changed, half] = await act([
+      {
+        name: "update",
+        args: {
+          drop: a,
+          title: "Trip plans",
+          expiry: "30d",
+          limits: { files: 50 },
+          delete_files: ["old.txt"],
+          files: ["photo.jpg", "notes.md"],
+        },
+      },
+      { name: "update", args: { drop: a, files: ["photo.jpg", "too-big.bin"] } },
+    ]);
+    expect(changed?.text).toBe(
+      [
+        `Updated "Plans" (drop ${a}):`,
+        '- title: "Trip plans"; expires 2026-11-29; holds up to 2000 MB and 50 files',
+        "- deleted old.txt",
+        "- added photo.jpg",
+        "- added 2-notes.md",
+      ].join("\n"),
+    );
+    expect(seen.filter((s) => s.startsWith("PATCH"))).toHaveLength(1);
+    expect(half?.ok).toBe(false);
+    expect(half?.text).toBe(
+      "Done: added 2-photo.jpg. Then: too-big.bin couldn't be added (Drop refused the file as too big: A file can be 100 MB at most.)",
+    );
+    expect(drops[a]).toMatchObject({
+      title: "Trip plans",
+      expires: "2026-11-29T08:00:00.000Z",
+      limits: { mb: 2000, files: 50 },
+      files: {
+        "notes.md": "y",
+        "photo.jpg": "the bytes of photo.jpg",
+        "2-notes.md": "the bytes of notes.md",
+        "2-photo.jpg": "the bytes of photo.jpg",
+      },
+    });
+    expect(drops[a]?.files).not.toHaveProperty("old.txt");
+  }, 60_000);
+
+  it("answers who asked to open a drop, as Drop's Requests page does", async () => {
+    const a = "k000000000002";
+    fake({
+      address: a,
+      title: "Diwali",
+      gate: "people",
+      requests: ["aunt@example.com", "spam@example.com"],
+    });
+    const [answered, unknown] = await act([
+      {
+        name: "update",
+        args: { drop: a, requests: { "Aunt@example.com": "add", "spam@example.com": "deny" } },
+      },
+      { name: "update", args: { drop: a, requests: { "who@example.com": "view" } } },
+    ]);
+    expect(answered?.text).toBe(
+      [
+        `Updated "Diwali" (drop ${a}):`,
+        "- aunt@example.com can add",
+        "- spam@example.com turned down",
+      ].join("\n"),
+    );
+    expect(seen).toContain(`POST /api/requests/${a}.r0/allow`);
+    expect(seen).toContain(`POST /api/requests/${a}.r1/deny`);
+    expect(drops[a]?.people).toEqual({ "aunt@example.com": "add" });
+    expect(unknown?.ok).toBe(false);
+    expect(unknown?.text).toContain("who@example.com hasn't asked to open this drop.");
   }, 60_000);
 
   it("says plainly when Access or Drop refuses the token, and refuses arguments that don't fit", async () => {
@@ -452,16 +639,25 @@ describe("tools: our Drop server, against a fake Drop", () => {
       { name: "update", args: { drop: "w000000000001" } },
       { name: "update", args: { drop: "w000000000001", new_link: true } },
       { name: "update", args: { drop: "w000000000001", remove: ["Mom"] } },
+      { name: "update", args: { drop: "w000000000001", limits: { mb: 0 } } },
+      { name: "update", args: { drop: "w000000000001", limits: { pages: 3 } } },
+      { name: "update", args: { drop: "w000000000001", title: "x".repeat(121) } },
+      { name: "update", args: { drop: "w000000000001", delete_files: ["nope.txt"] } },
     ]);
     expect(bad.map((b) => b.text)).toEqual([
       'Name the files to share in "files" (a drop that collects files needs none).',
       'Share with "people" names them in "people".',
       '"expiry" is one of: 1d, 7d, 30d, keep.',
       'A PIN guards a link: share "me" has none.',
-      "Say what to change: share, people, remove, pin or new_link.",
+      "Say what to change: title, expiry, limits, files, delete_files, share, people, remove, requests, pin or new_link.",
       '"new_link" needs share view, add or collect: this drop is "me".',
       "Mom isn't on this drop.",
+      '"limits" is { "mb": 1 to 2000, "files": 1 to 5000 }.',
+      '"limits" is { "mb": 1 to 2000, "files": 1 to 5000 }.',
+      '"title" is 120 characters at most.',
+      "nope.txt isn't in this drop.",
     ]);
+    expect(seen.some((s) => s.startsWith("PATCH"))).toBe(false);
     expect(Object.keys(drops)).toEqual(["w000000000001"]);
   }, 60_000);
 

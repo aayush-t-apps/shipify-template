@@ -109,7 +109,11 @@ export class Status {
         ? [{ w: "labels", n: this.issue.number, names: [want] } as RecordWrite]
         : []),
     ];
-    this.issue.labels = want ? [{ name: want }] : [];
+    // Its other labels stay in this view (a part's `sub-task`: decide reads it after the run).
+    this.issue.labels = [
+      ...this.issue.labels.filter((l) => !ours.includes(l.name)),
+      ...(want ? [{ name: want }] : []),
+    ];
     const all = [...(opts.alongside ?? []), ...mine];
     const ids = await rec().together(all);
     const at = all.findIndex((w) => w.w === "comment");

@@ -25,8 +25,8 @@ export function init(a) {
 
 /**
  * The card, under the thread's header: Start sends `go #n` on a ready part, Start all ready `go`,
- * Stop `stop`, your words as a reply's buttons send them; Open all as tabs puts the open parts in
- * their projects' tabs (ADR 0065). Open on a PC, folded on a phone; drawn again only when it changed.
+ * Stop `stop`, your words as a reply's buttons send them. Open on a PC, folded on a phone; drawn
+ * again only when it changed.
  */
 export function plan(v, t) {
   const T = t.task;
@@ -60,19 +60,11 @@ export function plan(v, t) {
   const closed = l.filter((x) => x.state === "closed").length;
   const fill = h("i");
   fill.style.width = `${(100 * closed) / (l.length || 1)}%`;
-  const open = l.filter((x) => x.state !== "closed");
-  const tabs = (e) => {
-    const b = e.currentTarget;
-    A.ws((w) => w.tab(open));
-    b.disabled = true;
-    b.lastChild.textContent = "Opened as tabs";
-  };
   const stop = (e) => confirm("Start no more parts? The ones that run finish.") && send("stop")(e);
   const acts = h(
     "p.links",
     can && l.some((x) => x.ready) && A.btn("Start all ready", send("go"), ".btn.answer"),
     can && T.started && A.btn("Stop", stop, ".btn"),
-    open.length > 0 && A.btn([icon("app"), h("span", "Open all as tabs")], tabs, ".btn"),
   );
   const d = h(
     "details.plan",
@@ -84,7 +76,7 @@ export function plan(v, t) {
       h("span.bar", fill),
       h("small", `${closed}/${l.length} closed`),
     ),
-    acts,
+    acts.children.length > 0 && acts,
     h("ol", l.map(part)),
   );
   if (was) was.replaceWith(d);

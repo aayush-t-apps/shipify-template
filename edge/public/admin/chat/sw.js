@@ -1,9 +1,17 @@
 // @ts-check
 // Shipify chat's service worker (ADR 0050): it shows a notification, opens its thread on a tap,
-// and takes Android's shares into New chat. It caches nothing: every request goes to the network.
+// takes Android's shares into New chat, and keeps the page's own files so it opens offline too
+// (ADR 0069). Never what the page reads (api/…).
 /** The worker itself (the page's types know no worker's). @type {any} */
 const sw = self;
 const IN = sw.registration.scope;
+const no = () => {};
+/** The page, its scripts, styles, manifest and icons; not the worker. */
+const own = (u) =>
+  u.startsWith(IN) && /^(?!sw\.)([\w-]+\.(html|js|css|json|svg))?([?#]|$)/.test(u.slice(IN.length));
+/** A good copy kept: never a sign-in's redirect. */
+const save = (r, res) =>
+  res.ok && !res.redirected && caches.open("chat").then((c) => c.put(r, res), no);
 /** Only an address inside the chat is opened. */
 const inChat = (u) => {
   try {
@@ -15,12 +23,19 @@ const inChat = (u) => {
 const windows = () => sw.clients.matchAll({ type: "window", includeUncontrolled: true });
 // What was shared, in memory only, till New chat takes it (a minute at most).
 let shared;
-let taken = () => {};
+let taken = no;
 
 sw.addEventListener("install", (e) => {
-  // Every read goes to the network without waking the worker (Chrome 123+).
-  const routes = e.addRoutes?.({ condition: { requestMethod: "GET" }, source: "network" });
-  e.waitUntil(Promise.resolve(routes).catch(() => {}));
+  let r;
+  try {
+    // What the page reads goes to the network without waking the worker (Chrome 123+).
+    const urlPattern = new URLPattern({ pathname: `${new URL(IN).pathname}api/*` });
+    r = e.addRoutes?.({ condition: { urlPattern }, source: "network" });
+  } catch {}
+  // The page's files, kept now (the page that installed it came before it).
+  const files = ["", "app.js", "compose.js", "app.css", "manifest.json", "icon.svg"];
+  const kept = files.map((f) => fetch(IN + f).then((res) => save(IN + f, res), no));
+  e.waitUntil(Promise.all([r?.catch(no), ...kept]));
   sw.skipWaiting();
 });
 sw.addEventListener("activate", (e) => e.waitUntil(sw.clients.claim()));
@@ -66,10 +81,23 @@ sw.addEventListener("notificationclick", (e) => {
   );
 });
 
-// Android's share (the manifest's share_target): New chat opens and asks for it. Nothing is sent
-// until you tap Send there.
+// The page's own files: the network's, kept; offline, the last kept. Android's share (the
+// manifest's share_target): New chat opens and asks for it. Nothing is sent until you tap Send.
 sw.addEventListener("fetch", (e) => {
   const r = e.request;
+  if (r.method === "GET" && own(r.url))
+    return e.respondWith(
+      fetch(r).then(
+        (res) => {
+          e.waitUntil(save(r, res.clone()));
+          return res;
+        },
+        () =>
+          caches
+            .match(r, { ignoreSearch: true, ignoreVary: true })
+            .then((c) => c || Response.error()),
+      ),
+    );
   if (r.method !== "POST" || r.url !== `${IN}share`) return;
   const got = r
     .formData()
@@ -80,7 +108,7 @@ sw.addEventListener("fetch", (e) => {
         .join("\n"),
       files: f.getAll("files").filter((x) => typeof x !== "string"),
     }))
-    .catch(() => undefined);
+    .catch(no);
   shared = got;
   e.respondWith(Response.redirect(`${IN}#/new?shared`, 303));
   const held = new Promise((done) => {

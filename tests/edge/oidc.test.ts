@@ -21,6 +21,21 @@ describe("a run's OIDC token", () => {
     }
   });
 
+  // The files' forget route (ADR 0069) takes the watch's own: no agent's run can delete a file.
+  it("takes watch.yml alone where a route asks for it", async () => {
+    const { deps } = world(k);
+    const env = envFor(k);
+    const of = (wf: string) =>
+      runToken(k, deps.now(), { workflow_ref: `${REPO}/.github/workflows/${wf}@refs/heads/main` });
+    expect(await verifyRun(await of("watch.yml"), env, deps, ["watch.yml"])).toMatchObject({
+      ok: true,
+    });
+    expect(await verifyRun(await of("task.yml"), env, deps, ["watch.yml"])).toEqual({
+      ok: false,
+      why: "workflow",
+    });
+  });
+
   it("refuses another repository, owner, workflow, branch, audience or issuer", async () => {
     const { deps } = world(k);
     const env = envFor(k);

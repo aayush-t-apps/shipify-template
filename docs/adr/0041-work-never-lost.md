@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #225) and built (one PR, the owner's go on 2026-10-07: "done merged go ahead keep docs updated"); proposed from (the owner's request of 2026-10-07: research how agents like Claude Code and pi do big tasks, whether they keep our rules, and how work carries on when something breaks; check the parallel and worktree flows; "models get better so the harness stays minimal"; then "only what's needed, clean and simple". Merging its PR accepts the design and its build plan)
+status: accepted (merged #225) and built (one PR, the owner's go on 2026-10-07: "done merged go ahead keep docs updated"); proposed from (the owner's request of 2026-10-07: research how agents like Claude Code and pi do big tasks, whether they keep our rules, and how work carries on when something breaks; check the parallel and worktree flows; "models get better so the harness stays minimal"; then "only what's needed, clean and simple". Merging its PR accepts the design and its build plan); amended by 0069 (the handoff is seeded into the next run's `out/handoff.md`, kept to 16,000 characters, and shown as the task's Progress)
 date: 2026-10-07
 amends: 0031 (the agent's handoff), 0035 (kept work, now on every end)
 ---

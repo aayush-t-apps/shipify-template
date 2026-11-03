@@ -11,31 +11,38 @@
 //                                  rest downloads
 //   GET  …/api/doc/<ref>           a kept file for the doc pane: Markdown rendered, a CSV's rows
 //   GET  …/api/sent/<chat>:<id>    a file you sent from another chat (Telegram's), the same way
-//   POST …/api/file                one file into the store (7 days); back comes its ref
+//   POST …/api/file                one file streamed into the store (R2, 95 MB at most), with its
+//                                  chat's number when it has one (x-file-task); back comes its ref
+//   DELETE …/api/file/<ref>        a file deleted: Files' Delete, or one taken off the box
 //   POST …/api/send                words, a `use` line and files, into the door
 //   POST …/api/repeat              a new repeat, written under the Repeat form's headings
+//   POST …/api/move                a chat moved into a project (ADR 0069: Move to project)
 //   POST …/api/push                notifications on this device, or off (ADR 0050)
-// A POST must come from the page itself: the edge's own Origin and `x-shipify-chat: 1`. The page's
-// service worker (sw.js, one of its files) shows notifications and takes Android's shares: a share
-// that reaches the edge instead (no worker yet) opens New chat.
+// A POST or a DELETE must come from the page itself: the edge's own Origin and `x-shipify-chat: 1`.
+// The page's service worker (sw.js, one of its files) keeps the page's own files for offline
+// (network first, never `api/`), shows notifications and takes Android's shares: a share that
+// reaches the edge instead (no worker yet) opens New chat.
 import {
   agentsSeen,
   instantOf,
   problem as known,
   maskSecrets,
-  modelSearches,
   modelLookup,
   modelPool,
+  modelSearches,
   poolMatching,
 } from "../../../cli/contracts/index.ts";
 import { accessTokenOk } from "../access.ts";
-import { cached, stale } from "../cache.ts";
+import { cached, forget, stale } from "../cache.ts";
+import { inboxOf, moveToProject } from "../capture.ts";
 import { channelOf } from "../channels/index.ts";
 import { writtenTo } from "../chat.ts";
 import { doorIn, listOf } from "../door-in.ts";
-import type { Deps, Env, Kept } from "../env.ts";
+import type { Bucket, Deps, Env, Kept } from "../env.ts";
 import {
+  bucketOf,
   devicesOf,
+  FILE_REF,
   GITHUB_NEEDS,
   keepDevices,
   kvOf,
@@ -48,27 +55,20 @@ import {
 import { DoorKeyRefused, GitHubError, github } from "../github.ts";
 import { deviceOf } from "../push.ts";
 import { type Settings, settings } from "../settings.ts";
-import {
-  type FileMeta,
-  has,
-  keep,
-  listed,
-  MOST_BYTES,
-  newId,
-  PICTURE,
-  safeName,
-  safeType,
-  serve,
-} from "./files.ts";
+import { copyFor, head, listed, newRef, put, remove, stamp } from "../store.ts";
 import { docOf } from "./docs.ts";
+import { type FileMeta, GONE, MOST_BYTES, PICTURE, safeName, safeType, serve } from "./files.ts";
 import { type RepeatAnswers, repeatProblems, repeatWords } from "./forms.ts";
-import { fileSrc, list, notebook, repeats, thread } from "./reads.ts";
+import { fileSrc, list, notebook, repeats, search, thread } from "./reads.ts";
 import { ADD, devicesSeen, menu, pushKey, setup } from "./setup.ts";
 import * as shapes from "./shapes.ts";
 
 export const BASE = "/admin/chat";
-/** How long a read is kept for every tab and phone: polling stays cheap. */
-const KEEP_MS = 5_000;
+/**
+ * How long a read is kept for every tab and phone: past the page's 5-second poll while a run works
+ * (5 s after the last one ends), so most polls are answered here and polling stays cheap.
+ */
+const KEEP_MS = 8_000;
 
 /**
  * A read the page polls (the list, a thread), kept KEEP_MS. When GitHub can't be read (on its
@@ -170,7 +170,10 @@ async function tagged(req: Request, body: unknown) {
   return answer(body, 200, { etag });
 }
 
-/** The page's own files: through Workers static assets, behind the same check. */
+/**
+ * The page's own files: through Workers static assets, behind the same check. The browser's copy
+ * unchanged (its ETag, or its time) is a 304 with no body, as the assets say.
+ */
 async function page(req: Request, env: Env, path: string) {
   const assets = (env as unknown as { ASSETS?: { fetch(r: Request): Promise<Response> } }).ASSETS;
   if (!assets) return problem(404, "The page isn't deployed here.", "Deploy the edge.");
@@ -178,11 +181,20 @@ async function page(req: Request, env: Env, path: string) {
   if (rest && !/^[\w-]+\.(?:html|js|css|json|svg|png)$/.test(rest))
     return problem(404, "Nothing here.", `Open ${BASE}.`);
   const url = new URL(`${BASE}/${rest || "index.html"}`, req.url);
-  const res = await assets.fetch(new Request(url, { method: "GET" }));
-  if (!res.ok) return problem(404, "Nothing here.", `Open ${BASE}.`);
+  const ask = new Headers();
+  for (const h of ["if-none-match", "if-modified-since"]) {
+    const v = req.headers.get(h);
+    if (v) ask.set(h, v);
+  }
+  const res = await assets.fetch(new Request(url, { method: "GET", headers: ask }));
+  const same = res.status === 304;
+  if (!res.ok && !same) return problem(404, "Nothing here.", `Open ${BASE}.`);
   const headers = new Headers(res.headers);
   for (const [k, v] of Object.entries(PAGE_HEADERS)) headers.set(k, v);
-  return new Response(req.method === "HEAD" ? null : res.body, { status: 200, headers });
+  return new Response(req.method === "HEAD" || same ? null : res.body, {
+    status: same ? 304 : 200,
+    headers,
+  });
 }
 
 export async function webChat(req: Request, env: Env, deps: Deps): Promise<Response> {
@@ -226,17 +238,23 @@ export async function webChat(req: Request, env: Env, deps: Deps): Promise<Respo
   const id = me.on.web as string;
   try {
     if (req.method === "GET") return await get(req, env, deps, s, id, route ?? "", arg, url);
-    if (req.method !== "POST") return problem(405, "Not here.", "Reload the page.");
-    // Only the page itself may post: the edge's own origin, and the chat's header.
+    if (req.method !== "POST" && req.method !== "DELETE")
+      return problem(405, "Not here.", "Reload the page.");
+    // Only the page itself may post or delete: the edge's own origin, and the chat's header.
     const origin = new URL(env.SHIPIFY_DOOR_URL ?? url.origin).origin;
     if (req.headers.get("origin") !== origin || req.headers.get("x-shipify-chat") !== "1") {
       log.warn("page.refused", { why: "foreign origin" });
       return problem(403, "That didn't come from the chat page.", "Send it from the chat.");
     }
+    if (req.method === "DELETE")
+      return route === "file" && arg
+        ? await deleted(env, deps, arg)
+        : problem(404, "Not here.", "Reload the page.");
     if (route === "file" && !arg) return await upload(req, env, deps);
     if (route === "send" && !arg) return await send(req, env, deps, id);
     if (route === "repeat" && !arg) return await newRepeat(req, env, deps, id);
     if (route === "push" && !arg) return await notifications(req, env, deps, id);
+    if (route === "move" && !arg) return await move(req, env, deps, s);
     return problem(404, "Not here.", "Reload the page.");
   } catch (e) {
     if (e instanceof GitHubError || e instanceof DoorKeyRefused) return unread(e, log);
@@ -269,7 +287,6 @@ async function get(
   arg: string | undefined,
   url: URL,
 ): Promise<Response> {
-  const kv = kvOf(env);
   const now = deps.now();
   const repo = env.GITHUB_REPO ?? "";
   if (route === "list" && !arg) {
@@ -305,22 +322,32 @@ async function get(
     return tagged(req, shapes.Thread.parse(t));
   }
   if (route === "menu" && !arg)
-    return tagged(req, shapes.Menu.parse(await menu(env, deps, Boolean(kv))));
+    return tagged(req, shapes.Menu.parse(await menu(env, deps, Boolean(bucketOf(env)))));
   if (route === "models" && !arg) return models(url, deps, now);
   if (route === "repeats" && !arg)
     return tagged(req, shapes.Repeats.parse(await repeats(env, deps)));
   if (route === "notebook" && !arg)
     return tagged(req, shapes.Notebook.parse(await notebook(env, deps)));
+  // Find by meaning (ADR 0070): asked only when you pick it in Ctrl+K, never as you type.
+  if (route === "search" && !arg) {
+    const words = (url.searchParams.get("q") ?? "").trim().replace(/\s+/g, " ");
+    if (!words || words.length > 200)
+      return problem(400, "Say what to find, in 200 characters or fewer.", "Type it again.");
+    return tagged(req, shapes.Found.parse(await search(env, deps, words)));
+  }
   if (route === "setup" && !arg)
     return tagged(req, shapes.Setup.parse(await setup(env, deps, s, me)));
   if (route === "files" && !arg) {
-    if (!kv) return tagged(req, { v: 1, files: [] });
-    const files = await cached(`web:files`, 60_000, () => listed(kv), now);
+    const bucket = bucketOf(env);
+    if (!bucket) return tagged(req, { v: 1, files: [], count: 0, bytes: 0 });
+    const kept = await cached(FILES_KEY, 60_000, () => listed(bucket), now);
     return tagged(
       req,
       shapes.Files.parse({
         v: 1,
-        files: files.map((f) => ({
+        count: kept.count,
+        bytes: kept.bytes,
+        files: kept.files.map((f) => ({
           ref: f.ref,
           name: f.meta.name,
           type: f.meta.type,
@@ -328,21 +355,22 @@ async function get(
           ...(f.meta.task ? { task: f.meta.task } : {}),
           by: f.meta.by,
           at: new Date(f.meta.at).toISOString(),
-          ...(f.until ? { until: new Date(f.until).toISOString() } : {}),
           src: fileSrc(f.ref),
         })),
       }),
     );
   }
   if (route === "file" && arg) {
-    if (!kv) return problem(404, "Files aren't set up.", `Run ${ADD} on your PC.`);
+    const bucket = bucketOf(env);
+    if (!bucket) return problem(404, "Files aren't set up.", `Run ${ADD} on your PC.`);
     const q = url.searchParams;
-    return serve(kv, arg, q.get("download") === "1", q.get("view") === "1");
+    return serve(bucket, arg, q.get("download") === "1", q.get("view") === "1");
   }
   if (route === "doc" && arg) {
-    if (!kv) return problem(404, "Files aren't set up.", `Run ${ADD} on your PC.`);
-    const d = await docOf(env, deps, kv, arg);
-    if (!d) return problem(410, "That file is gone (files are kept 7 days).", "Send it again.");
+    const bucket = bucketOf(env);
+    if (!bucket) return problem(404, "Files aren't set up.", `Run ${ADD} on your PC.`);
+    const d = await docOf(env, deps, bucket, arg);
+    if (!d) return problem(410, GONE.error, GONE.fix);
     return tagged(req, shapes.Doc.parse(d));
   }
   return problem(404, "Not here.", "Reload the page.");
@@ -426,41 +454,114 @@ async function sent(env: Env, deps: Deps, s: Settings, arg: string, type: string
   });
 }
 
-/** One file from the page into the store: 10 MB at most. */
+/** Files' list, kept a minute; a change made here reads it again. */
+const FILES_KEY = "web:files";
+
+/**
+ * One file from the page, streamed into the store as it comes (its length said first, 95 MB at
+ * most: MOST_BYTES), with the open chat's number when it has one (x-file-task).
+ */
 async function upload(req: Request, env: Env, deps: Deps) {
-  const kv = kvOf(env);
-  if (!kv) return problem(409, "Files aren't set up.", `Run ${ADD} on your PC; words still go.`);
-  if (Number(req.headers.get("content-length") ?? 0) > MOST_BYTES)
-    return problem(413, "That file is over 10 MB.", "Send a smaller one, or a link to it.");
-  const body = await req.arrayBuffer();
-  if (body.byteLength > MOST_BYTES)
-    return problem(413, "That file is over 10 MB.", "Send a smaller one, or a link to it.");
-  if (!body.byteLength) return problem(400, "That file is empty.", "Pick it again.");
+  const bucket = bucketOf(env);
+  if (!bucket)
+    return problem(409, "Files aren't set up.", `Run ${ADD} on your PC; words still go.`);
+  const said = req.headers.get("content-length");
+  const size = Number(said);
+  const over = `That file is over ${MOST_BYTES / 1e6} MB.`;
+  if (size > MOST_BYTES) return problem(413, over, "Send a smaller one, or a link to it.");
+  if (said === "0") return problem(400, "That file is empty.", "Pick it again.");
+  if (!said || !Number.isSafeInteger(size) || size < 0 || !req.body)
+    return problem(411, "That file's size wasn't said.", "Pick it again.");
   let name = "file";
   try {
     name = safeName(decodeURIComponent(req.headers.get("x-file-name") ?? "file"));
   } catch {}
+  const task = /^[1-9]\d{0,8}$/.exec(req.headers.get("x-file-task") ?? "")?.[0];
   const meta: FileMeta = {
     name,
     type: safeType(req.headers.get("content-type") ?? ""),
-    size: body.byteLength,
+    size,
     by: "you",
     at: deps.now(),
+    ...(task ? { task: Number(task) } : {}),
   };
-  const ref = `up-${newId()}`;
+  const ref = newRef(meta.at);
   try {
-    await keep(kv, ref, body, meta);
+    await put(bucket, ref, req.body, meta);
   } catch {
-    return problem(
-      507,
-      "The file store refused it (its daily limit, perhaps).",
-      "Try again later; words still go.",
-    );
+    return problem(507, "The file store didn't take it.", "Try again; words still go.");
   }
+  forget(FILES_KEY);
   logOf(deps, "web").info("page.served", { what: "file kept", bytes: meta.size });
   return answer(
     shapes.Uploaded.parse({ v: 1, ref, name: meta.name, type: meta.type, size: meta.size }),
   );
+}
+
+/** A file deleted, for good: Files' Delete, or one taken off the box before Send. */
+async function deleted(env: Env, deps: Deps, ref: string) {
+  const bucket = bucketOf(env);
+  if (!bucket) return problem(409, "Files aren't set up.", `Run ${ADD} on your PC.`);
+  if (!FILE_REF.test(ref)) return problem(404, "That isn't a file here.", "Reload the page.");
+  await remove(bucket, [ref]);
+  forget(FILES_KEY);
+  logOf(deps, "web").info("page.served", { what: "file deleted" });
+  return answer({ v: 1, deleted: ref });
+}
+
+/**
+ * Each file as this chat's own (ADR 0069): one of another chat's (or one from before R2) is copied
+ * for it once, under a new ref; one with no chat yet stays, to get this chat's number after the
+ * door. The refs to send, those to stamp, and the copies made (`gone`: a file that isn't there).
+ */
+async function owned(bucket: Bucket, files: shapes.SendBody["files"], now: number, task?: number) {
+  const out: shapes.SendBody["files"] = [];
+  const unstamped: string[] = [];
+  const copies: string[] = [];
+  for (const f of files) {
+    const meta = await head(bucket, f.ref);
+    if (!meta) return { gone: f, files: out, unstamped, copies };
+    const fresh = !meta.task && f.ref.startsWith("f-");
+    const mine = (task && meta.task === task) || fresh;
+    const ref = mine ? f.ref : await copyFor(bucket, f.ref, now, task);
+    if (!ref) return { gone: f, files: out, unstamped, copies };
+    if (!mine) copies.push(ref);
+    if (!task || fresh) unstamped.push(ref);
+    out.push({ ...f, ref });
+  }
+  return { files: out, unstamped, copies };
+}
+
+/**
+ * After the door: the files it wrote onto a chat get that chat's number when they have none (a new
+ * chat's, an Inbox item's page). A copy made for this message that no chat holds (the door refused
+ * it, wrote it on no chat, or a file was gone) is deleted now: the clean-up keeps a file with no
+ * chat, and its chat's number is all that ever deletes a copy.
+ */
+async function settle(
+  bucket: Bucket,
+  deps: Deps,
+  own: { files: shapes.SendBody["files"]; unstamped: string[]; copies: string[] },
+  written: { parts: number; chat?: number; task?: number },
+) {
+  const sent = new Set(own.files.slice(0, written.parts).map((f) => f.ref));
+  const held = written.chat ? sent : new Set<string>();
+  const stray = own.copies.filter((r) => !held.has(r));
+  if (stray.length) {
+    await remove(bucket, stray).catch(() => {});
+    forget(FILES_KEY);
+  }
+  const unstamped = own.unstamped.filter((r) => sent.has(r) && !stray.includes(r));
+  if (written.task && unstamped.length) await stamped(bucket, deps, unstamped, written.task);
+}
+
+/** A new chat's files get its number, after the reply: one that fails keeps none (kept). */
+function stamped(bucket: Bucket, deps: Deps, refs: string[], task: number) {
+  const work = Promise.all(refs.map((r) => stamp(bucket, r, task).catch(() => false))).then(() =>
+    forget(FILES_KEY),
+  );
+  if (deps.waitUntil) deps.waitUntil(work);
+  else return work;
 }
 
 /** What the door said to one of the chat's messages: its words, or what broke (nothing saved). */
@@ -495,7 +596,15 @@ async function into(
   env: Env,
   deps: Deps,
   user: string,
-  b: { id: string; task?: number; words: string; use?: string; files: shapes.SendBody["files"] },
+  b: {
+    id: string;
+    task?: number;
+    words: string;
+    use?: string;
+    button?: true;
+    under?: number;
+    files: shapes.SendBody["files"];
+  },
 ) {
   const use = b.use && !instantOf(b.words) ? `use ${b.use}` : "";
   const words = [use, b.words.trim()].filter(Boolean).join("\n");
@@ -503,15 +612,21 @@ async function into(
     return problem(400, "There's nothing to send.", "Write something first.");
   if (!words && !b.task)
     return problem(400, "Say what the files are for.", "Add a few words, then send.");
-  const kv = kvOf(env);
-  if (b.files.length && !kv)
+  const bucket = b.files.length ? bucketOf(env) : undefined;
+  if (b.files.length && !bucket)
     return problem(409, "Files aren't set up.", `Send the words alone, or run ${ADD}.`);
-  for (const f of b.files)
-    if (kv && !(await has(kv, f.ref)))
-      return problem(410, `“${f.name}” is gone from the store.`, "Attach it again.");
-  const album = b.files.length > 1 ? b.id : undefined;
-  const parts = b.files.length ? b.files : [undefined];
+  const own = bucket ? await owned(bucket, b.files, deps.now(), b.task) : undefined;
+  if (bucket && own?.gone) {
+    await settle(bucket, deps, own, { parts: 0 });
+    return problem(410, `“${own.gone.name}” is gone from the store.`, "Attach it again.");
+  }
+  const files = own?.files ?? [];
+  const album = files.length > 1 ? b.id : undefined;
+  const parts = files.length ? files : [undefined];
   let first: DoorSaid | undefined;
+  // How many parts the door took, and what it refused: the parts from there aren't written.
+  let taken = 0;
+  let refused: Response | undefined;
   for (const [i, f] of parts.entries()) {
     const said = await door(env, deps, {
       id: i ? `${b.id}-${i}` : b.id,
@@ -520,28 +635,37 @@ async function into(
       words: i ? "" : words,
       forwarded: false,
       ...(b.task ? { repliesTo: b.task } : {}),
+      // New chat here (ADR 0069): the first of them opens the chat in the project.
+      ...(b.under && !b.task && !i ? { under: b.under } : {}),
+      // A button's word on a task (ADR 0069): the web chat shows no message for it.
+      ...(b.button && b.task && !f ? { button: true as const } : {}),
       ...(album ? { album } : {}),
       ...(f ? { file: { ref: f.ref, name: f.name, type: f.type, size: f.size } } : {}),
     });
     // What broke, in the door's own words: the page keeps your message to send again, and what's
     // written already (an album's first files) isn't written twice.
-    if (said.trouble) return problem(503, said.trouble.what, said.trouble.fix);
-    if (said.status !== 200)
-      return problem(500, "The door refused the chat.", "Run pnpm ship door check on your PC.");
-    if (!i) {
-      if (said.text === undefined)
-        return problem(
-          403,
-          "The door didn't let it in.",
-          `Run ${ADD}, so your words are let in from the chat.`,
-        );
-      first = said;
-    }
+    if (said.trouble) refused = problem(503, said.trouble.what, said.trouble.fix);
+    else if (said.status !== 200)
+      refused = problem(500, "The door refused the chat.", "Run pnpm ship door check on your PC.");
+    else if (!i && said.text === undefined)
+      refused = problem(
+        403,
+        "The door didn't let it in.",
+        `Run ${ADD}, so your words are let in from the chat.`,
+      );
+    if (refused) break;
+    if (!i) first = said;
+    taken = i + 1;
   }
   // A task only when the door wrote your words onto one: an answer at once (/help, a refusal)
   // names none, so the page shows it, in the thread you wrote it in.
   const text = first?.text ?? "";
   const n = writtenTo(text);
+  // The files with no chat yet (a new chat's) get the number your words were written onto; an
+  // Inbox item's (ADR 0069), its Inbox page's, so they're kept while its project is open.
+  const chat = n ?? inboxOf(text);
+  if (bucket && own) await settle(bucket, deps, own, { parts: taken, chat, task: b.task ?? chat });
+  if (refused) return refused;
   return answer(shapes.Sent.parse({ v: 1, text, ...(n ? { task: n } : {}) }));
 }
 
@@ -599,6 +723,27 @@ async function notifications(req: Request, env: Env, deps: Deps, chat: string) {
     logOf(deps, "web").info("page.served", { what, devices: list.length });
   }
   return answer(shapes.Devices.parse({ v: 1, devices: await devicesSeen(list ?? had) }));
+}
+
+/**
+ * **Move to project** (ADR 0069): the chat linked under the project, with the `in-project` label and
+ * no edit of its words, so no run starts. Written as the door App, as the door writes; refused while
+ * the door is closed. Back come the words to show.
+ */
+async function move(req: Request, env: Env, deps: Deps, s: Settings) {
+  const b = shapes.MoveBody.safeParse(await req.json().catch(() => null));
+  if (!b.success) return problem(400, "That doesn't read.", "Reload the page and try again.");
+  const p = known("door-closed");
+  if (s.closed) return problem(503, p.what, p.fix);
+  const text = await moveToProject(github(env, deps), b.data.task, b.data.project);
+  // The list and the project's thread show it on the next read, not 8 s on.
+  const repo = env.GITHUB_REPO ?? "";
+  forget(`web:list:${repo}:1:false`);
+  forget(`web:task:${repo}:${b.data.project}::`);
+  forget(`web:plan:${repo}:${b.data.project}`);
+  forget(`web:moved:${repo}:${b.data.task}`);
+  logOf(deps, "web").info("page.served", { what: "moved to a project" });
+  return answer(shapes.Sent.parse({ v: 1, text }));
 }
 
 async function newRepeat(req: Request, env: Env, deps: Deps, user: string) {

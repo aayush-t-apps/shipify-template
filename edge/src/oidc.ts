@@ -54,13 +54,22 @@ async function keyFor(kid: string, deps: Pick<Deps, "fetch" | "now">) {
 }
 
 /** The workflows a run may call the door from: shipify's own, on main. */
-export const workflowRefs = (repo: string) => [
-  `${repo}/.github/workflows/task.yml@refs/heads/main`,
-  `${repo}/.github/workflows/watch.yml@refs/heads/main`,
-];
+const WORKFLOWS = ["task.yml", "watch.yml"];
 
-/** Why these claims aren't a run of shipify's on main, or undefined when they are. */
-export function claimsProblem(c: Claims, env: Env, nowMs: number): string | undefined {
+/** These workflows' refs, as a token names its own: shipify's, on main. */
+const workflowRefs = (repo: string, files = WORKFLOWS) =>
+  files.map((f) => `${repo}/.github/workflows/${f}@refs/heads/main`);
+
+/**
+ * Why these claims aren't a run of shipify's on main (of one of these workflows), or undefined when
+ * they are. A route only the watch may call (the files' forget) takes `["watch.yml"]`.
+ */
+export function claimsProblem(
+  c: Claims,
+  env: Env,
+  nowMs: number,
+  files = WORKFLOWS,
+): string | undefined {
   const now = Math.floor(nowMs / 1000);
   const num = (v: unknown) => (typeof v === "number" ? v : Number.NaN);
   const aud = Array.isArray(c.aud) ? c.aud : [c.aud];
@@ -69,7 +78,7 @@ export function claimsProblem(c: Claims, env: Env, nowMs: number): string | unde
   if (String(c.repository_id ?? "") !== env.SHIPIFY_REPO_ID) return "repository";
   if (String(c.repository_owner_id ?? "") !== env.SHIPIFY_OWNER_ID) return "owner";
   if (c.ref !== "refs/heads/main") return "ref";
-  if (!workflowRefs(env.GITHUB_REPO ?? "").includes(String(c.workflow_ref ?? "")))
+  if (!workflowRefs(env.GITHUB_REPO ?? "", files).includes(String(c.workflow_ref ?? "")))
     return "workflow";
   const exp = num(c.exp);
   const nbf = c.nbf === undefined ? num(c.iat) : num(c.nbf);
@@ -79,11 +88,12 @@ export function claimsProblem(c: Claims, env: Env, nowMs: number): string | unde
   return undefined;
 }
 
-/** A bearer token from a run, checked in full. */
+/** A bearer token from a run (of one of these workflows), checked in full. */
 export async function verifyRun(
   token: string,
   env: Env,
   deps: Pick<Deps, "fetch" | "now">,
+  files = WORKFLOWS,
 ): Promise<Verdict> {
   const parts = token.split(".");
   if (parts.length !== 3) return { ok: false, why: "malformed" };
@@ -113,7 +123,7 @@ export async function verifyRun(
     good = false;
   }
   if (!good) return { ok: false, why: "signature" };
-  const why = claimsProblem(claims, env, deps.now());
+  const why = claimsProblem(claims, env, deps.now(), files);
   return why ? { ok: false, why } : { ok: true, claims };
 }
 

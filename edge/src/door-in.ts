@@ -23,6 +23,7 @@ import {
   acknowledgement,
   agentsSeen,
   appsText,
+  captureOf,
   errorLine,
   type From,
   fromLine,
@@ -47,10 +48,12 @@ import {
   reposText,
   STATE_LABELS,
   STAYING_LABEL,
+  SUB_TASK_LABEL,
   useCommand,
   withUpcoming,
 } from "../../cli/contracts/index.ts";
 import { recall, remember, share, shared } from "./cache.ts";
+import { capture, newChatIn } from "./capture.ts";
 import type { Channel, Message, Shown, Tapped } from "./channels/channel.ts";
 import { channelOf } from "./channels/index.ts";
 import {
@@ -129,6 +132,8 @@ import {
 const MAX_UPDATE_BYTES = 256 * 1024;
 /** How far back the door looks for its own writes: well past a chat's retries of one message. */
 const RECENT_MS = 15 * 60_000;
+/** `add <name>: …` (captureOf): with a name no project can have, it's words, as with none open. */
+const ADDS = /^\s*add\s/i;
 /** /apps reads this many apps' health at most. */
 const MAX_APPS = 10;
 
@@ -558,6 +563,43 @@ async function write(
   const file = m.file;
   let text = textOf(m);
   let task = asked ?? albumTask ?? null;
+  // `project: …`, `add <name>: …`, `jot: …` as a new message (ADR 0069): saved now, with no run. An
+  // `add` is an Inbox item only when an open project has that name; else it's words, below.
+  const saving = task === null && !m.forwarded ? captureOf(text) : undefined;
+  if (saving && "wrong" in saving && !ADDS.test(text)) return say(saving.wrong, "refused");
+  if (saving && !("wrong" in saving)) {
+    const from: From = {
+      v: 1,
+      person,
+      channel,
+      chat: m.chat,
+      id: m.id,
+      ...(file
+        ? {
+            files: [
+              {
+                name: file.name,
+                ref: `${channel}:${file.ref}`,
+                ...(file.type ? { type: file.type } : {}),
+                ...(file.size !== undefined ? { size: file.size } : {}),
+              },
+            ],
+          }
+        : {}),
+    };
+    const saved = await capture(gh, saving, from, file?.name, now);
+    if (saved?.task) {
+      remember(memoKey(gh.repo, `id:${id}`), saved.task, RECENT_MS, now);
+      await share(memoKey(gh.repo, `id:${id}`), saved.task, RECENT_MS);
+    }
+    if (saved) {
+      log.info("door.in.written", { task: saved.task ?? 0, channel, kind: saving.kind });
+      return say(saved.text, "saved", {
+        ...(saved.task ? { shown: linked(gh, saved.task) } : {}),
+        ack: { spent: true },
+      });
+    }
+  }
   if (file && !text.trim() && task === null) return say(NEEDS_CAPTION, "needs caption");
   // A `use …` alone is a setting, not words: kept on the task for its next run, starting none.
   // With no task, it's your model, the one your new tasks start with.
@@ -600,7 +642,8 @@ async function write(
     }
   }
   // `close` or `reopen`: the task changes at once, and the word is written after as a setting (ADR
-  // 0040): no run, the chat is told now, and the next run that reads the task notes it. A close
+  // 0040; a part's close as words, below): no run, the chat is told now, and the next run that
+  // reads the task notes it. A close
   // takes the state labels off in the same write. Already so, or GitHub failing to change it: said,
   // and nothing is written.
   const turn = task !== null && !file ? turnOf(text, task) : undefined;
@@ -621,6 +664,10 @@ async function write(
     }
     open = !open;
   }
+  // A part's close (ADR 0066) is a run's to see to, as it starts what waited for it: its word is
+  // written as words, so its run is never one that skips. GitHub keeps one waiting run per task,
+  // and the newest takes its place: a setting's run would take the close's and skip.
+  const seenTo = turn === "close" && labels.includes(SUB_TASK_LABEL);
   const from: From = {
     v: 1,
     person,
@@ -628,7 +675,8 @@ async function write(
     chat: m.chat,
     id: m.id,
     ...(album ? { album } : {}),
-    ...(setting || turn ? { setting: true as const } : {}),
+    ...(setting || (turn && !seenTo) ? { setting: true as const } : {}),
+    ...(m.button && task !== null && !file ? { button: true as const } : {}),
     ...(file
       ? {
           files: [
@@ -659,6 +707,12 @@ async function write(
     }
   } else if (task !== null) {
     await gh.json("POST", `repos/${gh.repo}/issues/${task}/comments`, { body });
+  } else if (m.under) {
+    // A new chat in a project (ADR 0069): `Part of #n` first, in plain words, then its sub-issue
+    // link, the view GitHub shows. A project holds 100 chats.
+    const made = await newChatIn(gh, m.under, titleOf(text, file), body);
+    if ("why" in made) return say(made.why, "refused");
+    task = made.number;
   } else {
     const made = await gh.json<{ number: number }>("POST", `repos/${gh.repo}/issues`, {
       title: titleOf(text, file),

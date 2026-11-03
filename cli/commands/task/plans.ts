@@ -4,10 +4,9 @@ import { copySetting, PLATFORM_ROOT } from "../../lib/config.ts";
 import { credential, loadCredentials } from "../../lib/credentials.ts";
 import { ghRun, platformRepo } from "../../lib/github.ts";
 import { ok, type Result } from "../../lib/output.ts";
-import { readPlan } from "../../lib/plan.ts";
-import { findStatus } from "../../lib/task.ts";
+import { taskNumber } from "../../lib/links.ts";
+import { planOfFile, planTask, readPlan } from "../../lib/plan.ts";
 import { git, queue, rec } from "./context.ts";
-import { getComments } from "./issue.ts";
 
 /**
  * What publishing a plan's project needs and this run lacks (ADR 0026): the stack's deploy
@@ -57,11 +56,14 @@ export async function taskPlans(before: string, after: string): Promise<Result> 
     : ["diff", "--name-only", before, after];
   // The push's two ends are in the job's own checkout (its full history); the copy of Shipify a box
   // runs from (ADR 0051) may have been cloned from a shallow one.
-  const ids = git(process.env.GITHUB_WORKSPACE || PLATFORM_ROOT, ...range, "--", "plans/")
+  const root = process.env.GITHUB_WORKSPACE || PLATFORM_ROOT;
+  const ids = git(root, ...range, "--", "plans/")
     .split("\n")
-    .map((f) => /^plans\/([a-z0-9-]+)\.plan\.md$/.exec(f)?.[1])
+    .map(planOfFile)
     .filter((x): x is string => Boolean(x));
   if (!ids.length) return { command: "task plans", status: "skipped", summary: "no plans changed" };
+  // Each plan names its task (its `task:` line): the plan file is the link, whatever a run said.
+  const tasks = ids.map((id) => taskNumber(planTask(id, root)));
   const open = rec()
     .issues()
     .filter((i) => !i.pull_request);
@@ -69,8 +71,7 @@ export async function taskPlans(before: string, after: string): Promise<Result> 
   // other rounds, as every round does (ADR 0020), and shows as "task #n".
   const started: string[] = [];
   for (const i of open) {
-    const s = findStatus(getComments(i.number)).state;
-    if (s.plan && ids.includes(s.plan)) {
+    if (tasks.includes(i.number)) {
       // A run that stays on the task holds its turn (ADR 0057): its label off, the stay leaves
       // within seconds, rather than after its quiet minutes, and the build runs next (#528).
       if (i.labels.some((l) => l.name === STAYING_LABEL))

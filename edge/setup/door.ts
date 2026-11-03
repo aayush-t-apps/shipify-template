@@ -2,12 +2,14 @@
 //   door setup [--new] [--yes]  makes the door App from a manifest (two clicks in your browser:
 //                               Create, then Install on shipify only), puts its key on the edge's
 //                               Worker as PKCS#8 (`wrangler secret put`, from stdin), sets the
-//                               variables the edge is deployed with, and starts that deploy.
+//                               variables the edge is deployed with, and starts that deploy (not
+//                               with R2 off on your Cloudflare account: it would fail, ADR 0069).
 //                               --new: a new key for the same App (made on its page), put in place
-//   door check                  the edge answers /health with its version, the door App is installed
-//                               on shipify alone with exactly its permissions, and each channel's
-//                               route someone's on (SHIPIFY_PEOPLE) answers 401 without its proof
-//                               (not a sign-in's redirect); every failing check names its fix
+//   door check                  the edge's R2 bucket is there, the edge answers /health with its
+//                               version, the door App is installed on shipify alone with exactly
+//                               its permissions, and each channel's route someone's on
+//                               (SHIPIFY_PEOPLE) answers 401 without its proof (not a sign-in's
+//                               redirect); every failing check names its fix
 // The App's key is never printed or saved here: it goes from GitHub's answer (or the file GitHub
 // downloaded) straight to the Worker. `ship door` runs this; it lives with the edge, since it names
 // the edge's host and routes, which the core doesn't (tests/core.test.ts).
@@ -33,6 +35,9 @@ import {
   appJwt,
   cloudflareMissing,
   EDGE_APP,
+  EDGE_BUCKET,
+  type EdgeBucket,
+  edgeBucket,
   edgeOrigin,
   edgeSecretNames,
   foundWithKeys,
@@ -303,6 +308,43 @@ const downloadDirs = () => {
   return dirs;
 };
 
+// ---------------------------------------------------------------- the edge's R2 bucket
+
+/**
+ * The edge's R2 bucket (ADR 0069), as one check: every edge deploy binds it (wrangler.jsonc), so
+ * with R2 off on the account, or a deploy token that can't reach R2, each deploy fails. One not
+ * made yet is made by the next deploy: files are off till then, and words work.
+ */
+export function bucketCheck(b: EdgeBucket, repo: string): Check {
+  const name = `the edge's R2 bucket ${EDGE_BUCKET} is there (the web chat's files)`;
+  const deploy = `gh workflow run ci.yml --ref main -R ${repo}`;
+  if (b.is === "there") return { name, ok: true };
+  if (b.is === "r2-off")
+    return {
+      name,
+      ok: false,
+      detail:
+        "R2 isn't turned on for your Cloudflare account: every edge deploy binds this bucket, so each one fails until it is",
+      fix: `turn R2 on in Cloudflare's dashboard (R2 Object Storage: it asks for a card once, and charges nothing within its free 10 GB), then deploy the edge again: ${deploy}`,
+    };
+  if (b.is === "refused")
+    return {
+      name,
+      ok: false,
+      detail: `Cloudflare refused the deploy token (${b.why}): the edge's deploy can't make or bind its bucket`,
+      fix: `give the deploy token (CF_DEPLOY_TOKEN) Workers R2 Storage: Edit on Cloudflare (docs/setup.md, Tokens and secrets), then deploy the edge again: ${deploy}`,
+    };
+  if (b.is === "none")
+    return {
+      name,
+      ok: false,
+      blocking: false,
+      detail: "not made yet: the edge's next deploy makes it (files are off till then; words work)",
+      fix: `deploy the edge: ${deploy}`,
+    };
+  return { name, ok: false, blocking: false, detail: "Cloudflare couldn't be asked", fix: b.why };
+}
+
 // ---------------------------------------------------------------- door setup
 
 const blocked = (summary: string, nextSteps: string[] = [], checks: Check[] = []): Result => ({
@@ -363,6 +405,7 @@ export async function doorSetup(
           `set the secret ${keysOff.join(", ")} on ${repo}, from your credentials file: the edge's deploy runs with it`,
         ]
       : []),
+    `check R2 is on for your Cloudflare account: every edge deploy binds its bucket, ${EDGE_BUCKET}, and fails without it`,
     `start ci.yml on main, so the edge is deployed with them`,
   ];
   const again = `pnpm ship door setup${opts.renew ? " --new" : ""} --yes`;
@@ -515,22 +558,32 @@ export async function doorSetup(
     if (vars[name] !== value) sc.setVariable(repo, name, value);
   checks.push({ name: `the variables are set on ${repo}`, ok: true, detail: DOOR_VARS.join(", ") });
   checks.push(...putKeys());
-  // A deploy hands them to the Worker. Before the edge is on main, there's nothing to deploy yet.
-  const d = deps.gh(["workflow", "run", "ci.yml", "--ref", "main", "-R", repo]);
-  checks.push({
-    name: "the edge is deploying with them (ci.yml on main)",
-    ok: d.code === 0,
-    blocking: false,
-    detail: d.code === 0 ? `gh run list -R ${repo} -w ci -L 1` : d.stderr.trim().split("\n")[0],
-  });
+  // Every edge deploy binds its R2 bucket: with R2 off, or a token that can't reach it, the deploy
+  // would fail, so none starts, and the fix is said. A bucket not made yet is the deploy's to make.
+  const store = bucketCheck(await edgeBucket(deps.fetch), repo);
+  const noDeploy = !store.ok && store.blocking !== false;
+  if (noDeploy) checks.push(store);
+  else {
+    // A deploy hands them to the Worker. Before the edge is on main, there's nothing to deploy yet.
+    const d = deps.gh(["workflow", "run", "ci.yml", "--ref", "main", "-R", repo]);
+    checks.push({
+      name: "the edge is deploying with them (ci.yml on main)",
+      ok: d.code === 0,
+      blocking: false,
+      detail: d.code === 0 ? `gh run list -R ${repo} -w ci -L 1` : d.stderr.trim().split("\n")[0],
+    });
+  }
   return {
     command: "door setup",
-    status: problems.length ? "blocked" : "succeeded",
+    status: problems.length || noDeploy ? "blocked" : "succeeded",
     summary: problems.length
       ? `the door App is made and the edge holds its key, but its install isn't right: ${problems.join("; ")}`
-      : `the door App ${app.slug} is set up: the edge holds its key, and is deploying with its variables`,
+      : noDeploy
+        ? `the door App ${app.slug} is set up and the edge holds its key, but its deploy would fail: ${store.detail}`
+        : `the door App ${app.slug} is set up: the edge holds its key, and is deploying with its variables`,
     checks,
     nextSteps: [
+      ...(noDeploy && store.fix ? [store.fix] : []),
       ...(problems.length
         ? [`fix it on ${settingsHome(org)}/installations/${inst.id}, then: pnpm ship door check`]
         : []),
@@ -590,6 +643,8 @@ export async function doorCheck(
     detail: unset.length ? `not set: ${unset.join(", ")}` : undefined,
     fix: unset.length ? "pnpm ship door setup --yes" : undefined,
   });
+  // Its R2 bucket first: with R2 off, every deploy fails, and that's the fix to say first.
+  checks.push(bucketCheck(await edgeBucket(deps.fetch), repo));
   // The edge's deploy, the fix for an edge that isn't there or isn't the edge.
   const deploy = `gh run list -R ${repo} -w ci -L 3: the edge job deploys it`;
   let health: Health | undefined;

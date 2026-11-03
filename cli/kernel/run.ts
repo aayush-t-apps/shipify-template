@@ -107,6 +107,20 @@ export function stepLine(step: string, ms: number): string {
   ].join(" · ");
 }
 
+/**
+ * A step's timing line, where it's read: the job's log, which GitHub's API reads (`gh run view
+ * --log`), and the run's summary, which people read. Only a measure: a log or a summary it can't
+ * write never hides the step's own outcome.
+ */
+export function logStep(step: string, ms: number): void {
+  const line = stepLine(step, ms);
+  try {
+    process.stderr.write(`  · ${line}\n`);
+    const summary = process.env.GITHUB_STEP_SUMMARY;
+    if (summary) appendFileSync(summary, `\n${line}\n`);
+  } catch {}
+}
+
 /** One word of a step's output: a name from a fixed list, or a project's id. */
 const WORD = "[a-z][a-z0-9_-]{0,40}";
 /** A repo's name, as GitHub allows it. */
@@ -246,7 +260,7 @@ async function planned(
   // The steps hand on through files the workspace keeps: a run starts with none of the last run's,
   // so one with no agent never applies another's thinking (its run line, its files).
   for (const step of ["think", "decided"]) rmSync(file(n, step), { force: true });
-  const { s, ctx } = snapshot(n, trigger, { look: true, ...(record ? { record } : {}) });
+  const { s, ctx } = await snapshot(n, trigger, { look: true, ...(record ? { record } : {}) });
   // A merge's own run follows its deploy to the end, so decide tells it now (about a minute).
   if (ctx.merged)
     ctx.deploy = await followDeploy(ctx.merged, process.env.SHIPIFY_READ_TOKEN || undefined);
@@ -354,11 +368,16 @@ async function chatFiles(
       // Telegram names every photo photo.jpg: two in one message mustn't overwrite each other.
       const file = freeFile(filesDir(n), name);
       writeFileSync(file, body);
-      fetched.push(basename(file));
+      // With its ref: a call's files take it by that, with no copy on the branch (ADR 0069).
+      fetched.push(`${basename(file)} (${f.ref})`);
     } else missed.push(f.name);
   }
   return [
-    ...(fetched.length ? [`From your chat: ${fetched.join(", ")} (in the files folder).`] : []),
+    ...(fetched.length
+      ? [
+          `From your chat: ${fetched.join(", ")} (in the files folder). A tool call that takes files (a share) can name one by its ref, in brackets: no copy in your out folder is needed.`,
+        ]
+      : []),
     ...(missed.length
       ? [
           `These came through the chat but couldn't be fetched from the door: ${missed.join(", ")}. Say so in your reply.`,
@@ -396,8 +415,10 @@ export async function runThinkStep(
   const words = new Set(
     s.said.filter((c) => c.author === "owner" || c.author === "door").map((c) => c.id),
   );
-  // A stay's turn hands in the read its plan made a moment ago (ADR 0057): no second read.
-  const { record, heard, ...resume } = stay;
+  // A stay's turn hands in the read its plan made a moment ago (ADR 0057), and a run's think the
+  // task step's (ADR 0069, its start-up reads): the words plan read are in it, so no second read.
+  const { record: handed, heard, ...resume } = stay;
+  const record = handed ?? recordOf(n);
   const given = await taskAttachments(
     n,
     record?.issue ?? rec().issue(n),
@@ -606,7 +627,11 @@ export async function runApply(n: number, record?: TaskRecord): Promise<Result> 
 
 export async function runGithub(n: number): Promise<Result> {
   const record = recordOf(n);
-  const { s, ctx } = snapshot(n, { kind: "dispatch", job: "github" }, record ? { record } : {});
+  const { s, ctx } = await snapshot(
+    n,
+    { kind: "dispatch", job: "github" },
+    record ? { record } : {},
+  );
   const p = decidePlan(s, ctx);
   if (p.do !== "github")
     return { command: "run github", status: "skipped", summary: `task #${n}: ${p.why}` };
@@ -852,7 +877,7 @@ export async function runStep(step: Step, n: number): Promise<Result> {
 export async function runFailed(n: number, e?: unknown): Promise<Result> {
   // The task as it is now: never a plan's state, which an apply after it (or an earlier run's,
   // which the workspace keeps) may have moved on from.
-  const { s } = snapshot(n, triggerFromEnv());
+  const { s } = await snapshot(n, triggerFromEnv());
   // Never on what isn't a task: a PR, someone else's issue, the status issue.
   if (!s.isTask || s.issue.isPr || s.issue.author === "other")
     return { command: "run failed", status: "skipped", summary: `task #${n}: not a task` };

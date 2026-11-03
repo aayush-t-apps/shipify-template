@@ -127,6 +127,19 @@ describe("when a run stays", () => {
       "files",
     );
     expect(named(["handoff.md", "plan.md"])).toMatchObject({ files: ["plan.md"] });
+    // Nor writes one as a page (ADR 0069): its text would be the box's, not the page's.
+    const paged = readResult(
+      JSON.stringify({
+        v: 2,
+        state: "done",
+        text: "Wrote it.",
+        pages: [
+          { page: "games", file: "meta.json" },
+          { page: "games-inbox", file: "inbox.md" },
+        ],
+      }),
+    );
+    expect(paged).toMatchObject({ pages: [{ page: "games-inbox", file: "inbox.md" }] });
   });
 
   it("reads SHIPIFY_STAY as whole minutes, 20 by default, 0 for off, with no cap of its own", () => {

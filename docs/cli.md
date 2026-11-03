@@ -91,7 +91,8 @@ done on this PC.
 | `door page [--yes]` | the status page and the web chat: the Access application's steps (path `admin/*`), its two public values saved, the sign-in checked at `/admin/status` | shipify's `SHIPIFY_ACCESS` |
 | `add <name> [--new] [--yes]` | sets up a plug-in from its `tools.json` entry's `setup`, or a gateway's key (`executors.json`'s `gateways`: `add openrouter`) | its keys (a shipify secret, or a Worker secret for a channel), and its steps; for a gateway, its secret and `SHIPIFY_GATEWAYS` |
 | `remove <name> [--yes]` | undoes it | its own undo, then its keys; for a gateway, its secret, its credentials line and its `SHIPIFY_GATEWAYS` record |
-| `notebook [list]` · `notebook read "<topic>"` | the notebook's pages, or one in full ([notebook.md](notebook.md)) | – |
+| `notebook [list]` · `notebook read "<topic>"` | the notebook's and the Library's pages (each project's counted), or one in full ([notebook.md](notebook.md)) | – |
+| `task read <id> [--task <n>]` | on a box, in a run: one message of its task whole, by its id (`0`: the task's own words), for a long thread's older messages (ADR 0069) | – |
 
 **`door setup`** ([door.md](door.md#setting-it-up)): needs the deploy token and account id in your
 credentials file, and `APPS_DOMAIN`. With `--yes`: a page on this PC sends GitHub the App's
@@ -225,9 +226,9 @@ other accounts: GitHub must know the account, and the App must be set up first
 | `run apply <n>` | the same | makes the writes, saves the status comment last, tells the door of each new reply |
 | `run github <n>` | `task.yml`'s `github` job, on GitHub's machines | what's pending, once: a merged plan's repo and keys, an operation (release, down, up, rollback), or closing a dropped or started-over task's PRs (on another account, with the repos App's token there) |
 | `run failed <n>` | `task.yml`, when a step broke before a reply | says so on the task, with its fix |
-| `task plans <before> <after>` | `task.yml`, on a push of merged plans to `main` | starts each merged plan's task |
+| `task plans <before> <after>` | `task.yml`, on a push of merged plans to `main` | starts each merged plan's task, the one its `task:` line names |
 | `watch due` | `watch.yml`'s due run | starts each due task's run, each box's weekly clean-up; writes this box's health, "Coming up", the apps list and the schedule ([watch.md](watch.md)) |
-| `watch cleanup [<box>]` | `watch.yml`'s cleanup run, on that box | closed tasks' folders and agents' old run folders removed (the job then prunes the package store and npm's cache, while no other slot runs); the box's shared tools kept to each agent's pinned version and the two newest Node versions (while no other slot runs); doctor; on the status task |
+| `watch cleanup [<box>]` | `watch.yml`'s cleanup run, on that box | closed tasks' folders, any task's folder unchanged for 7 days with no run going, and agents' old run folders removed; once a week in all, closed chats' files and the 30-day close (ADR 0069) (the job then prunes the package store and npm's cache, while no other slot runs); the box's shared tools kept to each agent's pinned version and the two newest Node versions (while no other slot runs); doctor; on the status task |
 | `watch alert ['<findings>']` | `watch.yml`'s alert run | the watch's findings (the argument, or the door App's newest comment) into the record, and an alert reply |
 
 ## Operate

@@ -7,6 +7,8 @@ import type { Deps, Env } from "../../edge/src/env.ts";
 
 export const REPO = "o/shipify";
 export const APP_ID = 77;
+/** An issue's id, as GitHub's REST answer carries it beside its number. */
+const ISSUE_ID = 900_000;
 export const DOOR = "shipify-door[bot]";
 export const RUN = { login: "github-actions[bot]", id: 41898282, type: "Bot" };
 export const OWNER = "owner";
@@ -35,6 +37,8 @@ export interface Issue {
   subIssues?: number[];
   /** The open PR that closes it. */
   closedBy?: { number: number; url: string };
+  /** When it closed, as GitHub says it: set as a PATCH closes it. */
+  closed_at?: string | null;
 }
 
 export interface Comment {
@@ -167,6 +171,8 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     githubDown: false,
     /** GitHub's GraphQL answers a 502 (a sub-task plan's read fails). */
     graphqlFails: false,
+    /** How many times moved chats' parents were read (one GraphQL call for all). */
+    parentReads: 0,
     /** GitHub's next this many calls get a 502 (a moment's hiccup), its token's left alone. */
     githubBlips: 0,
     /** One task's read fails (a GitHub hiccup), by its number. */
@@ -191,6 +197,9 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     apps: {} as Record<string, Reply>,
     /** How many times GitHub rendered Markdown (`POST /markdown`). */
     rendered: 0,
+    /** Each issue search's `q`, and whether search by meaning is spent for the minute (ADR 0070). */
+    searches: [] as string[],
+    searchBusy: false,
     jwks: { keys: [k.jwk] } as { keys: unknown[] },
     runnerRelease: { tag_name: "v2.330.0", published_at: "2026-08-01T00:00:00Z" },
     calls: [] as string[],
@@ -216,6 +225,7 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     const subs = (subIssues ?? []).map(byNumber);
     return {
       ...rest,
+      id: ISSUE_ID + i.number,
       html_url: `https://github.com/${REPO}/issues/${i.number}`,
       labels: i.labels.map((name) => ({ name })),
       body_html: htmlOf(i.body, i.html),
@@ -315,6 +325,29 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     if (path === "installation/repositories")
       return { body: { repositories: [{ name: "shipify" }] } };
     if (path === "repos/actions/runner/releases/latest") return { body: w.runnerRelease };
+    // GitHub's issue search (ADR 0070): by meaning (`search_type=hybrid`), any of the words in a
+    // title or a body; by words, all of them. `searchBusy`: its 10 a minute by meaning are spent.
+    if (path === "search/issues" && method === "GET") {
+      const hybrid = q.get("search_type") === "hybrid";
+      w.searches.push(q.get("q") ?? "");
+      if (hybrid && w.searchBusy)
+        return { status: 403, body: { message: "API rate limit exceeded for semantic search" } };
+      const words = (q.get("q") ?? "")
+        .split(/\s+/)
+        .filter((x) => x && !x.includes(":"))
+        .map((x) => x.toLowerCase());
+      const has = (i: Issue, x: string) => `${i.title} ${i.body}`.toLowerCase().includes(x);
+      const items = w.issues.filter((i) =>
+        hybrid ? words.some((x) => has(i, x)) : words.every((x) => has(i, x)),
+      );
+      return {
+        body: {
+          total_count: items.length,
+          items: items.slice(0, 10).map(issueJson),
+          ...(hybrid ? { search_type: "hybrid" } : {}),
+        },
+      };
+    }
     if (path === "graphql" && /subIssues/.test((body as { query?: string }).query ?? "")) {
       if (w.graphqlFails) return { status: 502 };
       const v = (body as { variables: { owner: string; name: string; n: number } }).variables;
@@ -325,6 +358,18 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
           data: { repository: { issue: i ? { subIssues: { nodes: subs.map(node) } } : null } },
         },
       };
+    }
+    // Moved chats' parents, each under its alias `i<n>`, as GitHub gives them: null for none.
+    const asked = (body as { query?: string } | undefined)?.query ?? "";
+    if (path === "graphql" && /parent \{ number \}/.test(asked)) {
+      w.parentReads++;
+      const repository = Object.fromEntries(
+        [...asked.matchAll(/i(\d+): issue/g)].map(([, n]) => {
+          const p = w.issues.find((x) => x.subIssues?.includes(Number(n)));
+          return [`i${n}`, { parent: p ? { number: p.number } : null }];
+        }),
+      );
+      return { body: { data: { repository } } };
     }
     if (path === "graphql") {
       const id = (body as { variables?: { id?: string } }).variables?.id;
@@ -398,9 +443,13 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     if (m) {
       const i = w.issues.find((x) => x.number === Number(m?.[1]));
       if (i && method === "PATCH") {
-        const b = body as { state?: Issue["state"]; labels?: string[] };
-        if (b.state) i.state = b.state;
+        const b = body as { state?: Issue["state"]; labels?: string[]; body?: string };
+        if (b.state) {
+          i.state = b.state;
+          i.closed_at = b.state === "closed" ? iso() : null;
+        }
         if (b.labels) i.labels = b.labels;
+        if (b.body !== undefined) i.body = b.body;
       }
       return i ? { body: issueJson(i) } : { status: 404, body: { message: "Not Found" } };
     }
@@ -451,6 +500,20 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
           .filter((r) => !q.get("content") || r.content === q.get("content"))
           .map((r) => ({ content: r.content, user: r.user })),
       };
+    }
+    // A sub-issue linked (ADR 0069), by the issue's id, as GitHub takes it: 100 a parent, and one
+    // parent a sub-issue.
+    m = at(/^issues\/(\d+)\/sub_issues$/);
+    if (m && method === "POST") {
+      const parent = byNumber(Number(m[1]));
+      const sub = w.issues.find(
+        (x) => ISSUE_ID + x.number === (body as { sub_issue_id: number }).sub_issue_id,
+      );
+      if (!parent || !sub) return { status: 404 };
+      if ((parent.subIssues ?? []).length >= 100) return { status: 422 };
+      if (w.issues.some((x) => x.subIssues?.includes(sub.number))) return { status: 422 };
+      parent.subIssues = [...(parent.subIssues ?? []), sub.number];
+      return { status: 201, body: issueJson(sub) };
     }
     m = at(/^issues\/(\d+)\/labels$/);
     if (m && method === "POST") {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
 import { resolveSelection, unknownOptions } from "./catalog.ts";
@@ -57,6 +57,28 @@ export function parsePlan(raw: string, file = "<plan>"): Plan {
     throw new ShipError(`${file} front matter is invalid: ${issues}`, "blocked");
   }
   return { file, meta: parsed.data, body: m[2], raw, hash: hashText(raw) };
+}
+
+/** A plan's id from a changed file's path (`plans/drop.plan.md` is `drop`); undefined for any
+ * other file. */
+export const planOfFile = (f: string) => /^plans\/([a-z0-9-]+)\.plan\.md$/.exec(f)?.[1];
+
+/** The task a plan is for: its `task:` line, as written (`owner/shipify#12`). The plan file is the
+ * link, whatever a run said. */
+export function planTask(app: string, root = PLATFORM_ROOT): string | undefined {
+  const file = planPath(app, root);
+  if (!existsSync(file)) return undefined;
+  const front = /^---\n([\s\S]*?)\n---/.exec(readFileSync(file, "utf8"))?.[1] ?? "";
+  return /^task:\s*(\S+)\s*$/m.exec(front)?.[1];
+}
+
+/** The plan on main whose `task:` line is `ref` (`owner/shipify#12`): its id. */
+export function planFor(ref: string, root = PLATFORM_ROOT): string | undefined {
+  const dir = join(root, "plans");
+  if (!existsSync(dir)) return undefined;
+  return readdirSync(dir)
+    .map((f) => planOfFile(`plans/${f}`))
+    .find((id) => id && planTask(id, root) === ref);
 }
 
 export function readPlan(app: string, root = PLATFORM_ROOT): Plan {

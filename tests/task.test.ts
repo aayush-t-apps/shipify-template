@@ -18,7 +18,13 @@ import {
 } from "../cli/commands/bot.ts";
 import { boxOf, boxUnit, slotName, slotOf, sshAdvice } from "../cli/commands/box.ts";
 import { errandSeen } from "../cli/commands/task/deploys.ts";
-import { countSkills, digestDue, digestNext, digestText } from "../cli/commands/task/digest.ts";
+import {
+  countSkills,
+  digestDue,
+  digestNext,
+  digestText,
+  projectsWeek,
+} from "../cli/commands/task/digest.ts";
 import {
   freeFile,
   saveAttachments,
@@ -372,6 +378,27 @@ describe("tasks: titles, state and the status comment", () => {
       { id: 1, body, user: { login: "github-actions[bot]" }, created_at: "now" },
     ]);
     expect(found.state.notes).toBe("an arrow --> inside");
+  });
+
+  it("says no close by itself, and a button's answer on its Last action line (ADR 0069)", () => {
+    const answered = {
+      ...newState(),
+      phase: "answered" as const,
+      closes: "2026-10-06T09:00:00.000Z",
+    };
+    const body = renderStatus(answered, { timeZone: "UTC" });
+    expect(body).not.toContain("Closes by itself");
+    expect(body).not.toContain("quiet day");
+    expect(body).toContain("Close it when you're done");
+    const stopped = renderStatus(
+      {
+        ...answered,
+        phase: "needs-you",
+        action: { text: "Stopped, as you asked.", at: "2026-10-05T13:40:00.000Z" },
+      },
+      { timeZone: "UTC" },
+    );
+    expect(stopped).toContain("**Last action:** Stopped, as you asked. (Mon 5 Oct, 13:40)");
   });
 
   it("lists every PR the task opened, with its kind and state, on every update", () => {
@@ -1853,6 +1880,49 @@ describe("the weekly digest (ADR 0053)", () => {
     expect(busy).not.toContain("all clear");
     expect(busy).toContain("#12 Bigger margins");
     expect(busy).toContain("`links: upgrade`");
+  });
+
+  it("says each project with something waiting: finds to collate, chats on you, quiet ones (ADR 0070)", () => {
+    const at = new Date("2026-11-09T09:00:00Z");
+    const chat = (number: number, labels: string[], updatedAt: string, state = "open") => ({
+      number,
+      state: state as "open" | "closed",
+      labels,
+      updatedAt,
+    });
+    const week = projectsWeek(
+      {
+        projects: [
+          {
+            number: 40,
+            title: "Project: games",
+            chats: [
+              chat(41, ["needs you"], "2026-10-01T00:00:00Z"),
+              chat(42, ["answered"], "2026-10-20T00:00:00Z"),
+              chat(43, [], "2026-11-08T00:00:00Z"),
+              chat(44, [], "2026-10-01T00:00:00Z", "closed"),
+            ],
+          },
+          { number: 50, title: "Project: clinic", chats: [chat(51, [], "2026-11-08T00:00:00Z")] },
+        ],
+        inboxes: [
+          {
+            title: "Notebook: games-inbox",
+            body: "# games: Inbox\n\nCollated up to item 504 (4 items).\n",
+            items: 16,
+          },
+          { title: "Notebook: clinic-inbox", body: "", items: 0 },
+        ],
+      },
+      at,
+    );
+    // clinic has nothing to say: no line for it.
+    expect(week).toEqual([{ name: "games", collate: 12, waiting: 1, quiet: 1 }]);
+    const base = { boxes: [], apps: [], waiting: [], upcoming: { count: 0 }, keys: [] };
+    expect(digestText({ ...base, projects: week }, (i) => i)).toContain(
+      "- **Projects:** games: 12 finds to collate, 1 chat waiting on you, 1 chat quiet a week",
+    );
+    expect(digestText(base, (i) => i)).not.toContain("Projects");
   });
 
   it("counts the week's skills from run rows, and names those none loaded", () => {

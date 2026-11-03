@@ -104,6 +104,8 @@ function world(
         repos?: string[];
         permissions?: Record<string, string>;
         installation?: number;
+        /** What Cloudflare answers for the edge's R2 bucket: there, unless said. */
+        r2?: { status: number; body: unknown };
       } = {},
     ): Partial<DoorDeps> {
       return {
@@ -140,12 +142,37 @@ function world(
           if (url.endsWith("/client/v4/accounts"))
             return ok({ result: [{ id: "0123456789abcdef0123456789abcdef" }] });
           if (url.endsWith("/workers/subdomain")) return ok({ result: { subdomain: "mine" } });
+          if (url.includes("/r2/buckets/"))
+            return new Response(JSON.stringify(over.r2?.body ?? R2_THERE), {
+              status: over.r2?.status ?? 200,
+            });
           return new Response("{}", { status: 404 });
         }) as typeof fetch,
       };
     },
   };
 }
+
+/** Cloudflare's answers for an R2 bucket: there, not made yet, R2 off, the token refused. */
+const R2_THERE = { success: true, result: { name: "shipify-web-files" } };
+const R2_NONE = {
+  status: 404,
+  body: {
+    success: false,
+    errors: [{ code: 10006, message: "The specified bucket does not exist." }],
+  },
+};
+const R2_OFF = {
+  status: 403,
+  body: {
+    success: false,
+    errors: [{ code: 10042, message: "Please enable R2 through the Cloudflare Dashboard." }],
+  },
+};
+const R2_REFUSED = {
+  status: 403,
+  body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] },
+};
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -243,6 +270,7 @@ describe("ship door setup", () => {
     expect(plan).toContain(
       "set the secret CF_DEPLOY_TOKEN on o/shipify, from your credentials file: the edge's deploy runs with it",
     );
+    expect(plan).toContain("check R2 is on for your Cloudflare account");
     expect(w.writes()).toEqual([]);
     expect(w.wrangler().calls).toEqual([]);
   });
@@ -294,6 +322,32 @@ describe("ship door setup", () => {
     expect(vars.CLOUDFLARE_ACCOUNT_ID).toBe("0123456789abcdef0123456789abcdef");
     // No domain: none is set, so the deploy adds none.
     expect(vars.APPS_DOMAIN).toBeUndefined();
+  });
+
+  it("with R2 off on your Cloudflare account, starts no deploy (it would fail) and names the fix", async () => {
+    const w = world();
+    const r = await doorSetup(true, { deps: w.deps({ r2: R2_OFF }) });
+    expect(r.status, JSON.stringify(r.checks)).toBe("blocked");
+    expect(r.summary).toContain("R2 isn't turned on for your Cloudflare account");
+    expect(r.nextSteps?.[0]).toContain("turn R2 on in Cloudflare's dashboard");
+    expect(r.nextSteps?.[0]).toContain("gh workflow run ci.yml --ref main -R o/shipify");
+    expect(w.gh.some((a) => a[0] === "workflow")).toBe(false);
+    // The rest is done: the App's key on the edge, and the variables its deploy takes.
+    expect(Object.keys(w.wrangler().secrets)).toEqual(["SHIPIFY_DOOR_APP_KEY"]);
+    expect(w.writes().some((c) => c.name === "SHIPIFY_DOOR_URL")).toBe(true);
+    // A new install's bucket isn't made yet: its deploy makes it.
+    const fresh = world();
+    const made = await doorSetup(true, { deps: fresh.deps({ r2: R2_NONE }) });
+    expect(made.status, JSON.stringify(made.checks)).toBe("succeeded");
+    expect(fresh.gh).toContainEqual([
+      "workflow",
+      "run",
+      "ci.yml",
+      "--ref",
+      "main",
+      "-R",
+      "o/shipify",
+    ]);
   });
 
   it("stops at an install that reaches every repository, saying how to fix it", async () => {
@@ -378,11 +432,17 @@ describe("ship door setup", () => {
 });
 
 describe("ship door check", () => {
-  const edge = (health: unknown, telegram = 401) =>
+  const edge = (
+    health: unknown,
+    telegram = 401,
+    r2: { status: number; body: unknown } = { status: 200, body: R2_THERE },
+  ) =>
     (async (input: string | URL | Request) =>
       String(input).endsWith("/health")
         ? new Response(JSON.stringify(health), { status: 200 })
-        : new Response("{}", { status: telegram })) as typeof fetch;
+        : String(input).includes("/r2/buckets/")
+          ? new Response(JSON.stringify(r2.body), { status: r2.status })
+          : new Response("{}", { status: telegram })) as typeof fetch;
   const gh = () => ({ code: 0, stdout: "abc\n", stderr: "" });
   // You, on each chat channel: their routes are checked.
   const people = [{ name: "me", on: { github: "o", telegram: "42", web: "me" } }];
@@ -444,6 +504,48 @@ describe("ship door check", () => {
     // Each failing check names its fix.
     for (const r of [other, much, signIn, keyless])
       for (const c of r.checks ?? []) if (!c.ok) expect(c.fix, c.name).toBeTruthy();
+  });
+
+  it("checks the edge's R2 bucket is there, and names the fix: R2 off, the token, a deploy", async () => {
+    world({ vars });
+    const asked: string[] = [];
+    const r2 = (answer: { status: number; body: unknown }) =>
+      (async (input: string | URL | Request) => {
+        if (String(input).includes("/r2/")) asked.push(String(input));
+        return edge(good, 401, answer)(input);
+      }) as typeof fetch;
+    const store = (r: Awaited<ReturnType<typeof doorCheck>>) =>
+      r.checks?.find((c) => c.name.includes("R2 bucket"));
+    const there = await doorCheck({ fetch: r2({ status: 200, body: R2_THERE }), gh });
+    expect(there.status, JSON.stringify(there.checks)).toBe("succeeded");
+    expect(store(there)).toMatchObject({ ok: true });
+    // With the deploy token, on your account, by the name edge/wrangler.jsonc binds as BUCKET.
+    expect(asked).toEqual([
+      "https://api.cloudflare.com/client/v4/accounts/acct/r2/buckets/shipify-web-files",
+    ]);
+    // R2 off on the account: every edge deploy fails until it's on.
+    const deploy = "gh workflow run ci.yml --ref main -R o/shipify";
+    const off = await doorCheck({ fetch: r2(R2_OFF), gh });
+    expect(off.status).toBe("failed");
+    expect(off.summary).toContain("R2 isn't turned on for your Cloudflare account");
+    expect(store(off)?.fix).toBe(
+      `turn R2 on in Cloudflare's dashboard (R2 Object Storage: it asks for a card once, and charges nothing within its free 10 GB), then deploy the edge again: ${deploy}`,
+    );
+    const refused = await doorCheck({ fetch: r2(R2_REFUSED), gh });
+    expect(refused.status).toBe("failed");
+    expect(store(refused)?.fix).toContain("Workers R2 Storage: Edit");
+    expect(store(refused)?.fix).toContain(deploy);
+    // Not made yet: the next deploy makes it, and words work meanwhile.
+    const none = await doorCheck({ fetch: r2(R2_NONE), gh });
+    expect(none.status, JSON.stringify(none.checks)).toBe("succeeded");
+    expect(store(none)).toMatchObject({ ok: false, blocking: false });
+    expect(store(none)?.fix).toContain(deploy);
+    // No deploy token on this PC: it can't ask, says so, and fails nothing.
+    world({ vars, creds: "APPS_DOMAIN=example.com\n" });
+    const blind = await doorCheck({ fetch: r2(R2_OFF), gh });
+    expect(blind.status, JSON.stringify(blind.checks)).toBe("succeeded");
+    expect(store(blind)).toMatchObject({ ok: false, blocking: false });
+    expect(store(blind)?.fix).toContain("CF_DEPLOY_TOKEN");
   });
 
   it("a channel no one's on isn't added yet: its route isn't checked, and nothing fails", async () => {

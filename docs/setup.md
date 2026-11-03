@@ -257,9 +257,14 @@ Replace a GitHub secret with `gh secret set <NAME> -R <you>/<repo>`, pasting at 
 - **`shipify-pc`:** your account (or org), all repositories. Read and write: Actions, Administration, Contents,
   Pull requests, Secrets, Variables, Workflows. Read: Commit statuses.
 - **`shipify-deploy`:** Workers Scripts Edit, Account Settings Read, User Details Read, Memberships
-  Read; Workers KV Storage Edit (the web chat's files, and apps that keep data), D1 Edit and Workers R2
-  Storage Edit for apps that keep data (R2 asks for a card on the Cloudflare account once; nothing is
-  charged inside its free limits); Zone → Workers Routes Edit on your domain's zone.
+  Read; Workers KV Storage Edit (the web chat's settings, and apps that keep data), D1 Edit and
+  Workers R2 Storage Edit (the web chat's files, in the bucket `shipify-web-files` the edge's deploy
+  makes, and apps that keep data; R2 asks for a card on the Cloudflare account once; nothing is
+  charged inside its free limits, 10 GB shared with Drop); Zone → Workers Routes Edit on your
+  domain's zone. Durable Objects need nothing more: Workers Scripts Edit covers them.
+- **A billing alert,** once, if you want one: in Cloudflare's dashboard (Manage Account → Billing →
+  Notifications), so you hear if R2 ever passes its free 10 GB (then $0.015 per GB a month). The
+  weekly clean-up keeps the web chat's files to open work and the last month's (ADR 0069).
 - **`CLOUDFLARE_ACCOUNT_ID`** isn't secret: it's one of your settings, a variable on shipify (ADR 0047).
 
 ### Variables on shipify

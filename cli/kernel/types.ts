@@ -57,6 +57,11 @@ export interface Snapshot {
   firstUse?: string;
   /** The body's hash now: a change counts as new. */
   bodyHash: string;
+  /**
+   * A clean start's chats (ADR 0070), read when your new words are `clean start` or a `yes` to its
+   * list: the open chats the 30-day close would take, whatever their age. None when the read failed.
+   */
+  cleanable?: { n: number; title: string; labels: string[]; updatedAt?: string }[];
   /** Known projects (the org's repos Shipify manages). */
   projects: string[];
   /** Every repo a task can name (ADR 0044): the projects and your other repos, with their sizes. */
@@ -80,6 +85,13 @@ export interface Snapshot {
    * a task with parts: its parent (this task, or the one it's a part of) and every part.
    */
   family?: Family;
+  /**
+   * The project it's in, or is (ADR 0069): an issue labelled `project`, read in the same family
+   * read. Its chats only when the read gave them (the project itself, or a chat directly in it).
+   */
+  project?: Project;
+  /** The family read failed: the run is told its project or split is missing from its prompt. */
+  familyUnread?: true;
   /** The status issue/notebook guards came first; this is a real task. */
   isTask: boolean;
 }
@@ -87,6 +99,16 @@ export interface Snapshot {
 /** A split task and its parts, as the record reads them (ADR 0066). */
 export type Family = RecordFamily;
 export type Part = RecordFamily["parts"][number];
+
+/** A project you made (ADR 0069): its issue, name, brief, repos and chats. */
+export interface Project {
+  number: number;
+  name: string;
+  brief: string;
+  repos: string[];
+  state: "open" | "closed";
+  chats?: Part[];
+}
 
 /** What the agent may touch (docs/glossary.md): talk (answers, your projects on demand), work (one
  * repo's clone, on the task's branch), read (only the repos it was given, files only: ADR 0044). */
@@ -167,7 +189,8 @@ export type Stop =
   | { why: "plan"; window: string; resets?: string }
   | { why: "crash"; code: number; error?: AgentError }
   | { why: "no-answer"; error?: AgentError }
-  | { why: "asked"; comment: number };
+  /** `button`: Stop the run from the web chat (ADR 0069), answered on the status, not in a reply. */
+  | { why: "asked"; comment: number; button?: true };
 
 /** An agent's last error: the model ("Sonnet", "glm-5.3-flash at openrouter.ai") and its words. */
 export interface AgentError {
@@ -187,6 +210,9 @@ export interface ThinkMeta {
    */
   elsewhere?: true;
   touchesWorkflows: boolean;
+  /** When the box read the pages it gave this turn (ADR 0070): a page changed after it isn't
+   * written over. */
+  pagesAt?: string;
   checkOutput?: string;
   checkHash?: string;
   /** The agent stopped before its answer. */
@@ -197,6 +223,8 @@ export interface ThinkMeta {
   commits?: boolean;
   /** Its repo has no main yet: those commits would be a new project's first push. */
   firstPush?: boolean;
+  /** The plan those commits add or change (plans/<id>.plan.md): its id. */
+  plan?: string;
   /** Its handoff for the next run (out/handoff.md, ADR 0041), however the run ended. */
   handoff?: string;
   /** The agent's session, for a stay's next turn to carry on in (ADR 0057). */
@@ -219,6 +247,8 @@ export type Write =
       choices?: string[];
       /** The list it asks your yes for: its code, or `github` (ReplyLine's `list`, ADR 0049). */
       list?: string;
+      /** An answer in a project's chat (ReplyLine's `keep`, ADR 0070): **Keep on page** under it. */
+      keep?: true;
       links?: Link[];
       files?: string[];
       problem?: Problem;
@@ -234,7 +264,23 @@ export type Write =
   | { w: "close"; reason?: "completed" | "not_planned" }
   | { w: "reopen" }
   | { w: "note"; topic: string; line: string }
+  /**
+   * Library pages rewritten from the run's files (ADR 0069): its project's, or, when it read
+   * nothing from outside, the Library's own (a Journal); never an always page or another project's.
+   */
+  | {
+      w: "pages";
+      pages: { page: string; file: string }[];
+      project?: string;
+      outside: boolean;
+      /** When the run's turn read the pages (ADR 0070): one changed since is left as it is. */
+      since?: string;
+      /** The task they came from, for the project's Log. */
+      chat?: number;
+    }
   | { w: "calls"; calls: ToolCall[]; fingerprint: string }
+  /** A clean start's chats, closed as done after your yes (ADR 0070), as the 30-day close does. */
+  | { w: "close-chats"; chats: { number: number; labels: string[] }[] }
   | {
       w: "push";
       repo: string;

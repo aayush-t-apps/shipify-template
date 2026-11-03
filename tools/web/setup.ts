@@ -3,7 +3,7 @@
 // edge at /admin/chat/, behind the Cloudflare Access application for
 // /admin, the status page's too (SHIPIFY_ACCESS, from `ship door page`), and has no keys of its
 // own: the door lets in only a person in SHIPIFY_PEOPLE with an id on the channel, so you get `"web": "me"`. Files sent
-// from it are kept in Workers KV, bound to the Worker as FILES by the deploy; this PC only reads
+// from it are kept in R2, bound to the Worker as BUCKET by the deploy; this PC only reads
 // the Worker's bindings, with the deploy token from your credentials file. Its notifications
 // (ADR 0050) are signed with a key made here and put on the Worker (WEB_PUSH_KEY), and go to your
 // default channels' alerts too when you have none. Nothing here prints a key.
@@ -114,7 +114,7 @@ function you(): string {
 }
 
 /**
- * The deployed edge keeps the chat's files: a Workers KV namespace bound as FILES. Unbound, it's a
+ * The deployed edge keeps the chat's files: an R2 bucket bound as BUCKET. Unbound, it's a
  * note, not a failure: words work, and the next deploy makes the store. Only a token Cloudflare
  * refuses (or no answer at all) stops it.
  */

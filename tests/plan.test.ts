@@ -1,8 +1,17 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../cli/lib/config.ts";
-import { checkPlan, hashText, parsePlan, planSkeleton } from "../cli/lib/plan.ts";
+import {
+  checkPlan,
+  hashText,
+  parsePlan,
+  planFor,
+  planOfFile,
+  planSkeleton,
+  planTask,
+} from "../cli/lib/plan.ts";
 import { renderString } from "../cli/lib/render.ts";
 import { planPrBody } from "../cli/lib/review.ts";
 
@@ -26,6 +35,23 @@ describe("plans", () => {
     });
     expect(p.hash).toBe(hashText(skeleton));
     expect(parsePlan(`${skeleton}\nchange`).hash).not.toBe(p.hash);
+  });
+  it("a plan names its task by its `task:` line, and a task finds its plan by it (#614)", () => {
+    const root = mkdtempSync(join(tmpdir(), "plans-"));
+    mkdirSync(join(root, "plans"));
+    writeFileSync(join(root, "plans", "other.plan.md"), skeleton);
+    writeFileSync(
+      join(root, "plans", "demo-app.plan.md"),
+      skeleton.replace("\n---\n", "\ntask: o/shipify#614\n---\n"),
+    );
+    expect(planTask("demo-app", root)).toBe("o/shipify#614");
+    expect(planTask("other", root)).toBeUndefined();
+    expect(planFor("o/shipify#614", root)).toBe("demo-app");
+    expect(planFor("o/shipify#61", root)).toBeUndefined();
+    expect(["plans/demo-app.plan.md", "plans/README.md"].map(planOfFile)).toEqual([
+      "demo-app",
+      undefined,
+    ]);
   });
   it("rejects a plan without front matter", () => {
     expect(() => parsePlan("# no front matter")).toThrow(/front matter/);

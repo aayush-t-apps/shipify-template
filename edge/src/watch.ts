@@ -6,7 +6,8 @@
 //   stopped      a task whose run died (its status says `working · <run>` and that run ended), or
 //                whose words wait with no run for 10 minutes: marked Stopped (`stuck`), and one
 //                alert. It never starts a run (ADR 0042): your `continue` does. Never the status
-//                task, notebook pages or pull requests
+//                task, notebook or Library pages, or pull requests; a project's own opening
+//                waits for no run (ADR 0069)
 //   notice       a run's reply with no mark of the door's after 2 minutes: one short notice to each
 //                chat it was for, with its link, then 😕; if that can't be sent either, a note on
 //                the status task. A reply is never sent twice
@@ -22,6 +23,8 @@
 import {
   DEPLOYING_LABEL,
   type Findings,
+  LIBRARY_LABEL,
+  PROJECT_LABEL,
   problem,
   type RecordSeen,
   readFrom,
@@ -377,7 +380,7 @@ async function due(t: Tick) {
 
 // ---------------------------------------------------------------- stopped
 
-const SKIPPED = [STATUS_LABEL, NOTEBOOK_LABEL, STUCK_LABEL];
+const SKIPPED = [STATUS_LABEL, NOTEBOOK_LABEL, LIBRARY_LABEL, STUCK_LABEL];
 
 /**
  * A task that should be working and isn't: its run ended before it finished, or your words waited
@@ -456,11 +459,13 @@ async function stopped(t: Tick) {
       const ownIssue =
         byDoor(t.gh, issue) || (owner !== undefined && issue.user?.login?.toLowerCase() === owner);
       // A task no run has answered yet (no comment at all: the 100 read are only the newest, so a
-      // status comment missing from them may just be older): its own words wait.
+      // status comment missing from them may just be older): its own words wait. A project's
+      // opening starts no run (ADR 0069): only words in its thread wait.
       if (
         !statusComment &&
         !issue.comments &&
         ownIssue &&
+        !issue.labels.some((l) => l.name === PROJECT_LABEL) &&
         t.now - Date.parse(issue.created_at) < DAY
       )
         waiting.push(Date.parse(issue.created_at));

@@ -17,6 +17,7 @@ import type {
   RecordIssue,
   RecordLabel,
   RecordWrite,
+  SweptIssue,
   TaskRecord,
 } from "./plugins/record.ts";
 
@@ -443,23 +444,32 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
       const nodes = graphql<{
         repository?: {
           issues?: {
-            nodes: (GqlIssue & { state: string; labels: { nodes: { name: string }[] } })[];
+            nodes: (GqlIssue & {
+              state: string;
+              labels: { nodes: { name: string }[] };
+              createdAt?: string | null;
+              lastEditedAt?: string | null;
+            })[];
           };
         };
       }>(
-        `query($owner: String!, $name: String!, $label: String!) { repository(owner: $owner, name: $name) { issues(first: 100, labels: [$label], states: [${state === "all" ? "OPEN, CLOSED" : "OPEN"}], orderBy: {field: CREATED_AT, direction: ASC}) { nodes { number title body url state labels(first: 20) { nodes { name } } author { login __typename } editor { login __typename } } } } }`,
+        `query($owner: String!, $name: String!, $label: String!) { repository(owner: $owner, name: $name) { issues(first: 100, labels: [$label], states: [${state === "all" ? "OPEN, CLOSED" : "OPEN"}], orderBy: {field: CREATED_AT, direction: ASC}) { nodes { number title body url state createdAt lastEditedAt labels(first: 20) { nodes { name } } author { login __typename } editor { login __typename } } } } }`,
         { label },
       ).repository?.issues?.nodes;
-      return (nodes ?? []).map((i) => ({
-        number: i.number,
-        title: i.title,
-        body: i.body ?? "",
-        state: i.state === "CLOSED" ? "closed" : "open",
-        labels: i.labels?.nodes ?? [],
-        url: i.url,
-        author: login(i.author) ?? "ghost",
-        editor: login(i.editor),
-      }));
+      return (nodes ?? []).map((i) => {
+        const editedAt = i.lastEditedAt ?? i.createdAt;
+        return {
+          number: i.number,
+          title: i.title,
+          body: i.body ?? "",
+          state: i.state === "CLOSED" ? "closed" : "open",
+          labels: i.labels?.nodes ?? [],
+          url: i.url,
+          author: login(i.author) ?? "ghost",
+          editor: login(i.editor),
+          ...(editedAt ? { editedAt } : {}),
+        };
+      });
     },
     writers(n) {
       const i = graphql<{ repository?: { issue?: GqlIssue } }>(
@@ -492,37 +502,79 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
         editor: login(node?.editor ?? null),
       };
     },
+    task(n) {
+      // The issue (or a PR, which comments start runs on too) and a page of its comments a call,
+      // each with who last edited it: the three reads a run started with, in one (ADR 0069).
+      let issue: RecordIssue | undefined;
+      const comments: (RecordComment & { editor?: string })[] = [];
+      let after: string | undefined;
+      do {
+        const it = graphql<{ repository?: { issueOrPullRequest?: GqlTask | null } }>(
+          TASK,
+          after ? { after } : {},
+          { n },
+        ).repository?.issueOrPullRequest;
+        if (!it) throw new ShipError(`#${n} couldn't be read`);
+        issue ??= {
+          number: it.number,
+          title: it.title,
+          body: it.body,
+          state: it.state === "OPEN" ? "open" : "closed",
+          state_reason: it.stateReason?.toLowerCase() ?? null,
+          closed_at: it.closedAt,
+          created_at: it.createdAt,
+          labels: names(it.labels).map((name) => ({ name })),
+          user: { login: login(it.author) ?? "ghost" },
+          node_id: it.id,
+          ...(it.__typename === "PullRequest" ? { pull_request: {} } : {}),
+          ...(it.subIssuesSummary
+            ? {
+                sub_issues_summary: {
+                  total: it.subIssuesSummary.total,
+                  completed: it.subIssuesSummary.completed,
+                },
+              }
+            : {}),
+        };
+        for (const c of it.comments.nodes) {
+          const editor = login(c.editor);
+          comments.push({
+            id: Number(c.fullDatabaseId),
+            body: c.body,
+            user: { login: login(c.author) ?? "ghost" },
+            created_at: c.createdAt,
+            ...(c.updatedAt ? { updated_at: c.updatedAt } : {}),
+            node_id: c.id,
+            ...(editor ? { editor } : {}),
+          });
+        }
+        after = it.comments.pageInfo.hasNextPage ? it.comments.pageInfo.endCursor : undefined;
+      } while (after);
+      if (!issue) throw new ShipError(`#${n} couldn't be read`);
+      return { issue, comments };
+    },
     family(n) {
-      const i = graphql<{ repository?: { issue?: GqlFamily & { parent?: GqlFamily | null } } }>(
-        `query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) { issue(number: $n) { ${FAMILY} parent { ${FAMILY} } } } }`,
+      // Both levels in one read (ADR 0069): the issue's own sub-issues, its parent's, and the
+      // parent's parent (a project above a split chat's part).
+      const i = graphql<{
+        repository?: {
+          issue?: GqlFamily & { parent?: (GqlFamily & { parent?: GqlAbove | null }) | null };
+        };
+      }>(
+        `query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) { issue(number: $n) { ${FAMILY} parent { ${FAMILY} parent { ${ABOVE} } } } } }`,
         {},
         { n },
       ).repository?.issue;
-      const top = i?.parent ?? i;
-      if (!top?.subIssues?.nodes.length) return undefined;
+      if (!i) return undefined;
+      const top = i.parent ?? i;
+      const above = i.parent?.parent;
+      const own = i.parent && i.subIssues?.nodes.length ? i.subIssues.nodes.map(partOf) : [];
+      if (!top.subIssues?.nodes.length && !own.length) return undefined;
       return {
-        parent: {
-          number: top.number,
-          title: top.title,
-          body: top.body ?? "",
-          state: top.state === "CLOSED" ? "closed" : "open",
-          labels: names(top.labels),
-        },
-        parts: top.subIssues.nodes.map((p) => ({
-          number: p.number,
-          title: p.title,
-          state: p.state === "CLOSED" ? "closed" : "open",
-          ...(p.stateReason ? { reason: p.stateReason.toLowerCase() } : {}),
-          labels: names(p.labels),
-          blockedBy: (p.blockedBy?.nodes ?? []).map((b) => ({
-            number: b.number,
-            state: b.state === "CLOSED" ? "closed" : "open",
-            ...(b.stateReason ? { reason: b.stateReason.toLowerCase() } : {}),
-          })),
-          ...(p.closedByPullRequestsReferences?.nodes[0]
-            ? { pr: p.closedByPullRequestsReferences.nodes[0].url }
-            : {}),
-        })),
+        parent: aboveOf(top),
+        parts: (top.subIssues?.nodes ?? []).map(partOf),
+        ...(own.length ? { own } : {}),
+        ...(above ? { above: aboveOf(above) } : {}),
       };
     },
     openParts(parent, parts, label) {
@@ -539,7 +591,7 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
       };
       const ids = () =>
         graphql<Ids>(
-          "query($owner: String!, $name: String!, $label: String!, $n: Int!) { repository(owner: $owner, name: $name) { id label(name: $label) { id } issue(number: $n) { id subIssues(first: 50) { nodes { id number title } } } } }",
+          "query($owner: String!, $name: String!, $label: String!, $n: Int!) { repository(owner: $owner, name: $name) { id label(name: $label) { id } issue(number: $n) { id subIssues(first: 100) { nodes { id number title } } } } }",
           { label: label.name },
           { n: parent },
         ).repository;
@@ -595,12 +647,193 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
     },
     pin: (issue) => pinning("pinIssue", issue),
     unpin: (issue) => pinning("unpinIssue", issue),
+    sweep(q) {
+      // Three searches in one query, each 100 at most; a missed one comes up the next week. The
+      // closed and the quiet ones come oldest first (a close is a closed issue's last change, as a
+      // word on it opens it again), so the ones about to leave their window are read first. The
+      // quiet search leaves out what stays open for ever, so it can't fill the 100.
+      const without = q.quietWithout.map((l) => ` -label:"${l}"`).join("");
+      const r = graphql<Record<"closed" | "projects" | "quiet", { nodes: (GqlSwept | null)[] }>>(
+        `query($closed: String!, $projects: String!, $quiet: String!) { closed: search(query: $closed, type: ISSUE, first: 100) { nodes { ${SWEPT} } } projects: search(query: $projects, type: ISSUE, first: 100) { nodes { ${SWEPT} } } quiet: search(query: $quiet, type: ISSUE, first: 100) { nodes { ${SWEPT} } } }`,
+        {
+          closed: `repo:${repo} is:issue is:closed closed:${q.closedFrom}..${q.closedTo} sort:updated-asc`,
+          projects: `repo:${repo} is:issue is:open label:project`,
+          quiet: `repo:${repo} is:issue is:open updated:<${q.quietBefore}${without} sort:updated-asc`,
+        },
+      );
+      const of = (k: "closed" | "projects" | "quiet") =>
+        (r[k]?.nodes ?? []).filter((i): i is GqlSwept => Boolean(i?.number)).map(swept);
+      return { closed: of("closed"), projects: of("projects"), quiet: of("quiet") };
+    },
+    liveProjects() {
+      // Two searches in one query (ADR 0070): the open projects with their chats, and the open
+      // Inbox pages with their item counts. The digest reads it once a week.
+      const r = graphql<{
+        projects?: { nodes: (GqlLive | null)[] };
+        inboxes?: {
+          nodes: ({
+            title: string;
+            body?: string | null;
+            comments: { totalCount: number };
+          } | null)[];
+        };
+      }>(
+        `query($projects: String!, $inboxes: String!) { projects: search(query: $projects, type: ISSUE, first: 50) { nodes { ... on Issue { number title subIssues(first: 100) { nodes { number state updatedAt labels(first: 20) { nodes { name } } } } } } } inboxes: search(query: $inboxes, type: ISSUE, first: 50) { nodes { ... on Issue { title body comments { totalCount } } } } }`,
+        {
+          projects: `repo:${repo} is:issue is:open label:project`,
+          inboxes: `repo:${repo} is:issue is:open label:library inbox in:title`,
+        },
+      );
+      return {
+        projects: (r.projects?.nodes ?? [])
+          .filter((p): p is GqlLive => Boolean(p?.number))
+          .map((p) => ({
+            number: p.number,
+            title: p.title,
+            chats: (p.subIssues?.nodes ?? []).map((c) => ({
+              number: c.number,
+              state: c.state === "CLOSED" ? ("closed" as const) : ("open" as const),
+              labels: names(c.labels),
+              updatedAt: c.updatedAt,
+            })),
+          })),
+        inboxes: (r.inboxes?.nodes ?? []).flatMap((i) =>
+          i?.title ? [{ title: i.title, body: i.body ?? "", items: i.comments.totalCount }] : [],
+        ),
+      };
+    },
+    projectItems(n, label) {
+      const r = graphql<{
+        repository?: {
+          issue?: { subIssues?: { nodes: { number: number; state: GqlState }[] } } | null;
+          pages?: { nodes: { number: number }[] };
+        };
+      }>(
+        "query($owner: String!, $name: String!, $n: Int!, $label: String!) { repository(owner: $owner, name: $name) { issue(number: $n) { subIssues(first: 100) { nodes { number state } } } pages: issues(first: 100, labels: [$label], states: [OPEN, CLOSED]) { nodes { number } } } }",
+        { label },
+        { n },
+      ).repository;
+      return {
+        chats: (r?.issue?.subIssues?.nodes ?? []).map((x) => ({
+          number: x.number,
+          state: x.state === "CLOSED" ? ("closed" as const) : ("open" as const),
+        })),
+        pages: (r?.pages?.nodes ?? []).map((x) => x.number),
+      };
+    },
   };
 }
 
-/** What the family read takes of each issue (ADR 0066): the parent's words, and each part. */
-const FAMILY =
-  "number title body state labels(first: 20) { nodes { name } } subIssues(first: 50) { nodes { number title state stateReason labels(first: 20) { nodes { name } } blockedBy(first: 20) { nodes { number state stateReason } } closedByPullRequestsReferences(first: 1, includeClosedPrs: false) { nodes { url } } } }";
+/**
+ * What the family read takes of each issue (ADR 0066): the parent's words, and each part, 100 as
+ * GitHub allows a parent (ADR 0069: a project's chats).
+ */
+const ABOVE = "number title body state labels(first: 20) { nodes { name } }";
+const FAMILY = `${ABOVE} subIssues(first: 100) { nodes { number title state stateReason labels(first: 20) { nodes { name } } blockedBy(first: 20) { nodes { number state stateReason } } closedByPullRequestsReferences(first: 1, includeClosedPrs: false) { nodes { url } } } }`;
+type GqlAbove = {
+  number: number;
+  title: string;
+  body: string | null;
+  state: GqlState;
+  labels: GqlLabels;
+};
+const aboveOf = (a: GqlAbove) => ({
+  number: a.number,
+  title: a.title,
+  body: a.body ?? "",
+  state: a.state === "CLOSED" ? ("closed" as const) : ("open" as const),
+  labels: names(a.labels),
+});
+const partOf = (p: NonNullable<GqlFamily["subIssues"]>["nodes"][number]) => ({
+  number: p.number,
+  title: p.title,
+  state: p.state === "CLOSED" ? ("closed" as const) : ("open" as const),
+  ...(p.stateReason ? { reason: p.stateReason.toLowerCase() } : {}),
+  labels: names(p.labels),
+  blockedBy: (p.blockedBy?.nodes ?? []).map((b) => ({
+    number: b.number,
+    state: b.state === "CLOSED" ? ("closed" as const) : ("open" as const),
+    ...(b.stateReason ? { reason: b.stateReason.toLowerCase() } : {}),
+  })),
+  ...(p.closedByPullRequestsReferences?.nodes[0]
+    ? { pr: p.closedByPullRequestsReferences.nodes[0].url }
+    : {}),
+});
+
+/** An open project as the weekly digest reads it (ADR 0070). */
+type GqlLive = {
+  number: number;
+  title: string;
+  subIssues?: {
+    nodes: { number: number; state: GqlState; updatedAt: string; labels: GqlLabels }[];
+  };
+};
+
+/** What the weekly clean-up reads of each issue (ADR 0069). */
+const SWEPT =
+  "... on Issue { number title closedAt updatedAt labels(first: 30) { nodes { name } } parent { number state labels(first: 30) { nodes { name } } } subIssues(first: 100) { nodes { state } } closedByPullRequestsReferences(first: 10, includeClosedPrs: false) { nodes { state } } }";
+type GqlSwept = {
+  number: number;
+  title: string;
+  closedAt?: string | null;
+  updatedAt?: string | null;
+  labels: GqlLabels;
+  parent?: { number: number; state: GqlState; labels: GqlLabels } | null;
+  subIssues?: { nodes: { state: GqlState }[] };
+  closedByPullRequestsReferences?: { nodes: { state: string }[] };
+};
+const swept = (i: GqlSwept): SweptIssue => ({
+  number: i.number,
+  title: i.title,
+  labels: names(i.labels),
+  ...(i.closedAt ? { closedAt: i.closedAt } : {}),
+  ...(i.updatedAt ? { updatedAt: i.updatedAt } : {}),
+  ...(i.parent
+    ? {
+        parent: {
+          number: i.parent.number,
+          state: i.parent.state === "CLOSED" ? "closed" : "open",
+          labels: names(i.parent.labels),
+        },
+      }
+    : {}),
+  openParts: (i.subIssues?.nodes ?? []).filter((p) => p.state === "OPEN").length,
+  openPrs: (i.closedByPullRequestsReferences?.nodes ?? []).filter((p) => p.state === "OPEN").length,
+});
+
+/**
+ * A task's read (ADR 0069): what `issue(n)` and `comments(n)` give, and each comment's editor, a
+ * page of comments a call (`$after`). An issue and a PR share the fields a run reads.
+ */
+const TASK_FIELDS =
+  "id number title body state closedAt createdAt author { login __typename } labels(first: 100) { nodes { name } } comments(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id fullDatabaseId body createdAt updatedAt author { login __typename } editor { login __typename } } }";
+const TASK = `query($owner: String!, $name: String!, $n: Int!, $after: String) { repository(owner: $owner, name: $name) { issueOrPullRequest(number: $n) { __typename ... on Issue { ${TASK_FIELDS} stateReason subIssuesSummary { total completed } } ... on PullRequest { ${TASK_FIELDS} } } } }`;
+type GqlTask = {
+  __typename: "Issue" | "PullRequest";
+  id: string;
+  number: number;
+  title: string;
+  body: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  stateReason?: string | null;
+  closedAt: string | null;
+  createdAt: string;
+  author: GqlActor;
+  labels: GqlLabels;
+  subIssuesSummary?: { total: number; completed: number } | null;
+  comments: {
+    pageInfo: { hasNextPage: boolean; endCursor: string };
+    nodes: {
+      id: string;
+      fullDatabaseId: string;
+      body: string;
+      createdAt: string;
+      updatedAt: string | null;
+      author: GqlActor;
+      editor: GqlActor;
+    }[];
+  };
+};
 type GqlState = "OPEN" | "CLOSED";
 type GqlLabels = { nodes: { name: string }[] } | null | undefined;
 type GqlFamily = {

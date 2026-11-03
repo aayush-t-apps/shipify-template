@@ -1,15 +1,14 @@
 // @ts-check
 // Shipify chat: projects as workspaces (ADR 0065), loaded the first time one is needed: a
-// project's tabs and its page, the doc pane beside the thread, Files, and the quick switcher
-// (Ctrl+K). It keeps nothing but the open tabs and the pane's width, in the browser, with the rest.
-import { $, h, icon, set, size } from "./compose.js";
+// project's page, the doc pane beside the thread, Files, and the quick switcher (Ctrl+K). It keeps
+// nothing but the pane's width, in the browser, with the rest. A project has no tab row (ADR 0069):
+// its name in a thread's header goes to its page, and Ctrl+K opens on the chats seen last.
+import { $, h, icon, set, size, unfile } from "./compose.js";
 
 /** What the page lends it (app.js `ws`): its state and a few of its helpers. @type {any} */
 let A;
 const enc = encodeURIComponent;
 const IMG = /^image\/(png|jpeg|gif|webp)$/;
-/** The most tabs a project keeps open: the oldest goes. */
-const MOST = 12;
 const WORD = {
   "needs-you": "Needs you",
   working: "Working",
@@ -41,7 +40,6 @@ function known() {
   const seen = new Set();
   return all.filter((t) => t?.title && !seen.has(t.n) && seen.add(t.n));
 }
-const task = (n) => known().find((t) => t.n === n);
 /** A task's mark: the list's run first, then its state. */
 const mark = (t) => (A.runs().has(t?.n) ? "working" : t?.staying ? "staying" : t?.state || "open");
 const name = (P) => A.named(P);
@@ -59,124 +57,57 @@ function repoOf(P) {
     : owner && `https://github.com/${owner}/${real}`;
 }
 
-// ---------------------------------------------------------------- tabs
-
-const tabsOf = (P) => (A.S.tabs[P] ||= []);
-
-/** A project's tabs: its page, the tasks open in it (state, title, ✕), and + for a new chat. */
-function nav(P, n) {
-  const one = (t) => {
-    const x = task(t);
-    const st = mark(x);
-    const title = x ? A.bare(x.title) : `#${t}`;
-    const x2 = A.btn(icon("x"), () => shut(P, t, n), ".icon.x");
-    x2.ariaLabel = x2.title = `Close ${title}`;
-    return h(
-      `div.wt${t === n ? ".on" : ""}`,
-      h(
-        "a",
-        { href: `#/t/${t}`, title: `${title} · ${WORD[st]}`, "aria-current": t === n && "page" },
-        h(`i.mark.${st}`),
-        h("span", title),
-      ),
-      x2,
-    );
-  };
-  const home = h(
-    `div.wt.home${n ? "" : ".on"}`,
-    h(
-      "a",
-      { href: `#/p/${enc(P)}`, title: "The project's page", "aria-current": !n && "page" },
-      icon("app"),
-      h("span", name(P)),
-    ),
-  );
-  const add = A.btn(icon("plus"), () => A.start(`${P}: `), ".icon.add");
-  add.ariaLabel = add.title = "New chat here";
-  const e = h("nav.wtabs", { "aria-label": `${name(P)}'s tabs` }, home, tabsOf(P).map(one), add);
-  Object.assign(e.dataset, { p: P, n: String(n) });
-  return e;
-}
-
-/** A project's tabs above a view, this task's added (the oldest goes past MOST). */
-export function strip(box, P, n) {
-  const T = tabsOf(P);
-  if (n && !T.includes(n)) {
-    T.push(n);
-    T.splice(0, T.length - MOST);
-    A.keep();
-  }
-  box.querySelector(".wtabs")?.remove();
-  const e = nav(P, n);
-  box.prepend(e);
-  e.querySelector(".on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
-}
-
-/**
- * Tasks put in their projects' tabs, the oldest going past MOST (a split task's parts, from its Plan
- * card, ADR 0066). A task with no project has none.
- */
-export function tab(l) {
-  for (const t of l) {
-    const P = A.projOf(t);
-    if (!P) continue;
-    const T = tabsOf(P);
-    if (!T.includes(t.n)) T.push(t.n);
-    T.splice(0, T.length - MOST);
-  }
-  A.keep();
-  redraw();
-}
-
-/** ✕: the tab goes; the one open goes to its neighbour, or to the project's page. */
-function shut(P, t, n) {
-  const T = tabsOf(P);
-  const i = T.indexOf(t);
-  T.splice(i, 1);
-  A.keep();
-  const next = T[i] || T[i - 1];
-  if (t === n) location.replace(next ? `#/t/${next}` : `#/p/${enc(P)}`);
-  else redraw();
-}
-
-/** Alt+1…9: the project's page is 1, its tabs after it. */
-export function pick(i) {
-  $(".wtabs")?.querySelectorAll(".wt > a")[i - 1]?.click();
-}
-
-/** The list changed: the tabs on screen, and a page of this module's, drawn again. */
+/** The list changed: a page of this module's on screen, drawn again. */
 export function redraw() {
-  for (const e of document.querySelectorAll(".wtabs")) {
-    const f = nav(e.dataset.p, Number(e.dataset.n));
-    e.replaceWith(f);
-    f.scrollLeft = e.scrollLeft;
-  }
   const v = A.R.page;
   if (v?.ws && v.body.isConnected && A.R.files) set(v.body, v.draw(A.R.files));
 }
 
 // ---------------------------------------------------------------- a project's page and Files
 
-/** A doc in a list: a thumbnail or an icon, its name (opens it), its size, who, when it goes. */
+/** A file dragged onto the box goes with your next message, as Ask about this does (ADR 0069). */
+const drag = (e, f) => {
+  const ref = /^api\/file\/([\w-]+)$/.exec(f.src || "")?.[1];
+  if (!ref) return e;
+  e.draggable = true;
+  e.ondragstart = (d) =>
+    d.dataTransfer.setData(
+      "text/x-shipify-file",
+      JSON.stringify({ ref, name: f.name, type: f.type || "", size: f.size || 0 }),
+    );
+  return e;
+};
+
+/** Deleted for good, after you say so: the list shows it at once, then reads again. */
+async function del(f) {
+  if (!confirm(`Delete ${f.name}? It goes from every message that has it.`)) return;
+  const r = await unfile(f.ref).catch(() => 0);
+  if (!r?.ok) return alert("It couldn't be deleted just now: try again.");
+  const d = A.R.files;
+  A.R.files = {
+    ...d,
+    files: d.files.filter((x) => x !== f),
+    count: d.count - 1,
+    bytes: d.bytes - f.size,
+  };
+  redraw();
+  A.fresh();
+}
+
+/** A doc in a list: a thumbnail or an icon, its name (opens it; drag it to the box), size, who. */
 const kept = (f) => [
   IMG.test(f.type) ? h("img.thumb", { src: f.src, alt: "", loading: "lazy" }) : icon("file"),
   A.what(
-    A.btn(f.name, () => doc(f), ".name"),
-    A.meta(
-      size(f.size),
-      f.by === "you" ? "by you" : "by a run",
-      f.until && `goes ${A.until(f.until)}`,
+    drag(
+      A.btn(f.name, () => doc(f), ".name"),
+      f,
     ),
-    f.task && [" · ", A.to(f.task)],
+    A.meta(size(f.size), f.by === "you" ? "by you" : "by a run", ago(f.at)),
   ),
+  A.btn("Delete", () => del(f), ".danger"),
 ];
 const byAt = (a, b) => Date.parse(b.at) - Date.parse(a.at);
 const docs = (l, none) => A.list(l.sort(byAt), kept, none);
-/** The project of a file's task, as far as the page knows the task. */
-const projOfFile = (f, all) => {
-  const t = all.find((x) => x.n === f.task);
-  return t ? A.projOf(t) : "";
-};
 
 /** Its repo's docs, on GitHub (the door App can't read a repo's files): what each kind keeps. */
 function repoDocs(P) {
@@ -211,12 +142,11 @@ function repoDocs(P) {
   return h("section", h("h4", "Repo docs", h("small", "on GitHub")), h("p.links", repo, links));
 }
 
-/** The project's page, under its tabs: where it stands, its chats, its docs. */
+/** The project's page: where it stands, its chats, its docs. */
 export function project(P) {
   const top = () => A.btn([icon("plus"), "New chat here"], () => A.start(`${P}: `), ".primary");
-  A.page(name(P), "files", (d) => overview(P, d), top);
+  A.page(`${name(P)} · repo`, "files", (d) => overview(P, d), top);
   A.R.page.ws = 1;
-  $("#main .view")?.prepend(nav(P, 0));
 }
 
 function overview(P, d) {
@@ -260,7 +190,7 @@ function overview(P, d) {
       h("h4", "In", h("small", "what you sent")),
       docs(
         files.filter((f) => f.by === "you"),
-        "Nothing in the last 7 days.",
+        "Nothing yet.",
       ),
     ),
     h(
@@ -268,29 +198,56 @@ function overview(P, d) {
       h("h4", "Out", h("small", "what runs made")),
       docs(
         files.filter((f) => f.by === "run"),
-        "Nothing in the last 7 days.",
+        "Nothing yet.",
       ),
     ),
     repoDocs(P),
   ];
 }
 
-/** Files: what was sent or made in the last 7 days, by project. */
+/**
+ * Files (ADR 0069): what you sent and runs made, kept as long as their chat, by chat, the newest
+ * first; the total at the top. One with no chat (a draft's, or from before) is under No chat.
+ */
 export function files() {
-  A.page("Files", "files", (d) => {
-    const all = known();
-    const by = new Map();
-    for (const f of d.files.sort(byAt)) {
-      const p = projOfFile(f, all);
-      by.set(p, [...(by.get(p) || []), f]);
-    }
-    if (!by.size) return h("p.quiet", "No files in the last 7 days.");
-    const head = (p) =>
-      p ? h("h3", h("a", { href: `#/p/${enc(p)}` }, name(p))) : h("h3", "General");
-    return [...by].map(([p, l]) => [by.size > 1 && head(p), docs(l, "")]);
-  });
+  A.page(
+    "Files",
+    "files",
+    (d) => {
+      const all = known();
+      const by = new Map();
+      for (const f of d.files.sort(byAt)) by.set(f.task || 0, [...(by.get(f.task || 0) || []), f]);
+      if (!by.size) return h("p.quiet", "No files yet: what you send in a chat shows here.");
+      const head = (n, t = all.find((x) => x.n === n)) =>
+        h("h3", n ? A.to(n, t ? `#${n} ${A.bare(t.title)}` : `#${n}`) : "No chat");
+      return [
+        h("p.quiet", `${d.count} ${d.count === 1 ? "file" : "files"} · ${size(d.bytes)} in all`),
+        [...by].map(([n, l]) => [head(n), docs(l, "")]),
+      ];
+    },
+    top,
+  );
   A.R.page.ws = 1;
 }
+
+/**
+ * Export everything (ADR 0069, export.js): every file kept, as one zip your browser builds, its
+ * size said first; shared as a drop from a new chat's box.
+ */
+const top = () =>
+  A.btn(
+    [icon("save"), "Export everything"],
+    (e) => {
+      const at = e.currentTarget;
+      const share = (f) =>
+        A.into((co) => {
+          co.add([f]);
+          co.fill("share this as a drop");
+        });
+      A.lazy("export")((x) => x.offer(at, x.exportFiles(), share));
+    },
+    ".primary",
+  );
 
 // ---------------------------------------------------------------- the doc pane
 
@@ -369,17 +326,20 @@ export async function doc(f) {
       { href: f.src, download: f.name, title: "Download", "aria-label": "Download" },
       icon("save"),
     );
-  const asked = () => {
-    A.ask({ ref, name: f.name, type: f.type || "", size: f.size || 0 });
+  // Ask about this puts it in your next message; Share asks for a drop of it (one short run).
+  const asked = (w) => () => {
+    A.ask({ ref, name: f.name, type: f.type || "", size: f.size || 0 }, w);
     if (!matchMedia("(min-width: 800px)").matches) close();
   };
-  const ask =
-    ref && A.S.menu?.files?.on && A.btn([icon("chat"), "Ask about this"], asked, ".btn.askit");
+  const on = ref && A.S.menu?.files?.on;
+  const ask = on && A.btn([icon("chat"), "Ask about this"], asked(), ".btn.askit");
+  const share = on && A.btn([icon("open"), "Share"], asked("share this as a drop"), ".btn.askit");
   const body = h("div.dbody", h("div.ph"));
   const head = h(
     "header.head",
-    h("div.title", h("h2", f.name), h("p.tags", f.size && size(f.size))),
+    h("div.title", drag(h("h2", f.name), f), h("p.tags", f.size && size(f.size))),
     ask,
+    share,
     dl,
     x,
   );
@@ -415,12 +375,16 @@ export async function doc(f) {
 
 // ---------------------------------------------------------------- Ctrl+K
 
-/** Find a project, a task or a doc by its name, and go there: the arrows move, Enter opens. */
+/**
+ * Find a project, a repo, a chat or a doc by its name, and go there: the arrows move, Enter opens.
+ * With nothing typed, the open chats seen last come first (ADR 0069); by meaning when you pick it
+ * (ADR 0070).
+ */
 export function quick() {
   $(".qk")?.remove();
   const q = h("input", {
     type: "search",
-    placeholder: "Find a project, a task or a doc",
+    placeholder: "Find a project, a repo, a chat or a doc",
     "aria-label": "Find",
   });
   const out = h("div.qlist");
@@ -428,17 +392,31 @@ export function quick() {
   document.body.append(d);
   d.onclose = () => d.remove();
   d.onclick = (e) => e.target === d && d.close();
-  const all = () => {
+  const all = (w) => {
     const tasks = known();
     const ps = [...new Set(["shipify", ...tasks.map((t) => A.projOf(t)).filter(Boolean)])];
+    // A repo is a repo; "project" is one you made (ADR 0070).
+    const projects = ps.map((p) => ({ k: "code", t: name(p), s: "Repo", go: `#/p/${enc(p)}` }));
+    // Projects you made (ADR 0069) go to their own page.
+    for (const t of tasks)
+      if (t.project)
+        projects.unshift({ k: "app", t: t.project.name, s: "Project", go: `#/t/${t.n}` });
+    const chat = (t) => ({
+      k: "chat",
+      t: A.bare(t.title),
+      s: [`#${t.n}`, A.projOf(t) && name(A.projOf(t)), WORD[mark(t)]].filter(Boolean).join(" · "),
+      go: `#/t/${t.n}`,
+    });
+    // Nothing typed: the chats seen last (the one on screen aside), open ones only, newest first;
+    // then the projects.
+    if (!w) {
+      const last = A.S.seen.map((n) => tasks.find((t) => t.n === n));
+      const open = last.filter((t) => t && t.state !== "closed" && location.hash !== `#/t/${t.n}`);
+      return [...open.reverse().map(chat), ...projects];
+    }
     return [
-      ...ps.map((p) => ({ k: "app", t: name(p), s: "Project", go: `#/p/${enc(p)}` })),
-      ...tasks.map((t) => ({
-        k: "chat",
-        t: A.bare(t.title),
-        s: [`#${t.n}`, A.projOf(t) && name(A.projOf(t)), WORD[mark(t)]].filter(Boolean).join(" · "),
-        go: `#/t/${t.n}`,
-      })),
+      ...projects,
+      ...tasks.map(chat),
       ...(A.R.files?.files || []).map((f) => ({
         k: "file",
         t: f.name,
@@ -447,28 +425,56 @@ export function quick() {
       })),
     ];
   };
+  const open = (x) => () => {
+    d.close();
+    if (x.f) doc(x.f);
+    else A.go(x.go);
+  };
+  const row = (x) =>
+    h("button", { type: "button", onclick: open(x) }, icon(x.k), h("span", x.t), h("small", x.s));
+  // Find by meaning (ADR 0070): the page knows only names; GitHub's search reads every chat's and
+  // page's words, by what they mean. Asked only when you pick it; words when GitHub is busy.
+  const KIND = { chat: ["chat", "Chat"], project: ["app", "Project"], page: ["book", "Page"] };
+  const deep = async () => {
+    const w = q.value.trim();
+    set(out, h("p.quiet", "Finding…"));
+    const r = await A.get(`search?q=${enc(w)}`, undefined, true, "").catch(() => null);
+    const hits = (r?.items || []).map((x) => {
+      const [k, s] = KIND[x.kind];
+      return { k, t: x.title, s: `${s} · #${x.n}${x.open ? "" : " · closed"}`, go: `#/t/${x.n}` };
+    });
+    if (d.open)
+      set(
+        out,
+        hits.map(row),
+        h(
+          "p.quiet",
+          !r
+            ? "The search didn't answer. "
+            : r.words
+              ? "By words: search by meaning is busy, so try again in a minute. "
+              : !hits.length && "Nothing found. ",
+          A.ext(`${repoOf("shipify")}/issues?q=${enc(w)}`, "Search on GitHub"),
+        ),
+      );
+  };
   const draw = () => {
     const w = q.value.trim().toLowerCase();
-    const hit = all()
+    const hit = all(w)
       .filter((x) => `${x.t} ${x.s}`.toLowerCase().includes(w))
       .slice(0, 30);
-    const open = (x) => () => {
-      d.close();
-      if (x.f) doc(x.f);
-      else A.go(x.go);
-    };
     set(
       out,
-      hit.map((x) =>
+      hit.map(row),
+      !hit.length && h("p.quiet", "Nothing by that name here."),
+      w &&
         h(
           "button",
-          { type: "button", onclick: open(x) },
-          icon(x.k),
-          h("span", x.t),
-          h("small", x.s),
+          { type: "button", onclick: deep },
+          icon("search"),
+          h("span", "Find by meaning"),
+          h("small", "GitHub's search"),
         ),
-      ),
-      !hit.length && h("p.quiet", "Nothing by that name."),
     );
   };
   q.oninput = draw;

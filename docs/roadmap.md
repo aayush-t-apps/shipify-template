@@ -27,6 +27,15 @@ pipeline (ADR 0048).
      (npm, the agent's API, GitHub, any site).
    - **`ship task <n>` on the PC:** a task's status and its last runs, with links to their logs.
    - **A container image for boxes.**
+   - **The copy of the web chat's files from KV to R2 goes** (ADR 0069), a week after the edge
+     with it deploys: KV kept a file 7 days, so nothing is left to copy. In `edge/src/store.ts`
+     the section "the switch from KV, once" (`MOVED`, `COPY_STEP`, `moveFromKv`, `copyStep`),
+     and its line in `edge/src/index.ts`'s cron; `Kv.list` and `Kv.getWithMetadata` in
+     `edge/src/env.ts` and `tests/edge/kv.ts`; the two routes tests that copy KV's files. Keep
+     `FILE_REF`'s `up-…` and `run-…` forms: the copied files keep those keys.
+   - **Knowledge, only if it's needed** (ADR 0070's "Not in it"): a search store of Shipify's own
+     (Cloudflare Vectorize) only if GitHub's search by meaning proves not enough, or goes; a
+     Zotero tool (its free Web API, as a plug-in) if you work from papers.
 4. **Chat channels beyond Telegram** (Discord, email), each one channel in `edge/` with its
    conformance test. (Notifications without Telegram are the web chat's own now: ADR 0050.)
 5. **The rest of ADR 0038** (its builds made pi, then OpenCode, agents through one setup), each

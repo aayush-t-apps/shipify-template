@@ -4,6 +4,7 @@
 // minted for it; plan carries on from that read, reading each repo with its own account's key.
 // This is the run's only read of the task; decide works from it with no GitHub.
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { forms, rec, runUrl, timeZone, workspace } from "../commands/task/context.ts";
 import {
@@ -15,22 +16,27 @@ import {
   mergedPr,
   productionUrl,
   releaseState,
+  releaseStateAsync,
 } from "../commands/task/deploys.ts";
+import { cleanable } from "../commands/task/sweep.ts";
 import {
+  LIBRARY_LABEL,
   namesPick,
+  PROJECT_LABEL,
   pickedLine,
   pickerAsked,
   readFrom,
-  SUB_TASK_LABEL,
   withoutLine,
+  wordOf,
 } from "../contracts/index.ts";
 import { parseUse, useChoices, useCommand } from "../lib/agents.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
 import { ghRun, platformRepo, RECORD_WRITER, repoOfPr } from "../lib/github.ts";
 import { accountList, platformAccount, taskAccount, yourAccounts } from "../lib/accounts.ts";
+import { planFor } from "../lib/plan.ts";
 import { maskSecrets } from "../contracts/index.ts";
 import type { RecordComment, RecordIssue } from "../lib/plugins/record.ts";
-import { type RepoRef, repoFor, reposOnGitHub } from "../lib/projects-on-github.ts";
+import { type RepoRef, repoFor, reposKept } from "../lib/projects-on-github.ts";
 import { RECIPE_LABEL, recipeFile, recipeOf } from "../lib/recipes.ts";
 import { loadRegistry } from "../lib/registry.ts";
 import { isStatusIssue } from "../lib/status-issue.ts";
@@ -50,6 +56,7 @@ import { defaultAgent, executors, taskChoice } from "./agent.ts";
 import { type Context, type ToolAct, yourWords } from "./decide.ts";
 import { instantAnswer } from "./instant.ts";
 import { hash8 } from "./keys.ts";
+import { placed, readsFamily } from "./projects.ts";
 import type { Author, Said, Snapshot, Trigger } from "./types.ts";
 
 /** The door App's login on GitHub (`<slug>[bot]`): its comments are your words through a chat. */
@@ -96,14 +103,17 @@ export interface TaskRecord {
 /** The task step's saved read (ADR 0045): the record, once. The status comment counts only when a run
  * wrote it and no one else edited it since. */
 export function readRecord(n: number): TaskRecord {
-  const issue = rec().issue(n);
-  const comments = rec().comments(n);
+  // One read (ADR 0069): the issue, its comments, and who last edited each (the status comment's).
+  const read = rec().task(n);
+  const { issue } = read;
+  const comments = read.comments.map(({ editor: _, ...c }) => c);
   const found = findStatus(comments);
   if (found.comment) {
-    const who = rec().commentWriters(found.comment);
-    if (who.editor && who.editor !== RECORD_WRITER) {
+    const id = found.comment.id;
+    const editor = read.comments.find((c) => c.id === id)?.editor;
+    if (editor && editor !== RECORD_WRITER) {
       process.stderr.write(
-        `  … the status comment was edited by ${who.editor}: starting from the task\n`,
+        `  … the status comment was edited by ${editor}: starting from the task\n`,
       );
       return { issue, comments, state: findStatus([]).state };
     }
@@ -188,40 +198,41 @@ export function readTokenFor(repo: string | undefined, account?: string): string
  * that has none reads it now). `look`: plan's own, which also looks the task's outside repos up
  * (ADR 0044); the other steps' snapshots don't need them.
  */
-export function snapshot(
+export async function snapshot(
   n: number,
   trigger: Trigger,
   opts: { look?: boolean; record?: TaskRecord } = {},
-): { s: Snapshot; ctx: Context } {
+): Promise<{ s: Snapshot; ctx: Context }> {
   const r = opts.record ?? readRecord(n);
   const { issue, state, statusId } = r;
   const owner = ownerLogin();
   const statusIssue = isStatusIssue(issue);
   const labels = issue.labels.map((l) => l.name);
   const account = recordAccount(n, r);
-
-  // Each PR the task still thinks open, read again: a merge or a close is seen (`go`, `preview`,
-  // `start over` and repeats act on what's true). Each with its own account's key.
-  let merged = false;
-  for (const url of state.prs ?? []) {
-    const info = state.prInfo?.[url];
-    if (info?.state !== "open") continue;
-    const now = releaseState(url, readTokenFor(repoOfPr(url), account)).state;
-    if (now === "merged" || now === "closed") info.state = now;
-    merged ||= now === "merged";
-  }
-  // A merge ends its branch: the task's next work starts a new one from the default branch, so its
-  // PR holds only the new commits (a repo may keep merged branches, and a squash leaves them off).
-  const open = (state.prs ?? []).some((u) => state.prInfo?.[u]?.state === "open");
-  if (merged && state.branch && !open) state.branch = nextBranch(state.branch);
-
   const { said, words, ia } = wordsOf(n, r);
   const all = forms();
-  const read = taskForm(words, all);
-  const rf = repeatForm(read);
+  const parsed = parseTask(issue.title, words, all);
+  // The repo the title names: a list kept on the box must have it, else it's read again.
+  const named = parsed.kind === "app" || parsed.kind === "op" ? parsed.project : undefined;
+  // A box keeps its repo lists in the runner's own cache for the next runs' plans; elsewhere none.
+  const keep = process.env.SHIPIFY_BOX
+    ? join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "shipify")
+    : undefined;
+  const accountToken = account ? process.env.SHIPIFY_ACCOUNT_TOKEN || undefined : undefined;
+
+  // Its reads of GitHub, all at once (ADR 0051 B3): each PR the task still thinks open, your
+  // repos, and its other account's. Each PR with its own account's key.
+  const prsRead = Promise.all(
+    (state.prs ?? [])
+      .filter((url) => state.prInfo?.[url]?.state === "open")
+      .map(async (url) => ({
+        url,
+        now: (await releaseStateAsync(url, readTokenFor(repoOfPr(url), account))).state,
+      })),
+  );
   // The projects and repos a task can name and its agent can read: this machine's registry (a PC:
   // its projects), else GitHub's (a box keeps none: your projects and your other repos).
-  const repos = ((): RepoRef[] => {
+  const reposRead = (async (): Promise<RepoRef[]> => {
     try {
       const local = loadRegistry().projects.map((p) => p.id);
       if (local.length)
@@ -234,19 +245,51 @@ export function snapshot(
         }));
     } catch {}
     try {
-      return reposOnGitHub(process.env.SHIPIFY_READ_TOKEN || undefined);
+      return await reposKept(process.env.SHIPIFY_READ_TOKEN || undefined, {
+        ...(keep ? { keep } : {}),
+        ...(named && !named.includes("/") ? { needs: named } : {}),
+      });
     } catch {
       return [];
     }
   })();
+  const theirsRead =
+    account && accountToken
+      ? reposKept(accountToken, {
+          account,
+          ...(keep ? { keep } : {}),
+          ...(named?.includes("/") ? { needs: named } : {}),
+        }).then(
+          (v) => ({ v }),
+          (e: unknown) => ({ e }),
+        )
+      : undefined;
+
+  // A merge or a close is seen (`go`, `preview`, `start over` and repeats act on what's true).
+  let merged = false;
+  for (const { url, now } of await prsRead) {
+    const info = state.prInfo?.[url];
+    if (!info) continue;
+    if (now === "merged" || now === "closed") info.state = now;
+    merged ||= now === "merged";
+  }
+  // A merge ends its branch: the task's next work starts a new one from the default branch, so its
+  // PR holds only the new commits (a repo may keep merged branches, and a squash leaves them off).
+  const open = (state.prs ?? []).some((u) => state.prInfo?.[u]?.state === "open");
+  if (merged && state.branch && !open) state.branch = nextBranch(state.branch);
+
+  const read = taskForm(words, all);
+  const rf = repeatForm(read);
+  const repos = await reposRead;
   // The task's other account (ADR 0045): its repos, by owner/name, when the repos App reached it,
   // and only on the account you added (its pinned id); else why not, in GitHub's words.
-  const accountToken = account ? process.env.SHIPIFY_ACCOUNT_TOKEN || undefined : undefined;
   let reached = false;
   let why: string | undefined = account && !accountToken ? "no-token" : undefined;
-  if (account && accountToken)
+  const got = theirsRead && (await theirsRead);
+  if (account && got)
     try {
-      const theirs = reposOnGitHub(accountToken, account);
+      if ("e" in got) throw got.e;
+      const theirs = got.v;
       const pinned = accountList().find((a) => a.login === account)?.id;
       const other = theirs.find((r) => pinned && r.ownerId && r.ownerId !== pinned);
       if (other)
@@ -287,7 +330,7 @@ export function snapshot(
       id: process.env.GITHUB_RUN_ID ?? `local-${Date.now()}`,
       ...(runUrl() ? { url: runUrl() } : {}),
     },
-    parsed: parseTask(issue.title, words, all),
+    parsed,
     ...(read ? { form: read } : {}),
     ...(rf ? { repeatForm: rf } : {}),
     ...(firstUseOf(read, words) ? { firstUse: firstUseOf(read, words) } : {}),
@@ -300,17 +343,46 @@ export function snapshot(
       listed: yourAccounts(),
       ...(process.env.SHIPIFY_REPOS_SLUG ? { app: process.env.SHIPIFY_REPOS_SLUG } : {}),
     },
-    isTask: Boolean(owner) && !statusIssue && !labels.includes("notebook"),
+    // Pages and saving start no agent (ADR 0069): a Library page as a notebook page, and a
+    // project's opening or edit (words in its thread still do).
+    isTask:
+      Boolean(owner) &&
+      !statusIssue &&
+      !labels.includes("notebook") &&
+      !labels.includes(LIBRARY_LABEL) &&
+      !(labels.includes(PROJECT_LABEL) && (trigger.kind === "opened" || trigger.kind === "edited")),
   };
   const looked = opts.look ? lookedUp(s, process.env.SHIPIFY_READ_TOKEN || undefined) : undefined;
   if (looked) s.looked = looked;
-  // A split task's family (ADR 0066): one read by plan, only for a part or a task with parts.
-  if (opts.look && (labels.includes(SUB_TASK_LABEL) || (issue.sub_issues_summary?.total ?? 0) > 0))
+  // A split task's family (ADR 0066) and its project (ADR 0069): one read by plan, only for a part,
+  // a task with parts, a project, or a chat in one.
+  if (opts.look && readsFamily(labels, words, issue.sub_issues_summary?.total ?? 0))
     try {
-      const family = rec().family(n);
-      if (family) s.family = family;
+      const me = {
+        number: n,
+        title: issue.title,
+        body: words,
+        state: issue.state === "closed" ? ("closed" as const) : ("open" as const),
+        labels,
+      };
+      Object.assign(s, placed(me, rec().family(n)));
     } catch (e) {
       process.stderr.write(`  … its sub-tasks couldn't be read: ${(e as Error).message}\n`);
+      s.familyUnread = true;
+    }
+  // A clean start (ADR 0070): its chats, read only when your new words ask for one (a new chat's
+  // too), or say yes to its list. The read failing leaves none: nothing is listed or closed.
+  const asks = [
+    ...said.filter((c) => c.id > state.seen && c.author !== "run" && c.author !== "other"),
+    ...(statusId ? [] : [{ text: issue.title }]),
+  ].map((c) => wordOf(c.text));
+  if (opts.look && asks.some((w) => w === "clean start" || (w === "yes" && state.pending.clean)))
+    try {
+      s.cleanable = cleanable(rec(), n, s.now);
+    } catch (e) {
+      process.stderr.write(
+        `  … the chats for a clean start couldn't be read: ${(e as Error).message}\n`,
+      );
     }
   return { s, ctx: context(s) };
 }
@@ -426,6 +498,7 @@ export function context(s: Snapshot): Context {
           };
     },
     planMerged: (id) => existsSync(join(PLATFORM_ROOT, "plans", `${id}.plan.md`)),
+    taskPlan: () => planFor(`${repo}#${s.n}`),
     timeZone: timeZone(),
     taskUrl: `https://github.com/${repo}/issues/${s.n}`,
     operateForm: `https://github.com/${repo}/issues/new?template=7-operate.yml`,
@@ -485,8 +558,8 @@ export function context(s: Snapshot): Context {
             ...(d.url ? { url: d.url } : {}),
             ...(d.staging ? { staging: true } : {}),
           }
-        : r.state === "failed"
-          ? { state: "failed", ...(r.run ? { run: r.run } : {}) }
+        : r.state === "failed" || (r.state === "held" && r.run !== d.held)
+          ? { state: r.state, ...(r.run ? { run: r.run } : {}) }
           : late || r.state === "unreadable"
             ? { state: "gone" }
             : { state: "waiting" };

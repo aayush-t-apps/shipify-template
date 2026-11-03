@@ -20,7 +20,19 @@ export function replyKey(k: {
 export const fingerprint = (calls: unknown[]) =>
   createHash("sha256").update(canonicalJson(calls)).digest("hex").slice(0, 16);
 
-/** A list's code (ADR 0049): all it lists, its calls, its notes and a split's parts (ADR 0066),
- * which its Yes names. */
-export const listCode = (calls: unknown[] = [], notes: unknown[] = [], split: unknown[] = []) =>
-  fingerprint(split.length ? [calls, notes, split] : [calls, notes]).slice(0, 8);
+/** A list's code (ADR 0049): all it lists, its calls, its notes, a split's parts (ADR 0066) and a
+ * clean start's chats (ADR 0070), which its Yes names. Each kind added only when there, so a
+ * list's code stays as it was. */
+export const listCode = (
+  calls: unknown[] = [],
+  notes: unknown[] = [],
+  split: unknown[] = [],
+  clean: unknown[] = [],
+) =>
+  fingerprint(
+    clean.length
+      ? [calls, notes, split, clean]
+      : split.length
+        ? [calls, notes, split]
+        : [calls, notes],
+  ).slice(0, 8);

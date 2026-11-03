@@ -1,11 +1,12 @@
 // The watch's runs (ADR 0019, docs/watch.md): what watch.yml runs when the watch (the edge's check
 // every 5 minutes) or you press one of its buttons. Each is one job:
-//   due      what's due now (lib: taskDue starts each due task's own run and closes a quiet one),
+//   due      what's due now (lib: taskDue starts each due task's own run and closes a quiet part),
 //            each box's weekly clean-up once its last is a week old, this box's health, and the
 //            schedule (the soonest time is `watch.next`, which the watch reads)
 //   cleanup  one box's weekly clean-up: closed or deleted tasks' folders, the agents' leftover run
 //            folders (lib/sandbox.ts), old agent installs, doctor (the workflow prunes the
-//            package caches after, while no other slot runs)
+//            package caches after, while no other slot runs); and, once a week in all, closed
+//            chats' files and the 30-day close (task/sweep.ts, ADR 0069)
 //   alert    what the watch saw change: a box offline, back, new or gone; an app failing or back
 // A box knows none of this: it runs what the queue hands it. The status issue is the record.
 import { spawnSync } from "node:child_process";
@@ -46,9 +47,17 @@ import { newer } from "../lib/versions.ts";
 import { cleanupsUnderWay, pressWatch, watchRuns } from "../lib/watch.ts";
 import { doctor } from "./doctor.ts";
 import { rec, timeZone, tryOr } from "./task/context.ts";
-import { countSkills, type DigestFacts, digestDue, digestNext, digestText } from "./task/digest.ts";
+import {
+  countSkills,
+  type DigestFacts,
+  digestDue,
+  digestNext,
+  digestText,
+  projectsWeek,
+} from "./task/digest.ts";
 import { type Due, keepRecipes } from "./task/due.ts";
 import { nearlyFull, readNotebook } from "./task/notebook.ts";
+import { sweep, sweepOnce } from "./task/sweep.ts";
 import { cleanUpTasks, runUrl, taskDue } from "./task.ts";
 
 const WEEK = 7 * 24 * 60 * 60_000;
@@ -102,8 +111,12 @@ export async function watchDue(): Promise<Result> {
         [] as { n: number; title: string }[],
       )
     : [];
-  // The week's run rows, for the digest's skills: read only when it's said.
+  // The week's run rows, for the digest's skills, and your projects (ADR 0070), one read: read only
+  // when it's said.
   const rows = sayDigest ? tryOr(() => weekRows(at), undefined) : undefined;
+  const projects = sayDigest
+    ? tryOr(() => projectsWeek(rec().liveProjects(), at), undefined)
+    : undefined;
   const posted = updateStatusIssue(
     (s) => {
       s.watch = { ...s.watch, last: at.toISOString(), box, run: runUrl(), digest: digestAt };
@@ -133,7 +146,14 @@ export async function watchDue(): Promise<Result> {
       const said = bad.map((p) => `- \`${p.file}\` doesn't read: ${p.problem}. Fix it in a PR.`);
       const skills = rows ? countSkills(rows, skillsOnMain(), at) : undefined;
       const digest = sayDigest
-        ? digestText({ ...digestFacts(s, data.apps, waiting, at), skills }, whenHere)
+        ? digestText(
+            {
+              ...digestFacts(s, data.apps, waiting, at),
+              skills,
+              ...(projects?.length ? { projects } : {}),
+            },
+            whenHere,
+          )
         : "";
       const text = [health, said.length ? `**Recipes**\n\n${said.join("\n")}` : "", digest]
         .filter(Boolean)
@@ -247,7 +267,8 @@ export async function doorAnswers(
 export async function watchCleanup(boxArg?: string): Promise<Result> {
   // The box it's on is the truth; the input says which box was meant.
   const box = process.env.SHIPIFY_BOX || process.env.RUNNER_NAME || boxArg || hostname();
-  const at = new Date().toISOString();
+  const started = new Date();
+  const at = started.toISOString();
   const t = cleanUpTasks();
   const runs = cleanStaleRuns();
   // On a box, its shared tools kept to the agents' pinned versions and two Node versions, and each
@@ -267,8 +288,20 @@ export async function watchCleanup(boxArg?: string): Promise<Result> {
     detail: c.detail,
     fix: c.fix,
   }));
+  // Closed chats' files and the 30-day close (ADR 0069), once a week however many boxes: taken
+  // after this box's own work, so two boxes started together seldom read the record at once. Due
+  // and written by the clean-up's start, not the time now: the next one starts a week after this
+  // start, so a time written minutes later would make it skip a week.
+  const swept = await sweepOnce(
+    started,
+    {
+      read: () => readStatusIssue(),
+      update: (change) => updateStatusIssue(change, { timeZone: timeZone() }),
+    },
+    () => sweep(started),
+  ).catch((e) => `the weekly steps stopped: ${(e as Error).message.slice(0, 160)}`);
   const agents = `${runs.removed ? `, ${runs.removed} old agent run folder(s) removed` : ""}${runs.failed.length ? `; couldn't clean ${runs.failed.join(", ")}` : ""}${tidied.length ? `, old tools removed (${tidied.join(", ")})` : ""}${images.pruned ? `, containers' images removed (${images.pruned} slot(s))` : ""}${images.failed.length ? `; couldn't prune containers of ${images.failed.join(", ")}` : ""}${onBox && !idle ? "; tools and images left as they are (another slot is busy)" : ""}`;
-  const summary = `${t.folders} task folder(s) removed${agents}${full.length ? `; notebook pages nearly full, to split: ${full.join(", ")}` : ""}${door ? `; ${door}` : ""}`;
+  const summary = `${t.folders} task folder(s) removed${agents}${swept ? `; ${swept}` : ""}${full.length ? `; notebook pages nearly full, to split: ${full.join(", ")}` : ""}${door ? `; ${door}` : ""}`;
   const posted = updateStatusIssue(
     (s) => {
       const doctorSays = setCleanup(s, box, { at, run: runUrl(), summary, checks });

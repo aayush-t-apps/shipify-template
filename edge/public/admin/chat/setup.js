@@ -5,10 +5,40 @@ import { cap, h, icon, nm, pretty, uid } from "./compose.js";
 
 /** What the page lends it (app.js `lazy`): its state and a few of its helpers. @type {any} */
 let A;
-export const init = (a) => {
+/** Takes what the page lends, and loads its stylesheet; ready once it has. */
+export function init(a) {
   A = a;
-};
+  return new Promise((r) =>
+    document.head.append(
+      h("link", { rel: "stylesheet", href: "setup.css", onload: r, onerror: r }),
+    ),
+  );
+}
 const no = () => {};
+
+// Notifications on this device, or off (ADR 0050): this browser's subscription sent to the edge,
+// made again under a newer key (app.js `sync` asks for that as the page opens).
+const b64 = (k) =>
+  Uint8Array.from(atob(k.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+export async function notify(on) {
+  const S = A.S;
+  const pm = (await A.reg).pushManager;
+  const k = S.menu?.notifications?.key;
+  let s = await pm.getSubscription();
+  if (!on) {
+    S.note = "";
+    A.keep();
+    return s && A.get("push", { off: s.endpoint }).finally(() => s.unsubscribe());
+  }
+  if ((await Notification.requestPermission()) !== "granted")
+    throw Error("Blocked: allow them in the site's settings, or the phone's");
+  // An older key's: made again (the old is dropped once gone).
+  if (s && !S.note?.endsWith(` ${k}`)) s = (await s.unsubscribe()) && null;
+  s ||= await pm.subscribe({ userVisibleOnly: true, applicationServerKey: b64(k) });
+  await A.get("push", { on: s.toJSON() });
+  S.note = `${s.endpoint} ${k}`;
+  A.keep();
+}
 
 const cmd = (c) =>
   h(
@@ -43,7 +73,7 @@ const bell = (d) => {
   const o = A.out();
   const sw = h("input", { type: "checkbox", checked: !!S.note });
   sw.onchange = () =>
-    A.notify(sw.checked)
+    notify(sw.checked)
       .then(A.sync)
       .then(A.fresh, (e) => {
         sw.checked = !!S.note;
@@ -81,7 +111,7 @@ const WHY = {
   "its job": "its repeat's time came",
   "a reminder": "its reminder's time came",
   "a check": "its check's time came",
-  "a quiet day": "a quiet day, so it closed",
+  "a part closed": "its part closed, so what waited starts",
   "its deploy": "its deploy finished",
   "its release": "its release PR was merged or closed",
   "a new recipe": "a new recipe",

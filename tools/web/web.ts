@@ -49,11 +49,11 @@ export type FilesVerdict =
 
 /** The note when files are off: words still work. */
 export const FILES_OFF =
-  "files stay off until the next deploy creates the store (FILES, in edge/wrangler.jsonc): the deploy token needs “Workers KV Storage: Edit” (docs/setup.md, Tokens and secrets). Words work now";
+  "files stay off until the next deploy creates the store (BUCKET, in edge/wrangler.jsonc): the deploy token needs “Workers R2 Storage: Edit” (docs/setup.md, Tokens and secrets). Words work now";
 
 /**
- * Cloudflare's answer to GET /accounts/<id>/workers/scripts/shipify/settings: whether a Workers KV
- * namespace is bound as FILES, or why it couldn't tell.
+ * Cloudflare's answer to GET /accounts/<id>/workers/scripts/shipify/settings: whether an R2 bucket
+ * is bound as BUCKET (ADR 0069), or why it couldn't tell.
  */
 export function filesVerdict(status: number, body: unknown): FilesVerdict {
   const said = (body ?? {}) as {
@@ -75,8 +75,8 @@ export function filesVerdict(status: number, body: unknown): FilesVerdict {
   const bindings = said.result?.bindings;
   if (status !== 200 || said.success === false || !Array.isArray(bindings))
     return { kind: "other", line: `Cloudflare said: ${why}` };
-  return bindings.some((b) => b?.type === "kv_namespace" && b?.name === "FILES")
-    ? { kind: "bound", line: "the edge keeps the chat's files (FILES is bound)" }
+  return bindings.some((b) => b?.type === "r2_bucket" && b?.name === "BUCKET")
+    ? { kind: "bound", line: "the edge keeps the chat's files (BUCKET is bound)" }
     : { kind: "unbound", line: FILES_OFF };
 }
 

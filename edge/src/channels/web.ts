@@ -3,14 +3,15 @@
 // the edge's own chat routes (edge/src/web/), which call the door directly with a proof made from
 // the door App's key, so `POST /door/web` from outside gets the door's 401. Its replies are read in
 // place, on the task, so `send` only tells your devices one came (ADR 0050: Web Push, push.ts),
-// never with its words; `sendFiles` keeps a run's files in the chat's store (Workers KV, bound as
-// FILES) for 7 days, where the page shows them. `file` hands a run what you sent from the page. No
-// log line holds the words, a file's name or a key.
+// never with its words; `sendFiles` keeps a copy of a run's files in the chat's store (R2, bound as
+// BUCKET, store.ts) with its chat's number, where the page shows them as long as the chat lasts.
+// `file` hands a run what you sent from the page. No log line holds the words, a file's name or a
+// key.
 import type { Deps, Env, Kept } from "../env.ts";
 import {
+  bucketOf,
   devicesOf,
   FILE_REF,
-  KEEP_S,
   keepDevices,
   kvOf,
   logOf,
@@ -20,6 +21,7 @@ import {
   same,
 } from "../env.ts";
 import { type Note, type Rung, ring, serviceOf } from "../push.ts";
+import { newRef, open, put } from "../store.ts";
 import {
   type Channel,
   type FileKind,
@@ -63,6 +65,10 @@ function parse(body: string): Message | null {
   if (f && (!ref || !FILE_REF.test(ref) || !name)) return null;
   const repliesTo = typeof o.repliesTo === "number" && o.repliesTo > 0 ? o.repliesTo : undefined;
   const album = str(o.album, 120);
+  const under =
+    typeof o.under === "number" && Number.isSafeInteger(o.under) && o.under > 0
+      ? o.under
+      : undefined;
   return {
     id,
     chat,
@@ -71,6 +77,10 @@ function parse(body: string): Message | null {
     forwarded: o.forwarded === true,
     ...(repliesTo ? { repliesTo } : {}),
     ...(album ? { album } : {}),
+    // A new chat in a project (ADR 0069: **New chat here**).
+    ...(under ? { under } : {}),
+    // A button's word (ADR 0069): the web chat shows no message for it.
+    ...(o.button === true ? { button: true as const } : {}),
     ...(f && ref && name
       ? {
           file: {
@@ -198,27 +208,21 @@ export const web: Channel = {
     return { ok: true };
   },
 
-  /** A run's files, kept for the page: how many the store didn't take. */
+  /** A run's files, a copy kept for the page with its chat's number: how many the store didn't take. */
   async sendFiles(env: Env, deps: Deps, _chat: string, task: number, files: File[]) {
-    const kv = kvOf(env);
+    const bucket = bucketOf(env);
     const keep = async (f: File) => {
-      if (!kv || f.size > MAX_FILE_BYTES) return false;
+      if (!bucket || f.size > MAX_FILE_BYTES) return false;
+      const at = deps.now();
       try {
-        await kv.put(
-          `run-${task}-${crypto.randomUUID().replace(/-/g, "")}`,
-          await f.arrayBuffer(),
-          {
-            expirationTtl: KEEP_S,
-            metadata: {
-              name: f.name.slice(0, 200),
-              type: f.type || "application/octet-stream",
-              size: f.size,
-              by: "run",
-              at: deps.now(),
-              task,
-            },
-          },
-        );
+        await put(bucket, newRef(at), f, {
+          name: f.name.slice(0, 200),
+          type: f.type || "application/octet-stream",
+          size: f.size,
+          by: "run",
+          at,
+          task,
+        });
         return true;
       } catch {
         return false;
@@ -229,24 +233,19 @@ export const web: Channel = {
     return unsent;
   },
 
-  /** A file you sent from the page, for the run: its bytes, from the store. */
+  /** A file you sent from the page, for the run: its bytes, streamed from the store. */
   async file(env: Env, _deps: Deps, ref: string) {
-    const kv = kvOf(env);
-    const notFound = () =>
-      new Response(JSON.stringify({ error: "not_found" }), {
+    const bucket = FILE_REF.test(ref) ? bucketOf(env) : undefined;
+    const f = bucket ? await open(bucket, ref) : null;
+    if (!f)
+      return new Response(JSON.stringify({ error: "not_found" }), {
         status: 404,
         headers: { "content-type": "application/json" },
       });
-    if (!kv || !FILE_REF.test(ref)) return notFound();
-    const { value, metadata } = await kv.getWithMetadata<{ type?: string; size?: number }>(
-      ref,
-      "stream",
-    );
-    if (!value) return notFound();
-    return new Response(value, {
+    return new Response(f.body, {
       headers: {
         "content-type": "application/octet-stream",
-        ...(typeof metadata?.size === "number" ? { "content-length": String(metadata.size) } : {}),
+        "content-length": String(f.meta.size),
         "cache-control": "no-store",
         "x-content-type-options": "nosniff",
       },

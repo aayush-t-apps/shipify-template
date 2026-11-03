@@ -5,7 +5,8 @@
 // are followed only when you ask, with an errand (ADR 0046, amended by ADR 0054): errandState.
 
 import { GIVE_UP_MS } from "../../kernel/decide.ts";
-import { ghRun, platformRepo, repoOfPr } from "../../lib/github.ts";
+import type { RunResult } from "../../lib/exec.ts";
+import { ghRun, ghRunAsync, platformRepo, repoOfPr } from "../../lib/github.ts";
 import { repoFor } from "../../lib/projects-on-github.ts";
 import { type ErrandOn, type ErrandSeen, errandName, errandPrUrl } from "../../lib/repeat.ts";
 import type { TaskState } from "../../lib/task.ts";
@@ -139,7 +140,7 @@ export function publishedDeploy(id: string, token?: string): Deploy | undefined 
 
 /** A deploy's end, as decide tells it. */
 export type DeployEnd = {
-  state: "live" | "failed" | "gone";
+  state: "live" | "failed" | "held" | "gone";
   url?: string;
   run?: string;
   staging?: boolean;
@@ -163,18 +164,27 @@ export async function followDeploy(
         ...(d.url ? { url: d.url } : {}),
         ...(d.staging ? { staging: true } : {}),
       };
-    if (r.state === "failed") return { state: "failed", ...(r.run ? { run: r.run } : {}) };
+    if (r.state === "failed" || r.state === "held")
+      return { state: r.state, ...(r.run ? { run: r.run } : {}) };
     if (r.state === "unreadable" || waited >= GIVE_UP_MS) return { state: "gone" };
     await wait(LOOK_MS);
   }
 }
 
+type PrState = { state: "open" | "merged" | "closed" | "unknown"; sha?: string };
+const prView = (pr: string) => ["pr", "view", pr, "--json", "state,mergeCommit"];
+
 /** A release PR: open, merged (with its merge commit), or closed unmerged. */
-export function releaseState(
-  pr: string,
-  token?: string,
-): { state: "open" | "merged" | "closed" | "unknown"; sha?: string } {
-  const r = ghRun(["pr", "view", pr, "--json", "state,mergeCommit"], { token });
+export function releaseState(pr: string, token?: string): PrState {
+  return prStateOf(ghRun(prView(pr), { token }));
+}
+
+/** `releaseState` without waiting: a plan reads each of a task's open PRs at once. */
+export async function releaseStateAsync(pr: string, token?: string): Promise<PrState> {
+  return prStateOf(await ghRunAsync(prView(pr), { token }));
+}
+
+function prStateOf(r: RunResult): PrState {
   if (r.code) return { state: "unknown" };
   const p = JSON.parse(r.stdout) as { state?: string; mergeCommit?: { oid?: string } };
   if (p.state === "MERGED" && p.mergeCommit?.oid)
@@ -409,15 +419,35 @@ function markOn(
 }
 
 /**
- * What the pipeline says of a deploy: up, failed (with its run), or not yet. Unreadable when no
- * token here may read the app's commit (GitHub says not found or forbidden): not a wait. A commit
- * with no mark of its own whose branch has moved on is deployed with the later commit that holds
- * it: GitHub keeps one waiting run per branch, so merges close together can drop one's run.
+ * The commit's pipeline run GitHub holds for someone with write access to approve: its link, or
+ * none. GitHub can hold a bot's push this way ("this workflow file may be malicious"), as it did a
+ * new project's first push.
+ */
+function heldRun(repo: string, sha: string, token?: string): string | undefined {
+  const r = ghRun(
+    [
+      "api",
+      `repos/${repo}/actions/runs?head_sha=${sha}`,
+      "--jq",
+      '[.workflow_runs[] | select(.conclusion == "action_required")][0].html_url // ""',
+    ],
+    { token },
+  );
+  const url = r.stdout.trim();
+  return !r.code && url.startsWith("https://") ? url : undefined;
+}
+
+/**
+ * What the pipeline says of a deploy: up, failed (with its run), held for your approval (with its
+ * run), or not yet. Unreadable when no token here may read the app's commit (GitHub says not found
+ * or forbidden): not a wait. A commit with no mark of its own whose branch has moved on is deployed
+ * with the later commit that holds it: GitHub keeps one waiting run per branch, so merges close
+ * together can drop one's run.
  */
 export function deployState(
   d: Deploy,
   token?: string,
-): { state: "up" | "failed" | "waiting" | "unreadable"; run?: string } {
+): { state: "up" | "failed" | "held" | "waiting" | "unreadable"; run?: string } {
   const context = d.production ? "shipify/production" : "shipify/main";
   const branch = d.production ? "production" : "main";
   let mark = markOn(d.repo, d.sha, context, token);
@@ -436,5 +466,6 @@ export function deployState(
   if (mark?.state === "success") return { state: "up" };
   if (mark?.state === "failure" || mark?.state === "error")
     return { state: "failed", run: mark.target_url };
-  return { state: "waiting" };
+  const held = mark ? undefined : heldRun(d.repo, d.sha, token);
+  return held ? { state: "held", run: held } : { state: "waiting" };
 }

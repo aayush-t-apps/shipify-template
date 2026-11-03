@@ -49,6 +49,11 @@ describe("the fixed words, defined once", () => {
     expect(asked("Then say `preview`.")).toEqual(["preview"]);
     expect(asked("Closed. Write again to carry it on, or say `reopen`.")).toEqual(["reopen"]);
     expect(asked("Continue? `use opus high` or `pnpm ship go`")).toEqual([]);
+    // A sub-task's start, named whole (ADR 0066): its button sends it. The doc's `go #n` is no part.
+    expect(asked("#21 was dropped: `go #22` or `go #23` starts one anyway. Say `go #n`.")).toEqual([
+      "go #22",
+      "go #23",
+    ]);
   });
 
   it("the door acts on `close` and `reopen` alone, after a leading #n, as the box reads them", () => {
@@ -99,6 +104,12 @@ describe("a reply's buttons, one list for every chat", () => {
     expect(go.rows.flat().map((x) => x.words)).toEqual(["Preview", "Go"]);
     const no = replyButtons(reply({ kind: "needs-you", question: "Sure?", choices: ["No"] }), "");
     expect(no.rows).toEqual([]);
+  });
+
+  it("under an answer in a project's chat, Keep on page (ADR 0070)", () => {
+    const kept = replyButtons(reply({ kind: "answer", state: "Done", keep: true }), "");
+    expect(kept.rows).toEqual([[{ label: "Keep on page", words: "keep this on the page" }]]);
+    expect(replyButtons(reply({ kind: "answer", state: "Done" }), "").rows).toEqual([]);
   });
 
   it("under a list, only its Yes (naming its code) and No: never the agent's or its words' (ADR 0049)", () => {

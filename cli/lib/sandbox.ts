@@ -214,7 +214,10 @@ const NEVER: RegExp[] = [
   /^GITHUB_(?!REPOSITORY$)/,
   /^RUNNER_/,
   /_WRITE$/,
-  /^SHIPIFY_(SEND|DOOR|BOT)_/,
+  /^SHIPIFY_(SEND|BOT)_/,
+  // The door's, but for its App's slug, its public name: the agent's `ship notebook` knows the pages
+  // the door wrote for you by it (ADR 0069).
+  /^SHIPIFY_DOOR_(?!SLUG$)/,
   /SEND_KEY|DOOR_KEY/,
   /^SHIPIFY_ISSUES_TOKEN$/,
   /DEPLOY/,

@@ -8,13 +8,17 @@
 // Every value is checked before it's used; a list that doesn't read is nobody, never everybody.
 import {
   holdsRecord,
+  inboxTopic,
+  LIBRARY_LABEL,
   type PageSeen,
   parseAccounts,
+  projectOfLabels,
   pickStatusIssue,
   type RecordSeen,
   readRecordSeen,
   useDefaultAgent,
   useTimeZone,
+  waitingItems,
 } from "../../cli/contracts/index.ts";
 import { type AccessApp, parseAccess } from "./access.ts";
 import { cached, stale } from "./cache.ts";
@@ -237,6 +241,79 @@ export async function notebookPages(gh: GitHub): Promise<PageSeen[]> {
     );
 }
 
+/**
+ * A Library page (ADR 0069): its number, and its project when it has one. A project's main page
+ * also says its Now and how many lines its Map has, and its Inbox how many items wait for a collate
+ * (ADR 0070): what its page's next step is worked out from.
+ */
+interface LibrarySeen extends PageSeen {
+  n: number;
+  project?: string;
+  now?: string[];
+  map?: number;
+  waiting?: number;
+}
+
+/** A page's block under its `## <name>` heading, to the next heading: its lines of words. */
+const block = (lines: string[], name: string) => {
+  const at = lines.findIndex((l) => new RegExp(`^##\\s+${name}\\s*$`, "i").test(l));
+  if (at < 0) return [];
+  const end = lines.findIndex((l, i) => i > at && /^#{1,2}\s/.test(l));
+  return lines.slice(at + 1, end < 0 ? undefined : end);
+};
+
+/**
+ * The Library's pages (open issues labelled `library`, ADR 0069), newest first: the web chat's
+ * Notebook view and a project's page list them. 100 at most, one call: an Inbox's items are its
+ * comments, counted in the same answer, less the ones its last collate counted.
+ */
+export async function libraryPages(gh: GitHub): Promise<LibrarySeen[]> {
+  const list = await gh.json<
+    {
+      number: number;
+      title?: string;
+      body?: string | null;
+      html_url?: string;
+      pull_request?: unknown;
+      labels?: { name: string }[];
+      comments?: number;
+    }[]
+  >(
+    "GET",
+    `repos/${gh.repo}/issues?labels=${LIBRARY_LABEL}&state=open&sort=updated&direction=desc&per_page=100`,
+  );
+  return list
+    .filter((i) => !i.pull_request && /^Notebook: /.test(i.title ?? ""))
+    .map((i) => {
+      const lines = (i.body ?? "")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith("<!--"));
+      const project = projectOfLabels((i.labels ?? []).map((l) => l.name));
+      const topic = (i.title ?? "").slice("Notebook: ".length);
+      const main = project && topic === project;
+      return {
+        n: i.number,
+        topic,
+        first: (lines[0] ?? "").replace(/^[-*#]+\s+/, ""),
+        lines: lines.length,
+        url: i.html_url ?? "",
+        ...(project ? { project } : {}),
+        ...(main
+          ? {
+              now: block(lines, "Now")
+                .slice(0, 6)
+                .map((l) => l.replace(/^[-*]\s+/, "").slice(0, 160)),
+              map: block(lines, "Map").length,
+            }
+          : {}),
+        ...(project && topic === inboxTopic(project)
+          ? { waiting: waitingItems(i.body ?? "", i.comments ?? 0) }
+          : {}),
+      };
+    });
+}
+
 // ---------------------------------------------------------------- boxes
 
 /** Runners with this label are boxes (ADR 0020): one runner per slot, grouped by `box-<name>`. */
@@ -280,18 +357,21 @@ export function toBoxes(runners: RawRunner[]): Box[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** A read's JSON: the client's own, or the chat's, which carries ETags (web/gh.ts: reader). */
+export type Get = <T>(path: string) => Promise<T>;
+const plain =
+  (gh: GitHub): Get =>
+  (path) =>
+    gh.json("GET", path);
+
 /** shipify's runners, as they are now (or within `ms`). */
-export const runners = (gh: GitHub, now: number, ms = 0) =>
+export const runners = (gh: GitHub, now: number, ms = 0, get: Get = plain(gh)) =>
   cached(
     `runners:${gh.repo}`,
     ms,
     async () =>
-      (
-        await gh.json<{ runners?: RawRunner[] }>(
-          "GET",
-          `repos/${gh.repo}/actions/runners?per_page=100`,
-        )
-      ).runners ?? [],
+      (await get<{ runners?: RawRunner[] }>(`repos/${gh.repo}/actions/runners?per_page=100`))
+        .runners ?? [],
     now,
   );
 
@@ -311,9 +391,12 @@ export interface StatusTask {
  * The status task (labelled shipify-status, open or closed), and its record: by the runs' own rule
  * (pickStatusIssue). The open ones, oldest first; all of them only when no open one holds the record.
  */
-export async function statusTask(gh: GitHub): Promise<StatusTask | undefined> {
+export async function statusTask(
+  gh: GitHub,
+  get: Get = plain(gh),
+): Promise<StatusTask | undefined> {
   const list = (state: "open" | "all") =>
-    gh.json<
+    get<
       {
         number: number;
         state?: string;
@@ -322,7 +405,6 @@ export async function statusTask(gh: GitHub): Promise<StatusTask | undefined> {
         labels?: { name: string }[];
       }[]
     >(
-      "GET",
       `repos/${gh.repo}/issues?labels=${STATUS_LABEL}&state=${state}&sort=created&direction=asc&per_page=100`,
     );
   const open = pickStatusIssue(await list("open"));

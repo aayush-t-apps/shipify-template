@@ -408,6 +408,14 @@ The listed models are a few of hundreds. The rest are found by a word, on any ch
   which skips CLAUDE.md, skills and helpers. The version's PR checks, with a recorded run, that a
   run still loads them.
 - **Never installed on a PC or in CI.**
+- **Each step's time, in the run's log** (ADR 0051 B0): every `ship run <step>` ends with one line,
+  `· plan 5.4 s · 3 gh calls, 2.1 s (pr view 0.8 s, …)`, in the job's log (which `gh run view
+  <run> --log` reads) and on the run's summary. So a slow step names the call that took the time.
+- **Plan's reads at once:** plan reads the task's open PRs, your repos and the task's other
+  account's repos at the same time. The repo lists (each installation's repos, and every repo's
+  `shipify.json`) are kept 10 minutes in the runner's own cache (`~/.cache/shipify/repos-*.json`,
+  never an agent's), so the next runs' plans skip those two calls. A task that names a repo the
+  kept list hasn't got (a project published a minute ago) reads it again at once.
 - **Its login:** plan names its secret (from `executors.json` only), and the think step gets that
   one as `SHIPIFY_AGENT_LOGIN`. The agent gets it on fd 3, a pipe: the sandbox's wrapper reads it
   from stdin after the other keys, and makes it a pipe (a here-document, which the box's `/bin/sh`,

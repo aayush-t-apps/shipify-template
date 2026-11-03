@@ -55,6 +55,7 @@ Skip any step = lying, not verifying
 - **A PR a later run carries on:** check that the PR's head commit has the earlier commit before you say it has.
 - **A check that repeats the product:** use the product's exact settings and folder layout.
 - **A check that runs the real thing:** check the state it leaves (folder modes, owners), not only its result.
+- **A PR you ask for again:** read its description on GitHub before you say its kind changed. Its commits can update while its description and task line stay as they were.
 
 ## Red Flags - STOP
 

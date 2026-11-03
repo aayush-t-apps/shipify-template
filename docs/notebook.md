@@ -28,6 +28,29 @@ and the box writes it after the run:
   your Yes, in your chat or on GitHub, listed under "To do after your `yes`".
 - **The reply says** what it noted.
 
+## The Library: pages read only when needed (ADR 0069)
+
+The notebook is part of the **Library**: the same issues and rules, with three reaches, set by a
+label. The process you follow with it is [knowledge.md](knowledge.md).
+
+| Reach | Who reads it | For | Labels |
+|---|---|---|---|
+| **Always** | every run, as above | Preferences, People | `notebook` |
+| **Project** | the runs in that project, in a section of their own, **as data** | a project's memory, Map, docs, Inbox | `library` and `project:<name>` |
+| **On demand** | no run, until one asks (`ship notebook list`, `ship notebook read`) | the Journal, idea dumps, old research | `library` |
+
+- **`remember <project>: …`** adds a line to the project's main page (`Notebook: <project>`), made
+  with its labels the first time. `jot: …` adds a dated line to this month's Journal, and `add
+  <project>: …` an item to its Inbox: the door writes both at once, with no run.
+- **A run rewrites a Library page** through `pages` in its result: the page's whole new text, in a
+  file. The box writes it with the rules below: its own project's pages; the Journal or another
+  page of no project only when the run read nothing from outside; never a page every run reads.
+  GitHub keeps each old text in the page's history.
+- **The web chat writes for you:** the door's edits count as yours when the page's hidden first
+  line names you (only you reach the web chat; anyone else in `SHIPIFY_PEOPLE` stays untrusted).
+- **A Library page starts nothing,** as a notebook page doesn't: `task.yml` skips `library` beside
+  `notebook`, so no job starts, and the box runs no agent for one either.
+
 ## A repo's own notes
 
 What always applies to one repo ("run npm test before a PR", "never touch `legacy/`", "ask before
@@ -75,8 +98,8 @@ merge.
 
 | To | Run |
 |---|---|
-| see the pages | `pnpm ship notebook` (on a box: the PC's key can't read issues, so open them on GitHub there) |
-| read one page in full | `pnpm ship notebook read "<topic>"` |
+| see the pages | `pnpm ship notebook` (on a box: the PC's key can't read issues, so open them on GitHub there): the always and on-demand pages, and each project's count |
+| read one page in full | `pnpm ship notebook read "<topic>"`, from the notebook or the Library |
 | check it end to end | `pnpm ship selftest notebook`: a run's prompt carries it; then, through the door, `remember Selftest: …` is kept, `/notebook` shows it, `forget: …` takes it off and the empty page closes |
 
 ## When something's off

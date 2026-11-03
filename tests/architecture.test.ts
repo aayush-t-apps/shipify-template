@@ -37,8 +37,14 @@ const KINDS = [
   {
     kind: "channel",
     dir: "edge/src/channels",
-    // The channel kit: the contract, the edge's env, and Web Push for a chat read in place.
-    contract: ["edge/src/channels/channel.ts", "edge/src/env.ts", "edge/src/push.ts"],
+    // The channel kit: the contract, the edge's env, and for a chat read in place Web Push and the
+    // file store (R2, ADR 0069).
+    contract: [
+      "edge/src/channels/channel.ts",
+      "edge/src/env.ts",
+      "edge/src/push.ts",
+      "edge/src/store.ts",
+    ],
     registry: "edge/src/channels/index.ts",
   },
   {
@@ -66,6 +72,10 @@ describe("rule 1 and 2: a plug-in imports only its contract, cli/contracts and N
 
   it("Web Push, in the channel kit, imports nothing: it knows the standards, not Shipify", () => {
     expect(importsOf("edge/src/push.ts")).toEqual([]);
+  });
+
+  it("the file store, in the channel kit, imports only the edge's env", () => {
+    expect(new Set(importsOf("edge/src/store.ts"))).toEqual(new Set(["./env.ts"]));
   });
 
   it("each kind has at least one plug-in, and a registry that lists it", () => {

@@ -1,30 +1,24 @@
-// The web chat's files (ADR 0036, "Files"): Workers KV, bound as FILES, each file kept 7 days with
-// its own metadata (name, type, size, task, who made it, when). Yours come from the page
-// (`up-<id>`); a run's, from its reply to a chat you wrote from (`run-<task>-<id>`), for the Files
-// page, which lists them when it opens. Only pictures are shown inline, and a PDF in the doc pane;
-// anything else downloads.
-// Plain web code: KV is reached through the small shape in env.ts, so tests stand in for it.
+// The web chat's files (ADR 0036, "Files"; ADR 0069, section 16): in R2, bound as BUCKET, each with
+// its own metadata (name, type, size, its chat, who made it, when), kept as long as its chat
+// (store.ts). Yours come from the page, streamed in (`f-…`); a run's, from its reply to a chat you
+// wrote from, for the Files page, which lists them when it opens. Only pictures are shown inline,
+// and a PDF in the doc pane; anything else downloads.
 
-import { FILE_REF, KEEP_S, type Kv } from "../env.ts";
-import { json } from "../env.ts";
+import type { Bucket } from "../env.ts";
+import { FILE_REF, json } from "../env.ts";
+import { type FileMeta, open } from "../store.ts";
 
-/** What each file says about itself. */
-export interface FileMeta {
-  name: string;
-  type: string;
-  size: number;
-  by: "you" | "run";
-  /** When it was made (ms). */
-  at: number;
-  task?: number;
-}
+export type { FileMeta };
 
 export const MOST_FILES = 5;
-export const MOST_BYTES = 10 * 1024 * 1024;
+/**
+ * One file at most, its request's whole body: 95 MB, as the page counts them (1 MB is 1,000,000
+ * bytes). Cloudflare refuses a request over 100 MB (free plan) before the Worker runs, with its own
+ * error, not ours: this leaves room.
+ */
+export const MOST_BYTES = 95_000_000;
 /** The only types shown inline; everything else downloads. */
 export const PICTURE = /^image\/(?:png|jpeg|gif|webp)$/;
-
-export const newId = () => crypto.randomUUID().replace(/-/g, "");
 
 /** A file's name, made safe for a header and a download. */
 export const safeName = (name: string) =>
@@ -40,65 +34,34 @@ export const safeType = (type: string) =>
     ? type.trim().toLowerCase()
     : "application/octet-stream";
 
-/** Keeps one file; the caller has checked its size. */
-export async function keep(kv: Kv, key: string, body: ArrayBuffer, meta: FileMeta) {
-  await kv.put(key, body, { expirationTtl: KEEP_S, metadata: meta });
-}
-
-/** Whether the store has this file. */
-export async function has(kv: Kv, ref: string) {
-  if (!FILE_REF.test(ref)) return false;
-  const v = await kv.get(ref, "stream");
-  await v?.cancel().catch(() => {});
-  return Boolean(v);
-}
+/** What the page is told of a file that isn't there. */
+export const GONE = { error: "That file is gone.", fix: "Send it again." };
 
 /** A PDF, by its type or its name: the doc pane shows it in the browser's own viewer. */
 const isPdf = (m: FileMeta) => safeType(m.type) === "application/pdf" || /\.pdf$/i.test(m.name);
 
 /**
- * A kept file, served safely: pictures inline, everything else as a download, never sniffed. With
- * `view`, a PDF shows inline for the doc pane (ADR 0065): as a PDF only (nosniff), framed only by
- * the chat. It has no sandbox, which browsers' PDF viewers refuse to run in; a PDF's own scripts
+ * A kept file, streamed out safely: pictures inline, everything else as a download, never sniffed.
+ * With `view`, a PDF shows inline for the doc pane (ADR 0065): as a PDF only (nosniff), framed only
+ * by the chat. It has no sandbox, which browsers' PDF viewers refuse to run in; a PDF's own scripts
  * run in the viewer, never on the edge's page.
  */
-export async function serve(kv: Kv, ref: string, download = false, view = false) {
+export async function serve(bucket: Bucket, ref: string, download = false, view = false) {
   if (!FILE_REF.test(ref)) return json({ error: "not_found" }, 404);
-  const { value, metadata } = await kv.getWithMetadata<FileMeta>(ref, "stream");
-  if (!value || !metadata)
-    return json(
-      { error: "That file is gone (files are kept 7 days).", fix: "Send it again." },
-      410,
-    );
-  const type = safeType(metadata.type);
-  const pdf = view && !download && isPdf(metadata);
+  const f = await open(bucket, ref);
+  if (!f) return json(GONE, 410);
+  const { meta } = f;
+  const type = safeType(meta.type);
+  const pdf = view && !download && isPdf(meta);
   const inline = (PICTURE.test(type) && !download) || pdf;
-  return new Response(value, {
+  return new Response(f.body, {
     headers: {
       "content-type": pdf ? "application/pdf" : inline ? type : "application/octet-stream",
-      "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(safeName(metadata.name))}`,
-      "content-length": String(metadata.size),
+      "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(safeName(meta.name))}`,
+      "content-length": String(meta.size),
       "cache-control": "private, max-age=86400, immutable",
       "x-content-type-options": "nosniff",
       "content-security-policy": pdf ? "frame-ancestors 'self'" : "default-src 'none'; sandbox",
     },
   });
-}
-
-/** The files kept, newest first, from their metadata: one listing. */
-export async function listed(kv: Kv, most = 200) {
-  const out: { ref: string; meta: FileMeta; until?: number }[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await kv.list<FileMeta>({ limit: 1000, ...(cursor ? { cursor } : {}) });
-    for (const k of page.keys)
-      if (k.metadata && FILE_REF.test(k.name))
-        out.push({
-          ref: k.name,
-          meta: k.metadata,
-          ...(k.expiration ? { until: k.expiration * 1000 } : {}),
-        });
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor && out.length < most);
-  return out.sort((a, b) => b.meta.at - a.meta.at).slice(0, most);
 }

@@ -37,8 +37,10 @@ export const Row = z.object({
   labels: z.array(z.string()).optional(),
   /** A split task's parts (ADR 0066): closed of all, from GitHub's own count. */
   parts: z.object({ done: z.number(), total: z.number() }).optional(),
-  /** A part's parent, from its body's first line `Part of #<n>`. */
+  /** A part's parent, or a chat's project, from its body's first line `Part of #<n>`. */
   parent: z.number().optional(),
+  /** A project you made (ADR 0069): its name, and how many chats it has. */
+  project: z.object({ name: z.string(), chats: z.number() }).optional(),
 });
 
 /** A part of a split task, as its parent's Plan card shows it (ADR 0066). */
@@ -96,7 +98,7 @@ export const FileSeen = z.object({
   name: z.string(),
   type: z.string().optional(),
   size: z.number().optional(),
-  /** The edge's own address for it: one it keeps (7 days), or one a chat keeps (Telegram's). */
+  /** The edge's own address for it: one it keeps (as long as its chat), or a chat's (Telegram's). */
   src: z.string().optional(),
 });
 
@@ -140,6 +142,16 @@ export const Msg = z.object({
   use: z.string().optional(),
   /** Your words a run has read (its 👀 on them). */
   read: z.literal(true).optional(),
+  /**
+   * Your words that start no run (task.yml): a project's own (ADR 0069), and any on a PR, the
+   * status task, a notebook or a Library page. The page shows no "Starting…" for them.
+   */
+  norun: z.literal(true).optional(),
+  /**
+   * A button's word (ADR 0069: Close, Reopen, Stop the run, Stop repeating): the page draws nothing
+   * for it, and counts it as yours (a run it starts, your Stop).
+   */
+  tap: z.literal(true).optional(),
   url,
 });
 
@@ -151,6 +163,8 @@ export const Thread = z.object({
     state: z.enum(STATES),
     from: origin,
     open: z.boolean(),
+    /** When it closed: the thread's faint "Closed" line, for a close from a button (ADR 0069). */
+    closed: iso.optional(),
     /** Closed, and your last words carry it on: the run they start opens it again. */
     wakes: z.literal(true).optional(),
     repeats: z.boolean(),
@@ -171,7 +185,24 @@ export const Thread = z.object({
     /** A split task after your `go`: a part's merge starts the next. */
     started: z.literal(true).optional(),
     /** A split task's parts, in order: its Plan card. None when GitHub's read failed. */
-    plan: z.array(Part).max(50).optional(),
+    plan: z.array(Part).max(100).optional(),
+    /**
+     * A project you made (ADR 0069): its chats (no Plan card) and its pages; its main page's Now,
+     * and its one next step (ADR 0070).
+     */
+    project: z
+      .object({
+        name: z.string(),
+        chats: z.array(Part).max(100),
+        pages: z.array(z.object({ n: z.number(), topic: z.string(), first: z.string(), url })),
+        now: z.array(z.string()).max(6).optional(),
+        /** Its one next step, from counts (reads.ts `nextStep`). */
+        step: z.string(),
+      })
+      .optional(),
+    /** Its Progress (ADR 0069): the last run's handoff, as cleaned HTML. Only in a task's newest
+     * view, not an older page or a PR's. */
+    progress: z.string().optional(),
   }),
   messages: z.array(Msg),
   /** Older messages left out: GitHub's pages of 100, and `page` is the one here (?page= reads one). */
@@ -292,10 +323,45 @@ export const Repeats = z.object({
 export const Notebook = z.object({
   v: z.literal(1),
   pages: z.array(z.object({ topic: z.string(), first: z.string(), lines: z.number(), url })),
+  /** The Library's pages (ADR 0069), newest first: each with its number and its project. */
+  library: z
+    .array(
+      z.object({
+        n: z.number(),
+        topic: z.string(),
+        first: z.string(),
+        lines: z.number(),
+        url,
+        project: z.string().optional(),
+      }),
+    )
+    .optional(),
 });
 
+/**
+ * Find by meaning (ADR 0070): GitHub's hybrid search's chats, projects and pages, the best first;
+ * `words` when GitHub searched by words instead (its limit, or it answered so).
+ */
+export const Found = z.object({
+  v: z.literal(1),
+  words: z.literal(true).optional(),
+  items: z
+    .array(
+      z.object({
+        n: z.number(),
+        title: z.string(),
+        kind: z.enum(["chat", "project", "page"]),
+        open: z.boolean(),
+      }),
+    )
+    .max(10),
+});
+
+/** The files kept, newest first, each with its chat when it has one; the count and bytes of all. */
 export const Files = z.object({
   v: z.literal(1),
+  count: z.number(),
+  bytes: z.number(),
   files: z.array(
     z.object({
       ref: z.string(),
@@ -305,8 +371,6 @@ export const Files = z.object({
       task: z.number().optional(),
       by: z.enum(["you", "run"]),
       at: iso,
-      /** When it goes. */
-      until: iso.optional(),
       src: z.string(),
     }),
   ),
@@ -416,6 +480,7 @@ export type FileSeen = z.infer<typeof FileSeen>;
 export type Menu = z.infer<typeof Menu>;
 export type Repeats = z.infer<typeof Repeats>;
 export type Notebook = z.infer<typeof Notebook>;
+export type Found = z.infer<typeof Found>;
 export type Files = z.infer<typeof Files>;
 export type Doc = z.infer<typeof Doc>;
 export type Setup = z.infer<typeof Setup>;
@@ -445,6 +510,10 @@ export const SendBody = z.object({
   words: z.string().max(MOST_CHARS),
   /** A pick, as a `use` line says it (contracts' PICK). */
   use: z.string().max(140).regex(PICK).optional(),
+  /** Sent by a button (Close, Reopen, Stop the run, Stop repeating): no message in the thread (ADR 0069). */
+  button: z.literal(true).optional(),
+  /** A new chat in this project (ADR 0069, **New chat here**): the project's issue number. */
+  under: z.number().int().positive().optional(),
   files: z
     .array(
       z.object({
@@ -459,3 +528,8 @@ export const SendBody = z.object({
     .default([]),
 });
 export type SendBody = z.infer<typeof SendBody>;
+
+/** **Move to project** (ADR 0069): a chat, and the project it goes in (`…/api/move`). */
+export const MoveBody = z
+  .object({ task: z.number().int().positive(), project: z.number().int().positive() })
+  .strict();

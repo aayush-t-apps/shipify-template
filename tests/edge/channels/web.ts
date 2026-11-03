@@ -1,17 +1,19 @@
 // The web chat's fixtures for the channel conformance suite (ADR 0036): messages as the chat's own
 // routes hand them to the door, proven with the door App's key, and its "platform": the file store
-// (Workers KV), since its replies are read in place on the task, and a push service for the
-// devices it notifies (ADR 0050).
+// (R2, ADR 0069), since its replies are read in place on the task, the devices it notifies (in
+// Workers KV) and a push service for them (ADR 0050).
 import { type Deps, keepDevices } from "../../../edge/src/env.ts";
 import { deviceOf } from "../../../edge/src/push.ts";
 import { browser, pushKey, pushService } from "../browser.ts";
 import { memoryKv } from "../kv.ts";
+import { memoryR2 } from "../r2.ts";
 import type { ChannelFixture, Mode } from "./fixture.ts";
 
 const KEY = "door-app-key";
 const store = memoryKv();
+const r2 = memoryR2();
 const NOW = Date.parse("2026-10-05T12:00:00Z");
-const UP = "up-0123456789abcdef0123";
+const UP = "f-8000000000000-0123456789abcdef0123";
 
 /** The proof the chat's routes make (edge/src/web/routes.ts), made here by hand. */
 async function proof(secret: string) {
@@ -46,6 +48,7 @@ export const web: ChannelFixture = {
     SHIPIFY_DOOR_URL: "https://shipify.example.com",
     WEB_PUSH_KEY: pushKey(),
     FILES: store.kv as unknown as string,
+    BUCKET: r2.bucket as unknown as string,
   },
   proven: (body) => call(body, PROOF),
   unproven: (body) => [call(body), call(body, "0".repeat(64))],
@@ -73,9 +76,9 @@ export const web: ChannelFixture = {
   platform() {
     store.items.clear();
     store.state.down = false;
-    void store.kv.put(UP, new TextEncoder().encode("png").buffer as ArrayBuffer, {
-      metadata: { name: "shot.png", type: "image/png", size: 3, by: "you", at: 0 },
-    });
+    r2.items.clear();
+    r2.state.down = false;
+    void r2.keep(UP, "png", { name: "shot.png", type: "image/png", size: 3, by: "you", at: 0 });
     const service = pushService();
     const deps: Deps = {
       now: () => NOW,
@@ -88,6 +91,7 @@ export const web: ChannelFixture = {
       deps,
       mode(m: Mode) {
         store.state.down = m === "down";
+        r2.state.down = m === "down";
         service.status = m === "refused" ? 410 : 201;
       },
       async device() {
@@ -98,9 +102,9 @@ export const web: ChannelFixture = {
       },
       texts: () => [],
       files: () =>
-        [...store.items.entries()]
-          .filter(([k]) => k.startsWith("run-"))
-          .map(([, v]) => (v.metadata as { name: string }).name),
+        [...r2.items.entries()]
+          .filter(([k, v]) => k.startsWith("f-") && v.meta.by === "run")
+          .map(([, v]) => v.meta.name ?? ""),
       healthy() {},
     };
   },

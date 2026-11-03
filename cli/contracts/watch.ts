@@ -33,6 +33,9 @@ export const TaskSeen = z.object({
     })
     .optional()
     .catch(undefined),
+  /** The last run's handoff (Goal, Done, Next, Decisions, Open), in Markdown: the chat shows it
+   * as the task's Progress (ADR 0069). One past its size isn't read. */
+  notes: z.string().max(20_000).optional().catch(undefined),
 });
 export type TaskSeen = z.infer<typeof TaskSeen>;
 
@@ -146,7 +149,7 @@ export const RecordSeen = z.object({
   channels: lenientMap(z.object({ failing: time })),
   /** The keys of notes already said (Findings.notes), so each is said once. */
   alerted: lenientList(z.string().max(120)),
-  /** What's coming up: repeats and quiet closes, soonest first (the status page shows them). */
+  /** What's coming up: repeats, soonest first (the status page shows them). */
   upcoming: lenientList(
     z.object({
       n: z.number().int().positive(),

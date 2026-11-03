@@ -1,40 +1,73 @@
 // @ts-check
 // Shipify chat: the list, threads, the pages, downloads, polling and the copy kept in the browser.
-import {
-  $,
-  api,
-  cap,
-  composer,
-  h,
-  icon,
-  pop,
-  said,
-  repeatForm,
-  set,
-  size,
-  timed,
-  uid,
-} from "./compose.js";
+import { $, api, cap, composer, h, icon, pop, said, set, size, timed, uid } from "./compose.js";
 
-const KEY = "shipify-chat";
+// Kept in the browser: the rest under KEY, each thread under a key of its own (TK + its number),
+// written only when it changed, when the page is idle (or as it's left).
+const KEY = "shipify-c";
+const TK = "shipify-t";
 const OFF = "Offline: showing what it last had";
-/** Kept in the browser. @type {Record<string, any>} */
-const S = { list: null, menu: null, threads: {}, seen: [], saw: {}, tabs: {}, fold: [] };
-try {
-  Object.assign(S, JSON.parse(localStorage.getItem(KEY) || "{}"));
-} catch {}
+const LS = localStorage;
+const got = (k) => {
+  try {
+    return JSON.parse(LS.getItem(k) || "null");
+  } catch {}
+};
 /** @type {Record<string, any>} */
-const R = { pend: {}, n: 0, tk: 0, busy: 0, turned: {}, drafts: {}, gone: {}, old: {}, miss: 0 };
-const keep = () => {
+const S = { list: null, menu: null, threads: {}, seen: [], saw: {}, fold: [] };
+// The copy kept whole under one key till 2026-11: split once, then gone.
+const was = got("shipify-chat");
+Object.assign(S, was || got(KEY), { threads: was?.threads || {} });
+// A project's tabs went (ADR 0069): the ones a browser saved go with the next write.
+delete S.tabs;
+for (const k of Object.keys(LS)) {
+  const t = /^shipify-t\d+$/.test(k) && got(k);
+  if (t) S.threads[k.slice(TK.length)] = t;
+}
+// A reply's Markdown isn't kept, only its HTML (what's drawn): its words stand in for it till the
+// thread is read whole again (`r`). A diagram's is kept, to draw it.
+for (const t of Object.values(S.threads))
+  for (const x of t.messages)
+    if (x.md == null) {
+      x.md = x.html.replace(/<[^>]+>/g, "");
+      t.r = x.r = 1;
+    }
+/** @type {Record<string, any>} */
+const R = { pend: {}, n: 0, tk: 0, busy: 0, turned: {}, gone: {}, old: {}, miss: 0, pj: {} };
+const dirty = new Set();
+const slim = (t) => ({
+  ...t,
+  messages: t.messages.map((x) =>
+    x.who === "shipify" && !x.md.includes("```mermaid") ? { ...x, md: undefined } : x,
+  ),
+});
+function flush() {
+  R.idle = 0;
   S.seen = S.seen.slice(-30);
-  for (const n in S.threads) if (!S.seen.includes(+n)) delete S.threads[n];
+  for (const n in S.threads) if (!S.seen.includes(+n)) dirty.add(n) && delete S.threads[n];
   for (const n in S.saw) if (!S.list?.tasks.some((t) => t.n === +n)) delete S.saw[n];
   try {
-    localStorage.setItem(KEY, JSON.stringify(S));
+    for (const n of dirty) {
+      const t = S.threads[n];
+      if (n === "") LS.setItem(KEY, JSON.stringify({ ...S, threads: 0 }));
+      else if (t) LS.setItem(TK + n, JSON.stringify(slim(t)));
+      else LS.removeItem(TK + n);
+      dirty.delete(n);
+    }
   } catch {
     S.seen = S.seen.slice(-5);
   }
+}
+/** Marks what changed (a thread's number, else the rest) to be written when the page is idle. */
+const keep = (n = "") => {
+  dirty.add(`${n}`);
+  R.idle ||= (self.requestIdleCallback || setTimeout)(flush, { timeout: 2e3 });
 };
+if (was) {
+  LS.removeItem("shipify-chat");
+  for (const n in S.threads) keep(n);
+  keep();
+}
 const no = () => {};
 const go = (x) => Object.assign(location, { hash: x });
 
@@ -67,7 +100,6 @@ const written = () =>
     e.value.trim(),
   ) ||
   !!R.draft?.trim() ||
-  Object.values(R.drafts).some((d) => d?.trim()) ||
   !!document.querySelector(".tray > *") ||
   Object.values(R.pend).some((q) => q.length);
 const reload = () => location.reload();
@@ -87,10 +119,10 @@ const signin = () => {
 // minute, or on the edge's last good copy (`stale`), a calm line says so. A read you waited for
 // that failed says why, and the next good read takes it away.
 const DOWN = "Can't reach GitHub · retrying";
-async function get(p, b, quiet = false) {
+async function get(p, b, quiet = false, k = p) {
   if (!quiet && !R.busy++) document.body.classList.add("busy");
   try {
-    const j = await api(p, b);
+    const j = await api(p, b, k);
     if (j) R.old[p] = j.stale;
     if (R.old[p]) R.down ||= Date.now();
     else R.down = 0;
@@ -131,10 +163,20 @@ const ago = (t, s = secs(t)) => (s < 60 ? "now" : unit(s));
 const until = (t, s = -secs(t)) => (s < 60 ? "due" : `in ${unit(s)}`);
 const dur = (t, s = Math.max(0, secs(t) | 0)) =>
   `${(s / 60) | 0}m ${String(s % 60).padStart(2, "0")}s`;
-setInterval(() => {
-  for (const e of document.querySelectorAll("[data-since]"))
-    e.textContent = `Working · ${dur(e.getAttribute("data-since") || "")}`;
-}, 1e3);
+// The clocks on screen ("Working · 2m 05s", a message's "5m"), each second while the page shows and
+// has one; a text unchanged isn't written again.
+function tock() {
+  const l = document.querySelectorAll("[data-since],[data-at]");
+  if (document.hidden || !l.length) R.clk = clearInterval(R.clk);
+  for (const e of l) {
+    const s = e.dataset.since;
+    const t = s ? `· ${dur(s)}` : ago(e.dataset.at);
+    if (e.textContent !== t) e.textContent = t;
+  }
+}
+// A clock's text, left out where a redraw compares what it would draw.
+const CLK = /(data-(?:since|at)="[^"]*">)[^<]*/g;
+const clock = () => (R.clk ||= !document.hidden && setInterval(tock, 1e3));
 
 const ext = (u, t, c = "") => h(`a${c}`, { href: u, target: "_blank", rel: "noopener" }, t);
 const to = (n, t = `#${n}`) => h("a", { href: `#/t/${n}` }, t);
@@ -164,7 +206,12 @@ const online = () => S.list?.boxes.some((b) => b.online);
 const working = (r) =>
   r.queued
     ? h("span.st.open", online() ? "Queued" : "Waiting for a box")
-    : h("span.st.working", { "data-since": r.since }, `Working · ${dur(r.since)}`);
+    : // Its clock hidden from a screen reader, which would say it each second.
+      h(
+        "span.st.working",
+        "Working",
+        h("span", { "aria-hidden": "true", "data-since": r.since }, `· ${dur(r.since)}`),
+      );
 // A task's state, the same in its row and its header: its run, your words starting one, a run
 // staying for them (ADR 0057), else its state ("Open" said only in the header).
 const status = (T, run, open = false) => {
@@ -197,17 +244,27 @@ const named = (k) => NAME[k] || cap(k);
 // A task's project (ADR 0065): the repo its title names, Shipify's own too; none is General.
 const projOf = (t, k = kindIn(t.title)) => (k && !NAME[k] ? k : "");
 // Parts loaded the first time they're needed (ADR 0065), lent what they read here: workspace.js
-// (a project's tabs and page, the doc pane, Files, Ctrl+K), setup.js (Status & setup) and plan.js
-// (a split task's Plan card, ADR 0066).
+// (a repo's page, the doc pane, Files, Ctrl+K), setup.js (Status & setup), plan.js (a split task's
+// Plan card, ADR 0066), and ADR 0069's project.js (a project's page, New project), desk.js (the
+// Desk, the first screen), library.js (the Library) and export.js. One that didn't load (offline)
+// says so, and loads again on the next tap, not only after a reload.
 const M = {};
+const LOST = "Part of the page didn't load: tap to reload";
 const lazy = (k) => (f) => {
-  M[k] ||= import(`./${k}.js`).then(async (m) => {
-    const lent = { S, R, go, get, keep, start, bare, named, projOf, runs, ago, until, secs, to };
-    const ui = { page, what, meta, list, btn, view, ext, mark, dot, out, copy, quick, fresh, ws };
-    await m.init({ ...lent, ...ui, ask, join, notify, sync, say });
-    return m;
-  });
-  return M[k].then(f).catch(oops);
+  M[k] ||= import(`./${k}.js`).then(
+    async (m) => {
+      const lent = { S, R, go, get, keep, start, bare, named, projOf, runs, ago, until, secs, to };
+      const ui = { page, what, meta, list, btn, view, ext, mark, dot, out, copy, quick, fresh };
+      const does = { ask, join, reg, sync, say, lazy, into, told, moved, reread, redraw };
+      await m.init({ ...lent, ...ui, ...does });
+      return m;
+    },
+    (e) => {
+      delete M[k];
+      throw Object.assign(e, { lost: true });
+    },
+  );
+  return M[k].then(f).catch((e) => (e?.lost ? bar("err", LOST, reload) : oops(e)));
 };
 const ws = lazy("workspace");
 // The tasks a run works on now, as the list shows them.
@@ -248,10 +305,11 @@ function moved(n, open, seen = {}) {
   safe(drawList);
 }
 const stop = (n) => confirm("Stop this run? What it committed is kept.") && say(n, "stop");
-// Your words waiting for a run (in the last 10 minutes): the list is asked too, to see it start.
+// Your words waiting for a run (in the last 10 minutes; a project's own start none): the list is
+// asked too, to see it start.
 const waits = (t) => {
   const m = t?.messages.at(-1);
-  return m?.who === "you" && secs(m.at) < 600;
+  return m?.who === "you" && !m.norun && secs(m.at) < 600;
 };
 // Your words are in and no run shows yet: it's starting, a closed task too when they carry it on.
 // A fixed word or a bare `use` starts none.
@@ -263,15 +321,33 @@ const soon = (t) =>
   !NORUN.test(t.messages.at(-1).md) &&
   (() => h("span.st.working", online() ? "Starting…" : "Waiting for a box"));
 const IMG = /^image\/(png|jpeg|gif|webp)$/;
-const save = (name, text) =>
-  h("a", { href: URL.createObjectURL(new Blob([text])), download: name }).click();
-const copy = (t) => navigator.clipboard.writeText(t).then(() => told("Copied"), no);
+const free = (u) => URL.revokeObjectURL(u);
+const save = (name, text, u = URL.createObjectURL(new Blob([text]))) => {
+  h("a", { href: u, download: name }).click();
+  setTimeout(() => free(u), 6e4);
+};
+// Called in the tap itself (Safari asks that); no clipboard here (not https) fails as a refusal does.
+const copy = async (t) => {
+  try {
+    await navigator.clipboard.writeText(t);
+    told("Copied");
+  } catch {
+    told("Couldn't copy: select it and copy it yourself");
+  }
+};
 const li = (f) => (x) => h("li", f(x));
 const list = (a, f, none) => (a.length ? h("ul.items", a.map(li(f))) : h("p.quiet", none));
 const meta = (...a) => h("small", a.filter(Boolean).join(" · "));
 const btn = (l, f, c = "") => h(`button${c}`, { type: "button", onclick: f }, l);
 const moreBtn = (f, c = ".icon") => btn(icon("more"), f, c);
-const start = (w, where = "#/new") => go(where) && Object.assign(R, { draft: w });
+// A round button with only its icon: its name said on hover and to a screen reader.
+const ib = (k, f, l, c = "") => {
+  const b = btn(icon(k), f, `.icon${c}`);
+  b.ariaLabel = b.title = l;
+  return b;
+};
+// `u`: a new chat in this project (ADR 0069: New chat here), `{ n, name }`.
+const start = (w, where = "#/new", u) => go(where) && Object.assign(R, { draft: w, u });
 // A task that stopped before it finished starts again only on your `continue` (ADR 0040).
 const resumed = (t) => /^\s*continue\W*$/i.test(t?.messages.at(-1)?.md ?? "");
 const starting = (T, t) => (T.state !== "stuck" || resumed(t)) && soon(t);
@@ -306,37 +382,63 @@ async function shut(on) {
 
 // The list by project (ADR 0065): each group folds open and shut (open while you search) and
 // counts what needs you and what works; tasks with no project are General. One group alone is a
-// plain list.
+// plain list. Projects you made (ADR 0069) come first, each its name and how many chats, its
+// chats folded under it (shut till you open it: `@n` in S.fold); then repos; then General. A
+// fold open the first time reads the project's thread once, for chats past the list's page, with
+// no ETag: its answer isn't the thread's copy, so neither may have the other's 304.
 function groups(l, row, runs, q) {
   const by = new Map();
-  for (const t of l) by.set(projOf(t), [...(by.get(projOf(t)) || []), t]);
-  if (by.size < 2) return h("ul.rows", l.map(row));
+  const pj = l.filter((t) => t.project);
+  for (const t of pj) by.set(`@${t.n}`, []);
+  // A chat's project is its `parent`: its `Part of` line, or GitHub's link once moved in.
+  for (const t of l) {
+    const k = by.has(`@${t.parent}`) ? `@${t.parent}` : projOf(t);
+    if (!t.project) by.set(k, [...(by.get(k) || []), t]);
+  }
+  const gen = by.get("");
+  if (by.delete("")) by.set("", gen);
+  if (by.size < 2 && !pj.length) return h("ul.rows", l.map(row));
   return [...by].map(([p, g]) => {
-    const shut = !q && S.fold.includes(p);
-    const n = (f, c, w, k = g.filter(f).length) => k > 0 && h(`small.${c}`, { title: w }, `${k}`);
+    const P = pj.find((t) => `@${t.n}` === p);
+    const shut = !q && S.fold.includes(p) === !P;
+    const c = P?.project.chats;
+    if (P && !shut && !R.pj[P.n] && g.length < c) {
+      R.pj[P.n] = [];
+      get(`task/${P.n}`, 0, 1, "").then((d) => {
+        R.pj[P.n] = d?.task.project?.chats || R.pj[P.n];
+        drawList();
+      }, no);
+    }
+    const more = P && !q ? R.pj[P.n] || [] : [];
+    const rest = more.filter((x) => x.state !== "closed" && !S.list.tasks.some((t) => t.n === x.n));
+    const n = (f, c, w, k = (P ? [P, ...g] : g).filter(f).length) =>
+      k > 0 && h(`small.${c}`, { title: w }, `${k}`);
     const fold = btn(
       [
         icon("down"),
-        h("b", p ? named(p) : "General"),
+        h("b", P ? P.project.name : p ? named(p) : "General"),
+        P && h("span", `${c} chat${c === 1 ? "" : "s"}`),
         n((t) => t.state === "needs-you", "n", "Needs you"),
         n((t) => runs.has(t.n), "w", "Working"),
       ],
       () => {
-        S.fold = shut ? S.fold.filter((x) => x !== p) : [...S.fold, p];
+        S.fold = S.fold.includes(p) ? S.fold.filter((x) => x !== p) : [...S.fold, p];
         keep();
         drawList();
       },
       ".fold",
     );
     fold.ariaExpanded = String(!shut);
+    // A project you made and a repo's group look apart: their pages aren't the same kind.
+    const it = P ? "The project's page" : `The ${named(p)} repo's page`;
     const page = {
-      href: `#/p/${encodeURIComponent(p)}`,
-      title: "Its page",
-      "aria-label": "Its page",
+      href: P ? `#/t/${P.n}` : `#/p/${encodeURIComponent(p)}`,
+      title: it,
+      "aria-label": it,
     };
     return [
-      h("div.proj", fold, p && h("a.icon", page, icon("app"))),
-      !shut && h("ul.rows", g.map(row)),
+      h("div.proj", fold, p && h("a.icon", page, icon(P ? "app" : "code"))),
+      !shut && h("ul.rows", g.map(row), rest.map(row)),
     ];
   });
 }
@@ -345,6 +447,7 @@ function groups(l, row, runs, q) {
 // you and Closed are one control; the filters under it (a kind, a project, your labels) count what
 // it shows. No call but for closed ones.
 function drawList() {
+  clock();
   const L = S.list;
   if (!L) {
     R.key = "";
@@ -421,8 +524,9 @@ function drawList() {
     const k = kindOf(t);
     const c = `a${R.n === t.n ? ".on" : ""}${t.state === "needs-you" ? ".need" : ""}${fresh ? ".fresh" : ""}`;
     // The row's state is its dot (its word on hover, and for a screen reader); the header says it.
+    // Its word only, not a clock's time.
     const mark = h(`i.mark.${st ? st.className.replace("st ", "") : t.state}`, {
-      title: st ? st.textContent : WORD[t.state],
+      title: st ? st.firstChild.textContent : WORD[t.state],
     });
     const meta = h("span.meta", st, k && h("span", named(k)), h("span", `#${t.n}`));
     const kids = t.parts ? all.filter((x) => x.parent === t.n).sort((a, b) => a.n - b.n) : [];
@@ -448,7 +552,7 @@ function drawList() {
         { href: `#/t/${t.n}` },
         mark,
         h("span.t", bare(t.title)),
-        h("time.age", ago(t.updated)),
+        t.updated && h("time.age", { "data-at": t.updated }, ago(t.updated)),
         meta,
       ),
       sub,
@@ -459,6 +563,27 @@ function drawList() {
   const boxes = on.map((b) => `${b.name} online · ${b.busy} of ${b.slots} busy`).join("; ");
   const late = (t) => !R.shut && every(t) && !need(t);
   const rest = rows.filter(late);
+  // Quiet (ADR 0069): no new word for 7 days, at the foot; opened, it reads the next page too. A
+  // project stays with the projects.
+  const hush = (t) =>
+    !R.shut &&
+    !q &&
+    !t.project &&
+    !late(t) &&
+    !runs.has(t.n) &&
+    Date.now() - Date.parse(t.updated) > 6048e5;
+  const quiet = rows.filter(hush);
+  const wide = S.fold.includes("~q");
+  const hushed = btn(
+    [icon("down"), h("b", "Quiet"), h("small", `${quiet.length}`)],
+    () => {
+      S.fold = wide ? S.fold.filter((x) => x !== "~q") : [...S.fold, "~q"];
+      keep();
+      (!wide && L.more && !R.old ? olderTasks : drawList)();
+    },
+    ".fold",
+  );
+  hushed.ariaExpanded = String(wide);
   const none =
     q || R.tag
       ? "No task matches."
@@ -486,7 +611,7 @@ function drawList() {
       ? ph()
       : [
           groups(
-            rows.filter((t) => !late(t)),
+            rows.filter((t) => !late(t) && !hush(t)),
             row,
             runs,
             q,
@@ -495,17 +620,18 @@ function drawList() {
             h("a.group", { href: "#/repeats" }, "Repeats", h("small", "Manage")),
             h("ul.rows", rest.map(row)),
           ],
+          quiet.length > 0 && [h("div.proj", hushed), wide && h("ul.rows", quiet.map(row))],
           !rows.length && h("p.quiet", none),
         ],
     more && btn(R.shut ? "Older closed tasks" : "Older tasks", olderTasks, ".earlier.older"),
   );
   // Put in only when it changed (a run's clock ticking doesn't count): a row isn't swapped under
   // a click for nothing.
-  const key = next.innerHTML.replace(/(data-since="[^"]*">)[^<]*/g, "$1");
+  const key = next.innerHTML.replace(CLK, "$1");
   if (key === R.key && $("#list").firstChild) return;
   R.key = key;
   $("#list").replaceChildren(...next.childNodes);
-  M.workspace?.then((m) => m.redraw());
+  for (const k in M) M[k].then((m) => m.redraw?.(), no);
 }
 
 const stub = (n) => ({ task: { n, title: "", prs: [] }, messages: [], writable: true, ph: n > 0 });
@@ -523,44 +649,62 @@ const SHOW = 40;
 
 function thread() {
   const n = R.n;
-  const v = { n, head: h("header.head"), msgs: h("div.msgs", { role: "log" }), done: new Map() };
-  // Something new below where you're reading: a small round button in the corner, gone at the end.
-  const label = { type: "button", hidden: true, onclick: end, "aria-label": "New below" };
+  /** @type {Record<string, any>} */
+  const v = {
+    n,
+    head: h("header.head"),
+    msgs: h("div.msgs", { role: "log" }),
+    done: new Map(),
+    u: !n && R.u,
+  };
+  R.u = 0;
+  // Away from the end: a small round button in the corner takes you back to the latest.
+  const label = { type: "button", hidden: true, onclick: end, "aria-label": "To the latest" };
   v.pill = h("button.pill", label, icon("down"));
-  v.pill.title = "New below";
+  v.pill.title = "To the latest";
   v.foot = h("div.foot", v.pill);
+  // Find in this chat: its row under the head, find.js's, loaded when it opens.
+  v.fb = ib("search", () => lazy("find")((m) => m.find(v)), "Find in this chat", ".fb");
   v.box = h("section.view", v.head, v.msgs, v.foot);
   v.msgs.onscroll = () => {
     v.low = near(v.msgs);
-    if (v.low) v.pill.hidden = true;
+    v.pill.hidden = v.low;
   };
   // A picture that loads late pushes the end down: still at the end, stay there.
   v.msgs.addEventListener("load", () => v.low && end(), true);
   set($("#main"), v.box);
-  if (n) S.seen = S.seen.filter((x) => x !== n).concat(n);
-  else R.pend[0] = queue(0).filter((p) => p.st === "fail");
+  if (n) {
+    S.seen = S.seen.filter((x) => x !== n).concat(n);
+    keep();
+  } else R.pend[0] = queue(0).filter((p) => p.st === "fail");
   R.v = v;
   redraw();
 }
 
-// The open thread: only what's newer while a run is going.
+// The open thread: only what's newer while a run is going (all of it once more, `whole`, when
+// what's kept here stands in for a reply's words).
 async function pull(n) {
   const old = S.threads[n];
-  const since = old?.task.running && old.messages.at(-1)?.at;
+  const since = !old?.r && old?.task.running && old.messages.at(-1)?.at;
   const d = await get(
     `task/${n}${since ? `?since=${encodeURIComponent(since)}` : ""}`,
     undefined,
     !!old && !R.woke,
   );
   if (!d) return;
-  // Only what's newer, or the newest page with older ones loaded: kept with what's here.
+  // Only what's newer, or the newest page with older ones loaded: kept with what's here, in order.
+  // Past 100, the edge reads what's newer by time, so a page that fills between reads skips none.
   if (since || old?.page < d.page) {
     const all = new Map(old.messages.map((x) => [x.id, x]));
     for (const x of d.messages) all.set(x.id, x);
-    Object.assign(d, { messages: [...all.values()], earlier: old.earlier, page: old.page });
+    const messages = [...all.values()].sort((a, b) => a.id - b.id);
+    Object.assign(d, { messages, earlier: old.earlier, page: old.page });
   }
+  // Your close or reopen holds here as in the list, till GitHub's read agrees.
+  const v = R.turned[n];
+  if (v && v.open !== d.task.open) Object.assign(d.task, { open: v.open, state: v.t.state });
   S.threads[n] = d;
-  keep();
+  keep(n);
   redraw();
 }
 
@@ -570,7 +714,6 @@ function above() {
   const below = m.scrollHeight - m.scrollTop;
   redraw();
   m.scrollTop = m.scrollHeight - below;
-  R.v.pill.hidden = true;
 }
 
 // Earlier messages: the ones here not drawn yet, else the page of 100 before the oldest here.
@@ -586,7 +729,7 @@ async function older(n) {
   const got = d.messages.filter((x) => !had.has(x.id));
   t.messages = got.concat(t.messages);
   Object.assign(t, { earlier: d.earlier, page: d.page });
-  keep();
+  keep(n);
   if (R.v?.n !== n) return;
   reveal(got.length);
   above();
@@ -601,7 +744,12 @@ const threadMenu = (t) => {
   const i = (k, l) => [icon(k), l];
   const gh = (u) => () => open(u, "_blank", "noopener");
   const task = !T.pr && t.writable;
+  const phone = !WIDE.matches;
   return [
+    phone && [i("search", "Find in this chat"), () => R.v.fb.click()],
+    phone &&
+      task &&
+      !T.repeats && [i(T.open ? "check" : "undo", T.open ? "Close" : "Reopen"), () => turn(T)],
     [i("open", "On GitHub"), gh(T.url)],
     task && runOf(T) && [i("x", "Stop the run"), () => stop(n)],
     T.pr && [i("code", "The changes"), gh(`${T.url}/files`)],
@@ -610,6 +758,7 @@ const threadMenu = (t) => {
       () => save(`#${n}-${slug.slice(0, 40)}.md`, `${top}${md}\n`),
     ],
     task && [i("repeat", "Run again"), () => say(n, "again")],
+    task && !T.project && !T.parent && [i("app", "Move to project"), () => pjs((m) => m.move(n))],
     task &&
       T.repeats &&
       T.open && [i("x", "Stop repeating"), () => confirm("Sure?") && say(n, "stop repeating")],
@@ -641,7 +790,11 @@ function drawThread(t) {
         status(T, run, true),
         h("span", `#${n}`),
         T.parent && to(T.parent, `Part of #${T.parent}`),
-        k && h("span", named(k)),
+        // A project's name goes to its page (ADR 0069: no tab row).
+        k &&
+          (k === projOf(T)
+            ? h("a", { href: `#/p/${encodeURIComponent(k)}` }, named(k))
+            : h("span", named(k))),
         model,
         all.runs.length > 0 && h("span.sum", summary(all)),
         T.prs.map((p) => pr(p)),
@@ -661,32 +814,52 @@ function drawThread(t) {
       ".btn.flip",
     );
   if (flip) flip.ariaLabel = T.open ? "Close" : "Reopen";
-  const title = n ? (T.pr ? `#${n} ${T.title}` : bare(T.title)) : "New chat";
-  set(v.head, back(), h("div.title", h("h2", title), tags), refreshBtn(), flip, more);
-  // A project's task: its tabs above (ADR 0065). A split task: its Plan card under the header.
-  const P = real && !T.pr && projOf(T);
-  if (P && v.p !== P) {
-    v.p = P;
-    ws((w) => R.v === v && w.strip(v.box, P, n));
-  }
+  const title = n
+    ? T.pr
+      ? `#${n} ${T.title}`
+      : bare(T.title)
+    : R.home
+      ? "Desk"
+      : `New chat${v.u ? ` in ${v.u.name}` : ""}`;
+  set(v.head, back(), h("div.title", h("h2", title), tags), real && v.fb, refreshBtn(), flip, more);
+  // A split task: its Plan card under the header.
   if (real && T.plan) lazy("plan")((m) => R.v === v && m.plan(v, t));
   // No plan this time (its read failed, or the parts were unlinked): no card left from before.
   else if (v.pk) {
     v.box.querySelector(".plan")?.remove();
     v.pk = undefined;
   }
+  // A project's page (ADR 0069): its chats, pages, Inbox and Export under the header (project.js).
+  if (real && T.project) lazy("project")((m) => R.v === v && m.card(v, t));
+  // Its Progress (ADR 0069): the run's handoff, folded above the thread. Drawn again only when it
+  // changed, as open as you left it. None is "": `v.pg` is the fold or nothing, never `false`.
+  const g = (real && T.progress) || "";
+  if ((v.pg?.k || "") !== g) {
+    const d =
+      g &&
+      h(
+        "details.prog",
+        { open: v.pg?.open },
+        h("summary", "Progress"),
+        Object.assign(h("div.md"), { innerHTML: g }),
+      );
+    v.pg?.remove();
+    if (d) v.msgs.before(d);
+    v.pg = d ? Object.assign(d, { k: g }) : undefined;
+  }
   // A command's answer stays until the thread's newest message changes; a note, a minute.
   const live = (p) =>
     p.sys
       ? !n || (p.keep ? t.messages.at(-1)?.id === p.last : Date.now() - p.t < 6e4)
       : p.st !== "sent" || you <= p.base;
-  R.pend[n] = queue(n).filter(live);
-  let added = 0;
+  // One gone lets go of its pictures' previews.
+  R.pend[n] = queue(n).filter((p) => live(p) || (p.prev?.map(free) && 0));
+  // A message drawn once is drawn again only when it changed (or its words came in place of a
+  // stand-in, `r`).
   const one = (x, i) => {
     const e = v.done.get(x.id);
-    if (!e) added++;
-    if (e?.k === x.html) return e;
-    v.done.set(x.id, Object.assign(msg(x, i, n), { k: x.html }));
+    if (e?.k === x.html && e.r === x.r) return e;
+    v.done.set(x.id, Object.assign(msg(x, i, n), { k: x.html, r: x.r }));
     return v.done.get(x.id);
   };
   // Your `stop` is in: the run reads it within a minute.
@@ -710,22 +883,44 @@ function drawThread(t) {
       btn("Continue", () => say(n, "continue"), ".btn.answer"),
     );
   const words = !run && !wait && (stopped || (last && quickWords(T, last)));
-  const msgs = t.ph ? ph() : t.messages.slice(cut).map((x, i) => one(x, i + cut));
-  set(v.msgs, earlier, msgs, !n && !wait && starts(), R.pend[n].map(pend), words, work);
+  // A button's word isn't drawn (ADR 0069); a close shows from the task's state.
+  const msgs = t.ph
+    ? ph()
+    : t.messages.slice(cut).flatMap((x, i) => (x.tap ? [] : one(x, i + cut)));
+  const shut =
+    real &&
+    !T.open &&
+    !TURN.test(t.messages.findLast((x) => !x.tap)?.md) &&
+    turned("close", T.closed ? ` · ${ago(T.closed)}` : "", !!T.closed);
+  // A new chat's starters; on the first screen, the Desk (desk.js), made once a view.
+  if (R.home) v.dk ||= home();
+  const hi = !n && !wait && (v.dk || starts());
+  const rest = [shut, hi, R.pend[n].map(pend), words, work].flat().filter(Boolean);
+  // The same messages stay where they are (a picture, a diagram, what you selected): only what's
+  // around them is put in again.
+  if (msgs.length === v.ms?.length && msgs.every((e, i) => e === v.ms[i])) {
+    for (const e of [v.er, ...v.tl]) e?.remove();
+    if (earlier) v.msgs.prepend(earlier);
+    v.msgs.append(...rest);
+  } else set(v.msgs, earlier, msgs, rest);
+  Object.assign(v, { ms: msgs, er: earlier || null, tl: rest });
   if (!v.drawn || was) end();
-  else if (added && !near(v.msgs)) v.pill.hidden = false;
-  v.low = near(v.msgs);
+  v.pill.hidden = v.low = near(v.msgs);
   v.drawn = !t.ph;
-  if (v.w !== t.writable) {
-    v.w = t.writable;
+  clock();
+  // A project's box (ADR 0069) opens a new chat in it, or adds to its Inbox: it replies to none.
+  const W = t.writable && (T.project ? 2 : 1);
+  if (v.w !== W) {
+    v.w = W;
     v.seen = T.model;
     v.co = {
       menu: S.menu,
-      task: n || undefined,
+      task: (W < 2 && n) || undefined,
+      dk: n,
       model: T.model,
-      words: R.draft || R.drafts[n],
+      words: R.draft,
       root: v.box,
-      send,
+      send: W > 1 ? inProject(v, T.project) : (b, p) => send(v.u ? { ...b, under: v.u.n } : b, p),
       after: redraw,
     };
     R.draft = "";
@@ -734,7 +929,7 @@ function drawThread(t) {
       ? h("p.note", "Read it here. ", changes, " and the merge are on GitHub.")
       : h("p.note", "This task doesn't take words from here: ", ext(T.url, "open it on GitHub"));
     set(v.foot, v.pill, t.writable ? composer(v.co) : note);
-    if (R.ask && v.co.attach) v.co.attach(R.ask);
+    if (R.ask && v.co.attach) R.ask(v.co);
     R.ask = 0;
   } else if (real && v.co && v.seen !== T.model) {
     // The task's model as GitHub has it, once it changes: a pick here stays till then.
@@ -742,8 +937,9 @@ function drawThread(t) {
     v.co.label();
   }
   // Words sent while a run works are taken in before it answers (tasks.md): the box says so.
-  // While it works, an empty box's send button stops it, as in other chats.
-  const ta = n && v.foot.querySelector("textarea");
+  // While it works, an empty box's send button stops it, as in other chats. A project's box says
+  // its own (project.js).
+  const ta = n && W < 2 && v.foot.querySelector("textarea");
   if (ta) ta.placeholder = run || start ? "Reply · read before it answers" : "Reply";
   if (!v.co?.state) return;
   v.co.stop = run && !halt && !wait && T.open && (() => stop(n));
@@ -793,6 +989,14 @@ function quickWords(T, r) {
   return here.length && h("p.links.quick", here);
 }
 
+const pjs = lazy("project");
+// The first screen (ADR 0069): the Desk, drawn by desk.js, kept with the view.
+const home = () => {
+  const e = h("div.desk");
+  lazy("desk")((m) => m.desk(e));
+  return e;
+};
+
 // A new chat's starters, each filling the box you write in.
 function starts() {
   const says = Object.fromEntries(S.menu?.commands || []);
@@ -825,7 +1029,13 @@ function msg(x, i, n) {
     return turned(x.md, `${x.who === "other" ? ` by ${x.name}` : ""} · ${ago(x.at)}`);
   const r = x.reply;
   const md = Object.assign(h("div.md"), { innerHTML: x.html, onclick: zoom });
-  draw(md, x.md);
+  // Copy on each block of code; a diagram's is drawn in its place (draw.js).
+  if (x.md.includes("```mermaid")) lazy("draw")((m) => m.draw(md, x.md));
+  for (const pre of md.querySelectorAll("pre")) {
+    const b = ib("copy", () => copy(pre.textContent), "Copy", ".cp");
+    pre.replaceWith(h("div.code", b));
+    b.before(pre);
+  }
   const det =
     x.details && Object.assign(h("div.md.details", { hidden: true }), { innerHTML: x.details });
   const dl = () => save(`#${n}-reply-${i}.md`, x.md);
@@ -852,7 +1062,7 @@ function msg(x, i, n) {
   // has read it.
   const use = x.use && h("span.use", said(S.menu, x.use.replace(/^use /, "")));
   const seen = x.read && h("span.seen", { title: "A run read it" }, icon("seen"));
-  const at = h("time", { title: new Date(x.at).toLocaleString() }, ago(x.at));
+  const at = h("time", { title: new Date(x.at).toLocaleString(), "data-at": x.at }, ago(x.at));
   const foot = h("footer", use, at, seen, more);
   return h(`article.msg.${x.who}`, who, md, x.files.map(file), links, ask, line, det, foot);
 }
@@ -864,7 +1074,7 @@ function file(f) {
   if (!u) return h("span.chip.gone", f.name);
   if (!IMG.test(f.type))
     return btn([icon("file"), h("span", `${f.name}${s}`)], () => see(f), ".chip");
-  // A picture: yours from here (kept 7 days) or from Telegram (read through the edge).
+  // A picture: yours from here (kept with its chat) or from Telegram (read through the edge).
   const i = h("img", { src: u, alt: f.name, loading: "lazy" });
   const b = btn(i, zoom, ".pic");
   i.onerror = () => b.replaceWith(gone());
@@ -886,40 +1096,39 @@ function view(...c) {
 }
 // A file opens here, never in a new tab: in the doc pane, beside the thread (workspace.js).
 const see = (f) => ws((w) => w.doc(f));
-// Its Ask about this: the file goes with your next message, here or in a new chat.
-const ask = (f) => {
-  if (R.v?.co?.attach) return R.v.co.attach(f);
+// `f` takes the box on screen, or a new chat's (in the project on screen).
+const into = (f) => {
+  if (R.v?.co?.attach) return f(R.v.co);
   R.ask = f;
-  go("#/new");
+  start(R.proj ? `${decodeURIComponent(location.hash.slice(4))}: ` : "");
 };
-
-// A ```mermaid block is drawn in /draw/, a sandboxed frame (Mermaid never runs here), and comes
-// back as SVG, shown as a picture (one runs no script). Its source stays if it doesn't draw.
-const MER = /```mermaid.*\n([\s\S]*?)```/g;
-function draw(md, text) {
-  const src = [...text.replace(/\r/g, "").matchAll(MER)].map((m) => m[1].trim());
-  for (const pre of md.querySelectorAll("pre")) {
-    const s = pre.textContent.trim();
-    if (!src.includes(s)) continue;
-    const at = `/draw/#${encodeURIComponent(s)}`;
-    const f = h("iframe.draw", { src: at, sandbox: "allow-scripts" });
-    f.drawn = (svg) => pre.replaceWith(pic(`data:image/svg+xml,${encodeURIComponent(svg)}`, s));
-    pre.before(f);
+// Ask about this: the file goes with your next message; Share asks for a drop of it.
+const ask = (f, w) => into((co) => co.attach(f) || (w && co.fill(w)));
+// Drop anywhere (ADR 0069): your files, or a row from Files (DZ), into the box. Never sent.
+const DZ = "text/x-shipify-file";
+const dz = (e, d = document.body.dataset) => {
+  if (![...e.dataTransfer.types].some((x) => x === "Files" || x === DZ)) return;
+  e.preventDefault();
+  clearTimeout(R.dz);
+  if (e.type === "dragover") {
+    d.dz = S.menu?.files?.on ? "Drop to attach" : "Files aren't set up";
+    R.dz = setTimeout(() => delete d.dz, 150);
+    return;
   }
-}
-addEventListener("message", (e) => {
-  const f = [...document.querySelectorAll(".draw")].find((x) => x.contentWindow === e.source);
-  const svg = e.data?.draw;
-  if (!f || typeof svg !== "string") return;
-  f.remove();
-  if (svg.startsWith("<svg") && svg.length < 2e6) f.drawn(svg);
-});
+  delete d.dz;
+  const l = [...e.dataTransfer.files];
+  const f = e.dataTransfer.getData(DZ);
+  if (S.menu?.files?.on) into((co) => (f ? co.attach(JSON.parse(f)) : co.add(l)));
+};
+addEventListener("dragover", dz);
+addEventListener("drop", dz);
 
 function pend(p) {
   // A command's answer (/help, /ping…) reads as Shipify's, lines kept; a note stays a small line.
   if (p.sys) return p.keep ? h("article.msg", h("div.md.pre", p.sys)) : h("p.sys", p.sys);
   const b = p.b;
   const fail = [h("span.st.bad", p.err), btn("Retry", () => sendIt(p))];
+  if (b.button && p.st !== "fail") return;
   if (TURN.test(b.words) && !b.files.length)
     return p.st === "fail" ? h("p.sys", fail) : turned(b.words, "", p.st === "sent");
   const st = p.st === "fail" ? fail : h("em", p.st === "sent" ? p.text : "Sending…");
@@ -929,27 +1138,52 @@ function pend(p) {
   return h("article.msg.you", h("div.md.pre", b.words), pics, docs, h("footer", use, st));
 }
 
-// Sends a message: shown at once, kept with Retry if it fails; the id is made once.
-function send(b, prev = [], note = "") {
-  const L = queue(b.task || 0);
-  const base = (S.threads[b.task]?.messages || []).filter((x) => x.who === "you").length;
-  L.push({ b, prev, note, base: base + L.filter((p) => p.b).length });
+// Sends a message: shown at once, kept with Retry if it fails; the id is made once. One from a
+// project's box (`box`, inProject) shows in the project's page, and is never kept to send again:
+// what isn't sent goes back in the box.
+function send(b, prev = [], note = "", box) {
+  const at = box?.n || b.task || 0;
+  const L = queue(at);
+  const base = (S.threads[at]?.messages || []).filter((x) => x.who === "you").length;
+  L.push({ b, prev, note, at, box, base: base + L.filter((p) => p.b).length });
   sendIt(L.at(-1));
 }
-const say = (n, words) => send({ id: uid(), task: n, words, files: [] });
+// A project's box (ADR 0069) replies to none: Send opens a new chat in it (`under`, as New chat
+// here's box does); Add beside it (project.js sets `v.add`) puts what you found in its Inbox, with
+// no run. Not sent: your words and files back in the box, to send again.
+const inProject = (v, P) => (b, p) =>
+  send(v.add ? { ...b, words: `add ${P.name}: ${b.words}` } : { ...b, under: v.n }, p, "", {
+    n: v.n,
+    back() {
+      if (R.v !== v) return;
+      v.co.fill(b.words);
+      for (const f of b.files) v.co.attach(f);
+    },
+  });
+// A button's word, marked: no message shows for it (ADR 0069).
+const TAP = /^(close|reopen|stop( repeating)?)$/;
+const sent = (task, words, id = uid()) => ({
+  id,
+  task,
+  words,
+  files: [],
+  button: TAP.test(words) || undefined,
+});
+const say = (n, words) => send(sent(n, words));
 async function sendIt(p) {
   p.st = "sending";
   redraw();
   try {
     const s = await api("send", p.b);
-    const n = p.b.task || 0;
+    const n = p.at;
     const k = s.task || n;
     bar("off");
     Object.assign(p, { st: "sent", text: s.task ? `Sent · #${s.task}` : "Sent" });
     // What you sent isn't news to you (a few seconds' grace for the clocks; a reply takes longer).
-    S.saw[s.task || n] = Date.now() + 5e3;
+    S.saw[k] = Date.now() + 5e3;
+    // In a new chat, it goes with you; from a project's box, an Add leaves only the door's answer.
+    if (k !== n || p.box) R.pend[n] = queue(n).filter((x) => x !== p);
     if (k !== n) {
-      R.pend[n] = queue(n).filter((x) => x !== p);
       p.base = 0;
       queue(k).push(p);
       go(`#/t/${k}`);
@@ -958,14 +1192,24 @@ async function sendIt(p) {
       const last = S.threads[k]?.messages.at(-1)?.id;
       queue(k).push({ sys: p.note || s.text, keep: !p.note, last, t: Date.now() });
     }
-    setTimeout(tick, 5500);
+    // One read after a send, however many go.
+    clearTimeout(R.sent);
+    R.sent = setTimeout(tick, 5500);
   } catch (e) {
     Object.assign(p, { st: "fail", err: why(e) });
     if (e.off) bar("off", OFF);
-    // Not sent for want of a line (offline, or GitHub not reached: nothing was saved): sent again
-    // by itself, with the same id (so never twice), at most three times, and when you're online
-    // again. Retry stays.
-    const late = e.off || e.status === 503;
+    // From a project's box: out of its page, why said at the top, your words back in the box.
+    if (p.box) {
+      R.pend[p.at] = queue(p.at).filter((x) => x !== p);
+      p.prev.map(free);
+      if (!e.off) told(p.err);
+      p.box.back();
+      return redraw();
+    }
+    // Not sent for want of a line (offline, the edge's answer late, or GitHub not reached): sent
+    // again by itself, with the same id (so never twice), at most three times, and when you're
+    // online again. Retry stays.
+    const late = e.off || e.late || e.status === 503;
     if (late) p.again = (p.again || 0) + 1;
     if (late && p.again <= 3) setTimeout(() => p.st === "fail" && sendIt(p), 5e3 * 2 ** p.again);
   }
@@ -981,15 +1225,24 @@ async function page(title, p, draw, top = no) {
   R.page = { p, body, draw };
   const head = h("header.head", back(), h("h2.title", title), refreshBtn());
   set($("#main"), h("section.view", head, h("div.page", top(), body)));
-  const d = await get(p).catch(no);
+  await load(R.page);
+}
+// A page's read, drawn when it comes. One that fails with nothing kept says why in its place, with
+// Retry: never placeholders for good.
+async function load(v) {
+  const retry = () => set(v.body, ph()) || load(v);
+  const d = await get(v.p).catch((e) => {
+    if (!R[v.p] && v.body.isConnected && !e.signin)
+      set(v.body, h("p.quiet", why(e)), btn("Retry", retry));
+  });
   if (!d) return;
-  R[p] = d;
-  if (body.isConnected) set(body, draw(d));
+  R[v.p] = d;
+  if (v.body.isConnected) set(v.body, v.draw(d));
 }
 // Words sent from a button: it waits while they go, a failure keeps a Retry (with the same id).
 async function quick(task, words, out, b, id = uid()) {
   if (b) b.disabled = true;
-  const s = await get("send", { id, task, words, files: [] }).catch((e) => {
+  const s = await get("send", sent(task, words, id)).catch((e) => {
     if (!e.off) bar("err", `${why(e)} · Retry`, () => bar("err") || quick(task, words, out, b, id));
   });
   if (b) b.disabled = false;
@@ -1014,106 +1267,14 @@ async function fresh() {
   R[v.p] = d;
   if (v.body.isConnected) set(v.body, v.draw(d));
 }
-const act = (l, n, w, sure = false, c = "", done = reread) =>
-  btn(
-    l,
-    async (e) => (!sure || confirm("Sure?")) && (await quick(n, w, 0, e.currentTarget)) && done(),
-    c,
-  );
 const out = () => h("p.hint", { "aria-live": "polite" });
 // An item on a page (Repeats, Notebook, Files): its name over a line about it.
 const what = (name, ...about) => h("div.what", name, h("span.meta", about));
-const live = (on) => dot(on ? "ok" : "closed", on ? "on" : "paused");
+// Repeats: repeat.js, with its New repeat form, loaded when it opens (ADR 0069: from the Desk).
+const repeats = () => lazy("repeat")((m) => m.repeats());
 
-const rep = (r) => {
-  const on = R.turned[r.n]?.open ?? r.open;
-  const next = on && r.next && `next ${until(r.next)}`;
-  const flip = (open) => () => moved(r.n, open, { title: r.title, from: "repeat" }) || reread();
-  const pause = on
-    ? act("Pause", r.n, "close", false, "", flip(false))
-    : act("Resume", r.n, "resume", false, "", flip(true));
-  const change = btn("Change", () => start("Change it to: ", `#/t/${r.n}`));
-  const acts = h("span.acts", act("Run now", r.n, "again"), pause, change);
-  // Stopped: it leaves at once (its run takes the label off in a minute or so).
-  const stopped = () => {
-    R.gone[r.n] = Date.now();
-    flip(false)();
-  };
-  acts.append(act("Stop", r.n, "stop repeating", true, ".danger", stopped));
-  return [what(to(r.n, `#${r.n} ${r.title}`), live(on), meta(r.every, next)), acts];
-};
-const recipe = (r) => {
-  const next = !r.paused && r.next && `next ${until(r.next)}`;
-  const at = r.task ? to(r.task, `Task #${r.task}`) : ext(r.url, "On GitHub", ".chip");
-  // A recipe is a file: for good, it's a change that removes it, which you send and then merge.
-  const gone = r.paused
-    ? btn("Remove", () => start(`shipify: remove the recipe ${r.name} (recipes/${r.name}.md)`))
-    : "";
-  return [what(h("b", r.name), live(!r.paused), meta(r.every, next)), h("span.acts", gone, at)];
-};
-const newRepeat = (e) => e.currentTarget.replaceWith(repeatForm(S.menu, (n) => go(`#/t/${n}`)));
-const isOn = (r) => R.turned[r.n]?.open ?? r.open;
-// One you stopped here, for five minutes: back after that only if the stop didn't take.
-const shown = (r) => !(Date.now() - (R.gone[r.n] || 0) < 3e5);
-// What runs, then what's paused, folded away: a stopped repeat isn't here at all.
-const repeats = () =>
-  page(
-    "Repeats",
-    "repeats",
-    (d) => {
-      const mine = d.repeats.filter(shown);
-      const paused = [...mine.filter((r) => !isOn(r)), ...d.recipes.filter((r) => r.paused)];
-      return [
-        h("h3", "Your repeats"),
-        list(mine.filter(isOn), rep, "Nothing repeats now."),
-        h("h3", "Waiting"),
-        list(d.waiting ?? [], (r) => what(to(r.n), r.every), "Nothing waits."),
-        h("h3", "Recipes"),
-        list(
-          d.recipes.filter((r) => !r.paused),
-          recipe,
-          "No recipes running.",
-        ),
-        paused.length
-          ? h(
-              "details.paused",
-              h("summary", `Paused (${paused.length})`),
-              list(paused, (x) => ("n" in x ? rep(x) : recipe(x)), ""),
-            )
-          : "",
-      ];
-    },
-    () => btn([icon("plus"), "New repeat"], newRepeat, ".primary"),
-  );
-
-const forget = (p) => {
-  const w = prompt("Words to forget", p.first)?.trim();
-  if (w) quick(undefined, `forget: ${w}`).then((s) => s && reread());
-};
-const note = (p) => [
-  what(ext(p.url, p.topic), meta(`${p.lines} lines`, p.first)),
-  btn("Remove", () => forget(p), ".danger"),
-];
-const addNote = () => {
-  const topic = h("input");
-  const text = h("textarea", { rows: 2 });
-  const o = out();
-  const f = h("form.card.form", h("label", "Topic (optional)", topic), h("label", "Note", text));
-  f.append(h("button.primary", "Add"), o);
-  f.onsubmit = async (e) => {
-    e.preventDefault();
-    const w = text.value.trim();
-    const tp = topic.value.trim();
-    if (!w) o.textContent = "Write the note.";
-    else if (await quick(undefined, `remember${tp && ` ${tp}`}: ${w}`, o)) {
-      text.value = "";
-      reread();
-    }
-  };
-  return f;
-};
-const notebook = () =>
-  page("Notebook", "notebook", (d) => [list(d.pages, note, "The notebook is empty.")], addNote);
+// The Library (ADR 0069): the notebook's pages, then the Library's by project (library.js).
+const notebook = () => lazy("library")((m) => m.library());
 
 // Files: every project's docs, sorted as a project's page sorts its own (workspace.js).
 const files = () => ws((w) => w.files());
@@ -1121,40 +1282,20 @@ const files = () => ws((w) => w.files());
 // Status & setup: setup.js, loaded when it opens.
 const setup = () => lazy("setup")((m) => m.setup());
 // Notifications (ADR 0050): sw.js shows them and takes shares. Sent again on opening if the
-// subscription or the edge's key changed.
+// subscription or the edge's key changed (setup.js `notify`, where they're turned on or off).
 const SW = navigator.serviceWorker;
 const reg = SW?.register("sw.js").catch(no);
-const b64 = (k) =>
-  Uint8Array.from(atob(k.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
 const hex = async (u) =>
   [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(u)))]
     .slice(0, 4)
     .map((b) => (b + 256).toString(16).slice(1))
     .join("");
-async function notify(on) {
-  const pm = (await reg).pushManager;
-  const k = S.menu?.notifications?.key;
-  let s = await pm.getSubscription();
-  if (!on) {
-    S.note = "";
-    keep();
-    return s && get("push", { off: s.endpoint }).finally(() => s.unsubscribe());
-  }
-  if ((await Notification.requestPermission()) !== "granted")
-    throw Error("Blocked: allow them in the site's settings, or the phone's");
-  // An older key's: made again (the old is dropped once gone).
-  if (s && !S.note?.endsWith(` ${k}`)) s = (await s.unsubscribe()) && null;
-  s ||= await pm.subscribe({ userVisibleOnly: true, applicationServerKey: b64(k) });
-  await get("push", { on: s.toJSON() });
-  S.note = `${s.endpoint} ${k}`;
-  keep();
-}
 const sync = async () => {
   const pm = (await reg)?.pushManager;
   const k = S.menu?.notifications?.key;
   let s = await pm?.getSubscription();
   if (k && S.note && S.note !== `${s?.endpoint} ${k}` && Notification.permission === "granted") {
-    await notify(true);
+    await lazy("setup")((m) => m.notify(true).catch(no));
     s = await pm.getSubscription();
   }
   R.mine = s && (await hex(s.endpoint));
@@ -1163,21 +1304,25 @@ function route() {
   const [, p = "", n = ""] = location.hash.match(/^#\/(\w*)\/?(\d*)/) || [];
   R.n = p === "t" ? +n : 0;
   R.proj = p === "p";
-  // What you were writing in a task (or a new chat) waits there till you come back, as in a chat.
-  const ta = R.v?.foot.querySelector("textarea");
-  if (ta) R.drafts[R.v.n] = ta.value;
+  R.home = !p || p === "desk";
   R.v = null;
   document.body.classList.toggle("in", !!p);
   // A thread (or a new chat) takes the whole phone; a page keeps the tabs.
   document.body.classList.toggle("talk", p === "t" || p === "new");
   for (const a of $("#pages").children)
     a.ariaCurrent = a.dataset.p === (p === "t" || p === "new" ? "" : p) ? "page" : null;
-  $(".pop")?.remove();
+  $(".pop")?.close();
   // Nothing picked is a new chat: its starters, ready to type in.
   const proj = () => ws((w) => w.project(decodeURIComponent(location.hash.slice(4))));
   safe({ repeats, notebook, files, setup, p: proj }[p] || thread);
   safe(drawList);
   tick();
+  // Focus where it was went with it (a tap on a phone): the view's heading has it, for a screen
+  // reader. The box you write in keeps it on a PC.
+  setTimeout(() => {
+    const e = document.activeElement === document.body && $("#main h2");
+    if (e) Object.assign(e, { tabIndex: -1 }).focus();
+  });
 }
 
 const gotList = (d) => {
@@ -1190,7 +1335,16 @@ const gotList = (d) => {
   ver(d.version);
   keep();
   safe(drawList);
-  redraw();
+  // The open thread is drawn again only when its own run or state changed here.
+  const n = R.v?.n;
+  const k = JSON.stringify([
+    n,
+    online(),
+    d.running.filter((r) => r.n === n),
+    d.tasks.find((t) => t.n === n)?.state,
+  ]);
+  if (k !== R.lk) redraw();
+  R.lk = k;
 };
 // On a phone the list and a page take turns: only what's on screen is asked for, the list while
 // your words wait for a run, to show it start, and once on coming back (a newer page shows there).
@@ -1211,9 +1365,10 @@ async function tick() {
   try {
     const t = S.threads[R.n];
     const wait = (t?.task.open || t?.task.wakes) && !t.task.running && waits(t);
-    // A project's page shows its tasks: the list is on screen there too.
+    // A project's page and the Desk (a phone's first screen) show the list's tasks: it's read there
+    // too.
     const listed =
-      WIDE.matches || !document.body.classList.contains("in") || wait || R.woke || R.proj;
+      WIDE.matches || !document.body.classList.contains("in") || wait || R.woke || R.proj || R.home;
     await Promise.all([
       listed && get("list", undefined, !!S.list).then(gotList, no),
       R.n && pull(R.n).catch(gone),
@@ -1232,9 +1387,10 @@ async function tick() {
 }
 // Back from away (another app, the phone asleep, the tab again) or ↻: what's on screen reads again
 // at once, a page too, and a newer page loads by itself (ver); the times shown ("5m") are drawn
-// again even when nothing else changed. Away, nothing is asked for.
+// again even when nothing else changed. Away, nothing is asked for, and what changed is written now
+// (a phone may close the app).
 async function wake() {
-  if (document.hidden) return clearTimeout(R.timer);
+  if (document.hidden) return flush() || clearTimeout(R.timer);
   R.woke = true;
   safe(drawList);
   redraw();
@@ -1248,41 +1404,44 @@ function gone(e) {
 
 if (!location.pathname.endsWith("/"))
   history.replaceState(null, "", `${location.pathname}/${location.hash}`);
-// The pages: a row under the list on a PC, tabs at the foot on a phone (Tasks there too).
+// The pages: a row under the list on a PC, tabs at the foot on a phone (the list, Projects, there
+// too). Repeats is on the Desk (ADR 0069).
 set(
   $("#pages"),
   [
-    ["chat", "Tasks", ""],
-    ["repeat", "Repeats"],
-    ["book", "Notebook"],
+    ["spark", "Desk"],
+    ["app", "Projects", ""],
     ["folder", "Files"],
+    ["book", "Library", "notebook"],
     ["pulse", "Setup", "setup"],
   ].map(([k, l, p = l.toLowerCase()]) =>
     h(`a${p ? "" : ".home"}`, { href: `#/${p}`, "data-p": p }, icon(k), h("span", l)),
   ),
 );
-// Back: Tasks is under every page; a tab from another page takes its place.
+// Back: the list (Projects) is under every page; a tab from another page takes its place, the
+// list's too, by its hash (never Back, which leaves the app when it was opened from elsewhere).
 $("#pages").onclick = (e) => {
   const a = e.target.closest("a");
   if (!a || !location.hash.replace(/^#\/?/, "")) return;
   e.preventDefault();
-  if (a.dataset.p) location.replace(a.href);
-  else history.back();
+  location.replace(a.href);
 };
 $("#new").prepend(icon("plus"));
 $("#new").before(refreshBtn());
 $(".search").prepend(icon("search"));
-$("#q").oninput = drawList;
+// The list follows what you type once you pause (100 ms), not each key.
+$("#q").oninput = () => {
+  clearTimeout(R.qt);
+  R.qt = setTimeout(drawList, 100);
+};
 $("#q").onkeydown = (e) => {
   const m = /^#(\d+)$/.exec(e.target.value.trim());
   if (e.key === "Enter" && m) go(`#/t/${m[1]}`);
 };
-// Ctrl+K (⌘K) finds a project, a task or a doc; Alt+1…9 picks a project's tab.
+// Ctrl+K (⌘K) finds a project, a task or a doc; with nothing typed, the chats seen last.
 addEventListener("keydown", (e) => {
-  const tab = e.altKey && /^Digit[1-9]$/.test(e.code) && $(".wtabs");
-  if ((e.ctrlKey || e.metaKey) && e.key === "k") ws((w) => w.quick());
-  else if (tab) ws((w) => w.pick(+e.code.slice(5)));
-  else return;
+  if (!(e.ctrlKey || e.metaKey) || e.key !== "k") return;
+  ws((w) => w.quick());
   e.preventDefault();
 });
 $("#view").onclick = (e) =>
@@ -1309,6 +1468,8 @@ get("menu").then((d) => {
   redraw();
   sync().catch(no);
 }, no);
+// A phone opens on the Desk (ADR 0069).
+if (!location.hash.slice(2) && !WIDE.matches) history.replaceState(null, "", "#/desk");
 // Opened on a page or a thread with nothing behind: the list goes under, so Back stays in.
 if (history.length < 2 && /^#\/\w/.test(location.hash)) {
   const at = location.hash;

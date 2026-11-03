@@ -213,7 +213,8 @@ export async function chat(opts: Wait = {}) {
  * A chat, end to end (ADR 0031): a message from you through the door becomes a task, sent again
  * it's written once, a run answers it, and its reply reaches your chat through the door, once. It
  * posts to the edge as Telegram does (with Telegram's secret, from your id), so it needs `ship add
- * telegram` done here; the task it opens is answered, and closes on its own.
+ * telegram` done here; the task it opens is answered, and closed by its `close` when its run stays
+ * (nothing closes for quiet any more, ADR 0069).
  */
 async function endToEnd(opts: Wait): Promise<Check[]> {
   const me = asYou();
