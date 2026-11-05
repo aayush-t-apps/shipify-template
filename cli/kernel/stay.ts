@@ -5,7 +5,19 @@
 // An answer that needs a write key ends it, for its job to apply (ADR 0062). Plain code: the rules
 // are pure functions, and the loop gets its clock and its reads from the step that runs it.
 import { taskAgent } from "./agent.ts";
-import type { Decided, Plan, Snapshot, ThinkMeta, ThinkWhy } from "./types.ts";
+import type { Decided, Plan, Said, Snapshot, ThinkMeta, ThinkWhy } from "./types.ts";
+
+/**
+ * The words a stay answers, after comment `after`: yours, and a guest's on their own chat (ADR
+ * 0071), never a setting the door wrote (a `use` or `close` from a chat starts nothing).
+ */
+export const newWords = (said: Said[], after: number): Said[] =>
+  said.filter(
+    (c) =>
+      (c.author === "owner" || c.author === "door" || c.author === "guest") &&
+      c.id > after &&
+      !c.from?.setting,
+  );
 
 /**
  * How long a stay waits with nothing to answer, unless SHIPIFY_STAY says (minutes; 0: never): 20

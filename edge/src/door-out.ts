@@ -6,23 +6,28 @@
 // SHIPIFY_PEOPLE, through that chat's channel adapter (ADR 0032), each once, then marks it as the
 // door App, visible on GitHub (ADR 0042): 🚀 "it reached every chat it was for" (a chat that reads
 // replies in place has it already, and is only told one came: ADR 0050), or 😕 when none could take
-// it. Then the files, so a slow upload can't make sent words look unsent; any that didn't go are
-// said in one short message. A chat that didn't confirm the words leaves no mark: the watch's one
-// notice covers it. One that can't be reached gets one alert on the status task; one that refused
-// what Shipify made is told so at once. Nothing is sent twice.
+// it. Then the files, so a slow upload can't make sent words look unsent: the web chat's store (R2)
+// keeps each under the ref the reply's line names, whatever chat it's for (ADR 0071), and each chat
+// that takes files gets them; any that didn't go are said in one short message. A guest's chat
+// (`web:<guest id>`) is reached as a person's is. A chat that didn't confirm the words leaves no
+// mark: the watch's one notice covers it. One that can't be reached gets one alert on the status
+// task; one that refused what Shipify made is told so at once. Nothing is sent twice.
 import {
   type Findings,
+  GUEST_PREFIX,
+  isGuestId,
   plural,
   problem,
+  type ReplyLine,
   readReply,
   withoutLine,
 } from "../../cli/contracts/index.ts";
 import { emptyFindings, sayFindings } from "./alerts.ts";
-import type { Outgoing as Out } from "./channels/channel.ts";
+import { MAX_FILE_BYTES, type Outgoing as Out } from "./channels/channel.ts";
 import { channelOf } from "./channels/index.ts";
 import { alertOf, outgoingOf } from "./chat.ts";
 import type { Deps, Env } from "./env.ts";
-import { GITHUB_NEEDS, json, logOf, missing, OIDC_NEEDS, unconfigured } from "./env.ts";
+import { bucketOf, GITHUB_NEEDS, json, logOf, missing, OIDC_NEEDS, unconfigured } from "./env.ts";
 import {
   appLogin,
   byRun,
@@ -43,6 +48,7 @@ import {
   statusTask,
   toBoxes,
 } from "./settings.ts";
+import { newRef, put } from "./store.ts";
 
 const MAX_FILES = 10;
 /**
@@ -239,27 +245,25 @@ export async function replied(req: Request, env: Env, deps: Deps): Promise<Respo
       return json({ error: "edited after it was written" }, 409);
     }
     if (early ?? (await marked(c.id))) return json({ sent: 0, already: true });
-    const chats = chatsIn(reply.to, s.people).filter((x) => ready(env, x.channel));
+    const chats = chatsOf(reply.to, s.people).filter((x) => ready(env, x.channel));
     if (!chats.length) {
+      const unkept = await keepFiles(env, deps, out, reply.files, log);
       log.info("door.out.sent", { task: out.task, sent: 0, why: "no chat in to" });
-      return json({ sent: 0, none: true });
+      return json({ sent: 0, none: true, ...(unkept ? { unkept } : {}) });
     }
     const words = outgoingOf(reply, out.task, withoutLine(c.body), c.html_url);
     const d = await deliver(env, deps, chats, words);
     const unconfirmed = await settle(gh, env, deps, c, out.task, d, s.people, log);
-    // The files after the mark, to each chat that has the words.
-    const unsent = await sendFiles(
-      env,
-      deps,
-      [...d.sent, ...chats.filter((x) => channelOf(x.channel)?.inPlace)],
-      out,
-      c.html_url,
-      log,
-    );
+    // The files after the mark: kept in the store, then to each chat that has the words.
+    const unkept = await keepFiles(env, deps, out, reply.files, log);
+    const has = [...d.sent, ...chats.filter((x) => channelOf(x.channel)?.inPlace)];
+    const unsent = await sendFiles(env, deps, has, out, c.html_url, log);
+    if (unkept) await sayUnkept(env, deps, has, out.task, unkept, c.html_url);
     const said = {
       sent: d.sent.length,
       refused: d.refused.length + d.wrong.length,
       ...(unsent ? { unsent } : {}),
+      ...(unkept ? { unkept } : {}),
     };
     if (!unconfirmed) return json(said);
     return json({ ...said, error: "a chat didn't confirm it: the watch tells you" }, 502);
@@ -323,6 +327,89 @@ async function settle(
   }
   await alert(gh, deps, notes);
   return unconfirmed;
+}
+
+/**
+ * The chats a reply's `to` names: each person's, as chatsIn finds them, and a guest's web chat
+ * (`web:<guest id>`, ADR 0071), so a guest's devices are told a reply came. Each once.
+ */
+export function chatsOf(to: string[], people: Person[]): Chat[] {
+  const chats = chatsIn(to, people);
+  for (const t of to) {
+    const id = t.startsWith("web:") ? t.slice(4) : "";
+    if (isGuestId(id) && !chats.some((x) => x.channel === "web" && x.chat === id))
+      chats.push({ channel: "web", chat: id });
+  }
+  return chats;
+}
+
+/**
+ * A run's files kept in the web chat's store (ADR 0071), whatever chat the reply is for, with its
+ * chat's number: each under the ref its reply's line names, paired by name in order (a box from
+ * before names none: a new ref). A file over what the store takes isn't kept. How many of a guest's
+ * weren't (the store refused, or the box couldn't send it): yours have their backup on
+ * `shipify-files`, so their chips say Archived.
+ */
+async function keepFiles(
+  env: Env,
+  deps: Deps,
+  out: Outgoing,
+  named: ReplyLine["files"],
+  log: ReturnType<typeof logOf>,
+): Promise<number> {
+  const bucket = bucketOf(env);
+  const left = [...(named ?? [])];
+  let unkept = 0;
+  let failed = 0;
+  for (const f of out.files) {
+    const i = left.findIndex((x) => x.name === f.name);
+    const ref = i >= 0 ? (left.splice(i, 1)[0]?.ref ?? "") : newRef(deps.now());
+    const at = deps.now();
+    const kept =
+      bucket && f.size <= MAX_FILE_BYTES
+        ? await put(bucket, ref, f, {
+            name: f.name.slice(0, 200),
+            type: f.type || "application/octet-stream",
+            size: f.size,
+            by: "run",
+            at,
+            task: out.task,
+          }).then(
+            () => true,
+            () => false,
+          )
+        : false;
+    if (kept) continue;
+    failed++;
+    if (GUEST_PREFIX.test(ref)) unkept++;
+  }
+  // Named on the line, never sent (past the 50 MB a reply sends in all): a guest's isn't kept.
+  unkept += left.filter((x) => GUEST_PREFIX.test(x.ref)).length;
+  if (failed || unkept)
+    log.warn("door.out.failed", { task: out.task, why: "files not kept", failed, unkept });
+  return unkept;
+}
+
+/**
+ * A guest's files the store didn't keep, said in one short message to each chat that has the
+ * reply's words, one read in place too (its notification): they have no other copy.
+ */
+async function sayUnkept(
+  env: Env,
+  deps: Deps,
+  chats: Chat[],
+  task: number,
+  unkept: number,
+  url: string,
+) {
+  const p = problem("files-unkept", {
+    files: plural(unkept, "file"),
+    them: unkept === 1 ? "it" : "them",
+  });
+  for (const x of chats)
+    await channelOf(x.channel)
+      ?.send(env, deps, x.chat, alertOf(p.what, p.fix, task, url))
+      .catch(() => undefined);
 }
 
 /**

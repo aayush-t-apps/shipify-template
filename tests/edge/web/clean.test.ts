@@ -1,7 +1,13 @@
 // The safe-HTML list (edge/src/web/clean.ts, ADR 0036): what a reply uses is kept as GitHub
 // rendered it; anything that could run, or reach anywhere but https, is gone.
 import { describe, expect, it } from "vitest";
-import { clean, splitDetails, withoutEchoes, withoutPick } from "../../../edge/src/web/clean.ts";
+import {
+  clean,
+  insideOf,
+  splitDetails,
+  withoutEchoes,
+  withoutPick,
+} from "../../../edge/src/web/clean.ts";
 
 const REPLY = `<p><strong>Done.</strong> See <a href="https://github.com/o/shipify/pull/9" rel="nofollow">#9</a>.</p>
 <ul class="contains-task-list"><li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled="" checked=""> one</li></ul>
@@ -12,6 +18,51 @@ const REPLY = `<p><strong>Done.</strong> See <a href="https://github.com/o/shipi
 <details><summary>More</summary><p>inside</p></details>`;
 
 describe("clean", () => {
+  // ADR 0071: a link to a shipify issue (a chat, a project, a doc) or to a run's file the message
+  // names opens in the window; every other link, a new tab as before.
+  it("opens shipify's issues and a message's files in the window, the rest in a new tab", () => {
+    const files = [
+      {
+        name: "guide.pdf",
+        src: "api/file/f-1",
+        backup: "https://github.com/o/shipify/blob/shipify-files/task-4/1/guide.pdf",
+      },
+    ];
+    const inside = insideOf("o/shipify", files);
+    const { html } = clean(
+      [
+        '<a href="https://github.com/o/shipify/issues/664" class="issue-link">#664</a>',
+        '<a href="https://github.com/O/Shipify/pull/9/files">PR</a>',
+        '<a href="https://github.com/o/shipify/blob/shipify-files/task-4/1/guide.pdf">guide</a>',
+        '<a href="https://github.com/o/shipify/blob/shipify-files/task-4/1/other.pdf">other</a>',
+        '<a href="https://github.com/o/other/issues/3">elsewhere</a>',
+        '<a href="https://example.com/">web</a>',
+      ].join(" "),
+      undefined,
+      inside,
+    );
+    expect(html).toContain('<a href="#/t/664">#664</a>');
+    expect(html).toContain('<a href="#/t/9">PR</a>');
+    expect(html).toContain('<a href="api/file/f-1">guide</a>');
+    // A file the message doesn't name, another repo, the web: a new tab.
+    for (const out of [
+      "https://github.com/o/shipify/blob/shipify-files/task-4/1/other.pdf",
+      "https://github.com/o/other/issues/3",
+      "https://example.com/",
+    ])
+      expect(html).toContain(
+        `<a href="${out}" rel="noopener noreferrer nofollow" target="_blank">`,
+      );
+    // A reply's links list, shown as buttons, still goes from its words when the link is inside.
+    const r = { links: [["Doc", "https://github.com/o/shipify/issues/664"]] as [string, string][] };
+    const echoed = clean(
+      '<p>Done.</p><ul><li>Doc: <a href="https://github.com/o/shipify/issues/664">x</a></li></ul>',
+      undefined,
+      inside,
+    ).html;
+    expect(withoutEchoes(echoed, r, inside)).toBe("<p>Done.</p>");
+  });
+
   it("keeps what a reply uses: text, links, task lists, code, tables, quotes, pictures, folds", () => {
     const { html, trimmed } = clean(REPLY);
     expect(trimmed).toBe(false);

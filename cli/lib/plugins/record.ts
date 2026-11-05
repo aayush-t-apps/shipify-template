@@ -17,6 +17,8 @@ export interface RecordIssue {
   created_at?: string;
   labels: { name: string }[];
   user: { login: string };
+  /** Its page, as GitHub's API answers (its `url` is the API's address). */
+  html_url?: string;
   /** Set when the record lists a pull request as an issue: never a task. */
   pull_request?: unknown;
   /** The record's own id for it, for calls that take one (pinning). */

@@ -174,9 +174,13 @@ function earlierFiles(repo: string, shared: TaskState["shared"]): string {
 
 export function buildPrompt(p: PromptInput): string {
   const asks = asksOf(p);
-  // A read run has no command to read an older message with (ADR 0044): its thread stays whole.
+  // A guest's run (ADR 0071): it helps a guest, holds nothing of the owner's, and asks the box for
+  // words, files and its own project's pages alone.
+  const guest = p.profile === "guest";
+  // A read run has no command to read an older message with (ADR 0044), nor a guest's run a key to
+  // read one: its thread stays whole.
   const convo = conversationOf(p.conversation, {
-    ...(p.profile === "read" ? {} : { read: p.paths.ship }),
+    ...(p.profile === "read" || guest ? {} : { read: p.paths.ship }),
     progress: Boolean(p.state.notes?.trim()),
   }).text;
   // A `new:` task's planning is in Shipify; once its plan is built, its runs work on the project.
@@ -188,13 +192,25 @@ export function buildPrompt(p: PromptInput): string {
       : "an answer");
   return [
     "You are one run of a Shipify task, working **unattended**: nobody is watching, so never wait for",
-    "input. When you need the owner, finish with state `needs-you` and one clear question.",
+    `input. When you need the ${guest ? "guest" : "owner"}, finish with state \`needs-you\` and one clear question.`,
     "",
     // Who it is, shared by every agent (task #520): a few lines, as every run and stay turn pays them.
-    "You are Shipify, the owner's personal assistant, not only a coder: you answer, research, plan,",
-    "remind, draft, call their tools and change their projects, within what this run may do (below).",
-    "Be brief and direct, say what you're unsure of, and state a limit plainly rather than work",
-    "around it. The owner's words, then their notebook's notes on tone, win over this.",
+    ...(guest
+      ? [
+          "## A guest's task",
+          "",
+          "This task is a guest's: a person the owner let use the web chat (ADR 0071). You are Shipify,",
+          "their assistant here: you answer, research and make files for them. This run holds nothing of",
+          "the owner's: no GitHub key, notebook, tool or repo, and no other chat. Be brief and direct, say",
+          "what you're unsure of, and state a limit plainly. The playbook below is a guest's, and the",
+          "answer you can ask for is words, a question, files and the guest's own project's pages.",
+        ]
+      : [
+          "You are Shipify, the owner's personal assistant, not only a coder: you answer, research, plan,",
+          "remind, draft, call their tools and change their projects, within what this run may do (below).",
+          "Be brief and direct, say what you're unsure of, and state a limit plainly rather than work",
+          "around it. The owner's words, then their notebook's notes on tone, win over this.",
+        ]),
     "",
     `# Task #${p.n} in ${p.repo}`,
     "",
@@ -234,15 +250,19 @@ export function buildPrompt(p: PromptInput): string {
       ? `- Your clone of \`${p.project}\`: \`${p.paths.work}\`, on branch \`work\` (the task's own). Change files only there, and commit there (\`git -C ${p.paths.work} commit\`).`
       : p.profile === "read"
         ? `- The repos this task reads: under \`${p.paths.read}\` (the box's notes say which). This run only reads files: it has no command and no web, it writes nothing, and it changes nothing.`
-        : `- Nothing is cloned up front. When a question needs a project's or a repo's code, clone it yourself, read-only: \`gh repo clone <owner/name> ${p.paths.read}/<name> -- --depth 1 --no-tags\`. Change nothing; this run answers, or proposes.${p.repos?.length ? ` The owner's: ${p.repos.map((r) => `\`${r.repo}\``).join(", ")}.` : ""}`,
+        : guest
+          ? "- Nothing is cloned, and this run holds no key to clone with: the web, commands in your run folder, and the guest's files are what you have."
+          : `- Nothing is cloned up front. When a question needs a project's or a repo's code, clone it yourself, read-only: \`gh repo clone <owner/name> ${p.paths.read}/<name> -- --depth 1 --no-tags\`. Change nothing; this run answers, or proposes.${p.repos?.length ? ` The owner's: ${p.repos.map((r) => `\`${r.repo}\``).join(", ")}.` : ""}`,
     // A read run (ADR 0044) reads its repos and the owner's files, and nothing else: no Shipify, no
     // commands, nothing written.
     ...(p.profile === "read"
       ? [`- Files the owner sent, if any: \`${p.paths.files}\` (read).`]
       : [
           `- Shipify (read-only: its skills, its tools, its playbooks): \`${p.paths.shipify}\`.`,
-          `- Shipify's CLI for local commands (\`<ship>\` in the playbook): \`${p.paths.ship}\`.`,
-          `- Files the owner sent, and files you make for them: \`${p.paths.files}\` (read) and \`${p.paths.out}\` (write).`,
+          guest
+            ? ""
+            : `- Shipify's CLI for local commands (\`<ship>\` in the playbook): \`${p.paths.ship}\`.`,
+          `- Files the ${guest ? "guest" : "owner"} sent, and files you make for them: \`${p.paths.files}\` (read) and \`${p.paths.out}\` (write).`,
           p.state.notes?.trim()
             ? `- Your handoff for the next run: \`${p.paths.out}/handoff.md\` is seeded with the last one (the Progress below): edit it in place as you work, keeping what still holds (Goal, Done, Next, Decisions, Open). The box keeps it however this run ends, even if it's stopped.`
             : `- Your handoff for the next run: keep \`${p.paths.out}/handoff.md\` current as you work (Goal, Done, Next, Decisions, Open). The box keeps it however this run ends, even if it's stopped.`,
@@ -253,7 +273,7 @@ export function buildPrompt(p: PromptInput): string {
     p.state.notes?.trim() ? `\n## Progress: the last run's handoff\n\n${p.state.notes.trim()}` : "",
     // The files earlier runs shared (ADR 0069 section 13), as the status keeps them: a run with
     // commands and Shipify's key reads one from the branch; none is fetched up front.
-    p.profile !== "read" && !p.account ? earlierFiles(p.repo, p.state.shared) : "",
+    p.profile !== "read" && !guest && !p.account ? earlierFiles(p.repo, p.state.shared) : "",
     p.notes.length ? `\n## Notes from the box\n\n${p.notes.map((x) => `- ${x}`).join("\n")}` : "",
     p.notebook ? `\n## The notebook\n\n${p.notebook}` : "",
     p.projectPages ? `\n## The project's pages\n\n${p.projectPages}` : "",
@@ -307,6 +327,8 @@ export function buildPrompt(p: PromptInput): string {
           "the owner asked from what you read; you ask for no change, note, repeat or call.",
         ]
       : [
+          `Bring \`${p.paths.out}/handoff.md\` up to date first, with what this run did and what's next: it's`,
+          "the chat's Progress, shown at its top.",
           `Write \`${p.paths.result}\` as JSON, then stop; your final answer in the same shape counts too, if`,
           "that file isn't yours to write. The box makes every change you ask for; you never push, open or",
           "merge a PR, or call a tool that changes something.",
@@ -331,28 +353,39 @@ export function buildPrompt(p: PromptInput): string {
         ? '- `pr`: `{"kind": "closes", "lane": "tweak", "title": "…", "body": "…"}` once your commits are\n  in your clone and their tests pass (the box then runs `<ship> pr <clone> --check` and the full\n  `make verify`; if they fail, you get one round to fix them). `kind`: `closes` (finishes\n  the task), `part-of` (a change doc, or a plan), `publish` (a new project\'s first push).'
         : "",
     // A read run asks for nothing the box would make (ADR 0044): an answer, and a question at most.
+    // A guest's run (ADR 0071): files, and its own project's pages.
     ...(p.profile === "read"
       ? []
-      : [
-          '- `work`: `{"project": "<id>", "brief": "…"}` only when the owner\'s words ask for a change to a',
-          '  project ("fix it", "make…", "go ahead"): a run on its checkout follows. A question or a check',
-          "  gets your answer: say what you would change, and stop; their go starts it.",
-          '- `calls`: `[{"tool": "<tool>", "name": "<call>", "args": {…}}]`: changes through a tool,',
-          "  shown to the owner exactly and made by the box after their `yes`.",
-          '- `split`: `[{"title": "<repo>: …", "brief": "…", "after": [1]}]`, 2 to 8 parts, only when the',
-          "  job is more than one PR (the playbook's \"When to split\"): listed for the owner's `yes`, then each",
-          "  opens as a sub-task, and nothing starts. It comes alone: no `pr`, `work` or `calls` with it.",
-          '- `notes`: `[{"topic": "Preferences", "line": "…"}]`: the owner\'s own words to keep.',
-          ...(p.projectPages
-            ? [
-                '- `pages`: `[{"page": "<topic>", "file": "<file>"}]`: a project page\'s whole new text, in a file in your out folder (5 at most); the box writes it (`skills/knowledge`).',
-              ]
-            : []),
-          '- `repeat`: `{"when": "every Monday at 9", "kind": "reminder" | "job" | "check", "text": "…"}`; once, then it ends: `"when": "in 15 minutes"` (or "at 17:30", "tomorrow at 9"); once something happens (an errand): `"when": "when links#12\'s checks finish"` (or "when #12 merges", "when it\'s deployed").',
-          "- `files`: names of files you put in your out folder for the owner (at most 10).",
-          "- `read_outside`: true when you read a web page (the box counts your tools' reads itself).",
-        ]),
-    "- `quiet`: true on a scheduled run with nothing to say.",
+      : guest
+        ? [
+            ...(p.projectPages
+              ? [
+                  '- `pages`: `[{"page": "<topic>", "file": "<file>"}]`: a page of the guest\'s project, its whole new text, in a file in your out folder (5 at most; one new doc a run).',
+                ]
+              : []),
+            "- `files`: names of files you put in your out folder for the guest (at most 10).",
+            "- `read_outside`: true when you read a web page.",
+          ]
+        : [
+            '- `work`: `{"project": "<id>", "brief": "…"}` only when the owner\'s words ask for a change to a',
+            '  project ("fix it", "make…", "go ahead"): a run on its checkout follows. A question or a check',
+            "  gets your answer: say what you would change, and stop; their go starts it.",
+            '- `calls`: `[{"tool": "<tool>", "name": "<call>", "args": {…}}]`: changes through a tool,',
+            "  shown to the owner exactly and made by the box after their `yes`.",
+            '- `split`: `[{"title": "<repo>: …", "brief": "…", "after": [1]}]`, 2 to 8 parts, only when the',
+            "  job is more than one PR (the playbook's \"When to split\"): listed for the owner's `yes`, then each",
+            "  opens as a sub-task, and nothing starts. It comes alone: no `pr`, `work` or `calls` with it.",
+            '- `notes`: `[{"topic": "Preferences", "line": "…"}]`: the owner\'s own words to keep.',
+            ...(p.projectPages
+              ? [
+                  '- `pages`: `[{"page": "<topic>", "file": "<file>"}]`: a project page\'s whole new text, in a file in your out folder (5 at most); the box writes it (`skills/knowledge`).',
+                ]
+              : []),
+            '- `repeat`: `{"when": "every Monday at 9", "kind": "reminder" | "job" | "check", "text": "…"}`; once, then it ends: `"when": "in 15 minutes"` (or "at 17:30", "tomorrow at 9"); once something happens (an errand): `"when": "when links#12\'s checks finish"` (or "when #12 merges", "when it\'s deployed").',
+            "- `files`: names of files you put in your out folder for the owner (at most 10).",
+            "- `read_outside`: true when you read a web page (the box counts your tools' reads itself).",
+          ]),
+    guest ? "" : "- `quiet`: true on a scheduled run with nothing to say.",
   ]
     .filter((l) => l !== "")
     .join("\n")

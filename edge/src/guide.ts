@@ -7,6 +7,7 @@ import {
   agentName,
   agentsSeen,
   type Button,
+  GUEST_LABEL,
   inGroups,
   line,
   NEEDS_YOU_LABEL,
@@ -27,8 +28,8 @@ import {
   effortsFor,
 } from "../../cli/contracts/index.ts";
 import type { Shown } from "./channels/channel.ts";
-import { NO_SUCH_TASK, REFUSED } from "./chat.ts";
-import { byDoor, byRun, type GitHub, GitHubError, RUN_WRITER } from "./github.ts";
+import { NO_SUCH_TASK, NOT_YOURS, REFUSED } from "./chat.ts";
+import { byDoor, byRun, type GitHub, GitHubError, guestsOwn, RUN_WRITER } from "./github.ts";
 import {
   NOTEBOOK_LABEL,
   type RawRunner,
@@ -65,19 +66,24 @@ export async function readTask(
   s: Settings,
   gh: GitHub,
   pick = false,
+  guest?: string,
 ): Promise<TaskRead> {
   const r = await gh.call("GET", `repos/${gh.repo}/issues/${n}`);
+  // A guest (ADR 0071) hears the same for none as for one that isn't theirs: no hint it exists.
+  if (guest && r.status !== 200 && r.status < 500) return { why: NOT_YOURS, waiting: false };
   if (r.status === 404 || r.status === 410) return { why: NO_SUCH_TASK(n), waiting: false };
   if (r.status !== 200) throw new GitHubError(r.status, `issue #${n}`);
   const issue = r.data as {
     title?: string;
     state?: string;
+    body?: string | null;
     pull_request?: unknown;
     locked?: boolean;
     labels?: { name: string }[];
-    user?: { login?: string };
+    user?: { login?: string; type?: string; id?: number };
     performed_via_github_app?: { id?: number } | null;
   };
+  if (guest && !guestsOwn(gh, issue, guest)) return { why: NOT_YOURS, waiting: false };
   const labels = (issue.labels ?? []).map((l) => l.name);
   const waiting = labels.includes(NEEDS_YOU_LABEL);
   const refused = (why: string) => ({ why, waiting });
@@ -185,7 +191,12 @@ export async function tasksAnswer(
   now: number,
 ): Promise<{ text: string; buttons: Button[][] }> {
   const [open, status] = await Promise.all([openIssues(gh), statusTask(gh)]);
-  const rows = taskRows(open, [STATUS_LABEL, NOTEBOOK_LABEL], status?.record?.upcoming);
+  // Guests' chats are theirs (ADR 0071): your /tasks leaves them out.
+  const rows = taskRows(
+    open,
+    [STATUS_LABEL, NOTEBOOK_LABEL, GUEST_LABEL],
+    status?.record?.upcoming,
+  );
   const shown = inGroups(rows).flatMap((g) =>
     g.rows.map((r) => ({ label: `#${r.n}`, words: `#${r.n}` })),
   );

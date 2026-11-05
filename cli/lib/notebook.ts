@@ -4,7 +4,7 @@
 // (`notes`), and the box writes it. The pure parts live here; reading and writing them is
 // commands/task/notebook.ts.
 import { z } from "zod";
-import { LIBRARY_LABEL, projectLabel } from "../contracts/index.ts";
+import { GUEST_LABEL, guestLabel, LIBRARY_LABEL, projectLabel } from "../contracts/index.ts";
 import { maskSecrets } from "./safety.ts";
 
 export const NOTEBOOK_LABEL = {
@@ -32,6 +32,19 @@ export const libraryLabels = (project?: string) => [
         },
       ]
     : []),
+];
+
+/**
+ * A guest's labels (ADR 0071), on a page their run makes: `guest`, which your reads leave out, and
+ * `guest:<id>`, by which their window finds it. GitHub makes each on first use.
+ */
+export const guestLabels = (guest: string) => [
+  {
+    name: GUEST_LABEL,
+    color: "fbca04",
+    description: "A guest's: only they see it in the web chat",
+  },
+  { name: guestLabel(guest), color: "fef2c0", description: "One guest's chats, projects and docs" },
 ];
 
 /** A page's title: "Notebook: <Topic>". */
@@ -111,8 +124,11 @@ export const looksSecret = (text: string) => maskSecrets(text) !== text;
  * zero-width joiner inside emoji (👩‍🎨) is allowed. */
 export const hasHidden = (text: string) => /(?!\u200d)[\p{Cf}\u2028\u2029]/u.test(text);
 
-/** A note's date at its end, as the notebook writes it: " (2026-10-05)". */
-const DATE_TAIL = /\s+\((\d{4}-\d{2}-\d{2})\)$/;
+/**
+ * A note's date at its end, as the notebook writes it: " (2026-10-05)". A line written before
+ * `dated` kept a date it had may carry two ("(2026-10-09) (2026-10-09)"): both are its date.
+ */
+const DATE_TAIL = /(?:\s+\(\d{4}-\d{2}-\d{2}\))+$/;
 
 /** A note's words, without its bullet or its date. */
 export const noteWords = (line: string) =>

@@ -79,9 +79,15 @@ export interface Place {
  * with `reopen`, the one an earlier step of this job made, as it left it (ADR 0057: a stay carries
  * on in the agent's session there).
  */
-export function placeFor(runId: string, local: string, reopen = false): Place {
+export function placeFor(runId: string, local: string, reopen = false, own = false): Place {
   const box = onBox();
-  if (box) return boxPlace(reopen ? reopenRun(box.slot, runId) : prepareRun(box.slot, runId));
+  // `own`: a guest's run (ADR 0071), with caches of its own (sandbox.ts `runPaths`).
+  if (box)
+    return boxPlace(
+      reopen
+        ? reopenRun(box.slot, runId, undefined, own)
+        : prepareRun(box.slot, runId, undefined, own),
+    );
   return localPlace(local, reopen);
 }
 

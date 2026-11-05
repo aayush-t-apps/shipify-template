@@ -100,6 +100,11 @@ export const FileSeen = z.object({
   size: z.number().optional(),
   /** The edge's own address for it: one it keeps (as long as its chat), or a chat's (Telegram's). */
   src: z.string().optional(),
+  /**
+   * A run's file of yours, backed up on `shipify-files` (ADR 0071): where its chip links once the
+   * kept copy has gone (**Archived**).
+   */
+  backup: url.optional(),
 });
 
 export const ReplySeen = z.object({
@@ -194,15 +199,45 @@ export const Thread = z.object({
       .object({
         name: z.string(),
         chats: z.array(Part).max(100),
-        pages: z.array(z.object({ n: z.number(), topic: z.string(), first: z.string(), url })),
+        /**
+         * Its docs (ADR 0071: its Docs tab), each with its short name ("Research"), its size and
+         * when it changed; its Inbox, how many finds wait.
+         */
+        pages: z.array(
+          z.object({
+            n: z.number(),
+            topic: z.string(),
+            name: z.string(),
+            first: z.string(),
+            size: z.number(),
+            updated: iso,
+            waiting: z.number().optional(),
+            url,
+          }),
+        ),
         now: z.array(z.string()).max(6).optional(),
-        /** Its one next step, from counts (reads.ts `nextStep`). */
+        /** Its one next step, from counts (reads.ts `nextStep`); closed, what stays and Reopen. */
         step: z.string(),
+        /** Open, what Close asks first (ADR 0069): its open chats, and what stays and goes. */
+        ask: z.string().optional(),
       })
       .optional(),
     /** Its Progress (ADR 0069): the last run's handoff, as cleaned HTML. Only in a task's newest
      * view, not an older page or a PR's. */
     progress: z.string().optional(),
+    /**
+     * A doc (ADR 0071: a notebook or Library page): its short name, its project's, and when it
+     * last changed, which a save sends back (`…/api/edit`).
+     */
+    doc: z
+      .object({
+        name: z.string(),
+        project: z.string().optional(),
+        /** Its project's number, open or closed: the doc opens over its Docs. */
+        of: z.number().optional(),
+        updated: iso,
+      })
+      .optional(),
   }),
   messages: z.array(Msg),
   /** Older messages left out: GitHub's pages of 100, and `page` is the one here (?page= reads one). */
@@ -264,6 +299,11 @@ export const Menu = z.object({
     zone: z.string(),
   }),
   version: z.string(),
+  /**
+   * At the guests' door (ADR 0071): who the guest is. The page shows their own Desk with the Guest
+   * tag, and none of yours (Library, Apps, Repeats, Setup, run details).
+   */
+  guest: z.object({ name: z.string() }).optional(),
 });
 
 /** A search of an agent's gateway for models (`…/api/models?agent=&q=`), each as `use` takes it. */
@@ -322,19 +362,36 @@ export const Repeats = z.object({
 
 export const Notebook = z.object({
   v: z.literal(1),
-  pages: z.array(z.object({ topic: z.string(), first: z.string(), lines: z.number(), url })),
-  /** The Library's pages (ADR 0069), newest first: each with its number and its project. */
+  /** The pages every run reads, each with its number: it opens in the pane, with Edit (ADR 0071). */
+  pages: z.array(
+    z.object({
+      n: z.number().optional(),
+      topic: z.string(),
+      first: z.string(),
+      lines: z.number(),
+      url,
+    }),
+  ),
+  /**
+   * The Library's pages (ADR 0069), newest first: each with its number, its short name (ADR 0071),
+   * and its project.
+   */
   library: z
     .array(
       z.object({
         n: z.number(),
         topic: z.string(),
+        name: z.string(),
         first: z.string(),
         lines: z.number(),
         url,
         project: z.string().optional(),
       }),
     )
+    .optional(),
+  /** Your projects, open and closed (ADR 0069), the newest first: each by its number and name. */
+  projects: z
+    .array(z.object({ n: z.number(), name: z.string(), open: z.boolean(), closed: iso.optional() }))
     .optional(),
 });
 
@@ -362,6 +419,8 @@ export const Files = z.object({
   v: z.literal(1),
   count: z.number(),
   bytes: z.number(),
+  /** The chat each file's task is under, by number (a project, closed ones too: ADR 0069). */
+  parents: z.record(z.string(), z.number()).optional(),
   files: z.array(
     z.object({
       ref: z.string(),
@@ -447,7 +506,34 @@ export const Setup = z.object({
   links: z.object({ variables: url, actions: url, issues: url }),
   /** The devices the web chat notifies (ADR 0050), when it has the key. */
   devices: z.array(DeviceSeen).optional(),
+  /**
+   * Setup → Guests (ADR 0071): on once the guests' Access audience is saved; the link to send; each
+   * guest with their chats, their files' size and when they were last in. None: no file store.
+   */
+  guests: z
+    .object({
+      on: z.boolean(),
+      link: z.string(),
+      list: z.array(
+        z.object({
+          id: z.string(),
+          email: z.string(),
+          name: z.string(),
+          added: iso,
+          seen: iso.optional(),
+          chats: z.number(),
+          bytes: z.number(),
+        }),
+      ),
+    })
+    .optional(),
 });
+
+/** A change to Setup → Guests (`…/api/guests`): a guest added or removed. */
+export const GuestsBody = z.union([
+  z.object({ do: z.literal("add"), email: z.string().max(254), name: z.string().max(80) }).strict(),
+  z.object({ do: z.literal("remove"), id: z.string().max(40) }).strict(),
+]);
 
 /** The devices kept, after notifications are turned on or off (`…/api/push`). */
 export const Devices = z.object({ v: z.literal(1), devices: z.array(DeviceSeen) });
@@ -528,6 +614,20 @@ export const SendBody = z.object({
     .default([]),
 });
 export type SendBody = z.infer<typeof SendBody>;
+
+/**
+ * A doc's Edit (ADR 0071, `…/api/edit`): its number, your words, and when it changed as you read
+ * it (its thread's `doc.updated`). Words past 60,000 characters are refused, and said (edit.ts).
+ */
+export const EditBody = z
+  .object({
+    n: z.number().int().positive(),
+    words: z.string().max(200_000),
+    updated: iso,
+  })
+  .strict();
+/** A doc saved: its new time, for the next save. */
+export const Edited = z.object({ v: z.literal(1), n: z.number(), updated: iso });
 
 /** **Move to project** (ADR 0069): a chat, and the project it goes in (`…/api/move`). */
 export const MoveBody = z

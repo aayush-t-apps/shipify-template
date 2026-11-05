@@ -4,6 +4,7 @@
 // write; every GitHub string escaped. Access's token is checked here too, so a missing rule shows
 // nothing. What it reads (about four GitHub calls) is kept a minute in Cloudflare's cache.
 import {
+  GUEST_LABEL,
   NEEDS_YOU_LABEL,
   plural,
   problem,
@@ -119,7 +120,15 @@ async function gather(gh: GitHub, s: Settings, env: Env, deps: Deps): Promise<Vi
   const [record, list, needs, pages] = await Promise.all([
     statusTask(gh),
     runners(gh, deps.now(), KEEP_S * 1000),
-    gh.json<{ number: number; title: string; html_url: string; pull_request?: unknown }[]>(
+    gh.json<
+      {
+        number: number;
+        title: string;
+        html_url: string;
+        pull_request?: unknown;
+        labels?: { name: string }[];
+      }[]
+    >(
       "GET",
       `repos/${gh.repo}/issues?labels=${encodeURIComponent(NEEDS_YOU_LABEL)}&state=open&per_page=20`,
     ),
@@ -130,8 +139,9 @@ async function gather(gh: GitHub, s: Settings, env: Env, deps: Deps): Promise<Vi
     commit: env.GIT_SHA ?? "dev",
     record,
     boxes: toBoxes(list),
+    // A guest's chat waits on them, not you (ADR 0071).
     needs: needs
-      .filter((i) => !i.pull_request)
+      .filter((i) => !i.pull_request && !(i.labels ?? []).some((l) => l.name === GUEST_LABEL))
       .map((i) => ({ number: i.number, title: i.title, url: i.html_url })),
     pages,
     keyDates: s.keyDates,

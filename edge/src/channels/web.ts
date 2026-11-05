@@ -3,10 +3,11 @@
 // the edge's own chat routes (edge/src/web/), which call the door directly with a proof made from
 // the door App's key, so `POST /door/web` from outside gets the door's 401. Its replies are read in
 // place, on the task, so `send` only tells your devices one came (ADR 0050: Web Push, push.ts),
-// never with its words; `sendFiles` keeps a copy of a run's files in the chat's store (R2, bound as
-// BUCKET, store.ts) with its chat's number, where the page shows them as long as the chat lasts.
+// never with its words. It takes no files: the door keeps every run's files in the chat's store
+// (R2, bound as BUCKET, store.ts) itself, whatever chat a reply is for (door-out.ts, ADR 0071).
 // `file` hands a run what you sent from the page. No log line holds the words, a file's name or a
 // key.
+import { isGuestId } from "../../../cli/contracts/index.ts";
 import type { Deps, Env, Kept } from "../env.ts";
 import {
   bucketOf,
@@ -21,15 +22,8 @@ import {
   same,
 } from "../env.ts";
 import { type Note, type Rung, ring, serviceOf } from "../push.ts";
-import { newRef, open, put } from "../store.ts";
-import {
-  type Channel,
-  type FileKind,
-  MAX_FILE_BYTES,
-  type Message,
-  type Outgoing,
-  type Sent,
-} from "./channel.ts";
+import { open } from "../store.ts";
+import type { Channel, FileKind, Message, Outgoing, Sent } from "./channel.ts";
 
 const kindOf = (type: string): FileKind =>
   type.startsWith("image/")
@@ -69,6 +63,13 @@ function parse(body: string): Message | null {
     typeof o.under === "number" && Number.isSafeInteger(o.under) && o.under > 0
       ? o.under
       : undefined;
+  // A guest (ADR 0071): their id is the message's user and chat, or it's no message.
+  const g = obj(o.guest);
+  const guest =
+    g && typeof g.id === "string" && isGuestId(g.id) && str(g.name, 40)?.trim()
+      ? { id: g.id, name: String(g.name).trim() }
+      : undefined;
+  if (g && (!guest || guest.id !== user || guest.id !== chat)) return null;
   return {
     id,
     chat,
@@ -81,6 +82,7 @@ function parse(body: string): Message | null {
     ...(under ? { under } : {}),
     // A button's word (ADR 0069): the web chat shows no message for it.
     ...(o.button === true ? { button: true as const } : {}),
+    ...(guest ? { guest } : {}),
     ...(f && ref && name
       ? {
           file: {
@@ -104,7 +106,9 @@ const short = (s: string) => (s.length > MOST_BODY ? `${s.slice(0, MOST_BODY - 1
  * thread for a tap. An alert with no task says its first sentence, Shipify's own words. Never a
  * reply's words, a file's name or a list: a lock screen shows it.
  */
-function noteOf(out: Outgoing, origin: string): Note {
+function noteOf(out: Outgoing, origin: string, chat = ""): Note {
+  // A guest's device opens their own door (ADR 0071).
+  const base = isGuestId(chat) ? "/guest" : "/admin/chat";
   const first = out.text
     .replace(/[*`]/g, "")
     .split(/(?<=[.!?])\s|\n/)[0]
@@ -115,7 +119,7 @@ function noteOf(out: Outgoing, origin: string): Note {
     notification: {
       title: out.task ? `${out.state} · #${out.task}` : out.state,
       ...(body ? { body: short(body) } : {}),
-      navigate: `${origin}/admin/chat/${out.task ? `#/t/${out.task}` : ""}`,
+      navigate: `${origin}${base}/${out.task ? `#/t/${out.task}` : ""}`,
       tag: out.task ? `t${out.task}` : "alert",
       renotify: true,
       lang: "en",
@@ -172,7 +176,7 @@ export const web: Channel = {
       return { ok: true };
     }
     if (!devices.length) return { ok: true };
-    const note = noteOf(out, origin);
+    const note = noteOf(out, origin, chat);
     const rung = await Promise.all(devices.map((d) => ring(deps, key, origin, d, note)));
     // Only what came back gone is dropped, from the list as it is now: a device turned on while
     // these rang stays.
@@ -206,31 +210,6 @@ export const web: Channel = {
       });
     else log.info("door.out.sent", said);
     return { ok: true };
-  },
-
-  /** A run's files, a copy kept for the page with its chat's number: how many the store didn't take. */
-  async sendFiles(env: Env, deps: Deps, _chat: string, task: number, files: File[]) {
-    const bucket = bucketOf(env);
-    const keep = async (f: File) => {
-      if (!bucket || f.size > MAX_FILE_BYTES) return false;
-      const at = deps.now();
-      try {
-        await put(bucket, newRef(at), f, {
-          name: f.name.slice(0, 200),
-          type: f.type || "application/octet-stream",
-          size: f.size,
-          by: "run",
-          at,
-          task,
-        });
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    let unsent = 0;
-    for (const f of files) if (!(await keep(f))) unsent++;
-    return unsent;
   },
 
   /** A file you sent from the page, for the run: its bytes, streamed from the store. */

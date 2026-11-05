@@ -58,3 +58,19 @@
   can't see what changed or why.
 - **Done well:** a list, each item with its page and line, and no page written; "fix them"
   applies it in the next run.
+
+### 7. Two new topic pages in one run
+- **Ask:** "research clinics in Bangkok and what they charge" (in a project's chat, with an
+  Overview, Sources and an Inbox, and no topic page).
+- **Without it:** not yet seen. The risk: the run makes two new pages (clinics, prices) that no
+  one asked for, the box writes only the first, and the project's docs look random.
+- **Done well:** the findings go on the main page and Sources; a new page only when the owner
+  asked for one or a topic outgrew the main page, and one at most, named plainly in the reply
+  ("New doc: Research").
+
+### 8. A project chat's Progress that copies the project
+- **Ask:** a third message in a project's chat, after two runs that wrote the main page.
+- **Without it:** not yet seen. The risk: the run writes a long Progress that repeats Now and the
+  Map, which then goes stale beside them.
+- **Done well:** Progress stays short (this chat's goal, what it did, what's next) and points to
+  the main page's Now for where the project stands.

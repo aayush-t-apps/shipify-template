@@ -10,5 +10,7 @@ export default defineConfig({
     maxWorkers: Math.max(2, Math.floor(availableParallelism() / 2)),
     // Outside any job, and never this PC's credentials file (tests/env.ts).
     setupFiles: ["tests/env.ts"],
+    // The CLI built once for the run, which `ship()` starts as a box does (tests/built.ts).
+    globalSetup: ["tests/built.ts"],
   },
 });

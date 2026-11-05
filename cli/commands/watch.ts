@@ -13,12 +13,12 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { NEEDS_YOU_LABEL, replyLine } from "../contracts/index.ts";
+import { GUEST_LABEL, NEEDS_YOU_LABEL, replyLine } from "../contracts/index.ts";
 import { tellDoor } from "../kernel/door.ts";
 import { hash8 } from "../kernel/keys.ts";
 import { replyTo } from "../kernel/route.ts";
 import { doorLogin } from "../kernel/snapshot.ts";
-import { tidyTools } from "../lib/agent-install.ts";
+import { agentNews, tidyTools } from "../lib/agent-install.ts";
 import { loadExecutors } from "../lib/agents.ts";
 import { boxFacts } from "../lib/box-facts.ts";
 import { findStack } from "../lib/catalog.ts";
@@ -39,6 +39,7 @@ import {
   type StatusIssueState,
   setBox,
   setCleanup,
+  setSwept,
   setUpcoming,
   updateStatusIssue,
 } from "../lib/status-issue.ts";
@@ -106,7 +107,8 @@ export async function watchDue(): Promise<Result> {
         () =>
           rec()
             .issues({ labels: [NEEDS_YOU_LABEL] })
-            .filter((i) => !i.pull_request)
+            // A guest's chat waits on them, not you (ADR 0071).
+            .filter((i) => !i.pull_request && !(i.labels ?? []).some((l) => l.name === GUEST_LABEL))
             .map((i) => ({ n: i.number, title: i.title })),
         [] as { n: number; title: string }[],
       )
@@ -117,6 +119,9 @@ export async function watchDue(): Promise<Result> {
   const projects = sayDigest
     ? tryOr(() => projectsWeek(rec().liveProjects(), at), undefined)
     : undefined;
+  // The agents' pins beside their newest, and any advisory against one (task #673): the reads
+  // executors.json names, with no key, only when it's said.
+  const agents = sayDigest ? ((await agentNews(loadExecutors())) ?? null) : undefined;
   const posted = updateStatusIssue(
     (s) => {
       s.watch = { ...s.watch, last: at.toISOString(), box, run: runUrl(), digest: digestAt };
@@ -151,6 +156,7 @@ export async function watchDue(): Promise<Result> {
               ...digestFacts(s, data.apps, waiting, at),
               skills,
               ...(projects?.length ? { projects } : {}),
+              ...(agents !== undefined ? { agents } : {}),
             },
             whenHere,
           )
@@ -203,6 +209,7 @@ function digestFacts(
     waiting,
     upcoming: { count: s.upcoming.length, ...(s.upcoming[0] ? { next: s.upcoming[0].next } : {}) },
     keys,
+    ...(s.watch.swept ? { files: s.watch.swept } : {}),
   };
 }
 
@@ -291,22 +298,28 @@ export async function watchCleanup(boxArg?: string): Promise<Result> {
   // Closed chats' files and the 30-day close (ADR 0069), once a week however many boxes: taken
   // after this box's own work, so two boxes started together seldom read the record at once. Due
   // and written by the clean-up's start, not the time now: the next one starts a week after this
-  // start, so a time written minutes later would make it skip a week.
+  // start, so a time written minutes later would make it skip a week. The steps read from the last
+  // one's start, so a clean-up missed for weeks catches up.
   const swept = await sweepOnce(
     started,
     {
       read: () => readStatusIssue(),
       update: (change) => updateStatusIssue(change, { timeZone: timeZone() }),
     },
-    () => sweep(started),
-  ).catch((e) => `the weekly steps stopped: ${(e as Error).message.slice(0, 160)}`);
+    (last) => sweep(started, undefined, last),
+  ).catch((e) => {
+    const failed = `the weekly steps stopped: ${(e as Error).message.slice(0, 160)}`;
+    return { said: failed, deleted: 0, bytes: 0, unclaimed: 0, failed };
+  });
   const agents = `${runs.removed ? `, ${runs.removed} old agent run folder(s) removed` : ""}${runs.failed.length ? `; couldn't clean ${runs.failed.join(", ")}` : ""}${tidied.length ? `, old tools removed (${tidied.join(", ")})` : ""}${images.pruned ? `, containers' images removed (${images.pruned} slot(s))` : ""}${images.failed.length ? `; couldn't prune containers of ${images.failed.join(", ")}` : ""}${onBox && !idle ? "; tools and images left as they are (another slot is busy)" : ""}`;
-  const summary = `${t.folders} task folder(s) removed${agents}${swept ? `; ${swept}` : ""}${full.length ? `; notebook pages nearly full, to split: ${full.join(", ")}` : ""}${door ? `; ${door}` : ""}`;
+  const summary = `${t.folders} task folder(s) removed${agents}${swept ? `; ${swept.said}` : ""}${full.length ? `; notebook pages nearly full, to split: ${full.join(", ")}` : ""}${door ? `; ${door}` : ""}`;
   const posted = updateStatusIssue(
     (s) => {
       const doctorSays = setCleanup(s, box, { at, run: runUrl(), summary, checks });
+      // Two clean-ups in a row whose steps failed: said, as doctor's checks are.
+      const sweptSays = swept ? setSwept(s, swept) : undefined;
       const health = inActions() ? setBox(s, box, boxFacts()) : undefined;
-      const said = [doctorSays, health].filter(Boolean).join("\n\n");
+      const said = [doctorSays, sweptSays, health].filter(Boolean).join("\n\n");
       return said ? alertReply(said) : undefined;
     },
     { timeZone: timeZone() },

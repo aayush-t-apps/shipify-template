@@ -45,9 +45,11 @@ memory.
    GitHub or your chat (ADR 0049). One flow, one rule: every word, task and release works the
    same from any channel; only a PR's merge, and what changes the live app at once (down, up,
    rollback), are GitHub's.
-7. **Only you start work:** your comments, and the door's on your behalf. The watch starts no run
-   (ADR 0042): a stuck task is marked Stopped and waits for your `continue`. A dispatch carries
-   only a task number, and starts nothing the task's status doesn't already have pending.
+7. **Only you and the guests you add start work:** your comments, and the door's on your behalf;
+   a guest's words (ADR 0071) start runs only on their own chats and projects, and only in the
+   guest profile, and approve nothing. The watch starts no run (ADR 0042): a stuck task is marked
+   Stopped and waits for your `continue`. A dispatch carries only a task number, and starts nothing
+   the task's status doesn't already have pending.
 8. **The core names nothing at the edges:** tools, channels and stacks plug in with a manifest and
    a conformance test.
 9. **Grow by the ladder:** a prompt or a skill first, then a repeat or a pre-approved call, then a
@@ -106,8 +108,9 @@ Shipify's commit with `git` only when the box has no copy of it (or a push's pla
 The next makes a read-only copy of Shipify per commit, in the box's shared tools, with the CLI built as one file in it (`pnpm build:cli`,
 `scripts/build-cli.mjs`: esbuild, packages inside). Every step above, and the agent's own `ship`
 commands, start `node "$SHIPIFY_COPY/cli/dist/ship.mjs"`: 0.66 s a start, against `pnpm ship`'s
-2.65 s through tsx. A copy already built is only named. Your PC, CI, the tests and the `github` job
-keep the source through `pnpm ship`, so an edit needs no build. Each step writes one line to the
+2.65 s through tsx. A copy already built is only named. Your PC, CI and the `github` job keep the
+source through `pnpm ship`, so an edit needs no build; the tests build the CLI once per test run
+(`tests/built.ts`) and start that. Each step writes one line to the
 job's summary: its time, and each `gh` call it made with its time (`cli/lib/exec.ts` counts them),
 so a slow step names its slow call. The run reads its task once: plan writes its status from the
 task step's read, and apply reads only the comments written since (`comments(n, since)`), with the

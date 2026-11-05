@@ -2,8 +2,9 @@
 // The CLI built as one file (ADR 0051 B1): esbuild bundles cli/cli.ts — its packages inside, Node's
 // own modules outside — into cli/dist/ship.mjs (git-ignored). A box starts every step and the
 // agent's own `ship` commands from it (task.yml, cli/kernel/think.ts): one start costs 0.66 s
-// against the source's 2.65 s. Your PC, CI and the tests keep the source through tsx, so an edit
-// needs no build. `--out` and `--metafile` serve the box's copy step and the bundle test.
+// against the source's 2.65 s. Your PC and CI keep the source through tsx, so an edit needs no
+// build; the tests build it once per test run (tests/built.ts). `--out` and `--metafile` serve the
+// box's copy step, the tests and the bundle test.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
 import { parseArgs } from "node:util";

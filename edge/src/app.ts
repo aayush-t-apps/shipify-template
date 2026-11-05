@@ -10,6 +10,9 @@
 //     *    /admin/chat[/…]   the web chat (web/routes.ts): what you send goes through doorIn as the
 //                            `web` channel
 //     GET  /admin, /         send you to the chat
+//   *    /guest[/…]           the guests' door (ADR 0071): the same chat, behind a second Access
+//                            application (path guest/*) and your guest list, each route kept to
+//                            what is the guest's (web/routes.ts `WHOSE`)
 //   GET  /draw               the chat's diagram frame: a static page with no data, outside the
 //                            sign-in so the chat's sandboxed frame can load it (web/routes.ts)
 //   GET  /note/icon.png, /note/badge.png   a notification's pictures, outside the sign-in so a
@@ -17,7 +20,8 @@
 //   GET  /health             the version and commit deployed, for ci.yml and `ship door check`,
 //                            and the door App's install as GitHub says it (its reach and
 //                            permissions, nothing secret), so the PC can check it without its key
-// No sign-in in front of the door: each route proves who's calling. Access guards /admin alone.
+// No sign-in in front of the door: each route proves who's calling. Access guards /admin and
+// /guest, each with its own application.
 // An error never shows its insides.
 
 import { maskSecrets, useTimeZone } from "../../cli/contracts/index.ts";
@@ -32,7 +36,15 @@ import { fileOut, forgetFiles } from "./files.ts";
 import { appJwt, DoorKeyRefused, github } from "./github.ts";
 import { statusPage } from "./page.ts";
 import { zoneOf } from "./settings.ts";
-import { BASE, drawFrame, NOTE_PICTURES, notePicture, webChat } from "./web/routes.ts";
+import {
+  BASE,
+  drawFrame,
+  GUEST_BASE,
+  NOTE_PICTURES,
+  notePicture,
+  pdfFrame,
+  webChat,
+} from "./web/routes.ts";
 
 /** Where a bare address (/ or /admin) sends you: the chat. */
 export function moved(path: string): string | undefined {
@@ -105,7 +117,10 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
     if (req.method === "GET" && path === "/health") return await health(env, deps);
     if (path === "/admin/status") return await statusPage(req, env, deps);
     if (path === BASE || path.startsWith(`${BASE}/`)) return await webChat(req, env, deps);
+    if (path === GUEST_BASE || path.startsWith(`${GUEST_BASE}/`))
+      return await webChat(req, env, deps);
     if (path === "/draw/" || path === "/draw/draw.js") return await drawFrame(req, env);
+    if (path === "/pdf/" || path === "/pdf/pdf.js") return await pdfFrame(req, env);
     if (NOTE_PICTURES.includes(path)) return await notePicture(req, env);
     const home = moved(path);
     if (home && (req.method === "GET" || req.method === "HEAD"))

@@ -74,6 +74,12 @@ Structure first, then words, then meaning:
   characters), and GitHub keeps the old text. A new topic of your project is made with its
   labels. Never rewrite a page every run reads (Preferences, People): only the owner's words
   change those (`notes`, `remember`).
+- **Few pages, each made on purpose** (ADR 0071): a project's standard pages (its docs, in the web
+  chat) are its main page (the **Overview**), **Sources** and the **Inbox**. Make a topic page
+  (Research, Pricing) only when the owner asks for one, or when a topic outgrows the main page.
+- **One new page a run at most.** The box writes no second one, and the reply says so: put the
+  rest on the pages there are, or in your reply. Name a new page plainly in your reply ("New doc:
+  Research").
 - **Start from the page as it is now.** The box leaves a page whose text changed after the run
   read it (the owner's edit, another chat's run), so nothing is lost: the reply says so, and the
   owner asks again. In a long run, or a run that stays for another message, read a page again
@@ -93,6 +99,9 @@ Structure first, then words, then meaning:
 - **Keep the Map current.** When you add a page, a kept file or a drop, add its line to the Map.
 - **Keep Progress current** (`handoff.md`): it's the chat's Progress, shown above its thread and
   given to the next run. Edit it in place; never start it over.
+- **In a project's chat, Progress stays short:** this chat's goal, what it did and what's next, in
+  a few lines, then a pointer to the main page's Now for where the project stands. Never copy Now
+  or the Map into it: they hold that, once.
 - **A repo's code facts** (its spec, ADRs, `AGENTS.md`) live in the repo, reviewed in PRs. The
   project's pages hold everything else, and the Map links both.
 
@@ -147,3 +156,4 @@ write anything. Only on their `yes`, in a later run, write the Journal and proje
 - Copy a whole thread or file into a page: the page holds facts with links; the sources stay.
 - Write a page outside your project, or the Journal, after reading the web: the box refuses it.
 - Write the Log, or a page every run reads.
+- Make a second new page in one run, or a topic page that no ask or outgrown topic calls for.

@@ -5,23 +5,33 @@
 import {
   AFTER_CLOSE_MS,
   acknowledgement,
+  DEPLOYING_LABEL,
   type Instant,
   instantOf,
   LIST_HEAD,
   LIST_MAX,
   type Link,
   pickerAsked,
+  PROJECT_LABEL,
   problem,
   REMINDER,
   renderProblem,
   STARTED_LABEL,
   STATE_LABELS,
+  STAYING_LABEL,
   SUB_TASK_LABEL,
   type ToolCall,
   goPartOf,
   listCodeOf,
 } from "../contracts/index.ts";
-import { useLine } from "../contracts/index.ts";
+import {
+  closedProjectText,
+  GUEST_LABEL,
+  guestLabel,
+  guestPrefix,
+  shownProject,
+  useLine,
+} from "../contracts/index.ts";
 import { RECIPE_LABEL, type Recipe } from "../lib/recipes.ts";
 import {
   type ErrandSeen,
@@ -49,6 +59,7 @@ import {
   PLATFORM,
   PLAYGROUND,
   type SplitEntry,
+  TASK_LABELS,
   type TaskState,
 } from "../lib/task.ts";
 import { fingerprint, listCode } from "./keys.ts";
@@ -77,7 +88,7 @@ import type {
   ThinkWhy,
   Write,
 } from "./types.ts";
-import { type Word, wordOf } from "./words.ts";
+import { NOT_A_GUESTS, type Word, wordOf } from "./words.ts";
 
 /** Said under a pick it can't take: nothing ran with another. */
 const PICK_AGAIN = "Nothing ran: send your message again with a pick it takes.";
@@ -157,11 +168,27 @@ export interface ToolAct {
 }
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
-const isYou = (c: Said) => c.author === "owner" || c.author === "door";
-const viaGithub = (c: Said) => c.author === "owner" && c.channel === "github";
 
+/**
+ * The guest whose task it is (ADR 0071): the one its opening `from` line names, which only the door
+ * writes. None: the task is yours.
+ */
+export const guestOf = (s: Pick<Snapshot, "issue">) => s.issue.from?.guest;
+
+/**
+ * The project of a guest's task, when it's the guest's own (its name carries their prefix, which
+ * the door refuses for yours): a guest's run reads and writes only its pages. None otherwise.
+ */
+export function guestsProject(s: Pick<Snapshot, "issue" | "project">) {
+  const guest = guestOf(s);
+  return guest && s.project?.name.startsWith(`${guestPrefix(guest)}-`) ? s.project : undefined;
+}
+const isYou = (c: Said) => c.author === "owner" || c.author === "door";
+/** Words that ask a run something: yours, or a guest's on their own task (ADR 0071). */
+const asking = (c: Said) => isYou(c) || c.author === "guest";
+const viaGithub = (c: Said) => c.author === "owner" && c.channel === "github";
 /** Your words this run hasn't read: after the cursor, from you on GitHub or through the door. */
-export const freshOf = (s: Snapshot) => s.said.filter((c) => isYou(c) && c.id > s.state.seen);
+export const freshOf = (s: Snapshot) => s.said.filter((c) => asking(c) && c.id > s.state.seen);
 
 /**
  * The files you sent through a chat on this task, by the refs on its own from-lines
@@ -170,9 +197,10 @@ export const freshOf = (s: Snapshot) => s.said.filter((c) => isYou(c) && c.id > 
  * what its thread has.
  */
 export function sentRefs(s: Snapshot): Record<string, string> {
+  const door = (a: string) => a === "door" || a === "guest";
   const from = [
-    ...(s.issue.author === "door" ? [s.issue.from] : []),
-    ...s.said.filter((c) => c.author === "door").map((c) => c.from),
+    ...(door(s.issue.author) ? [s.issue.from] : []),
+    ...s.said.filter((c) => door(c.author)).map((c) => c.from),
   ];
   const all = from.flatMap((f) => f?.files ?? []).filter((f) => !/^https?:/.test(f.ref));
   return Object.fromEntries(all.map((f) => [f.ref, f.name]));
@@ -195,7 +223,7 @@ export function laterWords(
   after: number,
   files = false,
 ): { plain: Said[]; waiting?: number; stop?: Said } {
-  const yours = said.filter((c) => isYou(c) && c.id > after).sort((a, b) => a.id - b.id);
+  const yours = said.filter((c) => asking(c) && c.id > after).sort((a, b) => a.id - b.id);
   const plain: Said[] = [];
   for (const c of yours) {
     const own =
@@ -221,7 +249,7 @@ export function laterWords(
  * comments queued reads them next.
  */
 export function stillWaiting(d: Decided, later: Said[]): void {
-  const n = later.filter((c) => isYou(c) && c.id > d.state.seen).length;
+  const n = later.filter((c) => asking(c) && c.id > d.state.seen).length;
   const r = d.writes.find((w): w is Extract<Write, { w: "reply" }> => w.w === "reply");
   if (!n || !r) return;
   r.text += `\n\n${n === 1 ? "A message" : `${n} messages`} you sent after this run last read the task ${n === 1 ? "is" : "are"} next: the run ${n === 1 ? "it" : "they"} started reads ${n === 1 ? "it" : "them"} now.`;
@@ -233,7 +261,7 @@ export function stillWaiting(d: Decided, later: Said[]): void {
  * so no run starts for it alone and the stay goes on.
  */
 export function lateStop(d: Decided, later: Said[]): void {
-  const after = later.filter((c) => isYou(c) && c.id > d.state.seen);
+  const after = later.filter((c) => asking(c) && c.id > d.state.seen);
   const r = d.writes.find((w): w is Extract<Write, { w: "reply" }> => w.w === "reply");
   if (!r || !after.length || !after.every((c) => !c.edited && wordOf(c.text) === "stop")) return;
   d.state.seen = Math.max(...after.map((c) => c.id));
@@ -409,7 +437,7 @@ function cleanStart(s: Snapshot, st: TaskState, fresh: Said[], writes: Write[]):
   );
 }
 
-/** `close`, and what it writes: an errand's label off, when it drops one. */
+/** `close`, and what it writes: an errand's label off, when it drops one; a project's chats. */
 function closeWord(s: Snapshot, st: TaskState, fresh: Said[]): Write[] {
   st.seen = upTo(s, fresh);
   st.working = undefined;
@@ -417,7 +445,61 @@ function closeWord(s: Snapshot, st: TaskState, fresh: Said[]): Write[] {
   dropList(st);
   st.closes = undefined;
   st.phase = "done";
-  return off;
+  return [...off, ...projectChats(s, fresh)];
+}
+
+/** What keeps a project's chat open as the project closes: a run on it, a repeat or an errand. */
+const KEEPS_OPEN = new Set([
+  TASK_LABELS.working.name,
+  STAYING_LABEL,
+  DEPLOYING_LABEL,
+  REPEATS_LABEL.name,
+  WAITING_LABEL.name,
+]);
+/** The status line of a chat closed with its project. */
+export const WITH_PROJECT_CLOSED = "Closed with its project: write on it to open it again";
+
+/**
+ * A project's `close` closes its open chats too, as done, as a clean start does: but one a run is
+ * on, or a repeat or an errand keeps open, which the reply names. Only those on the project's side
+ * of the wall (ADR 0071): a guest's project closes their chats alone, yours none of a guest's (only
+ * a link made by hand on GitHub can mix them). Its reply always says what stays and when its files
+ * go; its chats unread, it says so.
+ */
+function projectChats(s: Snapshot, fresh: Said[]): Write[] {
+  if (!s.issue.labels.includes(PROJECT_LABEL)) return [];
+  const step = `close-${fresh.at(-1)?.id ?? 0}`;
+  const stays = closedProjectText(s.issue.closedAt ?? s.now);
+  const said = (...text: string[]) => [reply("answer", "Done", [...text, stays].join(" "), step)];
+  const chats = s.project?.number === s.n ? s.project.chats : undefined;
+  if (!chats)
+    return s.familyUnread
+      ? said("Its chats couldn't be read, so they stay open: say `reopen`, then close it again.")
+      : said();
+  const guest = guestOf(s);
+  const ours = (labels: string[]) =>
+    guest ? labels.includes(guestLabel(guest)) : !labels.includes(GUEST_LABEL);
+  const open = chats.filter((c) => c.state === "open" && ours(c.labels));
+  const kept = open.filter((c) => c.labels.some((l) => KEEPS_OPEN.has(l)));
+  const shut = open.filter((c) => !kept.includes(c));
+  return [
+    ...(shut.length
+      ? [
+          {
+            w: "close-chats",
+            chats: shut.map((c) => ({ number: c.number, labels: c.labels })),
+            why: WITH_PROJECT_CLOSED,
+          } as const,
+        ]
+      : []),
+    ...said(
+      ...(kept.length
+        ? [
+            `Left open, as a run, a repeat or an errand keeps them open: ${kept.map((c) => `#${c.number}`).join(", ")}. Close each when it's done.`,
+          ]
+        : []),
+    ),
+  ];
 }
 
 /**
@@ -552,7 +634,8 @@ function planned(s: Snapshot, ctx: Context): Plan {
   if (inStep) return inStep;
 
   // An operation runs by itself, once (the Operate form, or its title); see opPlan for where from.
-  if (s.parsed.kind === "op") return opPlan(s, st, fresh, first, ctx, writes);
+  // A guest's title is only words (snapshot's parsedOf, ADR 0071): never an operation, checked here too.
+  if (s.parsed.kind === "op" && !guestOf(s)) return opPlan(s, st, fresh, first, ctx, writes);
 
   // A form with a wrong answer runs nothing until an edit fixes it.
   if (s.form?.problems.length && (first || edited || st.form)) {
@@ -569,18 +652,20 @@ function planned(s: Snapshot, ctx: Context): Plan {
   if (st.form && !s.form?.problems.length) st.form = undefined;
 
   // The Repeat form sets its repeat with no agent, and an edit changes it.
-  if (s.repeatForm && (first || edited)) return repeatFromForm(s, st, ctx, writes);
+  if (s.repeatForm && (first || edited) && !guestOf(s)) return repeatFromForm(s, st, ctx, writes);
 
-  // `clean start` as a new chat's words (ADR 0070): its list, with no agent.
+  // `clean start` as a new chat's words (ADR 0070): its list, with no agent. Never a guest's.
   if (
     first &&
+    !guestOf(s) &&
     wordOf(s.issue.title) === "clean start" &&
     (!s.issue.body.trim() || wordOf(s.issue.body) === "clean start")
   )
     return cleanStart(s, st, fresh, writes);
 
   // A command on its own as a new task's title (`/apps`): answered with no agent, then closed.
-  const asked = first && !s.issue.body.trim() ? instantOf(s.issue.title) : null;
+  // A guest's are words for their agent (ADR 0071): the door refuses yours from them already.
+  const asked = first && !s.issue.body.trim() && !guestOf(s) ? instantOf(s.issue.title) : null;
   if (asked) {
     st.seen = upTo(s, fresh);
     return box(
@@ -604,7 +689,10 @@ function planned(s: Snapshot, ctx: Context): Plan {
   const said = fresh.map((c) => {
     const use = ctx.use(c.text, picked);
     if (use?.use) picked = use.use;
-    const word = wordOf(c.text);
+    // A guest's words (ADR 0071): a `use` picks, but no approval, command or note is theirs.
+    const guest = c.author === "guest";
+    const fixed = wordOf(c.text);
+    const word = guest && fixed && NOT_A_GUESTS.has(fixed) ? undefined : fixed;
     // A `use` line in a longer message: this run thinks with it. One that tries a pick it can't
     // take is told (below); one that names no agent or model stays words for the agent.
     const line = use
@@ -621,8 +709,8 @@ function planned(s: Snapshot, ctx: Context): Plan {
       use,
       choice: line?.use,
       refused: line && !line.use ? line.reply : undefined,
-      instant: instantOf(c.text),
-      note: noteOf(c.text),
+      instant: guest ? undefined : instantOf(c.text),
+      note: guest ? undefined : noteOf(c.text),
     };
   });
   // A list's Yes with no list waiting (made, dropped, expired): said, with no agent.
@@ -938,7 +1026,7 @@ function planned(s: Snapshot, ctx: Context): Plan {
   }
 
   // A note: written by the box, no agent.
-  if (s.parsed.kind === "remember" && first) {
+  if (s.parsed.kind === "remember" && first && !guestOf(s)) {
     st.seen = upTo(s, fresh);
     const line = s.parsed.ask.trim();
     if (!line)
@@ -964,7 +1052,7 @@ function planned(s: Snapshot, ctx: Context): Plan {
   }
 
   // `forget: …` as a task: the box takes the note off its page, no agent.
-  if (s.parsed.kind === "forget" && first) {
+  if (s.parsed.kind === "forget" && first && !guestOf(s)) {
     st.seen = upTo(s, fresh);
     if (!s.parsed.ask.trim())
       return box(
@@ -1334,7 +1422,37 @@ function withReads(s: Snapshot, t0: Think): Think {
   };
 }
 
+/**
+ * A guest run's answer (ADR 0071): words, a question, choices, files and its own project's pages
+ * alone. Anything else is dropped, and named in `left`.
+ */
+function guestsOnly<T extends Result>(r: T, left: string[]): T {
+  const {
+    pr,
+    work,
+    calls,
+    split,
+    notes,
+    repeat,
+    quiet,
+    ...kept
+  }: T & Partial<Pick<Result, "pr" | "work" | "calls" | "split" | "notes" | "repeat" | "quiet">> =
+    r;
+  const why = "a guest's run holds no key, tool or notebook";
+  if (pr || work) left.push(`a change (${why}: it changes no repo)`);
+  if (calls?.length) left.push(`tool calls (${why})`);
+  if (split?.length) left.push(`a split (${why}: it opens no task)`);
+  if (notes?.length) left.push(`notes (${why})`);
+  if (repeat) left.push(`a repeat (${why}: it sets none)`);
+  if (quiet) left.push("quiet (a guest's run always answers)");
+  return kept as T;
+}
+
 function thinkFor(s: Snapshot, st: TaskState, why: ThinkWhy, fresh: Said[]): Think {
+  // A guest's task (ADR 0071) runs in the guest profile, whoever writes on it later: no project's
+  // clone, no repo it reads, no account. A repo's name in its words is only words.
+  if (guestOf(s))
+    return { profile: "guest", why, notes: [], fresh: fresh.map((c) => c.id), web: true };
   const notes: string[] = [];
   const p = s.parsed;
   // A `new:` task plans in Shipify until its plan is built; from then on it works on the project.
@@ -2445,9 +2563,9 @@ function decideAfter(
     };
   }
 
-  const r = result;
-  const writes: Write[] = [];
   const left: string[] = [];
+  const r = think.profile === "guest" ? guestsOnly(result, left) : result;
+  const writes: Write[] = [];
   // The list is the box's alone (ADR 0049): a copy in the agent's words goes, from its heading on.
   let text = withoutList(r.text);
   const links: Link[] = [];
@@ -2634,16 +2752,25 @@ function decideAfter(
   // after the run read it (ADR 0070). None from another account, nor from a read run (ADR 0044):
   // what it read is a repo outside your account, data. Before the notes, so a note on the same page
   // goes on its new text.
+  // A closed project is read-only (ADR 0069): nothing is added to its pages until it's reopened.
+  // Its own thread runs only once words reopened it.
+  const shut = s.project?.state === "closed" && s.project.number !== s.n ? s.project : undefined;
   if (r.pages?.length && think.profile === "read")
     left.push("pages (a run that reads a repo outside your account writes none)");
+  else if (r.pages?.length && shut)
+    left.push(`pages (${shownProject(shut.name)} is closed · #${shut.number}: reopen it first)`);
   else if (r.pages?.length && !think.account && !alone)
     writes.push({
       w: "pages",
       pages: r.pages,
-      ...(s.project ? { project: s.project.name } : {}),
+      ...((think.profile === "guest" ? guestsProject(s) : s.project)
+        ? { project: (s.project as NonNullable<Snapshot["project"]>).name }
+        : {}),
       outside: Boolean(meta.readOutside || r.read_outside),
       ...(meta.pagesAt ? { since: meta.pagesAt } : {}),
       chat: s.n,
+      // A guest's run writes only its own project's pages (ADR 0071).
+      ...(think.profile === "guest" && guestOf(s) ? { guest: guestOf(s) } : {}),
     });
   // Notes: your own words, written now; from a run that read outside content (any tool's too), or
   // one on another of your accounts (ADR 0045), whose repos others write too, after your yes.

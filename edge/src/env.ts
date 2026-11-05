@@ -2,7 +2,8 @@
 // the Worker, set from your PC with `wrangler secret put` (`ship door setup`, `ship add <channel>`);
 // the rest are plain values ci.yml's deploy passes from shipify's variables. A route
 // that's missing what it needs answers 503 and logs the names, never a value.
-import { type Logger, logger } from "../../cli/contracts/index.ts";
+import { fileRefOf, type Logger, logger, WEB_FILE_REF } from "../../cli/contracts/index.ts";
+import pkg from "../../package.json" with { type: "json" };
 import { type Device, deviceOf } from "./push.ts";
 
 export interface Env {
@@ -91,6 +92,12 @@ export function unconfigured(log: Logger, names: string[]) {
   log.warn("door.in.refused", { why: "unconfigured", missing: names });
   return json({ door: "unconfigured" }, 503);
 }
+
+/**
+ * The web chat's build: Shipify's version and the commit deployed. An open chat compares it with
+ * its own and offers **Updated: tap to reload**, so it sees every deploy, not only a release.
+ */
+export const build = (env: Env) => `${pkg.version}+${(env.GIT_SHA ?? "dev").slice(0, 7)}`;
 
 export const utf8 = (s: string) => new TextEncoder().encode(s);
 
@@ -194,12 +201,12 @@ export const bucketOf = (env: Env): Bucket | undefined => {
 };
 
 /**
- * A kept file's key, which is its ref: `f-<time counted down>-<id>` (newest first in a list), or
- * one from before R2, copied under its old key: yours (`up-…`), or a run's (`run-<task>-…`).
- * Nothing else is read.
+ * A kept file's key, which is its ref (`WEB_FILE_REF`): `f-<time counted down>-<id>` (newest first
+ * in a list), a guest's with their prefix (`g3f9a2c-…`, ADR 0071), or one from before R2.
  */
-export const FILE_REF =
-  /^(?:f-\d{13}-[a-z0-9]{16,40}|up-[a-z0-9]{16,40}|run-\d{1,9}-[a-z0-9]{16,40})$/;
+export const FILE_REF = WEB_FILE_REF;
+/** A new file's ref, yours or a guest's (the contract's, for the channel kit's store). */
+export { fileRefOf };
 
 /** An object's fields, or null for anything else (a list, null, a string). */
 export const obj = (v: unknown) =>

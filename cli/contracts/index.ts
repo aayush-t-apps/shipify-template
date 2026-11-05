@@ -2,6 +2,7 @@
 // Workers APIs, so both import these files as they are (answers.ts also reads intents.json).
 export * from "./accounts.ts";
 export * from "./answers.ts";
+export * from "./guests.ts";
 export * from "./json.ts";
 export * from "./labels.ts";
 export * from "./lines.ts";

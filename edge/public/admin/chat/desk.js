@@ -32,6 +32,12 @@ export function desk(e) {
     month: "long",
   });
   const go = (k, l, p) => h("a.btn", { href: `#/${p}` }, icon(k), l);
+  // A guest's (ADR 0071): no Jot, Repeats or Library.
+  if (A.GUEST) {
+    const top = h("h3.day", day, h("span.tag", "Guest"));
+    set(e, top, live, newProject(), h("p.links", go("folder", "Files", "files")));
+    return redraw();
+  }
   const links = h("p.links", go("repeat", "Repeats", "repeats"), go("book", "Library", "notebook"));
   set(e, h("h3.day", day), jot(), live, newProject(), links);
   redraw();

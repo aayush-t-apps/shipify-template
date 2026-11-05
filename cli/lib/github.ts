@@ -653,17 +653,35 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
       // word on it opens it again), so the ones about to leave their window are read first. The
       // quiet search leaves out what stays open for ever, so it can't fill the 100.
       const without = q.quietWithout.map((l) => ` -label:"${l}"`).join("");
-      const r = graphql<Record<"closed" | "projects" | "quiet", { nodes: (GqlSwept | null)[] }>>(
-        `query($closed: String!, $projects: String!, $quiet: String!) { closed: search(query: $closed, type: ISSUE, first: 100) { nodes { ${SWEPT} } } projects: search(query: $projects, type: ISSUE, first: 100) { nodes { ${SWEPT} } } quiet: search(query: $quiet, type: ISSUE, first: 100) { nodes { ${SWEPT} } } }`,
+      type Found = {
+        nodes: (GqlSwept | null)[];
+        pageInfo?: { hasNextPage: boolean; endCursor?: string | null };
+      };
+      const closed = `repo:${repo} is:issue is:closed closed:${q.closedFrom}..${q.closedTo} sort:updated-asc`;
+      const PAGE = `pageInfo { hasNextPage endCursor }`;
+      const r = graphql<Record<"closed" | "projects" | "quiet", Found>>(
+        `query($closed: String!, $projects: String!, $quiet: String!) { closed: search(query: $closed, type: ISSUE, first: 100) { nodes { ${SWEPT} } ${PAGE} } projects: search(query: $projects, type: ISSUE, first: 100) { nodes { ${SWEPT} } } quiet: search(query: $quiet, type: ISSUE, first: 100) { nodes { ${SWEPT} } } }`,
         {
-          closed: `repo:${repo} is:issue is:closed closed:${q.closedFrom}..${q.closedTo} sort:updated-asc`,
+          closed,
           projects: `repo:${repo} is:issue is:open label:project`,
           quiet: `repo:${repo} is:issue is:open updated:<${q.quietBefore}${without} sort:updated-asc`,
         },
       );
-      const of = (k: "closed" | "projects" | "quiet") =>
-        (r[k]?.nodes ?? []).filter((i): i is GqlSwept => Boolean(i?.number)).map(swept);
-      return { closed: of("closed"), projects: of("projects"), quiet: of("quiet") };
+      // The closed ones past the first 100 (a clean-up missed for weeks), a call a page, up to
+      // GitHub search's own 1,000, so their files go too.
+      const all = [...(r.closed?.nodes ?? [])];
+      let next = r.closed?.pageInfo;
+      for (let page = 1; page < 10 && next?.hasNextPage && next.endCursor; page++) {
+        const more = graphql<{ closed?: Found }>(
+          `query($closed: String!, $after: String!) { closed: search(query: $closed, type: ISSUE, first: 100, after: $after) { nodes { ${SWEPT} } ${PAGE} } }`,
+          { closed, after: next.endCursor },
+        );
+        all.push(...(more.closed?.nodes ?? []));
+        next = more.closed?.pageInfo;
+      }
+      const of = (nodes: (GqlSwept | null)[] = []) =>
+        nodes.filter((i): i is GqlSwept => Boolean(i?.number)).map(swept);
+      return { closed: of(all), projects: of(r.projects?.nodes), quiet: of(r.quiet?.nodes) };
     },
     liveProjects() {
       // Two searches in one query (ADR 0070): the open projects with their chats, and the open
@@ -679,9 +697,10 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
         };
       }>(
         `query($projects: String!, $inboxes: String!) { projects: search(query: $projects, type: ISSUE, first: 50) { nodes { ... on Issue { number title subIssues(first: 100) { nodes { number state updatedAt labels(first: 20) { nodes { name } } } } } } } inboxes: search(query: $inboxes, type: ISSUE, first: 50) { nodes { ... on Issue { title body comments { totalCount } } } } }`,
+        // Guests' projects are theirs (ADR 0071): your digest leaves them out.
         {
-          projects: `repo:${repo} is:issue is:open label:project`,
-          inboxes: `repo:${repo} is:issue is:open label:library inbox in:title`,
+          projects: `repo:${repo} is:issue is:open label:project -label:guest`,
+          inboxes: `repo:${repo} is:issue is:open label:library -label:guest inbox in:title`,
         },
       );
       return {

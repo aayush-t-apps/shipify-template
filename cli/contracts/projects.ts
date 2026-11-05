@@ -4,6 +4,8 @@
 // Its pages are notebook pages labelled `library` and `project:<name>`, never sub-issues, so a
 // project keeps GitHub's 100 sub-issues for its chats. A `library` page with no project is read
 // only on demand (the Journal, idea dumps). Saving into them (`project:`, `add`, `jot`) starts no run.
+// A project is open or closed, and every surface shows which: closed, it's read-only.
+import { timeZoneNow } from "./zone.ts";
 
 /** On a project's issue: the door opens it, and the box runs nothing for its opening or edits. */
 export const PROJECT_LABEL = "project";
@@ -43,6 +45,23 @@ export const waitingItems = (body: string, comments: number) =>
   );
 /** This month's Journal page's topic, for a day as `YYYY-MM-DD`. */
 export const journalTopic = (day: string) => `Journal ${day.slice(0, 7)}`;
+
+/** A closed project's files (its chats' and its docs') go at the weekly clean-up this long after. */
+export const FILES_KEPT_DAYS = 30;
+/** A day as `5 Dec`, in your zone. */
+export const shortDay = (ms: number) =>
+  new Intl.DateTimeFormat("en-GB", { timeZone: timeZoneNow(), day: "numeric", month: "short" })
+    .format(new Date(ms))
+    .replace(".", "");
+/**
+ * What a project's close says, every time (ADR 0069): what stays, what goes and when, and how to
+ * undo it. `closedAt`: when it closed (ISO).
+ */
+export const closedProjectText = (closedAt: string) =>
+  `Its docs stay in the Library, read-only. Its files go from ${shortDay(Date.parse(closedAt) + FILES_KEPT_DAYS * 86_400_000)}, unless you reopen it before.`;
+/** A word that would add to a closed project, refused (ADR 0069): nothing is written. */
+export const projectClosed = (name: string, n: number) =>
+  `${name} is closed · #${n}: Reopen it first. Nothing was written.`;
 
 /** The repos a project's brief names on its `Repos:` line (its first such line). */
 export function reposOf(brief: string): string[] {

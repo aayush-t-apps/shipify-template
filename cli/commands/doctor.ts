@@ -83,7 +83,7 @@ function hostChecks(): Check[] {
       ok: !bits || Number(bits) >= 48,
       detail: bits ? `${bits}-bit` : "unknown",
       blocking: false,
-      fix: "use Ubuntu Server 24.04 LTS (Raspberry Pi OS's kernel is 39-bit: docs/box-setup.md)",
+      fix: "use Ubuntu Server 26.04 or 24.04 LTS (Raspberry Pi OS's kernel is 39-bit: docs/box-setup.md)",
     });
   }
   return checks;

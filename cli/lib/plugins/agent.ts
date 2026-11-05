@@ -143,6 +143,22 @@ export const Install = z.object({
     .regex(/^[a-z0-9][a-z0-9._-]*$/)
     .refine((d) => !RESERVED_DIRS.includes(d), "is one of the box's own folders")
     .optional(),
+  /**
+   * Where the weekly digest reads its newest version (task #673): a URL, read with no key, whose
+   * JSON answer names it in `version`. None: not looked up. Nothing is ever installed from it.
+   */
+  newest: z
+    .string()
+    .regex(/^https:\/\/\S+$/)
+    .optional(),
+  /**
+   * GitHub's advisories for its package at the pinned version (`{version}`), read with no key: what
+   * the digest says first, when there are some. None: not looked up.
+   */
+  advisories: z
+    .string()
+    .regex(/^https:\/\/api\.github\.com\/advisories\?\S*\{version\}\S*$/)
+    .optional(),
 });
 
 export type Install = z.infer<typeof Install>;

@@ -15,7 +15,8 @@ import {
   repeatModels,
   repeatProblems,
 } from "../../../edge/src/web/forms.ts";
-import { BASE, MERMAID } from "../../../edge/src/web/routes.ts";
+import { BASE, MERMAID, PDFJS } from "../../../edge/src/web/routes.ts";
+import { SendBody } from "../../../edge/src/web/shapes.ts";
 import { ROOT } from "../../helpers.ts";
 
 function files(dir: string): string[] {
@@ -84,6 +85,7 @@ class El {
   style: Record<string, string> = {};
   className = "";
   disabled = false;
+  value = "";
   parent?: El;
   text?: string;
   constructor(public tag: string) {}
@@ -152,6 +154,9 @@ class El {
   }
   focus() {}
   scrollIntoView() {}
+  showModal() {
+    this.attrs.open = "";
+  }
   isConnected = true;
 }
 
@@ -217,24 +222,29 @@ describe("the page", () => {
   // to pick.css, with pick.js (4.6 KB: 5), Status & setup's to setup.css, with setup.js and the
   // switch for notifications (5.1 KB: 6), New repeat's to repeat.css (3.9 of 4); Find in this chat
   // (find.js), diagrams (draw.js) and a file you add, sent up and a photo made smaller (attach.js,
-  // by compose.js), load the first time they're used: 2 KB each, as library.js.
+  // by compose.js), load the first time they're used: 2 KB each, as library.js. One window (ADR
+  // 0071): a reply's files as chips, Archived, a chat's Files chip, links that open inside and the
+  // Find button took the page to 43 KB; a project's screen (four tabs) took project.js to 5 KB, and
+  // a doc with Edit in the pane, Files by project, workspace.js to 10. A repo's page that counts
+  // only what the list has open (never a thread kept on the device), its figures in one row and its
+  // chats' titles in two lines took workspace.js to 10.4 KB: 11.
   const LAZY = {
-    workspace: 9,
+    workspace: 11,
     setup: 6,
     plan: 3,
     repeat: 4,
     pick: 5,
     export: 4,
-    project: 3,
+    project: 5,
     desk: 3,
     library: 2,
     find: 2,
     draw: 2,
     attach: 2,
   };
-  /** Parts loaded as the page is, on the first screen: they count in its 42 KB too. */
+  /** Parts loaded as the page is, on the first screen: they count in its 43 KB too. */
   const FIRST = ["desk"];
-  it.skipIf(!have)("is plain files of its own, under 42 KB as sent, its worker under 2 KB", () => {
+  it.skipIf(!have)("is plain files of its own, under 43 KB as sent, its worker under 2 KB", () => {
     const list = files(dir);
     for (const want of ["index.html", "app.js", "compose.js", "app.css", "manifest.json", "sw.js"])
       expect(list).toContain(`${dir}/${want}`);
@@ -244,7 +254,7 @@ describe("the page", () => {
     // The Desk is the first screen (ADR 0069): desk.js and .css load with the page, so they count.
     const lazy = (f: string) => part(f) in LAZY && !FIRST.includes(part(f));
     const sent = list.filter((f) => f !== worker && !lazy(f)).reduce((n, f) => n + gz(f), 0);
-    expect(sent).toBeLessThan(42 * 1024);
+    expect(sent).toBeLessThan(43 * 1024);
     for (const [k, kb] of Object.entries(LAZY)) {
       const mine = list.filter((f) => part(f) === k);
       expect(mine.length, k).toBeGreaterThan(0);
@@ -312,12 +322,12 @@ describe("the page", () => {
     }
     // What app.js asks of the workspace, it has.
     const ws = readFileSync(join(ROOT, dir, "workspace.js"), "utf8");
-    for (const f of ["redraw", "project", "files", "doc", "quick"])
+    for (const f of ["redraw", "project", "files", "doc", "page", "quick"])
       expect(ws, f).toMatch(new RegExp(`export (?:async )?function ${f}\\(`));
-    // And of ADR 0069's: a project's page, the Desk, the Library, Repeats, Export, Find in this
-    // chat, diagrams, a file's upload, notifications on or off.
+    // And of ADR 0069's: a project's screen (ADR 0071), the Desk, the Library, Repeats, Export, Find
+    // in this chat, diagrams, a file's upload, notifications on or off.
     const has = {
-      project: ["card", "move", "newProject"],
+      project: ["screen", "move", "newProject"],
       desk: ["desk", "redraw"],
       library: ["library"],
       find: ["find"],
@@ -352,6 +362,119 @@ describe("the page", () => {
       expect(ws).toContain('t.state !== "closed"');
     },
   );
+
+  // A repo's page (ADR 0065) and Ctrl+K's recent chats: what's open is the list's, which has every
+  // open chat, with your close or reopen at once. A thread kept on this device is as it was when it
+  // was last read: a chat closed since never counts as open there, and shows no state of its own.
+  it.skipIf(!have)("a repo's page counts what the list has open, never a kept thread", async () => {
+    await inFakeDom(async (make) => {
+      vi.stubGlobal("addEventListener", () => {});
+      vi.stubGlobal("location", { hash: "#/p/shipify" });
+      Object.assign(document, { querySelector: () => null, body: make("body") });
+      const { h } = await import(join(ROOT, dir, "compose.js"));
+      const m = await import(join(ROOT, dir, "workspace.js"));
+      const updated = new Date(Date.now() - 36e5).toISOString();
+      const url = "https://github.com/o/shipify/issues/1";
+      const S = {
+        list: {
+          tasks: [
+            { n: 662, title: "Shipify: guest mode", state: "open", updated, url },
+            { n: 680, title: "Shipify: which key?", state: "needs-you", updated, url },
+            // Closed here a moment ago (app.js `moved`), the list not read again since.
+            { n: 690, title: "Shipify: shut just now", state: "closed", updated, url },
+            { n: 50, title: "games: a level", state: "needs-you", updated, url },
+          ],
+          running: [],
+        },
+        menu: { repos: ["games"] },
+        seen: [621, 645, 680, 662],
+        // As they were last read, before they closed: an old state, and no `updated`.
+        threads: {
+          621: {
+            task: { n: 621, title: "Shipify: shut since", state: "needs-you", staying: true },
+          },
+          645: { task: { n: 645, title: "Shipify: shut too", state: "needs-you" } },
+          662: { task: { n: 662, title: "Shipify: guest mode", state: "needs-you" } },
+        },
+      };
+      // Reopened a moment ago: open at once, before the list has it.
+      const t700 = { n: 700, title: "Shipify: reopened", state: "open", updated, url };
+      const R: Record<string, unknown> = { turned: { 700: { open: true, t: t700 } } };
+      let shown: { title: string; draw: (d: unknown) => unknown } | undefined;
+      const ready = m.init({
+        S,
+        R,
+        runs: () => new Set([662]),
+        join: (a: { n: number }[], b: { n: number }[]) =>
+          a.concat(b.filter((t) => !a.some((x) => x.n === t.n))),
+        projOf: (t: { title: string }) => /^(\w+):/.exec(t.title)?.[1]?.toLowerCase() ?? "",
+        named: (p: string) => p.charAt(0).toUpperCase() + p.slice(1),
+        bare: (s: string) => s.replace(/^\w+:\s*/, ""),
+        ago: () => "5m",
+        to: (n: number, t: string) => h("a", { href: `#/t/${n}` }, t),
+        what: (n: unknown, ...a: unknown[]) => h("div", n, a),
+        meta: (...a: unknown[]) => h("small", a.filter(Boolean).join(" · ")),
+        list: (a: unknown[], f: (x: unknown) => unknown, none = "") =>
+          a.length
+            ? h(
+                "ul.items",
+                a.map((x) => h("li", f(x))),
+              )
+            : h("p", none),
+        btn: (l: unknown, f: unknown, c = "") => h(`button${c}`, { onclick: f }, l),
+        get: async () => ({ projects: [], files: [], count: 0, bytes: 0 }),
+        page: (title: string, _: string, draw: (d: unknown) => unknown) => {
+          shown = { title, draw };
+          R.page = {};
+        },
+      });
+      (document.head as unknown as El).children.at(-1)?.on.load?.({});
+      await ready;
+      m.project("shipify");
+      expect(shown?.title).toBe("Shipify · repo");
+      const body = h("div", shown?.draw({ files: [], count: 0, bytes: 0 })) as unknown as El;
+      const tiles = body
+        .all()
+        .filter((x) => x.className.split(" ").includes("tile"))
+        .map((x) => x.textContent);
+      expect(tiles).toEqual(["Open3", "Needs you1", "Working1"]);
+      const strip = body.all().find((x) => x.className.startsWith("strip"));
+      expect(strip?.className).toBe("strip counts");
+      const chats = body
+        .all()
+        .filter((x) => x.tag === "a" && x.attrs.href?.startsWith("#/t/"))
+        .map((x) => x.attrs.href);
+      expect(chats.sort()).toEqual(["#/t/662", "#/t/680", "#/t/700"]);
+      expect(body.textContent).not.toMatch(/shut|NaN|0d ago|Staying/);
+      // No files in its chats: one line, not an empty In and Out. With one: both, each its own.
+      expect(body.textContent).toContain("None yet: what you send in its chats");
+      expect(body.textContent).not.toContain("Nothing yet.");
+      const f = { task: 662, by: "you", name: "plan.md", size: 10, at: updated, src: "" };
+      const one = h("div", shown?.draw({ files: [f], count: 1, bytes: 10 })) as unknown as El;
+      expect(one.textContent).toMatch(/Inwhat you sent.*plan\.md.*Outwhat runs madeNothing yet\./);
+      // Ctrl+K, nothing typed: the chats seen last that the list has open, the newest first.
+      m.quick();
+      const qk = (document.body as unknown as El).children.at(-1) as El;
+      const rows = () =>
+        qk
+          .all()
+          .filter((x) => x.tag === "button")
+          .map((x) => x.textContent);
+      expect(rows().slice(0, 3)).toEqual([
+        "guest mode#662 · Shipify · Working",
+        "which key?#680 · Shipify · Needs you",
+        "ShipifyRepo",
+      ]);
+      // Found by name: a kept thread no list has says no state, not the one it last had.
+      const q = qk.all().find((x) => x.tag === "input") as El & { value: string };
+      q.value = "shut since";
+      (q as unknown as { oninput: () => void }).oninput();
+      expect(rows()[0]).toBe("shut since#621 · Shipify");
+      // Drawn again once the index and Files are in: the same.
+      await new Promise((r) => setTimeout(r, 0));
+      expect(rows()[0]).toBe("shut since#621 · Shipify");
+    });
+  });
 
   // A split task's Plan card (ADR 0066), drawn in a small fake DOM (the page's own h() makes it):
   // its buttons send your words, as a reply's do, and only where they make sense.
@@ -600,6 +723,10 @@ describe("the page", () => {
     expect(js).toContain("Date.now() - Date.parse(t.updated) > 6048e5");
     expect(6048e5).toBe(7 * 24 * 3600_000);
     expect(js).toContain("(!wide && L.more && !R.old ? olderTasks : drawList)()");
+    // R.old is the older pages alone: a read's last good copy is marked apart (R.st), so Older
+    // tasks shows while the open list has more.
+    expect(js).toContain("if (j) R.st[p] = j.stale;");
+    expect(js).not.toMatch(/\bR\.old\[|\bold: \{\}/);
     expect(js).toMatch(/groups\(\s*rows\.filter\(\(t\) => !late\(t\) && !hush\(t\)\)/);
     const tap = /const TAP = (\/.*\/);/.exec(js)?.[1] ?? "";
     const TAP = new Function(`return ${tap}`)() as RegExp;
@@ -655,7 +782,7 @@ describe("the page", () => {
   });
 
   // ADR 0069, parts 4 to 8: projects first in the list, each folded with its chats (its thread read
-  // once for chats past the list's page); New chat here and a project's own box send `under`, Add
+  // under Closed, for its closed ones); New chat here and a project's own box send `under`, Add
   // sends `add <name>: …`; Move to project on a chat's menu; no Plan card for a project.
   it.skipIf(!have)(
     "lists projects first, opens a chat in one, adds to its Inbox, moves one in",
@@ -666,9 +793,34 @@ describe("the page", () => {
       // The list: projects first, shut till opened, General last; a project never folds into Quiet.
       expect(js).toContain("for (const t of pj) by.set(`@${t.n}`, []);");
       expect(js).toContain('if (by.delete("")) by.set("", gen);');
-      expect(js).toContain("const shut = !q && S.fold.includes(p) === !P;");
+      // Every open project is a group whatever the tab shows; Needs you shows each open, a project
+      // that needs you as its own first row; Open counts chats, not projects.
+      expect(js).toContain("const shut = !q && !R.need && S.fold.includes(p) === !P;");
+      // Under Closed, a closed project is its own first row, with its closed chats; a group with
+      // nothing to show says so, never empty. Projects, then Chats, each under its heading.
+      expect(js).toContain(
+        'const self = P && shown.includes(P) && (R.shut || P.state === "needs-you") ? [P] : [];',
+      );
+      expect(js).toContain('h("p.quiet.none", R.shut ? "No closed chats." : "No open chats.")');
+      expect(js).toContain('sec && h("h3.sec", P ? "Projects" : "Chats")');
+      expect(js).toContain('tab("Open", R.shut ? 0 : all.filter((t) => !t.project).length, false)');
+      // Its open chats (Open, Needs you) are the list's alone: a copy of its thread read before
+      // kept a chat closed since as open. Under Closed, its closed ones past the closed list's page
+      // come from its thread, read again each time Closed opens.
+      expect(js).toContain(
+        'const rest = more.filter((x) => x.state === "closed" && !g.some((t) => t.n === x.n));',
+      );
+      expect(js).toContain("const more = P && R.shut && !q ? R.pj[P.n] || [] : [];");
+      expect(js).toMatch(/async function shut\(on\) \{\s*R\.shut = on;\s*R\.pj = \{\};/);
+      expect(js).toContain(
+        "const none = P && !rows.length && !(R.shut && g.length < c && !R.pj[P.n]?.length);",
+      );
+      // A link to a project's doc opens it once: the pane over its project's Docs, by the number
+      // the doc's read gives (open or closed).
+      expect(js).toContain("const docIn = T.doc?.of;");
+      expect(js).toContain('R.tab = "Docs";\n    location.replace(`#/t/${docIn}`);');
       expect(js).toMatch(
-        /if \(P && !shut && !R\.pj\[P\.n\] && g\.length < c\) \{\s*R\.pj\[P\.n\] = \[\];\s*get\(`task\/\$\{P\.n\}`, 0, 1, ""\)/,
+        /if \(P && R\.shut && !shut && !R\.pj\[P\.n\] && g\.length < c\) \{\s*R\.pj\[P\.n\] = \[\];\s*get\(`task\/\$\{P\.n\}`, undefined, 1, ""\)/,
       );
       expect(js).toContain('P && h("span", `${c} chat${c === 1 ? "" : "s"}`)');
       expect(js).toContain("href: P ? `#/t/${P.n}`");
@@ -698,15 +850,44 @@ describe("the page", () => {
       );
       expect(pj).not.toMatch(/co\.send\b|A\.get\("send"|function sent\(/);
       expect(pj).toMatch(/v\.add = 1;\s*f\.requestSubmit\(\);\s*v\.add = 0;/);
-      expect(pj).toContain('A.say(T.n, "collate the inbox")');
-      // Its card under the header is shut till you open it, then stays as you left it.
-      expect(pj).toContain("{ open: v.pj?.open },");
+      // Collate and Check the project each start a chat in it, so what its run asks waits in a
+      // chat, under the project, as any ask's does. No task at all: the edge takes only a real one.
+      expect(js).toContain("const say = (n, words, under) => send({ ...sent(n, words), under });");
+      expect(pj).toContain('A.say(undefined, "Collate the inbox", T.n)');
+      expect(pj).toContain('A.say(undefined, "Check the project", T.n)');
+      const body = JSON.parse(JSON.stringify({ id: "abcdefgh1", task: undefined, under: 12 }));
+      expect(SendBody.safeParse({ ...body, words: "Check the project", files: [] }).success).toBe(
+        true,
+      );
+      expect(SendBody.safeParse({ ...body, task: 0, words: "x", files: [] }).success).toBe(false);
+      expect(pj).not.toMatch(/A\.say\(T\.n, "(collate|check)/);
+      // A question put to the project itself: the next step says so, and the box answers it; the
+      // chats waiting on you are links under the next step.
+      expect(js).toContain(
+        'const W = t.writable && (T.project && T.state !== "needs-you" ? 2 : 1);',
+      );
+      expect(pj).toContain("if (!v.co || !f || v.w !== 2) return;");
+      expect(pj).toContain("The project asks you something, below: answer it in the box.");
+      expect(pj).toMatch(/"ul\.wait",\s*wait\.map\(\(c\) => h\("li", A\.to\(c\.n/);
+      expect(pj).toContain("JSON.stringify([P, T.state, T.open, tab, v.fl, A.runs().size])");
+      // Closed (ADR 0069), it's read-only: no box, and Reopen and Export in place of its buttons;
+      // its Close asks first, with what the edge says it closes and keeps.
+      expect(pj).toContain('if (f) f.style.display = T.open ? "" : "none";');
+      expect(pj).toContain(': b([icon("undo"), "Reopen"], () => A.turn(T)),');
+      expect(js).toContain("if (T.open && T.project?.ask && !confirm(T.project.ask)) return;");
+      // Its screen (ADR 0071): four tabs; one other than Overview takes the thread's place; its
+      // docs open in the pane; its Files are Files' one read, kept to its chats and docs.
+      expect(pj).toContain('const TABS = ["Overview", "Chats", "Docs", "Files"];');
+      expect(pj).toContain('v.box.classList.toggle("tab", tab !== "Overview");');
+      expect(pj).toContain("ws((w) => w.page(g.n))");
+      expect(pj).toMatch(/A\.get\(`files\?chats=\$\{ns\.join\(","\)\}`/);
+      expect(pj).not.toMatch(/details\.prog\.pj|On GitHub/);
       // Move to project, on a chat's menu (not a project's, not a part's): the edge's api/move.
       expect(js).toContain('task && !T.project && !T.parent && [i("app", "Move to project")');
       expect(pj).toContain('A.get("move", { task: n, project: p.n })');
-      // A project's own card, never a Plan card (the edge sends it none).
+      // A project's own screen, never a Plan card (the edge sends it none).
       expect(js).toContain(
-        'if (real && T.project) lazy("project")((m) => R.v === v && m.card(v, t));',
+        'if (real && T.project) lazy("project")((m) => R.v === v && m.screen(v, t));',
       );
     },
   );
@@ -735,10 +916,16 @@ describe("the page", () => {
   it.skipIf(!have)("the Desk: what needs you, works, your projects and pages; Jot", async () => {
     const js = readFileSync(join(ROOT, dir, "app.js"), "utf8");
     const dk = readFileSync(join(ROOT, dir, "desk.js"), "utf8");
+    // A guest has a Desk of their own (ADR 0071): theirs, with no Jot, Repeats or Library.
     expect(js).toContain('R.home = !p || p === "desk";');
     expect(js).toContain(
       'if (!location.hash.slice(2) && !WIDE.matches) history.replaceState(null, "", "#/desk");',
     );
+    expect(js).not.toMatch(/YOURS = new Set\([^)]*"desk"/);
+    expect(dk).toMatch(/if \(A\.GUEST\) \{[\s\S]*?return redraw\(\);/);
+    expect(/if \(A\.GUEST\) \{[\s\S]*?\n {2}\}/.exec(dk)?.[0]).not.toMatch(/jot|repeats|notebook/);
+    // Nothing on a guest's window names you.
+    expect(js).not.toMatch(/guestline|can read your chats/);
     expect(js).toMatch(
       /\["spark", "Desk"\],\s*\["app", "Projects", ""\],\s*\["folder", "Files"\],\s*\["book", "Library", "notebook"\],\s*\["pulse", "Setup", "setup"\],/,
     );
@@ -844,7 +1031,7 @@ describe("the page", () => {
       expect(asked).toEqual(["project"]);
       expect(np.parent?.children.some((x) => x.className === "np")).toBe(true);
       // The Library (library.js): the always pages, then the Journal first among those with no
-      // project, then each project's.
+      // project, then each project as one line (ADR 0071).
       const lib = await import(join(ROOT, dir, "library.js"));
       lib.init(lent);
       lib.library();
@@ -852,6 +1039,7 @@ describe("the page", () => {
       const page = (n: number, topic: string, project?: string) => ({
         n,
         topic,
+        name: topic,
         first: "x",
         lines: 1,
         url,
@@ -868,6 +1056,11 @@ describe("the page", () => {
             page(12, "Journal 2026-11"),
             page(14, "hacker-inbox", "hacker"),
           ],
+          // The index (ADR 0069): each project by its number, open or closed, the list's or not.
+          projects: [
+            { n: 5, name: "games", open: true },
+            { n: 3, name: "hacker", open: false, closed: new Date().toISOString() },
+          ],
         }),
       ) as unknown as El;
       const h3 = body
@@ -877,21 +1070,19 @@ describe("the page", () => {
       expect(h3).toEqual([
         "Always · every run reads these",
         "Journal and more · read when a run asks",
-        "games · its runs read these",
-        "hacker · its runs read these",
+        "Projects · each one's docs are on its screen",
+        "Closed projects · docs kept, read-only: Reopen to add",
       ]);
-      // A project's main page first, then its Inbox, each named for what it is; a project with no
-      // main page yet says how one comes.
-      const topics = body
+      // What is no project's opens in the pane, with Edit; a project is one line, which opens its
+      // screen's Docs: its docs aren't listed here again, and nothing says "On GitHub".
+      const names = body
         .all()
-        .filter((x) => x.attrs.href?.startsWith("#/t/1"))
+        .filter((x) => x.className === "name")
         .map((x) => x.textContent);
-      expect(topics).toEqual(["Journal 2026-11", "ideas", "games", "Main page", "Inbox", "Inbox"]);
-      const quiet = body.all().filter((x) => x.className === "quiet");
-      expect(quiet.map((x) => x.textContent)).toEqual([
-        "No main page yet: a run writes it when you ask for a summary, or to collate.",
-      ]);
-      expect(body.textContent).toContain("Its items wait for “collate the inbox”");
+      expect(names).toEqual(["Journal 2026-11", "ideas", "games", "hacker"]);
+      expect(body.textContent).toContain("hacker1 doc · closed 5m ago");
+      expect(body.textContent).toContain("games2 docs");
+      expect(body.textContent).not.toMatch(/Inbox|On GitHub|#\/t\//);
     });
   });
 
@@ -1002,6 +1193,9 @@ describe("the page", () => {
       const { api } = await import(join(ROOT, dir, "compose.js"));
       const asked: string[] = [];
       vi.stubGlobal("fetch", async (_: string, init: RequestInit) => {
+        // As a browser's: a GET with a body (`0` too) is refused before it goes.
+        if (init.method === "GET" && init.body != null)
+          throw new TypeError("Request with GET/HEAD method cannot have body.");
         const tag = (init.headers as Record<string, string>)["if-none-match"] ?? "none sent";
         asked.push(tag);
         const same = tag === '"a"';
@@ -1020,13 +1214,15 @@ describe("the page", () => {
         // The thread's ETag kept: its next read is a 304; the fold's still gets the body.
         await expect(api("task/40")).resolves.toBeNull();
         await expect(api("task/40", undefined, "")).resolves.toEqual({ v: 1 });
-        expect(asked).toEqual(["", "", '"a"', ""]);
+        // A falsy body is none: the fold's read went unsent when it passed `0`.
+        await expect(api("task/40", 0, "")).resolves.toEqual({ v: 1 });
+        expect(asked).toEqual(["", "", '"a"', "", ""]);
       } finally {
         vi.unstubAllGlobals();
       }
       const js = readFileSync(join(ROOT, dir, "app.js"), "utf8");
       expect(js).toMatch(/async function get\(p, b, quiet = false, k = p\) \{[^}]*api\(p, b, k\)/);
-      expect(js).toMatch(/get\(`task\/\$\{P\.n\}`, 0, 1, ""\)/);
+      expect(js).toMatch(/get\(`task\/\$\{P\.n\}`, undefined, 1, ""\)/);
     },
   );
 
@@ -1263,6 +1459,29 @@ describe("the page", () => {
       expect(s).not.toContain("allow-same-origin");
       expect(s).not.toMatch(/mermaid\.(?:render|initialize)/);
     }
+  });
+
+  it.skipIf(!have)("shows a PDF with pdf.js only in its frame, each file pinned to a hash", () => {
+    const frame = readFileSync(join(ROOT, "edge/public/pdf/index.html"), "utf8");
+    const outside = [...frame.matchAll(/<script type="module" src="(https:[^"]+)"([^>]*)>/g)];
+    expect(outside.map((m) => m[1])).toEqual([
+      `${PDFJS}build/pdf.min.mjs`,
+      `${PDFJS}build/pdf.worker.min.mjs`,
+    ]);
+    for (const m of outside)
+      expect(m[2]).toMatch(/integrity="sha384-[\w+/]{64}" crossorigin="anonymous"/);
+    expect(frame).not.toMatch(/<script(?![^>]*\ssrc=)[^>]*>/i);
+    expect(readFileSync(join(ROOT, "edge/public/pdf/pdf.js"), "utf8")).toContain(`"${PDFJS}"`);
+    // Only where the browser has no PDF viewer of its own; the frame gets the bytes, no address.
+    const ws = readFileSync(join(ROOT, dir, "workspace.js"), "utf8");
+    expect(ws).toContain(
+      'h("iframe.pdf", { src: "/pdf/", sandbox: "allow-scripts", title: f.name })',
+    );
+    expect(ws).toMatch(
+      /navigator\.pdfViewerEnabled\n\s*\? h\("iframe\.pdf", [^\n]+\n\s*: pdfIn\(f\);/,
+    );
+    expect(ws).not.toContain("allow-same-origin");
+    expect(ws).not.toMatch(/pdfjsLib|getDocument/);
   });
 
   it.skipIf(!have)(

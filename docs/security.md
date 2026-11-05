@@ -26,7 +26,7 @@ Names only: no value appears in any doc, file or log. How to make and replace ea
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code's login | shipify secret; the think step (and a stay's, ADR 0057) only when the run's agent is Claude Code, handed to the agent on a pipe it reads once, never in its environment | a year |
 | `AI_GATEWAY_API_KEY` | pi's and OpenCode's models, through Vercel's AI Gateway (a gateway; the `-vercel` agents): it can spend your Vercel credits | shipify secret; the think step only when the run's agent is one of those, handed to the agent on a pipe it reads once, never in its environment; the PC's credentials file | until you delete it in Vercel. Set a spend limit there |
 | `OPENROUTER_API_KEY` | pi's models, through OpenRouter (a gateway): it can spend your credits there | shipify secret; the think step only when the run's agent is pi, handed to the agent on a pipe it reads once, never in its environment; the PC's credentials file | until you delete it on OpenRouter. Set a spend limit there |
-| `SHIPIFY_NOTION_READ` | read the Notion pages you connect | shipify secret; the think step (a look key) | no expiry |
+| `SHIPIFY_NOTION_READ` | read the Notion pages you connect | shipify secret; the think step (a look key), never a guest run's (ADR 0071) | no expiry |
 | `SHIPIFY_NOTION_WRITE` | change those pages | shipify secret; the apply step only, and only for calls decide found approved | no expiry |
 | `SHIPIFY_DOOR_APP_KEY` | the door App (below): write your words onto tasks, read runs, runners and variables, on shipify only | the edge Worker only, put there from the PC by `ship door setup` | doesn't expire; rotate yearly (the watch reminds you) |
 | `TELEGRAM_TOKEN` | the bot speaks and reads its own chats | the edge Worker; the PC's credentials file. Never on a box | until you revoke it in @BotFather |
@@ -40,7 +40,7 @@ Names only: no value appears in any doc, file or log. How to make and replace ea
 | Token | Which steps | What it can do |
 |---|---|---|
 | the bot's read-only tokens (one hour each, minted right before each phase) | plan's; the finish's, decide's and apply's (ADR 0059: the finish fetches main with it, with no agent) | read every project: code, PRs, issues, statuses, runs |
-| the agent's read-only token (one hour, minted right before think, and not renewed: an agent working longer reads GitHub only in its first hour, ADR 0059) | think (the agent's copy) | read the same, but in a work run only its project or repo and Shipify; a talk run reads every project, as its profile says. A read run's agent gets none: the box keeps it, for the task and your repos it reads (ADR 0044) |
+| the agent's read-only token (one hour, minted right before think, and not renewed: an agent working longer reads GitHub only in its first hour, ADR 0059) | think (the agent's copy) | read the same, but in a work run only its project or repo and Shipify; a talk run reads every project, as its profile says. A read run's agent gets none: the box keeps it, for the task and your repos it reads (ADR 0044). A guest run's agent gets no GitHub key at all: its secrets are empty but for its login, and a guest's stay hands its agent no token (ADR 0071, [below](#a-guests-run)) |
 | `GITHUB_TOKEN` (the workflow's own) | the task step, plan, decide, apply; the runner of think and of a stay, never their agent (below) | write shipify's issues and comments, start runs |
 | the write token | apply, minted after decide | contents and PRs on the one repo decide named; workflows write only for files that match the stack (below) |
 | the files token | apply, when the run made files | write shipify's `shipify-files` branch |
@@ -64,6 +64,10 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
   clean-up trims what no run has read in 30 days. A task's work, home and files never outlive it.
   Its containers' images are kept in `data/containers` for at most a week
   ([What a box keeps between runs](#what-a-box-keeps-between-runs)).
+- **A guest's run has caches of its own** (ADR 0071): its `~/.cache` and `~/.local/share` are
+  folders inside its own run folder, not links to the slot's. Every other run on a slot shares the
+  slot's (ADR 0071's stress test found it), so what a run leaves there, a later run uses. A guest's
+  run leaves nothing there that reaches a later run of yours: its caches go with its run folder.
 - **A fresh folder per run:** `/srv/shipify-agent-<k>/run-<id>/`:
 
   | Folder | Holds |
@@ -78,7 +82,8 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
   Secrets come on stdin, never on a command line.
 - **What it holds:** its login (only the run's agent's: its own, or its gateway's key, which
   reaches it because it calls the model), a read-only GitHub token, the tools' look keys. A read
-  run's agent holds its login alone (below).
+  run's agent holds its login alone (below), and so does a guest run's: no GitHub key, no tool's
+  key, no notebook ([A guest's run](#a-guests-run)).
 - **Its login on a pipe, never in its environment:** the wrapper puts it on fd 3, a pipe the agent
   reads once at its start. Claude Code reads it with its own setting, and pi and OpenCode through
   Shipify's gate, which hands it to the gateway's provider alone (OpenCode's config holds no key, so
@@ -222,6 +227,43 @@ Three rules keep that as safe as your own account:
 What's left: its agent still has the web in reach, as every talk and work run does, to send out
 what it read (it reaches no private network since box setup 9; a list of allowed internet hosts is
 on the [roadmap](roadmap.md)). Its login isn't: it's on a pipe, out of its commands' reach.
+
+## A guest's run
+
+ADR 0071. A guest you add (Setup → Guests) writes in the web chat only. A task whose opening
+from-line names a guest runs in the **guest** profile, whoever writes on it later
+([tasks.md](tasks.md#a-guests-run)). It thinks with your agents, models and login, with no limits
+of its own. The walls keep your things yours:
+
+- **No GitHub key, notebook or tool of yours:** its agent's secrets are empty but for its login,
+  which reaches it on a pipe, as for your runs, so no command finds it. It gets none of your
+  notebook, Library, other projects, repos or clones.
+- **Nothing of yours in its environment:** its commands start with `LANG` and `SHIPIFY_TASK`
+  alone. No `SHIPIFY_OWNER`, `SHIPIFY_PEOPLE` (names and chat ids), door slug,
+  `GITHUB_REPOSITORY` or your copy's values (your Cloudflare account, domains, time zone), so
+  `env` in a guest's run shows nothing of yours (`runEnv`, `yoursEnv` in `cli/kernel/think.ts`).
+- **Caches of its own:** its `~/.cache` and `~/.local/share` are in its run folder, and go with it
+  ([above](#the-agents-sandbox)); `XDG_DATA_HOME` names its own too, so its containers' store
+  (Podman's images and containers) is its run's alone, and an image it pulls or builds never
+  reaches a run of yours.
+- **Its own playbook** (`playbooks/guest.md`) and a prompt with nothing of yours: no notebook,
+  tools, Shipify CLI, clone command or earlier files of yours, and the answer fields it may use
+  only (words, a question, files, its own project's pages).
+- **A guest's words approve nothing:** their author is `guest`, never you, so `yes`, `no`, `go`,
+  `publish`, `preview`, `start over` or `clean start` in them counts for nothing. The door refuses
+  each at once, from the same list the box reads (`NOT_A_GUESTS`, `cli/contracts/words.ts`), but a
+  plain `yes` or `no`, which answers their own run. They start runs only on the guest's own chats
+  and projects, and only in the guest profile.
+- **Their collate and close stay on their side:** "collate the inbox" in a guest's project reads
+  only the items the door wrote for that guest, and a project's close closes only the chats on its
+  own side (a guest's, theirs; yours, none of a guest's).
+- **Its files stay in R2,** the web chat's store, never on `shipify-files`.
+- **Your runs' reads leave out everything labelled `guest`:** no chat, project or doc of a guest
+  reaches a run of yours.
+- **Its docs only onto its own:** the box writes a guest run's docs only onto docs that carry that
+  guest's mark, so a guest's words never land where your runs read them.
+- **Its stay** (ADR 0057) reads the task with the record's token, which stays in the runner, as
+  another user, out of the agent's reach. Its turn hands the agent no token.
 
 ## Write keys come after the agent
 
@@ -429,6 +471,7 @@ previews. Details: [door.md](door.md).
   | `GET /door/file/<ref>` | the run's GitHub OIDC token |
   | `GET /health` | none: its version and commit only |
   | `GET /draw/` | none: the chat's diagram frame, a static page with no data ([below](#the-web-chat)) |
+  | `GET /pdf/` | none: the chat's PDF frame, a static page with no data ([below](#the-web-chat)) |
   | `GET /note/icon.png`, `/note/badge.png` | none: a notification's two pictures, which a phone fetches with no sign-in |
   | `GET /`, `/admin` | none: a redirect to the chat, nothing shown |
 
@@ -459,7 +502,7 @@ previews. Details: [door.md](door.md).
 - **The status page has two locks** (ADR 0032):
   - **Access's sign-in** on `/admin` alone (one application, "shipify status", path `admin/*`,
     your `allow-me` policy; it covers the web chat too), so the door's routes, `/health`,
-    `/draw/` and `/note/` stay open to what calls them;
+    `/draw/`, `/pdf/` and `/note/` stay open to what calls them;
   - **the edge checks Access's token itself:** RS256 against your team's published keys, this
     application's audience, the team as issuer, and the time. No token, a forged one, or the page
     not set up: 403 and nothing shown. A missing Access rule fails closed: an application whose
@@ -511,6 +554,12 @@ The chat at `/admin/chat/` (ADR 0036) is the edge's first page with scripts, so 
     `frame-ancestors 'self'`, so only the chat frames it. It has no sandbox CSP, because browsers'
     PDF viewers refuse to run in one; a PDF's own scripts run in the viewer, apart from the page.
     Every other file, and a PDF without `?view=1`, downloads as before.
+  - **A PDF on a browser with no viewer** (Chrome on a phone): pdf.js never runs in the chat. It
+    draws the PDF in `/pdf/`, a static page with no data, in an iframe sandboxed to `allow-scripts`
+    with no same-origin, as the diagram frame is. It loads pdf.js 6.5.438 and its worker from
+    jsDelivr, each pinned with an SRI sha384 hash, and its CSP lets it fetch only pdf.js's own
+    fonts and maps there. The chat fetches the file and hands the frame its bytes alone, never an
+    address or a cookie.
   - **Ask about this** sends a kept file's ref with your words (`up-…` or `run-<task>-…`, the
     store's own shapes, checked as before): it must still be in the store.
 - **No secrets in the chat:** your words land on a GitHub task. The page warns before sending

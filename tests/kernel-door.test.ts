@@ -79,9 +79,14 @@ describe("forgetFiles", () => {
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       calls.push([url, init]);
       if (url.startsWith("https://token.example.com")) return Response.json({ value: "oidc" });
-      return Response.json({ deleted: 3, bytes: 1200 });
+      return Response.json({ deleted: 3, bytes: 1200, unclaimed: 1, unclaimedBytes: 50 });
     });
-    expect(await forgetFiles([4, 5])).toEqual({ deleted: 3, bytes: 1200 });
+    expect(await forgetFiles([4, 5])).toEqual({
+      deleted: 3,
+      bytes: 1200,
+      unclaimed: 1,
+      unclaimedBytes: 50,
+    });
     const [url, init] = calls.at(-1) ?? [];
     expect(url).toBe("https://shipify.example.com/door/files/forget");
     expect(init?.method).toBe("POST");
@@ -91,15 +96,57 @@ describe("forgetFiles", () => {
     );
   });
 
-  it("says nothing when the door refuses, or there's no door or token here", async () => {
+  it("says it failed when the door refuses, or there's no token here; no door has nothing to clean", async () => {
     door();
     vi.stubGlobal("fetch", async (url: string) =>
       url.startsWith("https://token.example.com")
         ? Response.json({ value: "oidc" })
         : Response.json({ error: "unproven", why: "workflow" }, { status: 403 }),
     );
-    expect(await forgetFiles([4])).toBeUndefined();
+    const none = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0 };
+    expect(await forgetFiles([4])).toEqual({ ...none, failed: true });
+    vi.stubEnv("ACTIONS_ID_TOKEN_REQUEST_URL", "");
+    expect(await forgetFiles([4])).toEqual({ ...none, failed: true });
+    // A copy with no door (no web chat): no store of files, so a weekly clean-up never fails here.
     vi.stubEnv("SHIPIFY_DOOR_URL", "");
-    expect(await forgetFiles([4])).toBeUndefined();
+    expect(await forgetFiles([4])).toEqual(none);
+  });
+
+  it("names 500 chats a call, as the door takes, and adds up what each says; one that fails stops the rest, and what went before is still counted", async () => {
+    door();
+    const sent: number[][] = [];
+    let refuse = 0;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (url.startsWith("https://token.example.com")) return Response.json({ value: "oidc" });
+      sent.push(JSON.parse(String(init?.body)).chats);
+      if (sent.length === refuse) return Response.json({ error: "busy" }, { status: 503 });
+      return Response.json({ deleted: 2, bytes: 100, unclaimed: 1, unclaimedBytes: 10 });
+    });
+    const chats = Array.from({ length: 1001 }, (_, i) => i + 1);
+    expect(await forgetFiles(chats)).toEqual({
+      deleted: 6,
+      bytes: 300,
+      unclaimed: 3,
+      unclaimedBytes: 30,
+    });
+    expect(sent.map((l) => [l[0], l.length])).toEqual([
+      [1, 500],
+      [501, 500],
+      [1001, 1],
+    ]);
+    // No chats: one call all the same, for the files no chat used.
+    sent.length = 0;
+    expect((await forgetFiles([])).unclaimed).toBe(1);
+    expect(sent).toEqual([[]]);
+    sent.length = 0;
+    refuse = 2;
+    expect(await forgetFiles(chats)).toEqual({
+      deleted: 2,
+      bytes: 100,
+      unclaimed: 1,
+      unclaimedBytes: 10,
+      failed: true,
+    });
+    expect(sent.length).toBe(2);
   });
 });

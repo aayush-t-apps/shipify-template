@@ -120,6 +120,34 @@ Each only if you ask, and each its own design:
 7. **A tool that reaches homelab** (its status, a photo), read-only, over Tailscale. Its calls run
    outside the agent's user: since setup 9 no agent reaches the tailnet.
 
+## From the #662 audit (2026-11-05)
+
+What the audit of projects, the R2 clean-up and guests found that PR #671 left for later, each
+small, and each only after your go:
+1. **One "whose is it" check.** Today it's decided three ways: the door's from-line (`guestsOwn`),
+   labels (the list, Find, a project's close) and the name prefix (`add`, a guest's project, page
+   writes). One `whose(issue)` in `cli/contracts/guests.ts`, used by the edge and the box.
+2. **One refusal table.** What a guest may not say lives in five lists: the routes' `WHOSE`, the
+   page's `YOURS`, `GUEST_COMMANDS`, the door's and the box's (these two now share
+   `NOT_A_GUESTS`). One table in contracts, each list made from it.
+3. **Run files of repeats, recipes and open projects' chats** grow without end (the clean-up
+   keeps them). Delete their files older than 30 days.
+4. **A guest's removal** closes only their first 100 open items, and never tries again: page
+   through them all. (Their files with no chat go with the clean-up's 60-day rule.)
+5. **The `shipify-files` backup** is never pruned (git history can't shrink): a doctor check that
+   warns at 1 GB.
+6. **The guest list can lose a removal** when the hourly "last in" write races it: an
+   etag-checked write with one retry, or "last in" under its own key.
+7. **A guest's `/help`** shows yours, and **Download the thread** writes the repo's GitHub link.
+8. **A test-speed pass.** Done in part (2026-11-05): no test starts the real gitleaks but its own
+   (34 s a start on a Pi), and the tests start the CLI built once per run (0.7 s a start on a Pi,
+   not tsx's 2.2 s). Left: the flow tests' real processes (git, the stand-in `gh` at 0.15 s a
+   call) and telegram's setup steps through tsx (2 s each). Share fixtures and repos between
+   tests, with no coverage lost.
+9. **The page's first load** is a few bytes under its 43 KB budget: every change to `app.js`
+   needs room made. Move a part of it (the list's projects, or the thread's header menu) into a
+   lazy module, or agree a new budget.
+
 ## Faster and cheaper runs
 
 1. **The record over one connection (measured, not planned):** a `gh` call costs 0.66–0.69 s on
@@ -129,6 +157,62 @@ Each only if you ask, and each its own design:
    worth it for now (the owner, 2026-10-16; the plan and numbers are in the closed PR #469).
 2. **One browser in the stacks' `make setup`:** `playwright install --only-shell`, since tests run
    headless: about 190 MB less on a box's first setup of a project.
+3. **The secret scan's start on a Pi (measured 2026-11-05):** apply scans each change before it
+   sends it, and gitleaks takes about 34 s to start on a Raspberry Pi 4 (its go-re2 engine is
+   compiled through wazero at each start; the scan itself takes 41 ms). No faster way is known yet:
+   gitleaks has no setting for it. Worth a look, after your go. Measured again (2026-11-05, on
+   homepi): the start grows with the rules: `gitleaks version` 1.5 s, one rule 1.5 s, its 222
+   rules 34 s, and no rule alone stands out (the ten slowest are 17.5 s of it). Fewer rules would
+   catch less, so not that. The way to look at first: start the scan on the run's change while the
+   box's `make verify` runs (minutes on a Pi), and read its answer before the push, so its 34 s
+   hide under verify's. A box on an SSD or Ubuntu 26.04 changes none of it: it waits on the CPU.
+
+From the web chat to a reply (task #673, measured on homepi over 54 runs, 2026-11-05): a new chat
+answers in its thinking time plus 37–56 s, a staying run in its thinking time plus 4–11 s. Done
+then: a reply shows within 5 s of landing (the edge keeps a read 4 s, not 8), a stay's marks go on
+as its agent starts, and a box checks the labels once a day. What's left:
+
+4. **Fewer token steps (only you can change `task.yml`):** each `create-github-app-token` step
+   takes about 2 s, and a talk run mints four before its reply, then revokes each as the job ends
+   (about 1 s each). Three have the same inputs: plan's read token, decide and apply's, and the
+   stay's apply's; on a talk run the agent's and the stay's are the same too. A token lasts an
+   hour, so the second read token is needed only when think ran long: think says so in an output,
+   the step mints only then, and decide and apply take the first otherwise. About 2–4 s less
+   before a first reply, and 3–5 s less of a slot's time.
+5. **The runner's own cache of actions (a box setup 13):** "Set up job" downloads
+   `create-github-app-token` again in every job, 3.4–4.1 s of its 6 s (`curl` gets the same
+   tarball in 0.65 s). The runner reads `ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE`
+   (`<dir>/<owner>_<repo>/<sha>.tar.gz`, or an unpacked copy with
+   `ACTIONS_RUNNER_SYMLINK_CACHED_ACTIONS`), which `slot_env` can write in each slot's `.env`.
+   It needs a folder that only the runner's user can write (what's in it runs with the bot's key),
+   filled for `task.yml`'s pins with the old ones removed, and a live test on a box. About 3 s
+   less on every job.
+6. **A reply's push before its files:** the box tells the door of a reply in one upload with its
+   files (up to 50 MB), and the door rings your phone only after it read them all. Telling first,
+   then sending the files, rings it at once.
+7. **A first answer in seconds needs the direct layer (Later, 8):** of a new chat's 37–56 s
+   besides thinking, about 18 s is GitHub's (its queue, a runner taking the job and starting it,
+   "Set up job"). A job for each message can't go under that, and a staying run's 4–11 s is the
+   floor of this design.
+
+## Kept current and safe (task #673, 2026-11-05)
+
+What's automatic: Ubuntu's security updates on a box (daily, a restart at 04:30 when one needs
+it), the runner's own updates, Dependabot's security alerts and its quarterly PRs, and since #673
+the weekly digest's line on the agents behind their newest, with any advisory against a pin first.
+What's left:
+
+1. **An agent's new version checked on a box:** today its PR is made on your PC, as its live checks
+   (its login on fd 3, its skills, Claude Code's recorded permissions) need the agent signed in. A
+   step that runs those checks on a box, with the agent's own login as the think step has it,
+   would make `shipify: update claude to <version>` one task.
+2. **Shipify's own audit each week:** `pnpm audit` runs in `ci.yml` only on a merge. A schedule
+   in a small workflow of its own (only you can add one) finds a new advisory within the week.
+3. **The box's own Node:** a box takes the newest 22.x only when `box add` runs again or a new
+   image comes. A doctor check that compares it with nodejs.org's newest 22.x names the fix.
+   Node 22's support ends 2027-04-30: the move to 24 is a planned PR before then.
+4. **Ubuntu 26.04 in CI:** `box/Dockerfile` built from `ubuntu:26.04` as well (an `ARG`, and a job
+   in `ci.yml`, which only you can change), so each release proves the install half on both LTSs.
 
 ## Later
 

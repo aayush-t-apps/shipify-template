@@ -80,6 +80,9 @@ picks it up on a box. A run has five steps:
   - **work:** one project's or repo's clone, on the task's branch. Changes and new apps use this.
   - **read:** only the repos the task reads, files only: no command, no web, no key. A task that
     reads a repo outside your account uses this ([Any repo](#any-repo)).
+  - **guest:** a guest's task (ADR 0071): the web, commands and containers, as talk has them, but
+    no GitHub key and nothing of yours: no notebook, Library, other projects, tools, repos or
+    clones. Its answer is words and files ([below](#a-guests-run)).
 - **A second run, only when you asked for a change:** words that ask for one with no project
   prefix ("fix acme-site's button") get a work run on that project, which follows by itself. Its
   reply always ends "A work run on <project> starts now, from this reply: say `stop` to stop it." A
@@ -203,6 +206,32 @@ made after the agent's step. Only a new job can stay again, and that's a normal 
   for your words: say `continue`.
 - **The status comment** at the top: the state, the model, the PRs, what's waiting, and the last
   runs. Only a run edits it; if anyone else does, it's ignored and rebuilt from the task.
+
+### A guest's run
+
+ADR 0071. A guest you add (Setup → Guests) writes in the web chat only. A task whose opening
+from-line names a guest (the door writes `"guest": "<id>"` on it) runs in the **guest** profile,
+whoever writes on it later. Your own words on a guest's task on GitHub are instructions, but the
+run stays in the guest profile, so nothing of yours reaches it.
+
+- **What it holds:** no GitHub key, and none of your notebook, Library, other projects, tools,
+  repos or clones. Its project's docs only when the task is in the guest's own project (labels
+  `guest:<id>`). Caches of its own, in its run folder, gone with it
+  ([security.md](security.md#a-guests-run)).
+- **The same as yours:** the web, commands and containers, as talk has them; your agents, models
+  and login (your pick, or the guest's `use`); the run's clock; and the stay
+  ([above](#a-run-that-stays)), whose turn hands the agent no token.
+- **Its answer** may hold only words, a question, choices, files, and pages onto its own project's
+  docs (docs that carry that guest's mark). Anything else (a PR, work, calls, a split, notes, a
+  repeat, quiet) is dropped, and the reply names why, as a read run's refusals are.
+- **A guest's words are never yours:** their author is `guest`, so `yes`, `no`, `go`, `publish`,
+  `preview`, `start over` or `clean start` in them approves nothing (`NOT_A_GUESTS`).
+- **Nothing of yours in its environment:** its commands start with `LANG` and `SHIPIFY_TASK`
+  alone ([security.md](security.md#a-guests-run)).
+- **Its files** go to the web chat's store (R2) only, never to `shipify-files`
+  ([Files in and out](#files-in-and-out)).
+- **Its prompt** follows `playbooks/guest.md`, not the task playbook, and names nothing of yours.
+  A new doc its run makes gets the guest's labels, so it shows in their window and never in yours.
 
 ## Any repo
 
@@ -746,6 +775,13 @@ new branch, since a merge ends its branch.
   3,500 characters, then "the rest is on GitHub".
 - **Files the run made** (up to 10) go on shipify's private `shipify-files` branch: images show in
   the reply, other files are links. Telegram gets each as a photo or a document.
+- **Each also gets a copy in the web chat's store (R2),** whatever chat the task came from (ADR
+  0071). The reply's line names each copy (its ref), so the web chat shows them as chips under the
+  reply and opens them there. A guest's run's files go to R2 only, never to `shipify-files`.
+- **The next run in the chat gets them:** the chat's newest 5 files, the ones runs made too, as it
+  gets yours. So "make the PDF shorter" works on the PDF the last run made.
+- **One new doc a run at most:** a reply names a new doc plainly ("New doc: Research"). The box
+  writes no second one, and the reply says so ([knowledge.md](knowledge.md)).
 - **Anything that looks like a key** is masked before it's posted or sent.
 
 ## Run details
@@ -803,6 +839,7 @@ watch):
 | `chat-refused` | the chat can't be reached (the bot blocked, the chat gone) | unblock or start the bot again, then `pnpm ship selftest chat` |
 | `chat-rendering` | the chat refused a reply as Shipify made it: Shipify's bug, in the chat's own words | read the reply on GitHub |
 | `files-unsent` | some of a reply's files didn't send to the chat | open them on the reply on GitHub |
+| `files-unkept` | the web chat's store didn't keep some of a guest's run's files, which have no backup (ADR 0071) | ask again: the run makes them again |
 | `stopped` | the task's run stopped before it finished | `continue` (it carries on from where it got to), or close it |
 | `words-unanswered` | no run replied to your words (none started, or one broke before it could say so) | `continue` |
 | `form-wrong` | a form has a wrong answer | edit the issue |

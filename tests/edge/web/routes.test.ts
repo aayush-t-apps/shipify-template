@@ -5,6 +5,7 @@
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  fileRefOf,
   fromLine,
   readFrom,
   replyLine,
@@ -23,7 +24,7 @@ import type { Bucket, Env } from "../../../edge/src/env.ts";
 import { COPY_STEP, MOVED, moveFromKv } from "../../../edge/src/store.ts";
 import { clearSeen } from "../../../edge/src/web/gh.ts";
 import { clearBuilt, INBOX_FULL, nextStep } from "../../../edge/src/web/reads.ts";
-import { MERMAID } from "../../../edge/src/web/routes.ts";
+import { MERMAID, PDFJS } from "../../../edge/src/web/routes.ts";
 import { ROOT } from "../../helpers.ts";
 import { browser, pushKey } from "../browser.ts";
 import {
@@ -104,6 +105,8 @@ function setUp() {
           "/admin/chat/index.html",
           "/draw/index.html",
           "/draw/draw.js",
+          "/pdf/index.html",
+          "/pdf/pdf.js",
           "/note/icon.png",
           "/note/badge.png",
         ].includes(new URL(r.url).pathname)
@@ -273,6 +276,22 @@ describe("the sign-in and the page", () => {
     expect((await t.call("/draw/", { method: "POST" }, false)).status).toBe(404);
   });
 
+  it("the PDF frame is a static page outside the sign-in, with only pdf.js and its own script", async () => {
+    const t = setUp();
+    for (const path of ["/pdf/", "/pdf/pdf.js"]) {
+      const res = await t.call(path, {}, false);
+      expect(res.status, path).toBe(200);
+      const csp = res.headers.get("content-security-policy") ?? "";
+      expect(csp).toContain(`script-src ${ORIGIN}/pdf/pdf.js ${PDFJS} 'wasm-unsafe-eval';`);
+      expect(csp).toContain(`connect-src ${PDFJS};`);
+      expect(csp).toContain(`frame-ancestors ${ORIGIN}`);
+      expect(csp).not.toMatch(/'unsafe-eval'|worker-src|'self'/);
+    }
+    expect(t.f.w.issues).toHaveLength(0);
+    expect((await t.call("/pdf/other.js", {}, false)).status).toBe(404);
+    expect((await t.call("/pdf/", { method: "POST" }, false)).status).toBe(404);
+  });
+
   it("a notification's pictures are outside the sign-in: a phone fetches them after it ends", async () => {
     const t = setUp();
     for (const path of ["/note/icon.png", "/note/badge.png"]) {
@@ -290,6 +309,16 @@ describe("the sign-in and the page", () => {
     const res = await t.call("/admin/chat/api/list");
     expect(res.status).toBe(409);
     expect((await res.json()).fix).toContain("pnpm ship add webchat --yes");
+  });
+
+  it("names the commit deployed in its version, so an open page sees each deploy", async () => {
+    const t = setUp();
+    t.env.GIT_SHA = "5ee981611347a38ef0ebcbab7491bdf63340db0a";
+    for (const path of ["/admin/chat/api/list", "/admin/chat/api/menu"]) {
+      const res = await t.call(path);
+      expect(res.status, path).toBe(200);
+      expect((await res.json()).version, path).toMatch(/^\d+\.\d+\.\d+\+5ee9816$/);
+    }
   });
 });
 
@@ -1155,6 +1184,42 @@ describe("what the page reads", () => {
     expect((await t.call("/admin/chat/api/task/99")).status).toBe(404);
   });
 
+  // ADR 0071: a reply's files are chips from the refs its line names; its words' links to shipify's
+  // issues and to those files open in the window.
+  it("a reply's files are chips, and its links to shipify's issues and its files stay inside", async () => {
+    const t = setUp();
+    await t.post("/admin/chat/api/send", { id: "files0001", words: "write the guide" });
+    const ref = "f-8236000000000-abcdef0123456789abcd";
+    const backup = `https://github.com/${REPO}/blob/shipify-files/task-1/20261104/guide.pdf`;
+    const line = replyLine({
+      v: 1,
+      kind: "answer",
+      state: "Answered",
+      title: "write the guide",
+      links: [],
+      files: [
+        { name: "guide.pdf", ref, type: "application/pdf", size: 2048, backup },
+        { name: "notes.md", ref: "f-8236000000001-abcdef0123456789abcd" },
+      ],
+      to: ["web:me"],
+      key: "k1",
+    });
+    // As GitHub renders it: the file's link, and #2 linked.
+    const c = t.f.comment(1, `${line}\nDone: the guide. See #2.`, RUN);
+    c.html = `<p>Done: <a href="${backup}">the guide</a>. See <a class="issue-link" href="https://github.com/${REPO}/issues/2">#2</a>, or <a href="https://example.com/x">this</a>.</p>`;
+    const thread = await (await t.call("/admin/chat/api/task/1")).json();
+    const reply = thread.messages.at(-1);
+    expect(reply.files).toEqual([
+      { name: "guide.pdf", type: "application/pdf", size: 2048, src: `api/file/${ref}`, backup },
+      { name: "notes.md", src: "api/file/f-8236000000001-abcdef0123456789abcd" },
+    ]);
+    expect(reply.html).toContain(`<a href="api/file/${ref}">the guide</a>`);
+    expect(reply.html).toContain('<a href="#/t/2">#2</a>');
+    expect(reply.html).toContain(
+      'href="https://example.com/x" rel="noopener noreferrer nofollow" target="_blank"',
+    );
+  });
+
   it("a reply with a list has only its Yes and No, as every chat has them (ADR 0049)", async () => {
     const t = setUp();
     await t.post("/admin/chat/api/send", { id: "listed001", words: "write a quote in Notion" });
@@ -1186,7 +1251,7 @@ describe("what the page reads", () => {
     const t = setUp();
     const ago = new Date(t.f.w.at - 300_000).toISOString();
     const i = t.f.issue({ title: "done with", state: "closed", ...{ closed_at: ago } });
-    // Each read past the edge's 8 seconds of memory.
+    // Each read past the edge's 4 seconds of memory.
     const wakes = async () => {
       t.f.later(10_000);
       return (await (await t.call(`/admin/chat/api/task/${i.number}`)).json()).task;
@@ -1242,7 +1307,7 @@ describe("what the page reads", () => {
     const i = t.f.issue({ title: "one ask" });
     const c = t.f.comment(i.number, "make it faster", { login: OWNER });
     c.html = "<p>make it faster</p>";
-    // Each read past the edge's 8 seconds of memory, as an open thread's refreshes are.
+    // Each read past the edge's 4 seconds of memory, as an open thread's refreshes are.
     const mine = async () => {
       t.f.later(10_000);
       const thread = await (await t.call(`/admin/chat/api/task/${i.number}`)).json();
@@ -1309,7 +1374,8 @@ describe("what the page reads", () => {
     t.f.later(10_000);
     const before = t.f.w.rendered;
     const { task } = await (await t.call("/admin/chat/api/task/1")).json();
-    expect(task.progress).toContain("<h2>markdown</h2>");
+    // As a comment is (ADR 0071): its #12 links, which open in the window.
+    expect(task.progress).toContain("<h2>gfm</h2>");
     expect(task.progress).toContain("Read it all.");
     // Its pictures are links, its fetching tags text: GitHub gets `\![` and `&lt;img`.
     expect(task.progress).toContain("\\![seen]");
@@ -1345,7 +1411,7 @@ describe("what the page reads", () => {
     t.f.deps.fetch = markdown;
     t.f.later(10_000);
     const again = await (await t.call("/admin/chat/api/task/1")).json();
-    expect(again.task.progress).toContain("<h2>markdown</h2>");
+    expect(again.task.progress).toContain("<h2>gfm</h2>");
   });
 
   it("a thread just past 100 opens full: a newest page under 40 brings the one before it", async () => {
@@ -1417,17 +1483,33 @@ describe("what the page reads", () => {
     expect(together).toBe(true);
   });
 
-  it("a read is kept 8 s, past the page's 5-second poll, so a run's polls seldom reach GitHub", async () => {
+  it("a read is kept 4 s, under the page's 5-second poll, so each poll as a run works sees its reply", async () => {
     const t = setUp();
     t.f.issue({ title: "from GitHub", user: { login: "owner" } });
     const reads = () => t.f.gh().filter((c) => c.endsWith("issues/1")).length;
     await t.call("/admin/chat/api/task/1");
-    t.f.later(6_000);
-    await t.call("/admin/chat/api/task/1");
-    expect(reads()).toBe(1);
     t.f.later(3_000);
     await t.call("/admin/chat/api/task/1");
+    expect(reads()).toBe(1);
+    t.f.later(2_000);
+    await t.call("/admin/chat/api/task/1");
     expect(reads()).toBe(2);
+  });
+
+  it("your words on a task are in its next read, never one kept from before them", async () => {
+    const t = setUp();
+    t.f.issue({ title: "a task", user: { login: "owner" } });
+    const yours = async (since = "") =>
+      (
+        (await (await t.call(`/admin/chat/api/task/1${since}`)).json()) as {
+          messages: { who: string }[];
+        }
+      ).messages.filter((m) => m.who === "you").length;
+    const at = `?since=${encodeURIComponent(new Date(t.f.w.at - 60_000).toISOString())}`;
+    const before = [await yours(), await yours(at)];
+    await t.post("/admin/chat/api/send", { id: "msg00000041", task: 1, words: "and the logo?" });
+    // At once, within the 4 s a read is kept: the plain read and a running thread's `since` one.
+    expect([await yours(), await yours(at)]).toEqual(before.map((k) => k + 1));
   });
 
   it("a thread's PRs: each one's state read once a minute, not on every poll", async () => {
@@ -1466,9 +1548,9 @@ describe("what the page reads", () => {
     expect(reads()).toBe(2);
   });
 
-  it("the list: shipify's open PRs for review, with their task; 50 at a time, without rendered bodies", async () => {
+  it("the list: shipify's open PRs for review, with their task; 100 at a time, without rendered bodies", async () => {
     const t = setUp();
-    for (let i = 0; i < 55; i++) t.f.issue({ title: `task ${i}`, user: { login: "owner" } });
+    for (let i = 0; i < 105; i++) t.f.issue({ title: `task ${i}`, user: { login: "owner" } });
     t.f.issue({
       title: "The chat as a cockpit",
       body: "What changed.\n\nCloses o/shipify#3",
@@ -1487,9 +1569,9 @@ describe("what the page reads", () => {
     const listing = asked.find(([u]) => u.includes("/issues?state=open"));
     expect(listing?.[1]).toBe("application/vnd.github+json");
     expect(first.review).toEqual([
-      expect.objectContaining({ n: 56, title: "The chat as a cockpit", task: 3 }),
+      expect.objectContaining({ n: 106, title: "The chat as a cockpit", task: 3 }),
     ]);
-    expect(first.tasks.some((x: { n: number }) => x.n === 56)).toBe(false);
+    expect(first.tasks.some((x: { n: number }) => x.n === 106)).toBe(false);
     const older = await (await t.call("/admin/chat/api/list?page=2")).json();
     expect(older).toMatchObject({ page: 2, more: false, review: [], running: [], boxes: [] });
     expect(older.tasks.map((x: { n: number }) => x.n)).toEqual([6, 5, 4, 3, 2, 1]);
@@ -1652,6 +1734,39 @@ describe("what the page reads", () => {
     });
     // Its next step, from counts (ADR 0070): an empty Map asks for a first fact kept.
     expect(th.task.project.step).toContain("Keep on page");
+    // Open, its Close asks first: the chats it closes too, and what stays and goes.
+    expect(th.task.project.ask).toMatch(
+      /^Close games and its 1 open chat\? Its docs stay in the Library, read-only\. Its files go from \d{1,2} \w{3}, unless you reopen it before\.$/,
+    );
+    // A doc of it names the project's number, so it opens over the project's Docs.
+    const doc = await (await t.call(`/admin/chat/api/task/${page.number}`)).json();
+    expect(doc.task.doc).toMatchObject({ name: "Overview", project: "games", of: p.number });
+  });
+
+  it("a closed project: in the index, its step says when and what stays, its Close asks nothing; its doc still finds it (ADR 0069)", async () => {
+    const t = setUp();
+    const p = t.f.issue({ title: "Project: hacker", body: "x", labels: ["project"] });
+    const page = t.f.issue({
+      title: "Notebook: hacker",
+      body: "## Map",
+      labels: ["library", "project:hacker"],
+    });
+    t.f.issue({ title: "Project: g3f9a2c-trip", labels: ["project", "guest"] });
+    p.state = "closed";
+    p.closed_at = new Date().toISOString();
+    const th = await (await t.call(`/admin/chat/api/task/${p.number}`)).json();
+    expect(th.task.open).toBe(false);
+    expect(th.task.project.ask).toBeUndefined();
+    expect(th.task.project.step).toMatch(
+      /^Closed \d{1,2} \w{3}\. Its docs stay in the Library, read-only\. Its files go from \d{1,2} \w{3}, unless you reopen it before\. Reopen it to ask or add again\.$/,
+    );
+    const doc = await (await t.call(`/admin/chat/api/task/${page.number}`)).json();
+    expect(doc.task.doc.of).toBe(p.number);
+    // The Library's read: your projects, open and closed; a guest's left out.
+    const nb = await (await t.call("/admin/chat/api/notebook")).json();
+    expect(nb.projects).toEqual([
+      { n: p.number, name: "hacker", open: false, closed: p.closed_at },
+    ]);
   });
 
   it("a project's page shows its Now first, and one next step from counts it read already (ADR 0070)", async () => {
@@ -1697,7 +1812,8 @@ describe("what the page reads", () => {
     expect(found.items).toEqual([
       { n: page.number, title: "clinic-licences", kind: "page", open: true },
     ]);
-    expect(t.f.w.searches).toEqual([`repo:${REPO} is:issue health permits`]);
+    // Yours leaves guests' out (ADR 0071).
+    expect(t.f.w.searches).toEqual([`repo:${REPO} is:issue -label:guest health permits`]);
     // The same words within the minute: no second search.
     await t.call("/admin/chat/api/search?q=health+permits");
     expect(t.f.w.searches).toHaveLength(1);
@@ -2124,6 +2240,142 @@ describe("what the page reads", () => {
 
 // Sub-tasks (ADR 0066, "The web chat"): the list's counts and Waiting come from the list call that
 // it makes already; a parent's Plan card is one GraphQL read when its thread opens, kept 60 s.
+describe("the window (ADR 0071)", () => {
+  it("a doc saves under a from line naming you, and a changed one, or one too long, doesn't", async () => {
+    const t = setUp();
+    const page = t.f.issue({
+      title: "Notebook: games-research",
+      body: "# Research\n\n- Godot",
+      labels: ["library", "project:games"],
+      user: RUN,
+    });
+    const th = await (await t.call(`/admin/chat/api/task/${page.number}`)).json();
+    expect(th.task.doc).toEqual({
+      name: "Research",
+      project: "games",
+      updated: expect.any(String),
+    });
+    expect(th.messages[0].md).toBe("# Research\n\n- Godot");
+    const save = (words: string, updated = th.task.doc.updated, more = {}) =>
+      t.post("/admin/chat/api/edit", { n: page.number, words, updated }, more);
+    const ok = await save("# Research\n\n- Godot\n- Defold\n");
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({ v: 1, n: page.number });
+    // As the door App, your hidden line first: the notebook counts the page as yours.
+    expect(readFrom(page.body)).toMatchObject({ person: "owner", channel: "web", chat: "me" });
+    expect(withoutLine(page.body)).toBe("# Research\n\n- Godot\n- Defold\n");
+    expect(t.f.gh().filter((c) => c.startsWith("PATCH"))).toHaveLength(1);
+    // Changed after you opened it (a run wrote it): refused, nothing written.
+    page.updated_at = new Date(t.f.w.at + 60_000).toISOString();
+    const late = await save("mine");
+    expect(late.status).toBe(409);
+    expect(await late.json()).toEqual({
+      error: "It changed.",
+      fix: "Copy your words, then reload.",
+    });
+    expect(withoutLine(page.body)).toContain("Defold");
+    // Past 60,000 characters: said.
+    const long = await save("x".repeat(60_001), page.updated_at);
+    expect(long.status).toBe(413);
+    expect((await long.json()).error).toContain("60,000");
+    // A chat isn't a doc: its edit would start a run.
+    const chat = t.f.issue({ title: "which engine?", body: "which?" });
+    const notDoc = await t.post("/admin/chat/api/edit", {
+      n: chat.number,
+      words: "x",
+      updated: chat.created_at,
+    });
+    expect(notDoc.status).toBe(409);
+    expect(chat.body).toBe("which?");
+    // From another site, or a body that doesn't read: refused.
+    expect((await save("x", page.updated_at, { origin: "https://evil.example" })).status).toBe(403);
+    const odd = await t.post("/admin/chat/api/edit", { n: page.number, words: "x" });
+    expect(odd.status).toBe(400);
+    expect(t.f.gh().filter((c) => c.startsWith("PATCH"))).toHaveLength(1);
+  });
+
+  it("a project's docs have short names, sizes and times; the Library's pages their numbers", async () => {
+    const t = setUp();
+    const p = t.f.issue({ title: "Project: games", body: "Offline games.", labels: ["project"] });
+    t.f.issue({ title: "Notebook: games", body: "## Map", labels: ["library", "project:games"] });
+    t.f.issue({
+      title: "Notebook: games-inbox",
+      body: "Collated up to item 0 (0 items).",
+      labels: ["library", "project:games"],
+    });
+    const always = t.f.issue({
+      title: "Notebook: Preferences",
+      body: "- short",
+      labels: ["notebook"],
+    });
+    const th = await (await t.call(`/admin/chat/api/task/${p.number}`)).json();
+    const names = th.task.project.pages.map((g: { name: string }) => g.name).sort();
+    expect(names).toEqual(["Inbox", "Overview"]);
+    expect(th.task.project.pages[0]).toMatchObject({
+      size: expect.any(Number),
+      updated: expect.any(String),
+    });
+    const nb = await (await t.call("/admin/chat/api/notebook")).json();
+    expect(nb.pages[0]).toMatchObject({ n: always.number, topic: "Preferences" });
+    expect(nb.library.map((g: { name: string }) => g.name).sort()).toEqual(["Inbox", "Overview"]);
+  });
+
+  it("Files lists past the newest 500: a project's view keeps only its chats' files", async () => {
+    const t = setUp();
+    const at = t.f.w.at;
+    // 550 newer files of chat 1, then 50 older ones of chat 7: past the newest 500.
+    for (let i = 0; i < 600; i++) {
+      const old = i >= 550;
+      const when = at - (old ? 10_000_000 : 0) - i;
+      await t.r2.keep(fileRefOf(when), "x", {
+        name: `f${i}.txt`,
+        type: "text/plain",
+        size: 1,
+        by: "run",
+        at: when,
+        task: old ? 7 : 1,
+      });
+    }
+    const all = await (await t.call("/admin/chat/api/files")).json();
+    expect(all).toMatchObject({ count: 600, bytes: 600 });
+    expect(all.files).toHaveLength(500);
+    expect(all.files.some((f: { task: number }) => f.task === 7)).toBe(false);
+    // R2 lists 1,000 a call: one list, kept a minute, for both views.
+    const lists = t.r2.state.lists;
+    const mine = await (await t.call("/admin/chat/api/files?chats=7,8")).json();
+    expect(mine).toMatchObject({ count: 50, bytes: 50 });
+    expect(mine.files).toHaveLength(50);
+    expect(mine.files.every((f: { task: number }) => f.task === 7)).toBe(true);
+    expect(t.r2.state.lists).toBe(lists);
+    expect((await t.call("/admin/chat/api/files?chats=7,x")).status).toBe(400);
+  });
+
+  it("Files says each chat's project, closed ones too, from one read of their parents kept a minute (ADR 0069)", async () => {
+    const t = setUp();
+    const p = t.f.issue({ title: "Project: hacker", labels: ["project"], state: "closed" });
+    const chat = t.f.issue({ title: "level 3", state: "closed" });
+    const loose = t.f.issue({ title: "tea?" });
+    p.subIssues = [chat.number];
+    for (const [i, task] of [chat.number, loose.number].entries())
+      await t.r2.keep(fileRefOf(t.f.w.at - i), "x", {
+        name: `f${i}.txt`,
+        type: "text/plain",
+        size: 1,
+        by: "you",
+        at: t.f.w.at - i,
+        task,
+      });
+    const reads = t.f.w.parentReads;
+    const all = await (await t.call("/admin/chat/api/files")).json();
+    expect(all.parents).toEqual({ [chat.number]: p.number });
+    await t.call("/admin/chat/api/files");
+    expect(t.f.w.parentReads).toBe(reads + 1);
+    // A project's own Files knows its chats: no read.
+    const mine = await (await t.call(`/admin/chat/api/files?chats=${chat.number}`)).json();
+    expect(mine.parents).toBeUndefined();
+  });
+});
+
 describe("sub-tasks (ADR 0066)", () => {
   /** A split task #1 and its parts as the box opens them: #2 ran and merged, #3 waits for #2's
    * sibling #4, which waits for nothing; #5 was dropped. */

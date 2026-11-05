@@ -11,6 +11,7 @@ import {
   PICK_UP_MS,
   JOB_MINUTES,
   needsMint,
+  newWords,
   POLL_MS,
   type StayIo,
   stay,
@@ -20,7 +21,16 @@ import {
   type Turn,
   takes,
 } from "../cli/kernel/stay.ts";
-import type { Decided, Plan, Snapshot, Think, ThinkMeta, Write } from "../cli/kernel/types.ts";
+import { agentSecrets, holdFor } from "../cli/kernel/think.ts";
+import type {
+  Decided,
+  Plan,
+  Said,
+  Snapshot,
+  Think,
+  ThinkMeta,
+  Write,
+} from "../cli/kernel/types.ts";
 import { newState } from "../cli/lib/task.ts";
 
 const think = (t: Partial<Think> = {}): Think => ({
@@ -57,6 +67,40 @@ describe("when a run stays", () => {
     expect(staysAfter(snap(), plan({ profile: "read" }), answer, meta, 5)).toBe(true);
     expect(staysAfter(snap(), plan({ profile: "work" }), answer, meta, 5)).toBe(true);
     expect(staysAfter(snap({ trigger: { kind: "opened" } }), plan(), answer, meta, 5)).toBe(true);
+  });
+
+  it("a guest's run stays too (ADR 0071), and none of its turns hands the agent a key", () => {
+    expect(staysAfter(snap(), plan({ profile: "guest" }), answer, meta, 5)).toBe(true);
+    const was = { ...process.env };
+    try {
+      process.env.SHIPIFY_AGENT_READ_TOKEN = "ghs_the-stays-read-key";
+      // Each turn is the same think: a guest's holds nothing but its login, which goes on a pipe.
+      expect(holdFor(think({ profile: "guest" }), "ghs_the-stays-read-key")).toEqual({});
+      const held = agentSecrets(undefined, holdFor(think({ profile: "guest" }), "ghs_x"));
+      expect(held).toEqual({});
+      // Yours holds the run's read key.
+      expect(holdFor(think(), "ghs_x")).toEqual({ github: "ghs_x", tools: true });
+    } finally {
+      process.env = was;
+    }
+  });
+
+  it("hears a guest's next words, as yours: their chat isn't left unanswered while it stays", () => {
+    const said = (id: number, author: Said["author"], setting?: true): Said => ({
+      id,
+      author,
+      text: "what can you do",
+      at: "2026-11-04T18:53:15Z",
+      edited: false,
+      channel: "web",
+      ...(setting
+        ? { from: { v: 1, person: "Ana", channel: "web", chat: "c", id: "x", setting } }
+        : {}),
+    });
+    const l = [said(5, "guest"), said(6, "guest"), said(7, "door"), said(8, "owner")];
+    expect(newWords(l, 5).map((c) => c.id)).toEqual([6, 7, 8]);
+    // Not a run's reply, someone else's words, or a setting the door wrote.
+    expect(newWords([said(9, "run"), said(10, "other"), said(11, "guest", true)], 0)).toEqual([]);
   });
 
   it("never stays for a check, a repeat, a closed task, no session, or when it's off", () => {

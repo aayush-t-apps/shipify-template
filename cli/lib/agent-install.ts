@@ -5,8 +5,10 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { fetchAgain } from "./net.ts";
 import { ShipError } from "./output.ts";
-import type { Executor, Executors } from "./plugins/agent.ts";
+import type { Executor, Executors, Install } from "./plugins/agent.ts";
+import { newer } from "./versions.ts";
 
 /** Where an agent's install lives in the box's shared tools, and its program there. */
 export function installedAt(id: string, entry: Executor, tools: string) {
@@ -142,4 +144,77 @@ export function tidyTools(all: Executors, tools = process.env.RUNNER_TOOL_CACHE)
     prune(node, keep);
   }
   return removed;
+}
+
+/** An agent's pin beside its newest version, and the advisories against the pin. */
+export interface AgentNews {
+  id: string;
+  pinned: string;
+  /** Its newest, when it's newer than the pin. */
+  newer?: string;
+  advisories: { title: string; severity: string; url: string }[];
+}
+
+/** One of GitHub's advisories, as its list gives it. */
+type Advisory = {
+  summary?: string;
+  severity?: string;
+  html_url?: string;
+  withdrawn_at?: string | null;
+};
+
+/** One answer as JSON, or why not. */
+const answer = async <T>(r: Response): Promise<T> => {
+  if (!r.ok) throw new Error(`${r.url} answered ${r.status}`);
+  return (await r.json()) as T;
+};
+
+/**
+ * For the weekly digest (task #673): each agent whose install says where to look (`newest`,
+ * `advisories`, executors.json), with its newest version and the advisories against its pin, read
+ * with no key, all at once. Nothing is installed: a version moves only in a PR. Undefined when an
+ * answer didn't come.
+ */
+export async function agentNews(
+  all: Executors,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AgentNews[] | undefined> {
+  // An agent through another gateway (`extends`) is the same program and pin.
+  const looked = Object.entries(all).flatMap(([id, e]) =>
+    e.install && !e.extends && (e.install.newest || e.install.advisories)
+      ? [{ id, install: e.install as Install }]
+      : [],
+  );
+  const read = <T>(url: string) =>
+    fetchAgain(url, { headers: { accept: "application/json" } }, { fetchImpl }).then((r) =>
+      answer<T>(r),
+    );
+  try {
+    return await Promise.all(
+      looked.map(async ({ id, install: i }) => {
+        const [newest, advised] = await Promise.all([
+          i.newest ? read<{ version?: string }>(i.newest) : undefined,
+          i.advisories
+            ? read<Advisory[]>(i.advisories.replace("{version}", encodeURIComponent(i.version)))
+            : undefined,
+        ]);
+        const v = newest?.version;
+        return {
+          id,
+          pinned: i.version,
+          ...(v && newer(v, i.version) ? { newer: v } : {}),
+          // A withdrawn advisory was a mistake: it's not said.
+          advisories: (advised ?? [])
+            .filter((a) => !a.withdrawn_at)
+            .map((a) => ({
+              title: a.summary ?? "an advisory",
+              severity: a.severity ?? "unknown",
+              url: a.html_url ?? "",
+            })),
+        };
+      }),
+    );
+  } catch {
+    return undefined;
+  }
 }

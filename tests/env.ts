@@ -12,6 +12,11 @@
 export const JOB_ENV =
   /^(GITHUB_|RUNNER_|ACTIONS_|SHIPIFY_|TELEGRAM_|DOOR_|CLOUDFLARE_|CF_)|^(APPS_DOMAIN|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)$/;
 
+/** The secret scan's gitleaks in every test: a stand-in, never a download (tests/secret-scan.test.ts). */
+export const FAKE_GITLEAKS = `${import.meta.dirname}/fixtures/fake-gitleaks.mjs`;
+
 for (const name of Object.keys(process.env)) if (JOB_ENV.test(name)) delete process.env[name];
 // Tests that run Shipify in-process never read this PC's credentials file.
 process.env.SHIPIFY_CREDENTIALS = "/nonexistent/shipify-credentials.env";
+// Nor fetch or start the real gitleaks: apply's push scans each change (30 s a start on a Pi).
+process.env.SHIPIFY_GITLEAKS = FAKE_GITLEAKS;

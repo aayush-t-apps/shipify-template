@@ -1,7 +1,7 @@
 // What every part of a task's run shares (ADR 0012, docs/tasks.md): the issue's shape, where this
 // run is, the record and the queue it talks to (lib/plugins/record.ts), the workspace's paths, and
 // small helpers.
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { timeZoneNow, useTimeZone } from "../../contracts/zone.ts";
 import { copyTimeZone, loadConfig, projectsDir } from "../../lib/config.ts";
@@ -20,6 +20,14 @@ export const rec = (opts?: { timeoutMs?: number }): TaskRecord => githubRecord(o
 export const queue = (): Queue => githubQueue();
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Where a box keeps what its next runs' steps reuse (plan's repo lists, the labels' check): the
+ * runner's own cache, which no agent's user can read. None off a box.
+ */
+export const boxCache = (): string | undefined =>
+  process.env.SHIPIFY_BOX
+    ? join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "shipify")
+    : undefined;
 /**
  * Where this run is, for replies and run details: the box, and its slot when it has several
  * (ADR 0020: "mybox (slot 2)"); this machine's name outside a job.

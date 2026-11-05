@@ -606,8 +606,11 @@ export interface AgentRun {
   env: Record<string, string>;
 }
 
-/** A run's folders, without making them. */
-export function runPaths(slot: number, runId: string, root = AGENT_ROOT): AgentRun {
+/**
+ * A run's folders, without making them. `own`: a guest's run (ADR 0071), whose caches and
+ * containers' store are its own, in its run folder, not the slot's.
+ */
+export function runPaths(slot: number, runId: string, root = AGENT_ROOT, own = false): AgentRun {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(runId))
     throw new ShipError(`"${runId}" isn't a run id.`, "blocked");
   const dir = join(slotRoot(slot, root), `run-${runId}`);
@@ -631,6 +634,7 @@ export function runPaths(slot: number, runId: string, root = AGENT_ROOT): AgentR
       TMPDIR: at("tmp"),
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_CACHE_HOME: join(home, ".cache"),
+      ...(own ? { XDG_DATA_HOME: join(home, ".local", "share") } : {}),
     },
   };
 }
@@ -641,8 +645,13 @@ export function runPaths(slot: number, runId: string, root = AGENT_ROOT): AgentR
  * folder that passes that group on). Any process left of the slot's agent is killed
  * first, its earlier runs removed, and what they left of Podman's (ADR 0064) too. Once per job.
  */
-export function prepareRun(slot: number, runId: string, io: SandboxIo = REAL_IO): AgentRun {
-  const run = runPaths(slot, runId, io.root);
+export function prepareRun(
+  slot: number,
+  runId: string,
+  io: SandboxIo = REAL_IO,
+  own = false,
+): AgentRun {
+  const run = runPaths(slot, runId, io.root, own);
   const stopped = () => {
     if (!killAll(slot, io))
       throw new ShipError(
@@ -677,8 +686,11 @@ export function prepareRun(slot: number, runId: string, io: SandboxIo = REAL_IO)
     "chmod g-s .",
     "mkdir -m 700 home config tmp work read in",
     "mkdir -m 700 home/.local",
-    "ln -s ../../cache home/.cache",
-    "ln -s ../../../data home/.local/share",
+    // A guest's run (ADR 0071): caches and a containers' store of its own, gone with its folder,
+    // so nothing it leaves (a package, a browser, an image) reaches a later run of yours.
+    ...(own
+      ? ["mkdir -m 700 home/.cache home/.local/share"]
+      : ["ln -s ../../cache home/.cache", "ln -s ../../../data home/.local/share"]),
   ].join("\n");
   const r = asAgentNow(
     slot,
@@ -699,8 +711,13 @@ export function prepareRun(slot: number, runId: string, io: SandboxIo = REAL_IO)
  * The run's folder as an earlier step of this job made it (ADR 0057: a run that stays resumes its
  * agent's session there): nothing removed, nothing made. Its folder must be there.
  */
-export function reopenRun(slot: number, runId: string, io: SandboxIo = REAL_IO): AgentRun {
-  const run = runPaths(slot, runId, io.root);
+export function reopenRun(
+  slot: number,
+  runId: string,
+  io: SandboxIo = REAL_IO,
+  own = false,
+): AgentRun {
+  const run = runPaths(slot, runId, io.root, own);
   const r = asAgentNow(
     slot,
     ["/bin/sh", "-c", 'test -d "$1/config"', "reopen", run.dir],

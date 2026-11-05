@@ -107,7 +107,7 @@ preflight() {
   if [ "$id" != ubuntu ] || [ -z "$major" ] || [ "$major" -lt 24 ] || [ $((major % 2)) -ne 0 ] ||
     [ "${version#*.}" != 04 ]; then
     die "this is ${pretty:-an unknown OS}: a box needs Ubuntu Server 24.04 LTS or a newer LTS." \
-      "Make the machine again with Ubuntu 24.04 LTS (64-bit), then run this again."
+      "Make the machine again with Ubuntu 26.04 LTS (64-bit), then run this again."
   fi
   case "$(uname -m)" in
     x86_64) ARCH=x64 ;;

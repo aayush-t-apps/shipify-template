@@ -77,6 +77,8 @@ describe("the notebook: dates, hidden characters and forgetting (ADR 0032)", () 
     expect(dated("short answers (2026-10-05)", "2026-11-02")).toBe("short answers (2026-10-05)");
     expect(noteWords("- short answers (2026-10-05)")).toBe("short answers");
     expect(noteWords("* Sonnet (for now)")).toBe("Sonnet (for now)");
+    // A line from before `dated` kept a date it had: the same note, so a new one isn't added again.
+    expect(noteWords("- shallow clones (2026-10-09) (2026-10-09)")).toBe("shallow clones");
   });
 
   it("refuses characters you can't see: zero-width and direction marks", () => {

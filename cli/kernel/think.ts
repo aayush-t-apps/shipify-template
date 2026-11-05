@@ -16,6 +16,7 @@ import {
   maskSecrets,
   modelFacts,
   modelLookup,
+  shownProject,
 } from "../contracts/index.ts";
 import { accountOf } from "../lib/accounts.ts";
 import { adapterOf, heldTo, loginOf, modelLabel, readExecutors } from "../lib/agents.ts";
@@ -33,10 +34,10 @@ import type { RunDetails } from "../lib/runs.ts";
 import { onBox } from "../lib/sandbox.ts";
 import { loadTools } from "../lib/tools.ts";
 import { choiceFor, defaultAgent, executors, promptTools, Stopwatch, taskChoice } from "./agent.ts";
-import { laterWords } from "./decide.ts";
+import { guestOf, guestsProject, laterWords } from "./decide.ts";
 import { hash8 } from "./keys.ts";
 import { familyLines } from "./parts.ts";
-import { collateNotes, pageWordNotes, projectLines } from "./projects.ts";
+import { closedPagesNote, collateNotes, pageWordNotes, projectLines } from "./projects.ts";
 import { doorLogin } from "./snapshot.ts";
 import { binDir, type Place, placeFor } from "./place.ts";
 import { asksOf, buildPrompt, coverEach } from "./prompt.ts";
@@ -115,6 +116,16 @@ export interface ThinkOut {
  *   nothing of yours for it to reach.
  * - A run on another of your accounts (ADR 0045) holds that account's key, and no tool's.
  */
+/**
+ * What the agent holds besides its login, every turn of a stay too: the run's read key and the
+ * tools' look keys; a run on another account no tools (ADR 0045); a read run (ADR 0044) and a
+ * guest's run (ADR 0071) nothing at all.
+ */
+export const holdFor = (t: Pick<Think, "profile" | "account">, key: string | undefined) =>
+  t.profile === "read" || t.profile === "guest"
+    ? {}
+    : { ...(key ? { github: key } : {}), tools: !t.account };
+
 export function agentSecrets(
   login: string | undefined,
   hold: { github?: string; tools?: boolean } = {
@@ -217,10 +228,18 @@ export interface ThinkIn {
 
 export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOut> {
   const timing = new Stopwatch(io.resume ? io.used : undefined);
-  const place = placeFor(s.run.id.replace(/[^A-Za-z0-9._-]/g, "-"), io.local, Boolean(io.resume));
+  // A guest's run (ADR 0071): no GitHub key, notebook, Library, tool or repo of yours, and caches
+  // of its own, so nothing it leaves reaches a run of yours.
+  const guest = t.profile === "guest";
+  const place = placeFor(
+    s.run.id.replace(/[^A-Za-z0-9._-]/g, "-"),
+    io.local,
+    Boolean(io.resume),
+    guest,
+  );
   rmSync(io.keep, { recursive: true, force: true });
   mkdirSync(io.keep, { recursive: true });
-  const env = runEnv(s);
+  const env = runEnv(s, guest);
   const keep = (name: string, body: string | Buffer) => writeFileSync(join(io.keep, name), body);
   try {
     // A check: its reviewed script, as the agent's user, with no keys and a minute at most. The agent
@@ -268,11 +287,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     const away = Boolean(t.account);
     const key = runKey(t);
     const login = loginOf(ex, harness.gateways)?.secret;
-    const held = handOver(
-      agentSecrets(login, reading ? {} : { ...(key ? { github: key } : {}), tools: !away }),
-      login,
-      adapter,
-    );
+    const held = handOver(agentSecrets(login, holdFor(t, key)), login, adapter);
     const notes = [
       ...t.notes,
       ...(io.notes ?? []).map(asGiven),
@@ -379,13 +394,20 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     }
     // When the pages were read (ADR 0070): the box writes none of this turn's that changed after.
     const pagesAt = new Date().toISOString();
-    const nb = tryOr(readNotebook, undefined);
-    // A run in a project (ADR 0069) gets its pages, and its repos' own pages, as a run on them does.
-    const inProject = s.project && !reading && !away ? s.project : undefined;
-    const theirs = inProject ? tryOr(() => readProjectPages(inProject.name), undefined) : undefined;
+    const nb = guest ? undefined : tryOr(readNotebook, undefined);
+    // A run in a project (ADR 0069) gets its pages, and its repos' own pages, as a run on them does;
+    // a guest's run, only its own project's (ADR 0071).
+    const inProject = guest
+      ? guestsProject(s)
+      : s.project && !reading && !away
+        ? s.project
+        : undefined;
+    const theirs = inProject
+      ? tryOr(() => readProjectPages(inProject.name, guest ? guestOf(s) : undefined), undefined)
+      : undefined;
     // A stay's turn (ADR 0057) carries on with the pages its session read before: a page written
-    // whole starts from the page as it is now.
-    if (io.resume && theirs)
+    // whole starts from the page as it is now. Not a guest's: their run has no CLI to read it with.
+    if (io.resume && theirs && !guest)
       notes.push(
         `The project's pages may have changed since your session read them: before you write one whole, read it again (\`<ship> notebook read "<topic>"\`).`,
       );
@@ -399,7 +421,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     const pages = nb && !reading ? pagesFor(nb.pages, pagesRun) : [];
     // What the prompt can't carry is said, never missing quietly: a read that failed, and the
     // pages left out as someone else last edited them.
-    if (!reading) {
+    if (!reading && !guest) {
       if (s.familyUnread)
         notes.push(
           "This task is in a project or a split, and the box couldn't read it: its brief, chats and pages aren't below. Say so in your reply, and ask rather than guess what it holds.",
@@ -425,7 +447,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       .filter((c) => c.author !== "other")
       .map((c) => ({
         id: c.id,
-        who: c.author === "run" ? "Shipify" : "the owner",
+        who: c.author === "run" ? "Shipify" : c.author === "guest" ? "the guest" : "the owner",
         at: c.at,
         text: c.text,
         isNew: t.fresh.includes(c.id) || caughtUp.includes(c.id),
@@ -436,9 +458,15 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     let asks = io.resume
       ? fresh.map((c) => c.text.trim())
       : asksOf({ why: t.why, body: s.issue.body, title: s.issue.title, conversation });
-    // "collate the inbox" in a project (ADR 0069): its new items as data, their files fetched.
+    // "collate the inbox" in a project (ADR 0069): its new items as data, their files fetched. A
+    // closed project's pages are read-only: the run says so instead.
+    // (Its own thread runs only once words reopened it.)
+    const shut = inProject?.state === "closed" && inProject.number !== s.n;
+    const collating = asks.some((a) => /\bcollate\b/i.test(a));
+    if (inProject && shut && collating)
+      notes.push(closedPagesNote("collate the inbox", shownProject(inProject.name)));
     const inbox =
-      inProject && theirs && asks.some((a) => /\bcollate\b/i.test(a))
+      inProject && theirs && !shut && collating
         ? theirs.pages.find((p) => sameTopic(p.topic, inboxTopic(inProject.name)))
         : undefined;
     if (inbox) {
@@ -446,16 +474,19 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
         inProject?.name ?? "",
         inbox,
         tryOr(() => rec().comments(inbox.number), []),
-        {
-          login: process.env.SHIPIFY_OWNER || undefined,
-          person: readPeople().people[0]?.name,
-          door: doorLogin(),
-        },
+        // A guest's project holds the items the door wrote for them alone (ADR 0071).
+        guest
+          ? { door: doorLogin(), guest: guestOf(s) }
+          : {
+              login: process.env.SHIPIFY_OWNER || undefined,
+              person: readPeople().people[0]?.name,
+              door: doorLogin(),
+            },
       );
       notes.push(...c.notes, ...(c.said.length ? await filesOf(c.said) : []));
     }
     // "keep this on the page" and "check the project" (ADR 0070): what the run does with the pages.
-    if (!reading && !away) notes.push(...pageWordNotes(asks, inProject?.name));
+    if (!reading && !away) notes.push(...pageWordNotes(asks, inProject?.name, shut));
     const prompt = buildPrompt({
       repo: platformRepo(),
       n: s.n,
@@ -491,14 +522,18 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       // accounts gets that page alone (ADR 0047), adding nothing to it.
       ...(library ? { notebook: library.notebook } : {}),
       ...(library?.project ? { projectPages: library.project } : {}),
-      // A read run has no tool's calls (ADR 0044), nor a run on another account: none to name.
-      ...(reading || away ? {} : { tools: promptTools(executor) }),
+      // A read run has no tool's calls (ADR 0044), nor a run on another account or a guest's.
+      ...(reading || away || guest ? {} : { tools: promptTools(executor) }),
       ...(t.account ? { account: t.account } : {}),
       ...(t.base ? { base: t.base } : {}),
-      playbook: readFileSync(join(PLATFORM_ROOT, "playbooks", "task.md"), "utf8"),
+      // A guest's run (ADR 0071) has its own few rules: no GitHub, no PR, nothing of yours.
+      playbook: readFileSync(
+        join(PLATFORM_ROOT, "playbooks", guest ? "guest.md" : "task.md"),
+        "utf8",
+      ),
       ...(t.recipe ? { recipe: t.recipe } : {}),
       // A split task's parent and parts (ADR 0066), as plan read them: data, but for its parent's goal.
-      ...((s.family || s.project) && !reading
+      ...((s.family || s.project) && !reading && (!guest || inProject)
         ? { family: [...projectLines(s, platformRepo()), ...familyLines(s)] }
         : {}),
       thinksWith: [adapter.name, choice.model ?? "its default model", choice.effort]
@@ -536,7 +571,12 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
               : {}),
           ...(gateway && ex.gateway ? { gateway: { ...gateway, id: ex.gateway } } : {}),
           config: place.config,
-          tools: { mode: "look", dir: toolsDir, root: copy.root, ...(away ? { only: [] } : {}) },
+          tools: {
+            mode: "look",
+            dir: toolsDir,
+            root: copy.root,
+            ...(away || guest ? { only: [] } : {}),
+          },
           resultSchema: RESULT_SCHEMA,
           // A work run's folder is its clone: your files, its copy of Shipify and its out/ are
           // outside it. A read run reads its repos (its working folder) and your files, when you
@@ -607,7 +647,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
           ...(held.login !== undefined ? { login: held.login } : {}),
           env: {
             ...env,
-            ...yoursEnv(!reading && !away),
+            ...yoursEnv(t),
             ...(adapter.env?.(own) ?? {}),
             ...held.env,
           },
@@ -998,21 +1038,21 @@ const YOURS = ["SHIPIFY_OWNER", "SHIPIFY_PEOPLE", "SHIPIFY_DOOR_SLUG"];
 /**
  * Who's yours, for the agent's own `<ship> notebook` (ADR 0069), as the box reads them: so a page
  * the door wrote for you (a Journal, an Inbox) reads as yours there too. On a box the agent starts
- * from an empty environment. None for a read run, or one on another of your accounts: nothing of
- * your notebook is theirs.
+ * from an empty environment. None for a read run, a guest's (ADR 0071), or one on another of
+ * your accounts: nothing of your notebook is theirs.
  */
-export const yoursEnv = (mine: boolean): Record<string, string> =>
-  mine
-    ? Object.fromEntries(YOURS.flatMap((k) => (process.env[k] ? [[k, process.env[k]]] : [])))
-    : {};
+export const yoursEnv = (t: Pick<Think, "profile" | "account">): Record<string, string> =>
+  t.profile === "read" || t.profile === "guest" || t.account
+    ? {}
+    : Object.fromEntries(YOURS.flatMap((k) => (process.env[k] ? [[k, process.env[k]]] : [])));
 
 /** What a run's own commands start with: its `<ship>` calls name your Shipify repo as the run
- * does, and lay out a project with your copy's settings (ADR 0047), so no file says them. */
-const runEnv = (s: Snapshot) => ({
+ * does, and lay out a project with your copy's settings (ADR 0047), so no file says them. A
+ * guest's run (ADR 0071) gets its language and its task alone: no repo or value of yours. */
+export const runEnv = (s: Pick<Snapshot, "n">, guest = false): Record<string, string> => ({
   LANG: "C.UTF-8",
   SHIPIFY_TASK: String(s.n),
-  GITHUB_REPOSITORY: platformRepo(),
-  ...copyValues(),
+  ...(guest ? {} : { GITHUB_REPOSITORY: platformRepo(), ...copyValues() }),
 });
 
 /**

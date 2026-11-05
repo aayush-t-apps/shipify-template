@@ -2,7 +2,8 @@
 // cleans it already; this is the second lock, before the page puts it in place. Only the tags a
 // reply uses are kept, each with only its plain attributes; links and pictures only to https. A
 // tag that can carry code (script, style, iframe, svg, a form…) goes with everything inside it;
-// any other unknown tag goes and keeps its words. The page's CSP is the third lock.
+// any other unknown tag goes and keeps its words. The page's CSP is the third lock. A link the
+// window opens itself (ADR 0071: a shipify issue, a run's file) gets its own address, no new tab.
 
 /** Tags kept, with the attributes each may keep. */
 const KEEP: Record<string, string[]> = {
@@ -116,8 +117,42 @@ export interface Cleaned {
   trimmed: boolean;
 }
 
-/** GitHub's HTML, kept to the safe list. `base` is where relative links point (the repo). */
-export function clean(html: string, base = "https://github.com/"): Cleaned {
+/**
+ * Where a link opens in the window (ADR 0071: links stay inside): the page's own address for it, or
+ * undefined for a new tab, as before.
+ */
+export type Inside = (url: string) => string | undefined;
+
+/**
+ * The window's links on shipify's repo (`owner/shipify`): an issue or a PR opens its thread
+ * (`#/t/<n>`, a chat, a project or a doc); a file on `shipify-files` opens its kept copy when the
+ * message names that file (`files`, each with the edge's address for it). Anything else: a new tab.
+ */
+export function insideOf(
+  repo: string,
+  files: { name: string; src?: string; backup?: string }[] = [],
+) {
+  const own = `https://github.com/${repo}/`.toLowerCase();
+  return (u: string) => {
+    if (!repo || !u.toLowerCase().startsWith(own)) return undefined;
+    const rest = u.slice(own.length);
+    const n = /^(?:issues|pull)\/(\d{1,9})(?:[/?#].*)?$/.exec(rest)?.[1];
+    if (n) return `#/t/${n}`;
+    const path = /^blob\/shipify-files\/([^?#]+)/.exec(rest)?.[1];
+    if (!path) return undefined;
+    let name = path.slice(path.lastIndexOf("/") + 1);
+    try {
+      name = decodeURIComponent(name);
+    } catch {}
+    return files.find((f) => f.src && (f.backup === u || f.name === name))?.src;
+  };
+}
+
+/**
+ * GitHub's HTML, kept to the safe list. `base` is where relative links point (the repo). A link
+ * `inside` names opens in the window: its address, and no new tab.
+ */
+export function clean(html: string, base = "https://github.com/", inside?: Inside): Cleaned {
   let out = "";
   let trimmed = false;
   /** While inside a dropped tag: its name and depth. */
@@ -162,16 +197,19 @@ export function clean(html: string, base = "https://github.com/"): Cleaned {
     }
     const attrs: string[] = [];
     let ok = true;
+    let here = false;
     for (const a of (tag[3] ?? "").matchAll(ATTR)) {
       const key = (a[1] ?? "").toLowerCase();
       const value = a[2] ?? a[3] ?? a[4] ?? "";
       if (!allowed.includes(key)) continue;
       if (key === "href" || key === "src") {
-        const to = address(value, name, base);
+        let to = address(value, name, base);
         if (!to) {
           if (name === "img") ok = false;
           continue;
         }
+        const own = name === "a" && inside?.(to);
+        if (own) [to, here] = [own, true];
         attrs.push(`${key}="${escAttr(to)}"`);
       } else if (key === "type") {
         if (value.toLowerCase() !== "checkbox") ok = false;
@@ -188,7 +226,7 @@ export function clean(html: string, base = "https://github.com/"): Cleaned {
       trimmed = true;
       continue;
     }
-    if (name === "a") attrs.push('rel="noopener noreferrer nofollow"', 'target="_blank"');
+    if (name === "a" && !here) attrs.push('rel="noopener noreferrer nofollow"', 'target="_blank"');
     if (name === "img") attrs.push('loading="lazy"', 'referrerpolicy="no-referrer"');
     if (name === "input") attrs.push("disabled");
     out += `<${name}${attrs.length ? ` ${attrs.join(" ")}` : ""}>`;
@@ -225,6 +263,7 @@ const re = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 export function withoutEchoes(
   html: string,
   r: { question?: string; links: readonly (readonly [string, string])[] },
+  inside?: Inside,
 ): string {
   let out = html;
   if (r.question)
@@ -233,12 +272,13 @@ export function withoutEchoes(
       "",
     );
   for (const [, u] of r.links) {
-    // As clean() writes it (a URL made whole: "https://x.io" is "https://x.io/"), last in its item,
-    // and never past that item's end.
+    // As clean() writes it (a URL made whole: "https://x.io" is "https://x.io/", or the window's
+    // own address for it), last in its item, and never past that item's end.
     let to = u;
     try {
       to = new URL(u).href;
     } catch {}
+    to = inside?.(to) ?? to;
     const href = re(escAttr(to));
     const item = `<li>(?:(?!</?li>)[\\s\\S])*?<a href="${href}"[^>]*>[^<]*</a>\\s*</li>\\s*`;
     out = out.replace(new RegExp(item, "g"), "");

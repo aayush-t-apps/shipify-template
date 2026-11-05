@@ -109,7 +109,8 @@ export async function doorPage(yes: boolean, deps: PageDeps = defaultDeps()): Pr
   const team =
     (await deps.ask(`Your team's address (<team>.cloudflareaccess.com)${keep}: `)) || set?.team;
   const aud = (await deps.ask(`The application's AUD tag${keep}: `)) || set?.aud;
-  const access = parseAccess(JSON.stringify({ team, aud }));
+  // The guests' tag (ADR 0071), set on GitHub, is kept.
+  const access = parseAccess(JSON.stringify({ team, aud, guests: set?.guests }));
   if (!access)
     throw new ShipError(
       "Those don't read as a team address (<team>.cloudflareaccess.com) and an AUD tag (64 letters and digits): run it again and paste them as Cloudflare shows them.",

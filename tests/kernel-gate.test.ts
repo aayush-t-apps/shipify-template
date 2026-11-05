@@ -14,6 +14,7 @@ import {
   handOver,
   handoffOf,
   modelBy,
+  runEnv,
   stopOf,
   THINK_MINUTES,
   type ThinkIn,
@@ -25,6 +26,7 @@ import { ADAPTERS } from "../cli/lib/agents.ts";
 import { initialChangelog } from "../cli/lib/docs.ts";
 import { writeManifest } from "../cli/lib/manifest.ts";
 import { newState, type TaskState } from "../cli/lib/task.ts";
+import { BUILT } from "./built.ts";
 import { ROOT, sandbox } from "./helpers.ts";
 
 const saved = { ...process.env };
@@ -636,6 +638,8 @@ describe("an agent that stops before its answer keeps its work (ADR 0035)", () =
   it("a `stop` read that fails while it works is told in the run's details, once (ADR 0059)", async () => {
     remote({ "shipify.json": manifest, Makefile: MAKEFILE });
     process.env.FAKE_WORK = "slow";
+    // A few reads, 300 ms apart, are all it needs: not the stop test's full 20 s.
+    process.env.FAKE_SLOW_MS = "2500";
     let reads = 0;
     // The read as it starts works; every one while it works fails, as an expired key's would.
     const later = () => {
@@ -724,12 +728,33 @@ describe("work that's never lost (ADR 0041)", () => {
     expect(handoffOf("  \n ")).toBeUndefined();
   });
 
-  it("hands a run who's yours, for its own notebook reads; a read run, or one on another account, none (ADR 0069)", () => {
+  it("hands a run who's yours, for its own notebook reads; a read run, a guest's, or one on another account, none (ADR 0069, 0071)", () => {
     process.env.SHIPIFY_OWNER = "owner";
     process.env.SHIPIFY_DOOR_SLUG = "shipify-door";
     process.env.SHIPIFY_PEOPLE = "";
-    expect(yoursEnv(true)).toEqual({ SHIPIFY_OWNER: "owner", SHIPIFY_DOOR_SLUG: "shipify-door" });
-    expect(yoursEnv(false)).toEqual({});
+    const yours = { SHIPIFY_OWNER: "owner", SHIPIFY_DOOR_SLUG: "shipify-door" };
+    expect(yoursEnv(work)).toEqual(yours);
+    expect(yoursEnv({ profile: "talk" })).toEqual(yours);
+    expect(yoursEnv({ profile: "read" })).toEqual({});
+    expect(yoursEnv({ profile: "guest" })).toEqual({});
+    expect(yoursEnv({ profile: "talk", account: "acme" })).toEqual({});
+  });
+
+  it("a guest's run starts with its language and its task alone: no repo or value of yours (ADR 0071)", () => {
+    Object.assign(process.env, {
+      SHIPIFY_TIME_ZONE: "Asia/Kolkata",
+      CLOUDFLARE_ACCOUNT_ID: "acct",
+    });
+    // Yours: your repo and your copy's values, for a run's own `<ship>` calls.
+    expect(runEnv({ n: 12 })).toMatchObject({
+      LANG: "C.UTF-8",
+      SHIPIFY_TASK: "12",
+      GITHUB_REPOSITORY: "o/shipify",
+      SHIPIFY_TIME_ZONE: "Asia/Kolkata",
+      CLOUDFLARE_ACCOUNT_ID: "acct",
+    });
+    // A guest's: `env` in their run shows nothing of yours.
+    expect(runEnv({ n: 12 }, true)).toEqual({ LANG: "C.UTF-8", SHIPIFY_TASK: "12" });
   });
 
   it("a checkout inside the clone is never committed, whatever its name or whoever made it", async () => {
@@ -747,9 +772,9 @@ describe("work that's never lost (ADR 0041)", () => {
 });
 
 describe("a task's branch behind main: a sibling's PR merged first", () => {
-  /** Shipify's CLI, as the owner runs it on the PC. */
+  /** Shipify's CLI, built for this test run (tests/built.ts). */
   const ship = (...args: string[]) =>
-    execFileSync(process.execPath, [join(ROOT, "cli", "ship.mjs"), ...args], {
+    execFileSync(process.execPath, [BUILT, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -834,7 +859,7 @@ describe("a conflict with main never leaves markers behind", () => {
           `## [Unreleased]\n\n### Changed\n\n- ${line}\n`,
         ),
       );
-      execFileSync(process.execPath, [join(ROOT, "cli", "ship.mjs"), "version", seed, to], {
+      execFileSync(process.execPath, [BUILT, "version", seed, to], {
         stdio: "ignore",
       });
     };
@@ -881,7 +906,8 @@ describe("a conflict with main never leaves markers behind", () => {
   it("an agent whose own refresh stops, then crashes: the half-done merge is dropped, its commits kept", async () => {
     const { origin, s } = conflicting(true);
     process.env.FAKE_WORK = "refresh-crash";
-    process.env.FAKE_SHIP = join(ROOT, "cli", "ship.mjs");
+    // The agent's own `ship`, the built CLI as on a box.
+    process.env.FAKE_SHIP = BUILT;
     const { out, keep } = await run(s);
     expect(out.meta).toMatchObject({ commits: true, stopped: { why: "crash" } });
     const at = kept(origin, keep);
@@ -894,7 +920,7 @@ describe("a conflict with main never leaves markers behind", () => {
   it("an agent that settles a conflict with a plain commit, then crashes, keeps its commits", async () => {
     const { origin, s } = conflicting(true);
     process.env.FAKE_WORK = "resolve-crash";
-    process.env.FAKE_SHIP = join(ROOT, "cli", "ship.mjs");
+    process.env.FAKE_SHIP = BUILT;
     const { out, keep } = await run(s);
     expect(out.meta).toMatchObject({ commits: true });
     const at = kept(origin, keep);

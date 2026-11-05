@@ -433,6 +433,8 @@ main {
 }
 .top h1 {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -454,6 +456,8 @@ main {
   font-weight: 600;
   display: inline-flex;
   align-items: center;
+  flex: none;
+  white-space: nowrap;
 }
 .search {
   position: relative;
@@ -535,6 +539,10 @@ main {
 .fold[aria-expanded="false"] svg {
   transform: rotate(-90deg);
 }
+/* Open, it points down (not up, as a run line's does): > shut, v open. */
+.fold[aria-expanded="true"] svg {
+  transform: none;
+}
 .fold b {
   color: var(--ink);
   font-weight: 650;
@@ -549,6 +557,31 @@ main {
 .fold .w {
   background: var(--acc);
   color: var(--on);
+}
+/* Projects, then Chats: a heading each. A project is a card, its chats indented under it. */
+.sec {
+  margin: 0.75rem 1rem 0.25rem;
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pj {
+  margin: 0.25rem 0.5rem 0;
+  padding: 0.125rem 0;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--acc);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.pj + .rows,
+.pj + .none {
+  margin-left: 1.25rem;
+  border-left: 1px solid var(--line);
+}
+.none {
+  padding: 0.25rem 1rem 0.5rem;
+  font-size: 0.8125rem;
 }
 /* Open | Needs you | Closed: one control, the one shown pressed. */
 .tabs {

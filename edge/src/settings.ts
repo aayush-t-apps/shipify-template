@@ -9,6 +9,7 @@
 import {
   holdsRecord,
   inboxTopic,
+  GUEST_LABEL,
   LIBRARY_LABEL,
   type PageSeen,
   parseAccounts,
@@ -248,10 +249,15 @@ export async function notebookPages(gh: GitHub): Promise<PageSeen[]> {
  */
 interface LibrarySeen extends PageSeen {
   n: number;
+  /** Its size in characters, and when it last changed (ADR 0071: a project's Docs tab). */
+  size: number;
+  updated: string;
   project?: string;
   now?: string[];
   map?: number;
   waiting?: number;
+  /** A guest's page (ADR 0071): only their project's screen shows it; your Library doesn't. */
+  guest?: true;
 }
 
 /** A page's block under its `## <name>` heading, to the next heading: its lines of words. */
@@ -277,6 +283,7 @@ export async function libraryPages(gh: GitHub): Promise<LibrarySeen[]> {
       pull_request?: unknown;
       labels?: { name: string }[];
       comments?: number;
+      updated_at?: string;
     }[]
   >(
     "GET",
@@ -297,6 +304,8 @@ export async function libraryPages(gh: GitHub): Promise<LibrarySeen[]> {
         topic,
         first: (lines[0] ?? "").replace(/^[-*#]+\s+/, ""),
         lines: lines.length,
+        size: (i.body ?? "").length,
+        updated: i.updated_at ?? "",
         url: i.html_url ?? "",
         ...(project ? { project } : {}),
         ...(main
@@ -310,6 +319,7 @@ export async function libraryPages(gh: GitHub): Promise<LibrarySeen[]> {
         ...(project && topic === inboxTopic(project)
           ? { waiting: waitingItems(i.body ?? "", i.comments ?? 0) }
           : {}),
+        ...((i.labels ?? []).some((l) => l.name === GUEST_LABEL) ? { guest: true as const } : {}),
       };
     });
 }

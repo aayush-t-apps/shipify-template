@@ -62,6 +62,11 @@ export function forget(key: string) {
   memo.delete(key);
 }
 
+/** Every key that starts with `prefix`: a thread's reads, whatever their `since` or page. */
+export function forgetAll(prefix: string) {
+  for (const key of memo.keys()) if (key.startsWith(prefix)) memo.delete(key);
+}
+
 export function clearCaches() {
   memo.clear();
   last.clear();

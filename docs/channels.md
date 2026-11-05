@@ -196,8 +196,9 @@ Each step checks itself first: stop any time, run it again, and it carries on.
 
 A chat window of Shipify's own at `<the edge>/admin/chat/`, made for your phone first
 (ADR 0036). The edge's address alone opens it too. It sits behind the same Cloudflare
-Access sign-in as the status page (`/admin/status`): no users, no accounts. Whoever gets past that
-sign-in writes as you.
+Access sign-in as the status page (`/admin/status`): no accounts. Whoever gets past that sign-in
+writes as you. Guests you add come in at `<the edge>/guest/`, each in a space of their own
+([Guests](#guests), ADR 0071).
 
 **One screen** (ADR 0039): on a PC, your tasks and the open thread side by side, and a doc you open
 beside them (ADR 0065); on a phone one at a time, with **Desk, Projects, Files, Library and Setup**
@@ -212,24 +213,61 @@ new phone or PC shows the same at once, and on a phone it reads the list again o
 page's checks while it's on screen. The tabs keep the app's own history: Back never leaves the
 app.
 
-**What the first screen loads** (ADR 0069): the page with the Desk, 42 KB at most as sent. The
+**One window** (ADR 0071): everything you need opens here, on a phone too, and GitHub stays the
+record behind it. You look in three places: the list, a project's screen, and the pane beside the
+chat, where a doc or a file opens.
+- **Links stay inside.** In a message, a doc or a Progress, a link to an issue or PR on your
+  shipify repo (a chat, a project, a doc; `#664` too) opens it here, not in a new tab. A link to a
+  file on `shipify-files` opens its kept copy in the pane when the message names that file. Every
+  other link opens a new tab.
+- **A reply's files** show as chips under it, as yours do, and open in the pane. A chip whose kept
+  copy has gone (30 days after its chat closed, or Deleted) says **Archived** and links its backup
+  on `shipify-files`; with no backup, **Gone**. A chat's header has a **Files** chip: its files,
+  newest first.
+- **Find,** beside New chat, opens the same dialog as Ctrl+K, on any device.
+
+**What the first screen loads** (ADR 0069): the page with the Desk, 43 KB at most as sent. The
 rest loads the first time it's used, each with its own budget: the Library (`library.js`), Find
 in this chat (`find.js`), diagrams (`draw.js`), a file's shrink and upload (`attach.js`), New
 project's form (`project.js`), and the styles of the model picker, Status & setup and New repeat
 (`pick.css`, `setup.css`, `repeat.css`). One that can't load says so.
 
 **Projects you make** (ADR 0069, `project.js`; the process: [knowledge.md](knowledge.md)):
-- **In the list,** projects come first, each folded with its chats, then repos, then General. The
-  first time a project's fold opens, it reads the project's thread once, for chats past the list's
-  page. A project never folds into Quiet.
-- **A project's page** is its thread with a card on top, shut till you open it (its line counts
-  the chats and pages): its main page's **Now**, then one next step (ADR 0070: worked out on the
-  edge from counts its Library read has, with no run or extra call: a chat waiting on you, 10 finds
-  or more in the Inbox, a first question, a first answer kept, a check while questions are open,
-  Close when every chat is done), its chats (open first), its pages (the Inbox among them), **New
-  chat here**, **Export** and **Collate the inbox**. Its own words start no run, so it never says "Starting…" under them. Its box never writes
-  in the project's thread: **Send** opens a new chat in it, **Add** puts a find in its Inbox (`add
-  <name>: …`, words and one file) with no run. A file dropped on the page lands in that box.
+- **In the list,** projects come first, under a **Projects** heading, each a card folded with its
+  chats indented under it; then, under **Chats**, repos, then General. Its open chats are the
+  list's (which has them all), so a chat closed since never stays under it. A project never folds
+  into Quiet. Under **Closed**, a closed project is its own first row, with its closed chats: an
+  open fold reads the project's thread for them each time Closed opens, and shows each once.
+  A group with nothing to show says so ("No open chats."), never shows empty.
+- **A project's screen** (ADR 0071) is four tabs under its header:
+  - **Overview:** its main page's **Now**, then one next step (ADR 0070: worked out on the edge
+    from counts its Library read has, with no run or extra call: a chat waiting on you, 10 finds or
+    more in the Inbox, a first question, a first answer kept, a check while questions are open,
+    Close when every chat is done), each chat waiting on you as a link, then **New chat here**,
+    **Add**, **Collate**, **Check the project** and **Export**, then the project's own thread.
+    **Collate** and **Check the project** each start a chat in the project, so what their run asks
+    waits in a chat, as any ask's does. When the project's own thread asks you something (a word
+    typed on it), the next step says so, and the box at the foot answers it until it's answered;
+    else Send opens a new chat in the project.
+  - **Close** closes the project's open chats too, as done: but one a run is on, or a repeat or an
+    errand keeps open, which the project's reply names. Writing on a chat opens it again.
+  - **Chats:** by state: needs you, working, open, quiet (no word for 7 days), closed.
+  - **Docs:** Overview, Sources and the Inbox (with how many finds wait), then its topic docs, each
+    by its short name ("Research", not "Notebook: health-project-research"), its size and when it
+    changed. Each opens in the pane.
+  - **Files:** every file of its chats and docs, newest first, each with its chat: Files' one read
+    (R2, kept a minute at the edge) kept to them, past the newest 500 too.
+
+  It reads what its thread reads, and Files once when that tab opens. Its own words start no run,
+  so it never says "Starting…" under them. Its box never writes in the project's thread: **Send**
+  opens a new chat in it, **Add** puts a find in its Inbox (`add <name>: …`, words and one file)
+  with no run. A file dropped on the page lands in that box.
+- **A doc** (a notebook or Library page) opens in the pane, rendered, with **Edit** and
+  **History** (GitHub's). Edit is plain Markdown; **Save** writes it through the door (`api/edit`)
+  under a `from` line that names you, so runs count the page as yours, and starts no run. A doc
+  that changed after you opened it isn't saved: "It changed. Copy your words, then reload." Your
+  words stay in the box. Over 60,000 characters is refused, and said. An Inbox shows its finds
+  under it, with their files. A link to a doc opens its thread with the doc in the pane.
 - **Move to project** is on the menu of every chat in no project. A chat moves once: one in a
   project already, or a split task's part, is told so (GitHub gives an issue one parent). The list
   and the chat's thread name its project from GitHub's link (one GraphQL call for all the moved
@@ -261,20 +299,22 @@ as **Change a repo** writes it); a task with none is **General**.
   project's page. **Ctrl+K** brings back a chat you had open (below), and so does Back. Tabs an
   older page kept in your browser are deleted the first time it loads.
 - **A repo's page** (`#/p/<repo>`): **New chat here**; its open tasks, its numbers (open, needs
-  you, working) and its app (up, failing or paused, from the watch's record); its docs: **In**
-  (what you sent on its tasks) and **Out** (what its runs made), as Files keeps them; and **Repo docs**, links to its spec, decisions (ADRs), changelog and README on GitHub
+  you, working; in one row on a phone) and its app (up, failing or paused, from the watch's
+  record). What's open is the list's, as the list shows it: never a chat kept in your browser,
+  which is as it was when you last opened it. Its docs: **In**
+  (what you sent on its tasks) and **Out** (what its runs made), as Files keeps them, one line when there are none; and **Repo docs**, links to its spec, decisions (ADRs), changelog and README on GitHub
   (Shipify's own: its tour, design, decisions, plans, roadmap and changelog). Those open on
   GitHub: the door App can't read a repo's files.
-- **The doc pane:** a file you open (from a thread, a project's page or Files) shows beside the
+- **The doc pane:** a doc, or a file you open (from a thread, a project's screen or Files), shows beside the
   thread on a PC, its width yours to drag (or the arrows on its edge), and the whole screen on a
   phone. Markdown is rendered (by GitHub, then cleaned, as a message is), a CSV is a table, other
   text is text, a picture is a picture (tap for full size), and a PDF shows in the browser's own
-  viewer; a browser with none (Chrome on a phone) offers **open it**, which the phone's viewer
-  takes. Only the first 200 KB shows; Download has all of it. **Ask about this** puts the file in
+  viewer; on a browser with none (Chrome on a phone), pdf.js shows its pages in the pane, so it
+  opens in the chat too. Only the first 200 KB shows; Download has all of it. **Ask about this** puts the file in
   your next message, here or in a new chat, as if you had attached it (a run's file too). ✕ or
   Back closes it; going to another task leaves it open.
-- **Ctrl+K** (⌘K) finds a project, a repo, a task or a doc by its name: the arrows move, Enter
-  opens. With nothing typed, it lists the chats you opened last, open ones only, newest first, then
+- **Ctrl+K** (⌘K), or **Find** beside New chat, finds a project, a repo, a task or a doc by its name: the arrows move, Enter
+  opens. With nothing typed, it lists the chats you opened last that the list has open, newest first, then
   the projects and repos. Its list ends with **Find by meaning** (ADR 0070): picked (or Enter when
   no name fits), the edge's `api/search` asks GitHub's hybrid issue search, with the door's token,
   for your chats, projects and pages by what they mean, and each query's answer is kept a minute.
@@ -408,14 +448,15 @@ as **Change a repo** writes it); a task with none is **General**.
   Every few hours, or Your words; then only what that needs (a day, a date, the hours, an optional
   window) and the time. It says back what will run ("Runs every Monday at 09:00 IST"), in the
   words the box reads.
-- **Library** (the Notebook): your notes, then "Journal and more" (Journal pages first), then a
-  group per project: its **Main page** first (or, for a project made before its main page came with it, a line saying none is written yet), then its
-  **Inbox**, whose items wait for "collate the inbox". Add sends `remember …`, Remove sends `forget …`; the page reads again after
-  each (a note a run writes, with no notebook page yet, shows once it's written).
-- **Files:** every file kept, newest first, by chat (a file with no chat under **No chat**), each
-  with its size and **Delete**, and the total at the top. A file opens here, never in a new tab: in
-  the doc pane (above). A thread's files open the same way. Drag one into a chat's box, or
-  **Share** it ("share this as a drop").
+- **Library** (the Notebook): what is no project's (ADR 0071). Your notes, then "Journal and more"
+  (Journal pages first), each opening in the pane, with Edit; then **Projects**, one line each,
+  which opens the project's Docs tab: a project's docs have one place. Add sends `remember …`,
+  Remove sends `forget …`; the page reads again after each (a note a run writes, with no notebook
+  page yet, shows once it's written).
+- **Files:** every file kept, newest first (the newest 500), by project, then by chat (files with no
+  chat last, under **No chat**), each with its size and **Delete**, and the total at the top. A file
+  opens here, never in a new tab: in the doc pane (above). A thread's files open the same way. Drag
+  one into a chat's box, or **Share** it ("share this as a drop").
 - **Back** has one rule: Tasks is under every page. A tab from Tasks is a step; from another page it
   takes that page's place. A thread, New chat and an open file each add one step, so Back closes
   them first.
@@ -479,7 +520,9 @@ edge's one Worker on Cloudflare's free plan, and GitHub is the record:
   Working line). Each carries an `ETag`, so an unchanged answer is a
   304 that costs none of them. A Markdown file opened in the doc pane is one more, once a file
   (GitHub renders it; the Worker keeps that a day).
-- **The Worker's memory:** each read for 5 seconds (the boxes for 30), so a burst asks once; and
+- **The Worker's memory:** each read for 4 seconds (the boxes for 30), so a burst asks once and
+  each 5-second poll while a run works reads GitHub, which shows a reply within 5 seconds; your
+  words on a task drop its thread's kept reads, so the read after **Send** shows them; and
   each message as the page shows it (its HTML cleaned), built once and again only when its
   comment is edited or a run reads it, so an open thread's refreshes stay well under the free
   plan's 10 ms of CPU. It's gone when the Worker restarts, and that loses nothing.
@@ -599,6 +642,65 @@ Each step checks itself first: run it again any time.
   edge. Its files go with their chats, by the weekly clean-up; **Files → Delete** removes one now.
 - **A change to `executors.json` or `tools.json`** shows in the chat after the edge's next deploy
   ([troubleshooting.md](troubleshooting.md#the-web-chat)).
+
+### Guests
+
+A guest is a person you let use the web chat, in a space of their own (ADR 0071): family who
+ask, research and get files, with nothing of yours in reach. Two roles only: you, and guests.
+Guests use the web chat alone (no Telegram, no GitHub).
+
+**Set up once, in Cloudflare's dashboard (a phone works):**
+
+1. **Zero Trust → Access → Applications → Add → Self-hosted.** Name: `shipify guests`. Domain:
+   your edge's host, path `guest/*`. Session: 24 hours.
+2. Its policy `guests`: **Allow**; Include **Everyone**; login method **One-time PIN** only.
+   Shipify's own guest list decides who gets in, so Everyone is safe: an email not on the list
+   signs in to Access and sees nothing. To keep strangers out of Access too, list each guest's
+   email here instead of Everyone; Shipify works the same.
+3. In Zero Trust's settings, turn on removing inactive users from seats (Access's free plan has
+   50 seats; a stranger who tries the sign-in takes one until it's freed).
+4. Copy the application's **Application Audience (AUD) tag** (its Overview) into shipify's
+   `SHIPIFY_ACCESS` variable as `"guests"`, beside your own: GitHub → shipify → **Settings →
+   Secrets and variables → Actions → Variables** (a phone works), so it reads
+   `{"team": "…", "aud": "<yours>", "guests": "<the guests' tag>"}`. Guests are on within a
+   minute, with no deploy. Remove the key to turn guests off.
+
+Your `/admin` application doesn't change: only your email gets in there. The web chat only adds
+and removes guests: which application their sign-in must come from is set on GitHub alone.
+
+**Then, each time: Setup → Guests → Add** (an email and a name), and send them the link it shows,
+`<the edge>/guest/`. They sign in with a code Access emails them. **Remove** is one tap: they're
+refused within 10 seconds, their open chats and projects close, and their files go 30 days later.
+Their chats stay on GitHub; added again, the same email finds them.
+
+**Check it:** sign in at `<the edge>/guest/` with a second email of yours that you added. You see
+their Desk with the **Guest** tag and an empty list, and `<the edge>/admin/chat` asks you to sign
+in again.
+
+**What a guest gets:** the same window, with their own **Desk** (the Guest tag, what needs them,
+what works, their projects, New project and Files) and **Desk, Projects and Files** as its pages,
+with no line about you on top. New chat, Find, their own projects (Overview,
+Sources, an Inbox, docs, Keep on page, collate, check, Export), their chats and their files; any of
+your agents and models (`use …`). No Jot, Library, Apps, Repeats, Setup, status page or run details.
+A run that stays after its answer (ADR 0057) answers a guest's next words as it does yours.
+Refused with one line, writing nothing: `remember`, `forget`, `jot`, `/tasks`, `/apps`, `/ping`,
+`/repos`, `/notebook`, `/recipes`, and every fixed word only you say: `yes <code>`, `no <code>`,
+`go` (`go #n`, `go.`), `publish`, `preview`, `start over`, `clean start`. A plain `yes` or `no`
+answers their own run. A repo's name in their words is only words: no clone, no PR.
+
+**What keeps your things yours:**
+- Each person sees only their own: the edge checks every read and write against the record (the
+  door's from-line naming the guest, their files' prefix), never against what the page sends.
+- Their runs hold no GitHub key, notebook or tool of yours, and get caches of their own. Your
+  login reaches their agent on a pipe, as for your runs, so no command finds it. Their commands'
+  environment holds nothing of yours: no login, people list, repo or Cloudflare values.
+- Their words approve nothing.
+- Their files stay in R2, never on `shipify-files`.
+
+**What to watch:** guests have no limits of their own. Their runs use your plan's 5-hour and
+weekly limits, as yours do (the **Your plan** line in a run's details). To stop a guest at once,
+remove them. Claude's consumer terms say an account is one person's: guests on your login are
+your choice (ADR 0071, Options).
 
 ## Adding another channel
 

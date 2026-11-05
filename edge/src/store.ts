@@ -1,11 +1,12 @@
 // The web chat's files in R2 (ADR 0069, section 16): one bucket, bound as BUCKET, each file under
 // its ref with its own metadata (its name, type, size, who made it, when, and its chat's number once
 // known). A file lives as long as its chat: the weekly clean-up deletes a closed chat's files through
-// the door's forget route (files.ts). R2 can't change an object's metadata alone, so a file that
-// gets its chat later is written again under the same key, and one a second chat uses is copied for
-// it. Plain web code: R2 is reached through the small shape in env.ts, so tests stand in for it.
+// the door's forget route (files.ts), and a file no chat used 60 days after it was made. R2 can't
+// change an object's metadata alone, so a file that gets its chat later is written again under the
+// same key, and one a second chat uses is copied for it. Plain web code: R2 is reached through the
+// small shape in env.ts, so tests stand in for it.
 import type { Bucket, Deps, Env, Kv } from "./env.ts";
-import { bucketOf, FILE_REF, kvOf, logOf } from "./env.ts";
+import { bucketOf, FILE_REF, fileRefOf, kvOf, logOf } from "./env.ts";
 
 /** What each file says about itself. */
 export interface FileMeta {
@@ -19,9 +20,11 @@ export interface FileMeta {
   task?: number;
 }
 
-/** A new file's ref: its time counted down, so R2's list (by key) gives the newest first. */
-export const newRef = (now: number) =>
-  `f-${String(Math.max(0, 1e13 - Math.floor(now))).padStart(13, "0")}-${crypto.randomUUID().replace(/-/g, "")}`;
+/**
+ * A new file's ref: its time counted down, so R2's list (by key) gives the newest first; a guest's
+ * starts with their prefix (ADR 0071).
+ */
+export const newRef = (now: number, guest?: string) => fileRefOf(now, guest);
 
 /** As R2 keeps metadata: strings. */
 const metaOut = (m: FileMeta): Record<string, string> => ({
@@ -104,10 +107,11 @@ async function each(bucket: Bucket, f: (ref: string, meta: FileMeta) => void) {
 }
 
 /**
- * The files kept, newest first (the most shown), with the count and bytes of all: R2 has no call
- * for a bucket's total, so it's counted as it lists.
+ * Every file kept, newest first, with the count and bytes of all: R2 has no call for a bucket's
+ * total, so it's counted as it lists, 1,000 a call. The page is shown the newest of them, or a
+ * project's (ADR 0071: past the newest 500 too).
  */
-export async function listed(bucket: Bucket, most = 500) {
+export async function listed(bucket: Bucket) {
   const files: { ref: string; meta: FileMeta }[] = [];
   let bytes = 0;
   await each(bucket, (ref, meta) => {
@@ -115,7 +119,7 @@ export async function listed(bucket: Bucket, most = 500) {
     bytes += meta.size;
   });
   files.sort((a, b) => b.meta.at - a.meta.at);
-  return { files: files.slice(0, most), count: files.length, bytes };
+  return { files, count: files.length, bytes };
 }
 
 /**
@@ -134,10 +138,16 @@ export async function stamp(bucket: Bucket, ref: string, task: number) {
 }
 
 /** A copy of a file for another chat (or none yet), under a new ref: that ref, or undefined. */
-export async function copyFor(bucket: Bucket, ref: string, now: number, task?: number) {
+export async function copyFor(
+  bucket: Bucket,
+  ref: string,
+  now: number,
+  task?: number,
+  guest?: string,
+) {
   const f = await open(bucket, ref);
   if (!f) return undefined;
-  const to = newRef(now);
+  const to = newRef(now, guest);
   const { task: _was, ...meta } = f.meta;
   await put(bucket, to, f.body, { ...meta, at: now, ...(task ? { task } : {}) });
   return to;
@@ -148,22 +158,31 @@ export async function remove(bucket: Bucket, refs: string[]) {
   for (let i = 0; i < refs.length; i += 1000) await bucket.delete(refs.slice(i, i + 1000));
 }
 
+/** A file no chat used goes this many days after it was made. */
+const UNCLAIMED_DAYS = 60;
+
 /**
- * The weekly clean-up's step (ADR 0069, section 15): every file of these chats deleted, from one
- * listing. A file with no chat is kept. How many went, and their bytes.
+ * The weekly clean-up's step (ADR 0069, section 15), from one listing: every file of these chats
+ * deleted, and every file no chat used (yours or a guest's) made 60 days ago or more. One with no
+ * time of its own is kept: R2's list gives no upload time. How many of each went, and their bytes.
  */
-export async function forget(bucket: Bucket, chats: number[]) {
+export async function forget(bucket: Bucket, chats: number[], now: number) {
   const doomed = new Set(chats);
+  const old = now - UNCLAIMED_DAYS * 24 * 3600_000;
   const refs: string[] = [];
-  let bytes = 0;
+  const done = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0 };
   await each(bucket, (ref, meta) => {
     if (meta.task && doomed.has(meta.task)) {
-      refs.push(ref);
-      bytes += meta.size;
-    }
+      done.deleted++;
+      done.bytes += meta.size;
+    } else if (!meta.task && meta.at && meta.at <= old) {
+      done.unclaimed++;
+      done.unclaimedBytes += meta.size;
+    } else return;
+    refs.push(ref);
   });
   await remove(bucket, refs);
-  return { deleted: refs.length, bytes };
+  return done;
 }
 
 // ---------------------------------------------------------------- the switch from KV, once

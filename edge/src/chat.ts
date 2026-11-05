@@ -58,6 +58,9 @@ export const REPLY_TO = (task: number) => `Reply to #${task}…`;
 export const SET_FOR_NEXT = (pick: string, task: number) =>
   `From your next message: ${pick} · #${task}`;
 export const TURNED = (task: number, open: boolean) => `${open ? "Reopened" : "Closed"} · #${task}`;
+/** After TURNED, for a project reopened (ADR 0069): what stays as it was, and how to go on. */
+export const PROJECT_REOPENED =
+  ". Its chats stay closed: write on one (its Chats tab) to open it, or start a new chat in it.";
 /** A close or reopen GitHub took, whose note on the task it then didn't: done, and said truly. */
 export const TURNED_UNNOTED = (task: number, open: boolean) =>
   `${TURNED(task, open)}. Its note on the task couldn't be written (GitHub failed), so a run won't mention it: nothing else to do.`;
@@ -110,6 +113,11 @@ export const ALREADY = (task: number, open: boolean) =>
 export const writtenTo = (text: string) =>
   Number(/^(?:Got it|Reopened|Closed|Project [a-z0-9-]+ made) · #(\d+)/.exec(text)?.[1]) ||
   undefined;
+/** A guest's words on a chat that isn't theirs, or none (ADR 0071): the same, with no hint. */
+export const NOT_YOURS = "Not your chat: nothing was written. Open one of yours from the list.";
+/** What a guest may not say (ADR 0071): it's the person who invited them's to say. */
+export const ONLY_YOURS = (host: string) =>
+  `That's for ${host} only: nothing was written. Ask a question, or start a project.`;
 export const NO_SUCH_TASK = (task: number) =>
   `There's no task #${task} to carry on: nothing was written. Reply to one of my messages, or start with the right number.`;
 /** Why #n can't take your words: said at once, and nothing is written. */

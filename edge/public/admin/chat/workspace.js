@@ -3,7 +3,7 @@
 // project's page, the doc pane beside the thread, Files, and the quick switcher (Ctrl+K). It keeps
 // nothing but the pane's width, in the browser, with the rest. A project has no tab row (ADR 0069):
 // its name in a thread's header goes to its page, and Ctrl+K opens on the chats seen last.
-import { $, h, icon, set, size, unfile } from "./compose.js";
+import { $, api, h, icon, set, size, unfile } from "./compose.js";
 
 /** What the page lends it (app.js `ws`): its state and a few of its helpers. @type {any} */
 let A;
@@ -32,16 +32,36 @@ export function init(a) {
 
 // ---------------------------------------------------------------- what the page knows
 
-/** Every task the page has: the list, its older and closed pages, then the threads kept. */
+/**
+ * Every task the page has: the list, its older and closed pages, then the threads kept here, with
+ * no state: a kept one's is as last read (a chat closed since said Needs you).
+ */
 function known() {
   const R = A.R;
   const all = [...(A.S.list?.tasks || []), ...(R.old?.tasks || []), ...(R.closed?.tasks || [])];
-  for (const t of Object.values(A.S.threads)) all.push(t.task);
+  for (const t of Object.values(A.S.threads)) all.push({ ...t.task, state: "", staying: 0 });
   const seen = new Set();
   return all.filter((t) => t?.title && !seen.has(t.n) && seen.add(t.n));
 }
-/** A task's mark: the list's run first, then its state. */
-const mark = (t) => (A.runs().has(t?.n) ? "working" : t?.staying ? "staying" : t?.state || "open");
+/** Open now, as the list has them (all of yours), your close or reopen at once (app.js `moved`). */
+function opened() {
+  const T = A.R.turned;
+  return A.join(A.S.list?.tasks || [], A.R.old?.tasks || [])
+    .filter((t) => !T[t.n] && t.state !== "closed")
+    .concat(Object.values(T).flatMap((v) => (v.open ? [v.t] : [])));
+}
+/** Your projects and their docs (ADR 0069): the Library's read, once a page, untagged (no 304). */
+export function index() {
+  const R = A.R;
+  if (!A.GUEST && !R.ix)
+    R.ix = A.get("notebook", undefined, true, "").then(
+      (d) => (R.nb = d || R.notebook || {}),
+      () => (R.ix = 0),
+    );
+  return R.ix || Promise.resolve();
+}
+/** A task's mark: the list's run first, then its state (none for a thread kept here). */
+const mark = (t) => (A.runs().has(t?.n) ? "working" : t?.staying ? "staying" : t?.state);
 const name = (P) => A.named(P);
 const ago = (t) => (A.ago(t) === "now" ? "now" : `${A.ago(t)} ago`);
 
@@ -149,18 +169,19 @@ export function project(P) {
   A.R.page.ws = 1;
 }
 
+/** Its open chats: the list's (`opened`). Its files: those of each of its chats the page knows. */
 function overview(P, d) {
-  const all = known();
-  const mine = all.filter((t) => A.projOf(t) === P);
-  const open = mine.filter((t) => t.state !== "closed");
+  const mine = known().filter((t) => A.projOf(t) === P);
+  const open = opened().filter((t) => A.projOf(t) === P);
   const nums = new Set(mine.map((t) => t.n));
   const files = d.files.filter((f) => nums.has(f.task));
   const app = A.S.menu?.apps?.find((a) => a.id === P);
   const n = (f) => open.filter(f).length;
   const need = n((t) => t.state === "needs-you");
   const tile = (l, v, c = "") => h(`div.tile${c}`, h("small", l), h("b", `${v}`));
+  // In one row, a phone's too (workspace.css).
   const now = h(
-    "div.strip",
+    "div.strip.counts",
     tile("Open", open.length),
     tile("Needs you", need, need ? ".need" : ""),
     tile(
@@ -180,34 +201,32 @@ function overview(P, d) {
     A.what(A.to(t.n, A.bare(t.title)), A.meta(WORD[mark(t)], `#${t.n}`, ago(t.updated))),
   ];
   const sorted = open.sort((a, b) => Date.parse(b.updated) - Date.parse(a.updated));
+  const kind = (by, l, s) =>
+    h(
+      "section",
+      h("h4", l, h("small", s)),
+      docs(
+        files.filter((f) => f.by === by),
+        "Nothing yet.",
+      ),
+    );
   return [
     now,
     h("h3", "Chats"),
     A.list(sorted, chat, "No open chats here: start one."),
     h("h3", "Docs"),
-    h(
-      "section",
-      h("h4", "In", h("small", "what you sent")),
-      docs(
-        files.filter((f) => f.by === "you"),
-        "Nothing yet.",
-      ),
-    ),
-    h(
-      "section",
-      h("h4", "Out", h("small", "what runs made")),
-      docs(
-        files.filter((f) => f.by === "run"),
-        "Nothing yet.",
-      ),
-    ),
+    // None yet: one line, not an empty In and Out.
+    files.length
+      ? [kind("you", "In", "what you sent"), kind("run", "Out", "what runs made")]
+      : h("p.quiet", "None yet: what you send in its chats, and what runs make, shows here."),
     repoDocs(P),
   ];
 }
 
 /**
- * Files (ADR 0069): what you sent and runs made, kept as long as their chat, by chat, the newest
- * first; the total at the top. One with no chat (a draft's, or from before) is under No chat.
+ * Files (ADR 0069, ADR 0071): what you sent and runs made, kept as long as their chat, by project
+ * (a project's name opens its screen), then by chat, the newest first; the total at the top. One
+ * with no chat (a draft's, or from before) is last, under No chat.
  */
 export function files() {
   A.page(
@@ -215,19 +234,48 @@ export function files() {
     "files",
     (d) => {
       const all = known();
+      const at = (n) => all.find((x) => x.n === n);
+      // A chat's project: the index's first, open or closed as it is now (a project, a chat under
+      // it, or one of its docs: an Inbox's finds); else its own, or the one it's in (the edge says).
+      const nb = A.R.nb || {};
+      const doc = (n) => nb.library?.find((g) => g.n === n)?.project;
+      const mine = (t) =>
+        t?.project && { n: t.n, name: t.project.name, open: t.state !== "closed" };
+      const pj = (n, t = at(n), up = t?.parent || d.parents?.[n]) =>
+        nb.projects?.find((x) => x.n === n || x.n === up || x.name === doc(n)) ||
+        mine(t) ||
+        mine(at(up));
+      const ps = new Map();
       const by = new Map();
-      for (const f of d.files.sort(byAt)) by.set(f.task || 0, [...(by.get(f.task || 0) || []), f]);
+      for (const f of d.files.sort(byAt)) {
+        const o = f.task && pj(f.task);
+        if (o) ps.set(o.n, o);
+        const p = f.task ? o?.n || 0 : -1;
+        const g = by.get(p) || new Map();
+        by.set(p, g.set(f.task || 0, [...(g.get(f.task || 0) || []), f]));
+      }
       if (!by.size) return h("p.quiet", "No files yet: what you send in a chat shows here.");
-      const head = (n, t = all.find((x) => x.n === n)) =>
-        h("h3", n ? A.to(n, t ? `#${n} ${A.bare(t.title)}` : `#${n}`) : "No chat");
+      const head = (n, t = at(n)) =>
+        h("h4", n ? A.to(n, t ? `#${n} ${A.bare(t.title)}` : `#${n}`) : "No chat");
+      // Projects by name, then chats in no project, then files in no chat.
+      const order = (p) => (p > 0 ? ps.get(p).name : p ? "￿" : "￾");
       return [
         h("p.quiet", `${d.count} ${d.count === 1 ? "file" : "files"} · ${size(d.bytes)} in all`),
-        [...by].map(([n, l]) => [head(n), docs(l, "")]),
+        [...by]
+          .sort(([a], [b]) => (order(a) < order(b) ? -1 : 1))
+          .map(([p, g]) => [
+            p > 0 && h("h3", A.to(p, `${ps.get(p).name}${ps.get(p).open ? "" : " · closed"}`)),
+            [...g].map(([n, l]) => [head(n), docs(l, "")]),
+          ]),
       ];
     },
     top,
   );
-  A.R.page.ws = 1;
+  const pg = A.R.page;
+  pg.ws = 1;
+  // Drawn again once the index is in.
+  if (!A.R.nb)
+    index().then(() => pg.body.isConnected && A.R.files && set(pg.body, pg.draw(A.R.files)));
 }
 
 /**
@@ -309,16 +357,28 @@ const shown = (d) => [
   d.cut && h("p.hint", "Only its start shows here: Download has all of it."),
 ];
 
-/**
- * A file beside the thread (on a phone, the whole screen): a picture, a PDF in the browser's own
- * viewer, Markdown, a CSV or text read through the edge, else Download. Ask about this puts it in
- * your next message.
- */
-export async function doc(f) {
-  const pane = $("#doc");
-  const ref = /^api\/file\/([\w-]+)$/.exec(f.src || "")?.[1];
+/** The pane, open with these in its head and body; a step in the history, as a thread is. */
+function pane(head, body) {
+  const p = $("#doc");
   const x = A.btn(icon("x"), close, ".icon");
   x.ariaLabel = x.title = "Close";
+  head.append(x);
+  set(p, grip(), head, body);
+  p.hidden = false;
+  document.body.classList.add("doc");
+  if (!history.state?.doc) {
+    history.pushState({ doc: 1 }, "");
+    at = location.href;
+  }
+}
+
+/**
+ * A file beside the thread (on a phone, the whole screen): a picture, a PDF in the browser's own
+ * viewer (or pdf.js's, `pdfIn`), Markdown, a CSV or text read through the edge, else Download. Ask about this puts it in
+ * your next message. Its kept copy gone (ADR 0071): Archived, its chip (`chip`) too.
+ */
+export async function doc(f, chip) {
+  const ref = /^api\/file\/([\w-]+)$/.exec(f.src || "")?.[1];
   const dl =
     f.src &&
     h(
@@ -341,36 +401,108 @@ export async function doc(f) {
     ask,
     share,
     dl,
-    x,
   );
-  set(pane, grip(), head, body);
-  pane.hidden = false;
-  document.body.classList.add("doc");
-  if (!history.state?.doc) {
-    history.pushState({ doc: 1 }, "");
-    at = location.href;
-  }
+  pane(head, body);
   const pdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name);
+  // What the edge has of it (not for a picture, which shows from itself): gone is a 404 or 410.
+  const d = ref && !IMG.test(f.type || "") && (await api(`doc/${ref}`).catch((e) => e));
   let c;
-  if (IMG.test(f.type || "")) {
+  if (d?.status === 404 || d?.status === 410) {
+    A.R.gone[f.src] = 1;
+    chip?.replaceWith(A.lost(f));
+    c = h(
+      "p.quiet",
+      "Archived: its copy here has gone. ",
+      f.backup ? A.ext(f.backup, "Open its backup") : "Ask the chat for it again.",
+    );
+  } else if (IMG.test(f.type || "")) {
     const i = h("img.pic", { src: f.src, alt: f.name });
     i.onclick = () => A.view(h("img", { src: f.src, alt: f.name }));
     c = i;
   } else if (pdf && ref)
-    // A browser with no PDF viewer of its own (Chrome on a phone) opens it with the phone's.
+    // A browser with no PDF viewer of its own (Chrome on a phone): pdf.js draws it in /pdf/.
     c = navigator.pdfViewerEnabled
       ? h("iframe.pdf", { src: `${f.src}?view=1`, title: f.name })
-      : h(
-          "p.quiet",
-          "This browser shows a PDF on its own: ",
-          h("a", { href: `${f.src}?view=1`, target: "_blank", rel: "noopener" }, "open it"),
-        );
+      : pdfIn(f);
   else if (ref) {
-    const d = (await A.get(`doc/${ref}`).catch(() => 0)) || DOCS[ref];
-    if (d) DOCS[ref] = d;
-    c = d ? shown(d) : h("p.quiet", "It couldn't be read just now: Download it, or try again.");
+    const r = (!(d instanceof Error) && d) || DOCS[ref];
+    if (r) DOCS[ref] = r;
+    c = r ? shown(r) : h("p.quiet", "It couldn't be read just now: Download it, or try again.");
   } else c = h("p.quiet", "This file opens in the chat it came from: Download it.");
   if (body.isConnected) set(body, c);
+}
+
+/**
+ * A PDF in /pdf/, a sandboxed frame (no same-origin: pdf.js never runs here), for a browser with
+ * no PDF viewer of its own. Once it's ready, it gets the file's bytes; one it can't show says so.
+ */
+function pdfIn(f) {
+  const fr = h("iframe.pdf", { src: "/pdf/", sandbox: "allow-scripts", title: f.name });
+  const failed = () =>
+    fr.isConnected && fr.replaceWith(h("p.quiet", "It couldn't be shown here: Download it."));
+  fr.said = async (what) => {
+    if (what !== "ready") return what === "failed" && failed();
+    const b = await fetch(f.src)
+      .then((r) => (r.ok ? r.arrayBuffer() : 0))
+      .catch(() => 0);
+    if (!b) return failed();
+    fr.contentWindow?.postMessage({ pdf: b }, "*", [b]);
+  };
+  return fr;
+}
+addEventListener("message", (e) => {
+  const fr = [...document.querySelectorAll("iframe.pdf")].find((x) => x.contentWindow === e.source);
+  if (fr?.said && typeof e.data?.pdf === "string") fr.said(e.data.pdf);
+});
+
+/**
+ * A doc in the pane (ADR 0071): its words as GitHub renders them, **Edit** (plain Markdown) and
+ * **History** (GitHub's). Save sends when it changed as you read it: one changed since is refused,
+ * your words left in the box. An Inbox shows its finds under it, with their files.
+ */
+export async function page(n) {
+  const body = h("div.dbody", h("div.ph"));
+  const title = h("h2", `#${n}`);
+  const tools = h("span.dtools");
+  pane(h("header.head", h("div.title", title), tools), body);
+  const t = await A.get(`task/${n}`, undefined, false, "").catch(() => 0);
+  if (!body.isConnected) return;
+  if (!t) return set(body, h("p.quiet", "It couldn't be read just now: try again."));
+  const T = t.task;
+  const [own, ...finds] = t.messages.filter((x) => !x.tap);
+  title.textContent = T.doc?.name || A.bare(T.title);
+  const md = (x) => Object.assign(h("div.md"), { innerHTML: x?.html || "" });
+  const chip = (f) => (f.src ? A.btn(f.name, () => doc(f), ".chip") : A.lost(f));
+  const find = (x) => h("article.msg", md(x), x.files.map(chip));
+  const read = () => set(body, md(own), finds.length > 0 && [h("h3", "Finds"), finds.map(find)]);
+  const ta = h("textarea.edit", { "aria-label": "Its words, in Markdown" });
+  const o = A.out();
+  const save = async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    const s = await A.get("edit", { n, words: ta.value, updated: T.doc.updated }).catch((x) => {
+      o.textContent = `${x.message.replace(/\.$/, "")}: ${x.fix}`;
+    });
+    b.disabled = false;
+    if (s) page(n);
+  };
+  const edit = () => {
+    ta.value = own?.md || "";
+    set(body, ta, h("p.links", A.btn("Save", save, ".primary"), A.btn("Cancel", read, ".btn")), o);
+    ta.focus();
+  };
+  // Download keeps its words on this device, as Markdown (a guest's too). A doc's history is on
+  // GitHub, which a guest can't open (ADR 0071).
+  const name = `${(title.textContent || `doc-${n}`).replace(/[^\w.-]+/g, "-")}.md`;
+  const dl = A.btn(icon("save"), () => A.save(name, own?.md || ""), ".icon");
+  dl.ariaLabel = dl.title = "Download";
+  set(
+    tools,
+    own && dl,
+    T.doc && A.btn("Edit", edit, ".btn"),
+    !A.GUEST && A.ext(T.url, "History", ".btn"),
+  );
+  read();
 }
 
 // ---------------------------------------------------------------- Ctrl+K
@@ -397,10 +529,13 @@ export function quick() {
     const ps = [...new Set(["shipify", ...tasks.map((t) => A.projOf(t)).filter(Boolean)])];
     // A repo is a repo; "project" is one you made (ADR 0070).
     const projects = ps.map((p) => ({ k: "code", t: name(p), s: "Repo", go: `#/p/${enc(p)}` }));
-    // Projects you made (ADR 0069) go to their own page.
+    // Projects you made (ADR 0069) go to their own page: the index's, the closed ones marked.
+    const ix = A.R.nb?.projects || [];
+    const pj = (n, t, open) =>
+      projects.unshift({ k: "app", t, s: open ? "Project" : "Project · closed", go: `#/t/${n}` });
     for (const t of tasks)
-      if (t.project)
-        projects.unshift({ k: "app", t: t.project.name, s: "Project", go: `#/t/${t.n}` });
+      if (t.project && !ix.some((x) => x.n === t.n)) pj(t.n, t.project.name, 1);
+    for (const x of ix) pj(x.n, x.name, x.open);
     const chat = (t) => ({
       k: "chat",
       t: A.bare(t.title),
@@ -410,8 +545,9 @@ export function quick() {
     // Nothing typed: the chats seen last (the one on screen aside), open ones only, newest first;
     // then the projects.
     if (!w) {
-      const last = A.S.seen.map((n) => tasks.find((t) => t.n === n));
-      const open = last.filter((t) => t && t.state !== "closed" && location.hash !== `#/t/${t.n}`);
+      const on = opened();
+      const last = A.S.seen.map((n) => on.find((t) => t.n === n));
+      const open = last.filter((t) => t && location.hash !== `#/t/${t.n}`);
       return [...open.reverse().map(chat), ...projects];
     }
     return [
@@ -454,7 +590,7 @@ export function quick() {
             : r.words
               ? "By words: search by meaning is busy, so try again in a minute. "
               : !hits.length && "Nothing found. ",
-          A.ext(`${repoOf("shipify")}/issues?q=${enc(w)}`, "Search on GitHub"),
+          !A.GUEST && A.ext(`${repoOf("shipify")}/issues?q=${enc(w)}`, "Search on GitHub"),
         ),
       );
   };
@@ -489,6 +625,7 @@ export function quick() {
   };
   draw();
   d.showModal();
+  if (!A.R.nb) index().then(() => d.open && draw());
   // Docs come from Files' read (kept 60 s at the edge), once a page.
   if (A.R.files) return;
   A.get("files", undefined, true).then((x) => {

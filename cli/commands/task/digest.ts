@@ -5,8 +5,10 @@
 // (ADR 0070). Nothing in it acts.
 
 import { inboxTopic, NEEDS_YOU_LABEL, projectNameOf, waitingItems } from "../../contracts/index.ts";
+import type { AgentNews } from "../../lib/agent-install.ts";
 import type { TaskRecord } from "../../lib/plugins/record.ts";
 import { nextRun, parseSchedule } from "../../lib/repeat.ts";
+import { megabytes } from "./sweep.ts";
 
 export const DIGEST_EVERY = "every monday at 9:00";
 
@@ -42,6 +44,10 @@ export interface DigestFacts {
   skills?: SkillsWeek;
   /** Each open project you made with something to say (ADR 0070), as `projectsWeek` counts it. */
   projects?: ProjectWeek[];
+  /** What the last clean-up's steps deleted, or why they failed (ADR 0069), from the record. */
+  files?: { deleted: number; bytes: number; unclaimed: number; failed?: string };
+  /** The agents' pins beside their newest and advisories (task #673); null: a read didn't answer. */
+  agents?: AgentNews[] | null;
 }
 
 /** A project's week (ADR 0070): its Inbox's items to collate, its chats waiting on you, and its
@@ -139,6 +145,27 @@ function skillLines(s?: SkillsWeek): string[] {
   return [`- **Skills:** ${used}${idle}`];
 }
 
+/**
+ * The agents (task #673): an advisory against a pin first, as its own line, then the pins behind
+ * their newest, in one. A version moves only in a PR checked live (docs/agents.md).
+ */
+function agentLines(a?: AgentNews[] | null): string[] {
+  if (a === undefined) return [];
+  if (a === null) return ["- **Agents:** their newest versions couldn't be read this week"];
+  const behind = a.flatMap((x) => (x.newer ? [`${x.id} ${x.pinned} → ${x.newer}`] : []));
+  return [
+    ...a
+      .filter((x) => x.advisories.length)
+      .map(
+        (x) =>
+          `- **Advisory:** ${x.id} ${x.pinned}: ${list(x.advisories.map((v) => `${v.title} (${v.severity}${v.url ? `, ${v.url}` : ""})`))}. Take a fixed version soon (docs/agents.md, "A new version")`,
+      ),
+    ...(behind.length
+      ? [`- **Agents behind:** ${list(behind)} (each moves in a PR checked live: docs/agents.md)`]
+      : []),
+  ];
+}
+
 /** The message, short: what runs, what waits on you, what's due, and "all clear" when nothing is. */
 export function digestText(f: DigestFacts, when: (iso: string) => string): string {
   const offline = f.boxes.filter((b) => !b.online).map((b) => b.name);
@@ -160,7 +187,13 @@ export function digestText(f: DigestFacts, when: (iso: string) => string): strin
     ...(f.keys.length
       ? [`- **Keys due:** ${list(f.keys.map((k) => `${k.name} on ${k.date} (${k.days} days)`))}`]
       : []),
+    ...agentLines(f.agents),
     ...skillLines(f.skills),
+    ...(f.files
+      ? [
+          `- **Files:** deleted ${f.files.deleted} (${megabytes(f.files.bytes)}) last week; ${f.files.unclaimed} with no chat; failed: ${f.files.failed ?? "none"}`,
+        ]
+      : []),
     ...(f.upcoming.count
       ? [
           `- **Coming up:** ${f.upcoming.count} repeat${f.upcoming.count === 1 ? "" : "s"}${f.upcoming.next ? `, the next ${when(f.upcoming.next)}` : ""}`,
@@ -168,6 +201,12 @@ export function digestText(f: DigestFacts, when: (iso: string) => string): strin
       : []),
   ];
   const clear =
-    !offline.length && !failing.length && !f.waiting.length && !behind.length && !f.keys.length;
+    !offline.length &&
+    !failing.length &&
+    !f.waiting.length &&
+    !behind.length &&
+    !f.keys.length &&
+    !f.files?.failed &&
+    !f.agents?.some((x) => x.advisories.length);
   return [`**This week${clear ? ": all clear" : ""}**`, "", ...lines].join("\n");
 }

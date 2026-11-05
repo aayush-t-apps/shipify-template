@@ -237,6 +237,20 @@ describe("writing your words as the door App", () => {
     expect(readFrom(f.w.comments[0]?.body ?? "")?.setting).toBeUndefined();
   });
 
+  it("writes a project's `close` as words too, so its run closes the project's open chats", async () => {
+    const f = world(k);
+    const project = f.issue({ title: "project: hacker", labels: ["project"] });
+    expect(await said(await post(f, update({ text: `#${project.number} close` })))).toBe(
+      `Closed · #${project.number}`,
+    );
+    expect(project.state).toBe("closed");
+    expect(readFrom(f.w.comments[0]?.body ?? "")?.setting).toBeUndefined();
+    // Reopened, it says what stays as it was: its chats, closed with it.
+    expect(await said(await post(f, update({ text: `#${project.number} reopen` })))).toBe(
+      `Reopened · #${project.number}. Its chats stay closed: write on one (its Chats tab) to open it, or start a new chat in it.`,
+    );
+  });
+
   it("says a task is already open or closed, and writes nothing: no run starts for it", async () => {
     const f = world(k);
     const task = f.issue({ title: "make it faster" });
@@ -304,18 +318,19 @@ describe("saved with no run: a project, an Inbox item, a Journal line (ADR 0069)
     );
   });
 
-  it("keeps the main page a closed project of that name left, rather than make a second", async () => {
+  it("a closed project keeps its name: `project:` and `add` with it write nothing, and say how to go on", async () => {
     const f = world(k);
-    f.issue({ title: "Project: shop", labels: ["project"], state: "closed" });
-    const old = f.issue({
-      title: "Notebook: shop",
-      body: "## Map",
-      labels: ["library", "project:shop"],
-    });
-    expect(await said(await post(f, update({ text: "project: shop" })))).toMatch(
-      `, its main page · #${old.number}.`,
+    const shop = f.issue({ title: "Project: shop", labels: ["project"], state: "closed" });
+    f.issue({ title: "Notebook: shop", body: "## Map", labels: ["library", "project:shop"] });
+    expect(await said(await post(f, update({ text: "project: shop" }, 71)))).toBe(
+      `The project shop was closed · #${shop.number}: Reopen it, or pick another name. Nothing was made.`,
     );
-    expect(f.w.issues.filter((i) => i.title === "Notebook: shop")).toHaveLength(1);
+    expect(await said(await post(f, update({ text: "add shop: a find" }, 72)))).toBe(
+      `shop is closed · #${shop.number}: Reopen it first. Nothing was written.`,
+    );
+    // No second project, no Inbox, no chat: the closed one stays as it was.
+    expect(f.w.issues).toHaveLength(2);
+    expect(f.w.comments).toEqual([]);
   });
 
   it("adds a find to a project's Inbox page as a comment, making the page once", async () => {
@@ -336,11 +351,10 @@ describe("saved with no run: a project, an Inbox item, a Journal line (ADR 0069)
     expect(readFrom(items[0]?.body)?.person).toBe("owner");
   });
 
-  it("opens a task from `add <word>: …` when no open project has that name: your words, as any", async () => {
+  it("opens a task from `add <word>: …` when no project has that name: your words, as any", async () => {
     const f = world(k);
-    f.issue({ title: "Project: docs", labels: ["project"], state: "closed" });
     const long = `add ${"a".repeat(40)}: a name no project can have`;
-    for (const text of ["Add tests: for the login page", "add docs: a closed project's", long]) {
+    for (const text of ["Add tests: for the login page", "add docs: the API's", long]) {
       const res = await post(f, update({ text }));
       // As any new words: a task, its title your words, your model said; nothing is lost.
       expect(await said(res)).toBe(

@@ -1925,6 +1925,64 @@ describe("the weekly digest (ADR 0053)", () => {
     expect(digestText(base, (i) => i)).not.toContain("Projects");
   });
 
+  it("says what the last clean-up deleted, or why it failed (ADR 0069)", () => {
+    const base = { boxes: [], apps: [], waiting: [], upcoming: { count: 0 }, keys: [] };
+    const files = { deleted: 5, bytes: 3_000_000, unclaimed: 2 };
+    const fine = digestText({ ...base, files }, (i) => i);
+    expect(fine).toContain("- **Files:** deleted 5 (3 MB) last week; 2 with no chat; failed: none");
+    expect(fine).toMatch(/all clear/);
+    const failed = digestText(
+      { ...base, files: { ...files, failed: "the door didn't take the files" } },
+      (i) => i,
+    );
+    expect(failed).toContain("; failed: the door didn't take the files");
+    expect(failed).not.toMatch(/all clear/);
+  });
+
+  it("says the agents behind their newest, an advisory against a pin first, and never installs one (task #673)", async () => {
+    const { agentNews } = await import("../cli/lib/agent-install.ts");
+    const { loadExecutors } = await import("../cli/lib/agents.ts");
+    const all = loadExecutors(join(ROOT, "executors.json"));
+    // Each agent the box installs says where to look; its gateway variants are the same pin.
+    const pinned = all.claude?.install?.version ?? "";
+    const asked: string[] = [];
+    const reads = (async (url: string | URL | Request) => {
+      const u = String(url);
+      asked.push(u);
+      if (u.includes("/advisories?"))
+        return Response.json(
+          u.includes("opencode")
+            ? [
+                { summary: "Path traversal", severity: "high", html_url: "https://x/GHSA-1" },
+                { summary: "A mistake", severity: "low", html_url: "", withdrawn_at: "2026-11-01" },
+              ]
+            : [],
+        );
+      return Response.json({ version: u.includes("claude-code") ? "99.0.0" : "0.0.1" });
+    }) as typeof fetch;
+    const news = (await agentNews(all, reads)) ?? [];
+    expect(news.map((x) => x.id).sort()).toEqual(["claude", "opencode", "pi"]);
+    // Two reads an agent, the advisories' at its pinned version.
+    expect(asked).toHaveLength(6);
+    expect(asked).toContainEqual(expect.stringContaining(`claude-code%40${pinned}&`));
+    const base = { boxes: [], apps: [], waiting: [], upcoming: { count: 0 }, keys: [] };
+    const text = digestText({ ...base, agents: news }, (i) => i);
+    expect(text).toContain(`- **Agents behind:** claude ${pinned} → 99.0.0 (`);
+    // A withdrawn advisory isn't said.
+    expect(text).not.toContain("A mistake");
+    expect(text).toMatch(
+      /- \*\*Advisory:\*\* opencode [\d.]+: Path traversal \(high, https:\/\/x\/GHSA-1\)/,
+    );
+    // An advisory is a fault; an agent behind its newest is only news.
+    expect(text).not.toContain("all clear");
+    const behind = news.map((x) => ({ ...x, advisories: [] }));
+    expect(digestText({ ...base, agents: behind }, (i) => i)).toMatch(/all clear/);
+    // A read that doesn't answer is said, never a quiet gap.
+    const down = (async () => new Response("", { status: 503 })) as typeof fetch;
+    expect(await agentNews(all, down)).toBeUndefined();
+    expect(digestText({ ...base, agents: null }, (i) => i)).toContain("couldn't be read");
+  });
+
   it("counts the week's skills from run rows, and names those none loaded", () => {
     const at = new Date("2026-10-19T03:30:00Z");
     const rows = [

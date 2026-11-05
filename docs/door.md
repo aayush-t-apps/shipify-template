@@ -91,8 +91,8 @@ one gets no answer.
 
   | You send | It writes |
   |---|---|
-  | `project: games` (a line after the name, or lines below, are its brief; `repos: a, b` after the name names its repos) | a new issue `Project: games`, labelled `project`, its brief its body, and its main page `Notebook: games` (labelled `library` and `project:games`: the brief, then an empty `## Map`; one a closed project of that name left is kept). Said "Project games made · #40, its main page · #41"; no run starts (the box skips a project's opening). Already there: said, nothing written |
-  | `add games: <words>`, with a file too | a comment on the project's Inbox page `Notebook: games-inbox` (labelled `library` and `project:games`, made the first time). No open project of that name: they're words, and open a task as any do ("Add tests: …") |
+  | `project: games` (a line after the name, or lines below, are its brief; `repos: a, b` after the name names its repos) | a new issue `Project: games`, labelled `project`, its brief its body, and its main page `Notebook: games` (labelled `library` and `project:games`: the brief, then an empty `## Map`). Said "Project games made · #40, its main page · #41"; no run starts (the box skips a project's opening). Already there: said, nothing written. A closed project of that name: nothing written, "The project games was closed · #40: Reopen it, or pick another name." |
+  | `add games: <words>`, with a file too | a comment on the project's Inbox page `Notebook: games-inbox` (labelled `library` and `project:games`, made the first time). The project closed: nothing written, "games is closed · #40: Reopen it first." No project of that name: they're words, and open a task as any do ("Add tests: …") |
   | `jot: <words>` | a dated line (`- <words> (2026-11-02 13:40)`, in your time zone) on this month's Journal page, `Notebook: Journal 2026-11` (labelled `library`, made the first time) |
 
   Each write carries your hidden line, so the box trusts the page as yours; a Library page starts no
@@ -209,7 +209,7 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
   application's path doesn't cover `/admin`, the edge answers 403 itself, so it fails closed:
   change the path to `admin/*`.
 - **The page:** `edge/public/admin/chat/` (plain HTML, CSS and JS, `// @ts-check`, no libraries, no
-  build step, about 120 KB, 40 KB of its 42 KB budget compressed, its service worker apart),
+  build step, about 120 KB, 42.5 KB of its 43 KB budget compressed, its service worker apart),
   served as the Worker's static assets with `run_worker_first`, so every file is behind the same
   token check. Two parts load the first time they're needed, each with a budget of its own (ADR
   0065): `workspace.js` and `workspace.css` (a project's page, the doc pane, Files,
@@ -236,9 +236,9 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
   cleans again); a listing (the list, repeats, a PR's state) asks for the plain JSON, which has no
   rendering. Each carries an ETag (an unchanged read is a 304, with no quota) and is kept 5
   seconds in the edge; a message is cleaned once, and again only when its comment's edit time or
-  👀 count changes. Hidden lines never reach the page. The list is 50 open tasks and PRs,
-  with shipify's open PRs as **For review**; `list?closed=1` the closed ones, and `&page=` an older
-  50 of either. A task's model is its status comment's choice, or a `use` you said since. A thread is its newest 100
+  👀 count changes. Hidden lines never reach the page. The list is 100 open tasks and PRs (one
+  read, guests' chats left out, ADR 0071), with shipify's open PRs as **For review**;
+  `list?closed=1` the closed ones, and `&page=` an older 100 of either. A task's model is its status comment's choice, or a `use` you said since. A thread is its newest 100
   comments; `task/<n>?page=` reads an earlier page, for **Earlier messages**. A PR reads as a
   thread too, to review (the issues API has its description and comments; the door App has no
   Pull requests or Contents permission, so the diff is on GitHub).
@@ -246,6 +246,24 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
   the Worker, with no webhook: the person check, the closed door, commands, `#12`, dedupe and albums
   are the door's. The web adapter (`edge/src/channels/web.ts`) proves those calls with an HMAC of
   the door App's key, which only the Worker has, so `POST /door/web` from outside gets 401.
+- **Guests** (ADR 0071) come in at `<the edge>/guest/`: the same page and routes, behind a second
+  Access application (path `guest/*`, One-time PIN), whose audience (AUD) is `SHIPIFY_ACCESS`'s
+  `guests` key, set once on GitHub beside yours (no page can set it). The guest list is one
+  object in R2 (`_guests`), read at most every 10 s, so a removed guest is refused within 10 s. A guest is let in only when the token is the
+  guests' application's and its `email` is on the list (`guestAt`, `edge/src/guests.ts`); your
+  token at `/guest/`, or a guest's at `/admin/`, is refused. Every route says whose it is
+  (`WHOSE`, `edge/src/web/routes.ts`): a route with no rule answers 404 to everyone, and a route of
+  yours answers a guest 404 before anything is read. A guest's list reads by their label
+  (`issues?labels=guest:<id>`, never a search); a thread opens only when its opening line, written
+  by the door, names them (or the box wrote it with their label); a file only by their prefix
+  (`g3f9a2c-…`). The door takes a guest's words with the web channel's own proof and the guest's
+  id on the message: it writes their marks (labels `guest` and `guest:<id>`, `"guest"` on every
+  from-line), names their projects `g<6 hex>-<name>` on GitHub, answers "Not your chat" for a
+  task that isn't theirs or doesn't exist, and refuses, writing nothing, what only you say
+  (`remember`, `forget`, `jot`, `/tasks`, `/ping`, `/apps`, `/repos`, `/notebook`, `/recipes`,
+  and the fixed words of `NOT_A_GUESTS`, the box's list too: `yes <code>`, `no <code>`, `go`,
+  `publish`, `preview`, `start over`, `clean start`). `POST …/api/guests` (yours alone) adds
+  a guest, or removes one (their open chats close).
 - **Files** live in R2, the bucket `shipify-web-files` bound as `BUCKET` (the deploy creates it),
   one key a file (`f-<time counted down>-<id>`, so a list is newest first; older `up-…` and
   `run-…` refs still open), each with its chat's number, kept as long as the chat or its project
@@ -253,12 +271,14 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
   at most (inside Cloudflare's 100 MB a request). A file used in a second chat is copied for it;
   a copy no chat takes (the door refused the message, or it named no chat) is deleted at once. KV (`FILES`) keeps only your model and your devices. A run fetches one through
   `GET /door/file/web:<ref>`, 100 MB at most. **`POST /door/files/forget`** `{"chats": [n, …]}`
-  is the weekly clean-up's: it takes only watch.yml's OIDC token (task.yml's gets 403), deletes
-  those chats' files, and answers what it deleted. Only PNG, JPEG, GIF and
+  (500 at most; the box sends more in calls of 500) is the weekly clean-up's: it takes only
+  watch.yml's OIDC token (task.yml's gets 403), deletes those chats' files and every file no chat
+  used (yours or a guest's) made 60 days ago or more, and answers what it deleted:
+  `{deleted, bytes, unclaimed, unclaimedBytes}`. Only PNG, JPEG, GIF and
   WebP show inline; anything else, HTML and SVG too, downloads
   ([security.md](security.md#the-web-chat)). The doc pane (ADR 0065) reads one through
   `…/api/doc/<ref>`: Markdown rendered by GitHub (`POST /markdown`, once a file, kept a day in the
-  Worker) and cleaned, a CSV as rows, text as text; a PDF shows from `…/api/file/<ref>?view=1`. A file you sent on Telegram shows through
+  Worker) and cleaned, a CSV as rows, text as text; a PDF shows from `…/api/file/<ref>?view=1`, or in `/pdf/` (pdf.js, sandboxed) on a browser with no PDF viewer. A file you sent on Telegram shows through
   `…/api/sent/telegram:<id>`: the edge asks Telegram for it, as for a run, and keeps nothing; a
   picture shows inline only when its `from` line says it's one; with the door closed, none.
 - **The model picker and Status & setup** read `executors.json` and `tools.json`, built into the edge when it

@@ -105,7 +105,7 @@ walled off as its own user. Any free slot on any box takes the next task.
 | Where | How |
 |---|---|
 | **A Pi, a VPS, or this PC** | `pnpm ship box add [<user@host>]` |
-| **Any Ubuntu 24.04 machine** | `curl -fsSL https://github.com/aayush-t-apps/shipify-template/releases/latest/download/here.sh \| bash` |
+| **Any Ubuntu 26.04 or 24.04 machine** | `curl -fsSL https://github.com/aayush-t-apps/shipify-template/releases/latest/download/here.sh \| bash` |
 | **Anything that runs Docker** | `docker compose run --rm box register` once, then `docker compose up -d` ([compose.yml](compose.yml)) |
 
 The last two ask you to approve a GitHub code on your phone, then keep no login. Details, and

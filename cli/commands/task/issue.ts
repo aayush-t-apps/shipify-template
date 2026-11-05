@@ -1,5 +1,8 @@
 // The task's issue on the record (lib/plugins/record.ts): reading it, replying on it, its state
 // label, and the status comment that holds its state (ADR 0017).
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fitComment, platformRepo, postComment } from "../../lib/github.ts";
 import { ShipError } from "../../lib/output.ts";
 import { type RepeatState, repeatLine } from "../../lib/repeat.ts";
@@ -13,7 +16,7 @@ import {
   type TaskState,
 } from "../../lib/task.ts";
 import type { RecordWrite } from "../../lib/plugins/record.ts";
-import { type Issue, now, rec, runUrl, timeZone } from "./context.ts";
+import { boxCache, type Issue, now, rec, runUrl, timeZone } from "./context.ts";
 
 /** What the status comment needs of its issue: its number, and its labels. The run's snapshot
  * holds both (ADR 0051 B2), so no step re-reads the issue to save a status. */
@@ -34,15 +37,46 @@ export function reply(n: number, body: string): number {
 const commentUrl = (n: number, id: number) =>
   `https://github.com/${platformRepo()}/issues/${n}#issuecomment-${id}`;
 
+/**
+ * How long a box trusts its look at the state labels: a day. One deleted since comes back with the
+ * write that sets it (GitHub makes a label an issue is given), in GitHub's grey.
+ */
+export const LABELS_KEPT_MS = 24 * 3_600_000;
+
 let labelsReady = false;
-/** The state labels, created once (ADR 0051 B3): one read per run, and a create only for a
- * missing one, before the writes that set them go together. */
-const ensureLabels = () => {
+/**
+ * The state labels, created once (ADR 0051 B3): a create only for a missing one, before the writes
+ * that set them go together. One read a process; on a box, one a day, marked in the runner's own
+ * cache, so a run's plan, apply and stay read none (each read ~0.8 s from a Pi). The mark names the
+ * repo and the labels, so a new label of Shipify's is made at once.
+ */
+export function ensureLabels(keep = boxCache(), at = Date.now()) {
   if (labelsReady) return;
+  const sum = createHash("sha256")
+    .update(JSON.stringify([platformRepo(), TASK_LABELS]))
+    .digest("hex")
+    .slice(0, 16);
+  const mark = keep ? join(keep, `labels-${sum}`) : undefined;
+  const seen = mark && existsSync(mark) ? statSync(mark).mtimeMs : undefined;
+  if (seen !== undefined && seen <= at && at - seen < LABELS_KEPT_MS) {
+    labelsReady = true;
+    return;
+  }
   const record = rec();
   const have = new Set(record.labels());
   for (const l of Object.values(TASK_LABELS)) if (!have.has(l.name)) record.makeLabel(l);
   labelsReady = true;
+  if (mark && keep)
+    try {
+      mkdirSync(keep, { recursive: true });
+      writeFileSync(mark, "");
+      utimesSync(mark, at / 1000, at / 1000);
+    } catch {}
+}
+
+/** For tests: the next status save looks at the labels again, as a new process does. */
+export const forgetLabels = () => {
+  labelsReady = false;
 };
 
 export const LABEL_OF: Partial<Record<Phase, LabelKey>> = {

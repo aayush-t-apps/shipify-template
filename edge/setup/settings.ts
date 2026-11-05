@@ -99,9 +99,9 @@ const OWN: readonly Setting[] = [
   {
     name: "SHIPIFY_ACCESS",
     lives: ["variable"],
-    what: 'the status page\'s Access application: `{"team": "…", "aud": "…"}`, both public',
-    setBy: "`ship door page`",
-    readBy: "the status page and the web chat: the sign-in the edge checks",
+    what: 'the status page\'s Access application: `{"team": "…", "aud": "…"}`, and the guests\' (`"guests": "…"`, ADR 0071), all public',
+    setBy: "`ship door page`; you add `guests`",
+    readBy: "the status page, the web chat and `/guest/`: the sign-in the edge checks",
   },
   {
     name: "SHIPIFY_DOOR",

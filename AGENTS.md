@@ -48,6 +48,7 @@ Projects live in `../projects/<id>`, each its own repo with its own `AGENTS.md`.
 | what anyone can ask | `intents.json` (six intents, chat commands, fixed words) · `cli/kernel/words.ts` · `docs/tasks.md` |
 | the notebook | `docs/notebook.md` · `pnpm ship notebook` (on a box) · `remember: …` and `forget: …` (no agent, from any channel), or notes in a run's `result.json` · a repo's own notes: `remember <repo>: …`, read only by runs on that repo · `/notebook` · a way of working is a skill PR, not a note |
 | a project you make, its pages, Inbox and Journal (the Library) | `docs/knowledge.md` (the loop) · `project: <name>`, `add <name>: …`, `jot: …` (the door saves them, no agent: `edge/src/capture.ts`) · a run's `pages` and the Log (`cli/commands/task/notebook.ts`) · Keep on page and "check the project" (`cli/kernel/projects.ts`) · a project's next step and Find by meaning (`edge/src/web/reads.ts`) · `clean start` (`cli/kernel/decide.ts`, `cli/commands/task/sweep.ts`) · `skills/knowledge` · ADR 0069, ADR 0070 |
+| guests: someone you let use the web chat, in a space of their own | `docs/channels.md` ("Guests": the one-time Access setup, Setup → Guests) · the guests' door: `edge/src/guests.ts`, `edge/src/web/routes.ts` (`WHOSE`, each route's rule) · their runs: the `guest` profile (`docs/tasks.md`, `docs/security.md`) · the marks: `cli/contracts/guests.ts` · ADR 0071 |
 | the door, or a chat with no answer | `docs/door.md` · `pnpm ship door check` · `pnpm ship door setup` (show it, then `--yes`; `--new` for a new key) |
 | main moved under a branch | `pnpm ship refresh <p>` (merges main, redoes the version bump) |
 
@@ -68,6 +69,7 @@ start:
 | `security-and-hardening` | input, auth, secrets, anything exposed |
 | `notion` | a task that reads or changes the owner's Notion (`tools/notion`) |
 | `drop` | a task that shares files as a link, or changes the owner's drops (`tools/drop`) |
+| `pdf` | a run that makes a PDF: HTML printed by headless Chromium (`skills/pdf/pdf.mjs`) |
 | `knowledge` | a run in a project, a reply kept on its pages, a check of them, a collate of its Inbox, the Journal organized, a project's pages written (`docs/knowledge.md`) |
 | `plug-ins` | adding or changing any plug-in, through its contract and conformance test |
 | `new-project` | a `new: …` task: its plan's PR, then its build |

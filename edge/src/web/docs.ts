@@ -7,7 +7,7 @@ import { cached } from "../cache.ts";
 import type { Bucket, Deps, Env } from "../env.ts";
 import { FILE_REF } from "../env.ts";
 import { GitHubError, installationToken } from "../github.ts";
-import { clean } from "./clean.ts";
+import { clean, insideOf } from "./clean.ts";
 import { open } from "../store.ts";
 import { PICTURE, safeType } from "./files.ts";
 import type { Doc } from "./shapes.ts";
@@ -101,8 +101,16 @@ export function csvRows(text: string, most = MOST_ROWS) {
   return rows;
 }
 
-/** GitHub's rendering of Markdown, as a README's (no #12 links), cleaned for the page. */
-export async function render(env: Env, deps: Pick<Deps, "fetch" | "now">, text: string) {
+/**
+ * GitHub's rendering of Markdown, as a README's (no #12 links), cleaned for the page. With shipify's
+ * `repo`, as a comment's: #12 links, and its links to shipify's issues open in the window (ADR 0071).
+ */
+export async function render(
+  env: Env,
+  deps: Pick<Deps, "fetch" | "now">,
+  text: string,
+  repo?: string,
+) {
   const token = await installationToken(env, deps);
   const res = await deps.fetch("https://api.github.com/markdown", {
     method: "POST",
@@ -113,11 +121,11 @@ export async function render(env: Env, deps: Pick<Deps, "fetch" | "now">, text: 
       "user-agent": "shipify-edge",
       "x-github-api-version": "2022-11-28",
     },
-    body: JSON.stringify({ text, mode: "markdown" }),
+    body: JSON.stringify(repo ? { text, mode: "gfm", context: repo } : { text, mode: "markdown" }),
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) throw new GitHubError(res.status, "POST markdown");
-  return clean(await res.text()).html;
+  return clean(await res.text(), undefined, repo ? insideOf(repo) : undefined).html;
 }
 
 /**

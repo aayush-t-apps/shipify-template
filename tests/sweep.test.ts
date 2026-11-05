@@ -17,7 +17,7 @@ import {
   sweepOnce,
 } from "../cli/commands/task/sweep.ts";
 import type { SweepRead, SweptIssue } from "../cli/lib/plugins/record.ts";
-import { StatusIssueState } from "../cli/lib/status-issue.ts";
+import { StatusIssueState, setSwept } from "../cli/lib/status-issue.ts";
 
 const AT = new Date("2026-11-02T03:00:00.000Z");
 const issue = (number: number, over: Partial<SweptIssue> = {}): SweptIssue => ({
@@ -38,6 +38,8 @@ const inProject = (n: number, state: "open" | "closed" = "open") => ({
   parent: { number: n, state, labels: ["project"] },
 });
 const none: SweepRead = { closed: [], projects: [], quiet: [] };
+/** The door's answer when it deleted nothing. */
+const gone = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0 };
 const chat = (number: number, state: "open" | "closed" = "closed") => ({ number, state });
 
 describe("the weekly clean-up's files (ADR 0069)", () => {
@@ -85,21 +87,26 @@ describe("the weekly clean-up's files (ADR 0069)", () => {
       },
       forget: async (chats) => {
         sent.push(chats);
-        return { deleted: 9, bytes: 12_400_000 };
+        return { ...gone, deleted: 9, bytes: 12_400_000 };
       },
       close: async () => true,
     };
-    expect(await sweep(AT, io)).toBe("deleted 9 files (12 MB) of 4 closed chats");
+    expect(await sweep(AT, io)).toEqual({
+      said: "deleted 9 files (12 MB) of 4 closed chats",
+      deleted: 9,
+      bytes: 12_400_000,
+      unclaimed: 0,
+    });
     expect(asked).toEqual([
       {
         closedFrom: "2026-09-03",
         closedTo: "2026-10-03",
         // 30 quiet days (the owner's pick, 2026-11-02: "30 days or less also works"), not 90.
         quietBefore: "2026-10-03",
-        // What the 30-day close leaves open, left out of its search so they can't fill its 100.
+        // What the 30-day close leaves open, left out of its search so they can't fill its 100. A
+        // chat moved into a project (`in-project`) isn't: its project may be closed.
         quietWithout: [
           "project",
-          "in-project",
           "notebook",
           "library",
           "sub-task",
@@ -117,13 +124,70 @@ describe("the weekly clean-up's files (ADR 0069)", () => {
     ]);
     expect(sent).toEqual([[10, 70, 71, 80]]);
     // Chats with no files, or a second pass over the same ones: nothing deleted, and said so.
-    io.forget = async () => ({ deleted: 0, bytes: 0 });
-    expect(await sweep(AT, io)).toBe("no files to delete for 4 closed chats");
-    io.forget = async () => ({ deleted: 1, bytes: 2_400 });
-    expect(await sweep(AT, io)).toBe("deleted 1 file (3 KB) of 4 closed chats");
+    io.forget = async () => gone;
+    expect((await sweep(AT, io)).said).toBe("no files to delete for 4 closed chats");
+    io.forget = async () => ({ ...gone, deleted: 1, bytes: 2_400 });
+    expect((await sweep(AT, io)).said).toBe("deleted 1 file (3 KB) of 4 closed chats");
     // A door that doesn't answer: said, and the same chats come up next week (60-day window).
-    io.forget = async () => undefined;
-    expect(await sweep(AT, io)).toBe("the door didn't take the files of 4 closed chats: next week");
+    io.forget = async () => ({ ...gone, failed: true });
+    expect(await sweep(AT, io)).toEqual({
+      said: "the door didn't take the files of 4 closed chats: next week",
+      deleted: 0,
+      bytes: 0,
+      unclaimed: 0,
+      failed: "the door didn't take the files",
+    });
+  });
+
+  it("asks the door every week, with no closed chats too, and says the files no chat used it deleted", async () => {
+    const sent: number[][] = [];
+    const io: SweepIo = {
+      record: { sweep: () => none, projectItems: () => ({ chats: [], pages: [] }) },
+      forget: async (chats) => {
+        sent.push(chats);
+        return { ...gone, unclaimed: 2, unclaimedBytes: 1_200_000 };
+      },
+      close: async () => true,
+    };
+    expect(await sweep(AT, io)).toEqual({
+      said: "deleted 2 files no chat used (1 MB), 60 days old",
+      deleted: 2,
+      bytes: 1_200_000,
+      unclaimed: 2,
+    });
+    expect(sent).toEqual([[]]);
+    io.record.sweep = () => ({ ...none, closed: [issue(10), issue(11)] });
+    io.forget = async () => ({
+      deleted: 3,
+      bytes: 2_000_000,
+      unclaimed: 2,
+      unclaimedBytes: 1_000_000,
+    });
+    expect(await sweep(AT, io)).toEqual({
+      said: "deleted 3 files (2 MB) of 2 closed chats; 2 files no chat used (1 MB), 60 days old",
+      deleted: 5,
+      bytes: 3_000_000,
+      unclaimed: 2,
+    });
+  });
+
+  it("reads from 30 days before the last clean-up's start, so one missed for weeks catches up; 60 days at least", async () => {
+    const asked: string[] = [];
+    const io: SweepIo = {
+      record: {
+        sweep: (q) => {
+          asked.push(`${q.closedFrom}..${q.closedTo}`);
+          return none;
+        },
+        projectItems: () => ({ chats: [], pages: [] }),
+      },
+      forget: async () => gone,
+      close: async () => true,
+    };
+    await sweep(AT, io, "2026-08-01T03:00:00.000Z");
+    // A week ago: 60 days still, so a week the door didn't take is tried again.
+    await sweep(AT, io, "2026-10-26T03:00:00.000Z");
+    expect(asked).toEqual(["2026-07-02..2026-10-03", "2026-09-03..2026-10-03"]);
   });
 });
 
@@ -131,7 +195,10 @@ describe("the 30-day close (ADR 0069)", () => {
   const quiet = [
     issue(20),
     issue(21, inProject(50)),
-    issue(22, { labels: ["in-project"] }),
+    issue(22, { labels: ["in-project"], ...inProject(50) }),
+    // Left open under a closed project: a chat like any other.
+    issue(36, inProject(60, "closed")),
+    issue(37, { labels: ["in-project"], ...inProject(60, "closed") }),
     issue(23, { openPrs: 1 }),
     issue(24, { labels: ["repeats"] }),
     issue(25, { labels: ["waiting"] }),
@@ -147,27 +214,25 @@ describe("the 30-day close (ADR 0069)", () => {
     issue(34, { labels: ["needs you"] }),
   ];
 
-  it("closes only a chat in no project, with no open PR, repeat, errand or open part, of no special kind, and not waiting on you", () => {
-    expect(quietToClose({ ...none, quiet }).map((i) => i.number)).toEqual([20, 32]);
+  it("closes only a chat in no open project, with no open PR, repeat, errand or open part, of no special kind, and not waiting on you", () => {
+    expect(quietToClose({ ...none, quiet }).map((i) => i.number)).toEqual([20, 36, 37, 32]);
   });
 
   it("closes each one and says so in the clean-up's summary; one it couldn't is said too", async () => {
     const closed: [number, string][] = [];
     const io: SweepIo = {
       record: { sweep: () => ({ ...none, quiet }), projectItems: () => ({ chats: [], pages: [] }) },
-      forget: async () => undefined,
+      forget: async () => gone,
       close: async (i, at) => {
         closed.push([i.number, at]);
         return i.number !== 32;
       },
     };
-    expect(await sweep(AT, io)).toBe(
-      "closed 1 chat quiet for 30 days (#20); couldn't close 1 quiet chat (#32): next week",
+    expect((await sweep(AT, io)).said).toBe(
+      "closed 3 chats quiet for 30 days (#20, #36, #37); couldn't close 1 quiet chat (#32): next week",
     );
-    expect(closed).toEqual([
-      [20, AT.toISOString()],
-      [32, AT.toISOString()],
-    ]);
+    expect(closed.map(([n]) => n)).toEqual([20, 36, 37, 32]);
+    expect(closed[0]).toEqual([20, AT.toISOString()]);
     expect(QUIET_CLOSED).toBe("Closed after 30 quiet days: write on it to open it again");
   });
 
@@ -180,6 +245,8 @@ describe("the 30-day close (ADR 0069)", () => {
       },
     };
     expect(cleanable(record, 20, AT.toISOString())).toEqual([
+      { n: 36, title: "task 36", labels: [] },
+      { n: 37, title: "task 37", labels: ["in-project"] },
       { n: 32, title: "task 32", labels: ["answered", "bug"] },
       { n: 35, title: "task 35", labels: [], updatedAt: "2026-11-01T00:00:00Z" },
     ]);
@@ -202,7 +269,11 @@ describe("once a week in all, however many boxes (ADR 0069)", () => {
       },
     };
     let ran = 0;
-    const steps = async () => `ran ${++ran}`;
+    const lasts: (string | undefined)[] = [];
+    const steps = async (last?: string) => {
+      lasts.push(last);
+      return `ran ${++ran}`;
+    };
     expect(await sweepOnce(AT, store, steps)).toBe("ran 1");
     expect(record.watch.sweep).toBe(AT.toISOString());
     const later = new Date(AT.getTime() + 3600_000);
@@ -220,6 +291,21 @@ describe("once a week in all, however many boxes (ADR 0069)", () => {
     const week = new Date(AT.getTime() + 7 * 24 * 3600_000);
     expect(sweepDue(record.watch.sweep, week)).toBe(true);
     expect(await sweepOnce(week, store, steps)).toBe("ran 2");
+    // Each takes the last one's start, as it was before it wrote its own.
+    expect(lasts).toEqual([undefined, AT.toISOString()]);
+  });
+
+  it("the record keeps the last one's files and how many failed in a row; the second in a row alerts you, once, with the fix", () => {
+    const s = StatusIssueState.parse({ v: 2 });
+    const failed = { deleted: 0, bytes: 0, unclaimed: 0, failed: "the door didn't take the files" };
+    expect(setSwept(s, failed)).toBeUndefined();
+    expect(setSwept(s, failed)).toBe(
+      "The weekly clean-up failed twice: the door didn't take the files. Check the door: `pnpm ship door check`.",
+    );
+    expect(s.watch.swept).toEqual({ ...failed, failures: 2 });
+    expect(setSwept(s, failed)).toBeUndefined();
+    expect(setSwept(s, { deleted: 5, bytes: 3_000_000, unclaimed: 2 })).toBeUndefined();
+    expect(s.watch.swept).toEqual({ deleted: 5, bytes: 3_000_000, unclaimed: 2, failures: 0 });
   });
 
   it("a clean-up started a little short of a week after the last steps takes them: a schedule's jitter skips no week", () => {

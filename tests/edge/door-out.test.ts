@@ -189,7 +189,7 @@ describe("POST /door/replied", () => {
     expect((await call(f, tooMany)).status).toBe(413);
   });
 
-  it("takes up to 50 MB of files in all; the web chat keeps a copy in R2 with its chat", async () => {
+  it("takes up to 50 MB of files in all; the web chat's store keeps a copy with its chat", async () => {
     const f = world(k);
     f.w.variables.SHIPIFY_PEOPLE = JSON.stringify([
       { name: "owner", on: { github: "owner", web: "me" } },
@@ -213,6 +213,71 @@ describe("POST /door/replied", () => {
       ["phone.png", "run", String(task.number)],
       ["report.md", "run", String(task.number)],
     ]);
+  });
+
+  // The refs the box picked, as a reply's line names them (ADR 0071).
+  const PNG = `f-${"8".repeat(13)}-${"a".repeat(32)}`;
+  const MD = `f-${"8".repeat(13)}-${"b".repeat(32)}`;
+  const GUEST = "guest-ana-3f9a2c";
+  const GUEST_MD = `g3f9a2c-${"8".repeat(13)}-${"c".repeat(32)}`;
+  const named = (refs: [string, string][]) =>
+    refs.map(([name, ref]) => ({
+      name,
+      ref,
+      backup: `https://github.com/o/shipify/blob/x/${name}`,
+    }));
+
+  it("keeps every run file in R2 under the ref its reply's line names, whatever chat is in `to` (ADR 0071)", async () => {
+    const f = world(k);
+    const r2 = memoryR2();
+    const env = envFor(k, { BUCKET: r2.bucket } as unknown as Partial<Env>);
+    const task = f.issue();
+    // Telegram's reply: Telegram gets its files as before, and the store keeps each under its ref.
+    const files = named([
+      ["phone.png", PNG],
+      ["report.md", MD],
+    ]);
+    const c = f.reply(task.number, line({ files }));
+    expect((await call(f, withFiles(task.number, c.id), undefined, env)).status).toBe(200);
+    expect(sends(f).map((s) => s.method)).toEqual(["sendMessage", "sendPhoto", "sendDocument"]);
+    expect([...r2.items].map(([key, v]) => [key, v.meta.name, v.meta.by, v.meta.task])).toEqual([
+      [PNG, "phone.png", "run", String(task.number)],
+      [MD, "report.md", "run", String(task.number)],
+    ]);
+    // A reply for no chat at all (on GitHub): kept all the same, so the window shows it.
+    const quiet = f.reply(task.number, line({ to: [], files: named([["report.md", MD]]) }));
+    r2.items.clear();
+    const form = withFiles(task.number, quiet.id);
+    expect(await (await call(f, form, undefined, env)).json()).toMatchObject({ none: true });
+    expect([...r2.items.keys()]).toContain(MD);
+  });
+
+  it("reaches a guest's web chat, and says when the store didn't keep a guest's file", async () => {
+    const f = world(k);
+    const r2 = memoryR2();
+    const env = envFor(k, { BUCKET: r2.bucket } as unknown as Partial<Env>);
+    const task = f.issue();
+    const files = [{ name: "report.md", ref: GUEST_MD }];
+    const c = f.reply(task.number, line({ to: [`web:${GUEST}`], files }));
+    const form = new FormData();
+    form.set("task", String(task.number));
+    form.set("comment", String(c.id));
+    form.append("file", new File(["md"], "report.md", { type: "text/markdown" }));
+    // The guest's chat is reached (read in place: 🚀), and their file kept under their prefix.
+    expect(await (await call(f, form, undefined, env)).json()).toEqual({ sent: 0, refused: 0 });
+    expect(c.reactions.map((r) => r.content)).toEqual(["rocket"]);
+    expect([...r2.items.keys()]).toEqual([GUEST_MD]);
+    // The store refuses: a guest's file has no backup, so the door says it wasn't kept.
+    r2.items.clear();
+    r2.state.down = true;
+    const again = f.reply(task.number, line({ to: [`web:${GUEST}`], files }));
+    form.set("comment", String(again.id));
+    expect(await (await call(f, form, undefined, env)).json()).toMatchObject({ unkept: 1 });
+    expect(f.w.logs.some((l) => l.includes('"files not kept"'))).toBe(true);
+    // Yours have their backup: nothing to say.
+    const mine = f.reply(task.number, line({ to: [], files: named([["report.md", MD]]) }));
+    form.set("comment", String(mine.id));
+    expect(await (await call(f, form, undefined, env)).json()).toEqual({ sent: 0, none: true });
   });
 
   it("says in one short message which files didn't send, and never sends one a second way", async () => {
@@ -484,8 +549,8 @@ describe("POST /door/files/forget", () => {
     const env = { BUCKET: r2.bucket } as unknown as Partial<Env>;
     const res = await forget(f, { chats: [4, 9] }, await watch(f), env);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ deleted: 2, bytes: 7 });
-    // Chat 5's stays, and a file with no chat.
+    expect(await res.json()).toEqual({ deleted: 2, bytes: 7, unclaimed: 0, unclaimedBytes: 0 });
+    // Chat 5's stays, and a file with no chat and no time.
     expect([...r2.items.keys()].sort()).toEqual([
       "f-8000000000001-0123456789abcdef0123",
       "up-0123456789abcdef0123",
@@ -494,7 +559,32 @@ describe("POST /door/files/forget", () => {
     expect(await (await forget(f, { chats: [4] }, await watch(f), env)).json()).toEqual({
       deleted: 0,
       bytes: 0,
+      unclaimed: 0,
+      unclaimedBytes: 0,
     });
+  });
+
+  it("deletes the files no chat used, made 60 days ago or more, a guest's too, in the same one listing", async () => {
+    const f = world(k);
+    const r2 = memoryR2();
+    const days = (n: number) => f.w.at - n * 24 * 3600_000;
+    const id = "0123456789abcdef0123";
+    void r2.keep(`f-8000000000004-${id}`, "aaa", { name: "a", by: "you", at: days(61) });
+    void r2.keep(`g3f9a2c-8000000000003-${id}`, "bb", { name: "b", by: "you", at: days(90) });
+    void r2.keep(`f-8000000000002-${id}`, "c", { name: "c", by: "you", at: days(59) });
+    void r2.keep(`f-8000000000001-${id}`, "d", { name: "d", by: "run", at: days(90), task: 5 });
+    void r2.keep(`up-${id}`, "e", { name: "e", by: "you" });
+    const env = { BUCKET: r2.bucket } as unknown as Partial<Env>;
+    // A week with no closed chats asks too.
+    const res = await forget(f, { chats: [] }, await watch(f), env);
+    expect(await res.json()).toEqual({ deleted: 0, bytes: 0, unclaimed: 2, unclaimedBytes: 5 });
+    // A newer one stays, an open chat's, and one with no time of its own.
+    expect([...r2.items.keys()].sort()).toEqual([
+      `f-8000000000001-${id}`,
+      `f-8000000000002-${id}`,
+      `up-${id}`,
+    ]);
+    expect(r2.state.lists).toBe(1);
   });
 
   it("refuses a task.yml token (any agent's run), and anything that isn't a list of chats", async () => {

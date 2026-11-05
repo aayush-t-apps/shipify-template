@@ -438,11 +438,21 @@ if (args[1] === "graphql") {
         found.sort((a, b) => updated(a).localeCompare(updated(b)));
       return found.map(swept);
     };
+    // As GitHub pages a search: `first` of them from `after` (a cursor), and whether more follow.
+    const page = (k, found) => {
+      const first = Number(new RegExp(`${k}: search\\([^)]*first: (\\d+)`).exec(query)?.[1] ?? 100);
+      const from = Number(vars.after ?? 0);
+      const end = from + first;
+      return {
+        nodes: found.slice(from, end),
+        pageInfo: { hasNextPage: end < found.length, endCursor: String(end) },
+      };
+    };
     out({
       data: Object.fromEntries(
         ["closed", "projects", "quiet", "inboxes"]
           .filter((k) => vars[k])
-          .map((k) => [k, { nodes: find(vars[k]) }]),
+          .map((k) => [k, page(k, find(vars[k]))]),
       ),
     });
   } else if (query.includes("pages: issues(")) {
@@ -768,7 +778,12 @@ else if (method === "GET" && /[?&]labels=shipify-status/.test(path ?? "")) {
     },
     comments: [],
   };
-  out(state.others[n].issue);
+  // As GitHub answers: `url` is the API's, `html_url` the issue's page.
+  out({
+    ...state.others[n].issue,
+    url: `https://api.github.com/repos/${state.repo}/issues/${n}`,
+    html_url: `https://github.com/${state.repo}/issues/${n}`,
+  });
 } else if (method === "POST" && path === `repos/${state.repo}/issues`) {
   const b = opening;
   state.status = {

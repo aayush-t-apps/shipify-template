@@ -8,8 +8,11 @@ import type { RepoRef } from "../lib/projects-on-github.ts";
 import type { TaskState, TaskTitle } from "../lib/task.ts";
 import type { Result } from "./result.ts";
 
-/** Who wrote a comment, as the record proves it (never as its text claims). */
-export type Author = "owner" | "door" | "run" | "other";
+/**
+ * Who wrote a comment, as the record proves it (never as its text claims). `guest`: a guest's words
+ * through the door (ADR 0071), never yours: they ask on their own task, and approve nothing.
+ */
+export type Author = "owner" | "door" | "guest" | "run" | "other";
 
 export interface Said {
   id: number;
@@ -22,6 +25,8 @@ export interface Said {
   /** Where it came from: "github", or the chat the door names in its `from` line. */
   channel: string;
   from?: From;
+  /** A run's reply: the files it made, by their refs in the web chat's store (ADR 0071). */
+  made?: { name: string; ref: string }[];
 }
 
 /** What started this run. */
@@ -111,8 +116,9 @@ export interface Project {
 }
 
 /** What the agent may touch (docs/glossary.md): talk (answers, your projects on demand), work (one
- * repo's clone, on the task's branch), read (only the repos it was given, files only: ADR 0044). */
-export type Profile = "talk" | "work" | "read";
+ * repo's clone, on the task's branch), read (only the repos it was given, files only: ADR 0044),
+ * guest (a guest's task, ADR 0071: no key, nothing of yours, its own project's pages alone). */
+export type Profile = "talk" | "work" | "read" | "guest";
 
 /** A repo a run reads (ADR 0044): cloned at depth 1 into its read/ folder before the agent starts. */
 export interface Read {
@@ -277,10 +283,18 @@ export type Write =
       since?: string;
       /** The task they came from, for the project's Log. */
       chat?: number;
+      /**
+       * A guest's run (ADR 0071), by the guest's id: only its own project's pages, and a new one
+       * gets their mark.
+       */
+      guest?: string;
     }
   | { w: "calls"; calls: ToolCall[]; fingerprint: string }
-  /** A clean start's chats, closed as done after your yes (ADR 0070), as the 30-day close does. */
-  | { w: "close-chats"; chats: { number: number; labels: string[] }[] }
+  /**
+   * Chats closed as done, as the 30-day close does: a clean start's after your yes (ADR 0070), or a
+   * project's as you close it. `why` is their status line: a clean start's when none is given.
+   */
+  | { w: "close-chats"; chats: { number: number; labels: string[] }[]; why?: string }
   | {
       w: "push";
       repo: string;

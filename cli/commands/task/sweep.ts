@@ -1,11 +1,11 @@
 // The weekly clean-up's own two steps (ADR 0069 §2, §15), with no agent: the files of chats closed
-// 30 to 60 days ago go from the edge's store, and a chat quiet for 30 days closes. Each box runs
-// its own clean-up (watch.ts), so these run once a week in all, however many boxes: the status
-// record keeps when they last ran, as it keeps the digest's time. One read finds it all (the
-// record's `sweep`), and one more for each project closed in the window.
+// 30 to 60 days ago (or since the last clean-up) go from the edge's store with the files no chat
+// used, and a chat quiet for 30 days closes. Each box runs its own clean-up (watch.ts), so these
+// run once a week in all, however many boxes: the status record keeps when they last ran, as it
+// keeps the digest's time, and what they did. One read finds it all (the record's `sweep`), and
+// one more for each project closed in the window.
 import {
   DEPLOYING_LABEL,
-  IN_PROJECT_LABEL,
   LIBRARY_LABEL,
   PROJECT_LABEL,
   projectLabel,
@@ -13,12 +13,12 @@ import {
   STAYING_LABEL,
   SUB_TASK_LABEL,
 } from "../../contracts/index.ts";
-import { forgetFiles } from "../../kernel/door.ts";
+import { type Forgotten, forgetFiles } from "../../kernel/door.ts";
 import { NOTEBOOK_LABEL } from "../../lib/notebook.ts";
 import type { ProjectItems, SweepRead, SweptIssue, TaskRecord } from "../../lib/plugins/record.ts";
 import { RECIPE_LABEL } from "../../lib/recipes.ts";
 import { REPEATS_LABEL, WAITING_LABEL } from "../../lib/repeat.ts";
-import { STATUS_LABEL, type StatusIssueState } from "../../lib/status-issue.ts";
+import { STATUS_LABEL, type StatusIssueState, type Swept } from "../../lib/status-issue.ts";
 import { findStatus, TASK_LABELS } from "../../lib/task.ts";
 import { rec } from "./context.ts";
 import { Status } from "./issue.ts";
@@ -28,8 +28,13 @@ const DAY = 24 * 3600_000;
 const SWEEP_EVERY_MS = 7 * DAY;
 /** A closed chat's files go this many days after it closes… */
 const FILES_AFTER_DAYS = 30;
-/** …read up to this many, so a missed week catches up, and a second pass deletes nothing more. */
+/**
+ * …read from this many at least, so a week the door didn't take is tried again, and a second pass
+ * deletes nothing more; from 30 days before the last clean-up, when that's longer ago.
+ */
 const FILES_UNTIL_DAYS = 60;
+/** The edge deletes a file no chat used this many days after it was made (edge/src/store.ts). */
+const UNCLAIMED_DAYS = 60;
 /**
  * A chat outside a project with no word or change for this long closes (your pick, 2026-11-02: 30,
  * not 90); its files go 30 days after that. A word on it opens it again.
@@ -39,17 +44,16 @@ const QUIET_DAYS = 30;
 export const QUIET_CLOSED = `Closed after ${QUIET_DAYS} quiet days: write on it to open it again`;
 
 const PROJECT = PROJECT_LABEL;
-const IN_PROJECT = IN_PROJECT_LABEL;
 const LIBRARY = LIBRARY_LABEL;
 
 /**
- * What the 30-day close leaves open, by label: a project, a chat in one, a page, a split's part, a
- * repeat or an errand, the status task, a recipe, a task a run is on or follows, and a task that
- * waits on you (a question, or a `new:` task's plan PR, which doesn't close it).
+ * What the 30-day close leaves open, by label: a project, a page, a split's part, a repeat or an
+ * errand, the status task, a recipe, a task a run is on or follows, and a task that waits on you (a
+ * question, or a `new:` task's plan PR, which doesn't close it). A chat in an open project is left
+ * open by its parent, not a label: one moved in (`in-project`) closes once its project has.
  */
 const KEPT = new Set([
   PROJECT,
-  IN_PROJECT,
   NOTEBOOK_LABEL.name,
   LIBRARY,
   SUB_TASK_LABEL,
@@ -73,8 +77,9 @@ const SWEEP_SLACK_MS = 3600_000;
 export const sweepDue = (last: string | undefined, at: Date) =>
   !last || at.getTime() - Date.parse(last) >= SWEEP_EVERY_MS - SWEEP_SLACK_MS;
 
-/** A chat in a project: its parent is one (its sub-issue, or moved in with `in-project`). */
-const parentProject = (i: SweptIssue) => Boolean(i.parent?.labels.includes(PROJECT));
+/** A chat in an open project: its parent is one (its sub-issue, or moved in with `in-project`). */
+const inOpenProject = (i: SweptIssue) =>
+  Boolean(i.parent?.labels.includes(PROJECT) && i.parent.state === "open");
 
 /**
  * The chats whose files go (ADR 0069 §15): each one closed in the window that isn't in an open
@@ -85,7 +90,7 @@ const parentProject = (i: SweptIssue) => Boolean(i.parent?.labels.includes(PROJE
 export function filesToForget(read: SweepRead, items: Map<number, ProjectItems>): number[] {
   const names = new Set(read.projects.map((p) => projectNameOf(p.title)).filter(Boolean));
   const kept = (i: SweptIssue) =>
-    (parentProject(i) && i.parent?.state === "open") ||
+    inOpenProject(i) ||
     i.labels.some((l) => l.startsWith(`${PROJECT}:`) && names.has(l.slice(PROJECT.length + 1)));
   const out = new Set(read.closed.filter((i) => !kept(i)).map((i) => i.number));
   for (const { chats, pages } of items.values()) {
@@ -96,14 +101,15 @@ export function filesToForget(read: SweepRead, items: Map<number, ProjectItems>)
 }
 
 /**
- * The open chats the 30-day close takes (ADR 0069 §2): quiet that long, in no project, with no open
- * PR or open part, and none of the kinds it leaves open (KEPT). The search leaves KEPT out already;
- * the check stays here, as a search can't leave out a parent or a `project:<name>` label.
+ * The open chats the 30-day close takes (ADR 0069 §2): quiet that long, in no open project (one
+ * left open under a closed project is a chat like any other), with no open PR or open part, and
+ * none of the kinds it leaves open (KEPT). The search leaves KEPT out already; the check stays
+ * here, as a search can't leave out a parent or a `project:<name>` label.
  */
 export const quietToClose = (read: SweepRead): SweptIssue[] =>
   read.quiet.filter(
     (i) =>
-      !parentProject(i) &&
+      !inOpenProject(i) &&
       !i.labels.some((l) => KEPT.has(l) || l.startsWith(`${PROJECT}:`)) &&
       !i.openParts &&
       !i.openPrs,
@@ -119,8 +125,8 @@ export interface Cleanable {
 
 /**
  * A clean start's list (ADR 0070 §7): the open chats the 30-day close would take, whatever their
- * age (its own rules: no project, nothing it leaves open), but the one asking; the oldest 100, in
- * the clean-up's one read.
+ * age (its own rules: no open project, nothing it leaves open), but the one asking; the oldest
+ * 100, in the clean-up's one read.
  */
 export function cleanable(record: Pick<TaskRecord, "sweep">, n: number, at: string): Cleanable[] {
   const tomorrow = new Date(Date.parse(at) + DAY).toISOString().slice(0, 10);
@@ -143,15 +149,14 @@ export function cleanable(record: Pick<TaskRecord, "sweep">, n: number, at: stri
 /** What the steps read and write. */
 export interface SweepIo {
   record: Pick<TaskRecord, "sweep" | "projectItems">;
-  /** The edge's word: these chats' files deleted (forgetFiles); undefined when it didn't answer. */
-  forget(chats: number[]): Promise<{ deleted: number; bytes: number } | undefined>;
+  /** The edge's word: these chats' files, and those no chat used, deleted (forgetFiles). */
+  forget(chats: number[]): Promise<Forgotten>;
   /** Closed as completed, with its status line; whether it was. */
   close(i: SweptIssue, at: string): Promise<boolean>;
 }
 
-const day = (at: Date, daysAgo: number) =>
-  new Date(at.getTime() - daysAgo * DAY).toISOString().slice(0, 10);
-const megabytes = (bytes: number) =>
+const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+export const megabytes = (bytes: number) =>
   bytes < 1e6 ? `${Math.ceil(bytes / 1e3)} KB` : `${Math.round(bytes / 1e6)} MB`;
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 const numbers = (ns: number[]) => ns.map((n) => `#${n}`).join(", ");
@@ -159,13 +164,21 @@ const numbers = (ns: number[]) => ns.map((n) => `#${n}`).join(", ");
 /**
  * The two steps, as the clean-up's summary says what each really did: "deleted 12 files (8 MB) of
  * 4 closed chats", "no files to delete for 3 closed chats" (none had any, or a pass before took
- * them), "closed 2 chats quiet for 30 days (#20, #31)", and what didn't happen, to try next week.
+ * them), "2 files no chat used (1 MB), 60 days old", "closed 2 chats quiet for 30 days (#20,
+ * #31)", and what didn't happen, to try next week. With the files deleted in all, for the status
+ * record; `last` is the last clean-up's start.
  */
-export async function sweep(at: Date, io: SweepIo = liveIo()): Promise<string> {
+export async function sweep(
+  at: Date,
+  io: SweepIo = liveIo(),
+  last?: string,
+): Promise<Swept & { said: string }> {
+  const ago = (days: number) => at.getTime() - days * DAY;
+  const from = ago(FILES_UNTIL_DAYS);
   const read = io.record.sweep({
-    closedFrom: day(at, FILES_UNTIL_DAYS),
-    closedTo: day(at, FILES_AFTER_DAYS),
-    quietBefore: day(at, QUIET_DAYS),
+    closedFrom: day(last ? Math.min(from, Date.parse(last) - FILES_AFTER_DAYS * DAY) : from),
+    closedTo: day(ago(FILES_AFTER_DAYS)),
+    quietBefore: day(ago(QUIET_DAYS)),
     // What stays open for ever can't fill the search's 100, so the real quiet chats are reached.
     quietWithout: [...KEPT],
   });
@@ -177,17 +190,18 @@ export async function sweep(at: Date, io: SweepIo = liveIo()): Promise<string> {
   }
   const said: string[] = [];
   const chats = filesToForget(read, items);
-  if (chats.length) {
-    const gone = await io.forget(chats);
-    const of = plural(chats.length, "closed chat");
+  // Asked with no chats too: the door deletes the files no chat used all the same.
+  const gone = await io.forget(chats);
+  const of = plural(chats.length, "closed chat");
+  if (gone.deleted)
+    said.push(`deleted ${plural(gone.deleted, "file")} (${megabytes(gone.bytes)}) of ${of}`);
+  else if (chats.length && !gone.failed) said.push(`no files to delete for ${of}`);
+  if (gone.unclaimed)
     said.push(
-      !gone
-        ? `the door didn't take the files of ${of}: next week`
-        : gone.deleted
-          ? `deleted ${plural(gone.deleted, "file")} (${megabytes(gone.bytes)}) of ${of}`
-          : `no files to delete for ${of}`,
+      `${gone.deleted ? "" : "deleted "}${plural(gone.unclaimed, "file")} no chat used (${megabytes(gone.unclaimedBytes)}), ${UNCLAIMED_DAYS} days old`,
     );
-  }
+  const failed = gone.failed ? "the door didn't take the files" : undefined;
+  if (failed) said.push(`${failed}${chats.length ? ` of ${of}` : ""}: next week`);
   const quiet = quietToClose(read);
   const closed: number[] = [];
   const left: number[] = [];
@@ -198,30 +212,39 @@ export async function sweep(at: Date, io: SweepIo = liveIo()): Promise<string> {
     );
   if (left.length)
     said.push(`couldn't close ${plural(left.length, "quiet chat")} (${numbers(left)}): next week`);
-  return said.join("; ") || "nothing to clear";
+  return {
+    said: said.join("; ") || "nothing to clear",
+    deleted: gone.deleted + gone.unclaimed,
+    bytes: gone.bytes + gone.unclaimedBytes,
+    unclaimed: gone.unclaimed,
+    ...(failed ? { failed } : {}),
+  };
 }
 
 /**
  * The steps on this box's clean-up, once a week in all: taken when the record says they're a week
  * old, and the time written at once, in the same read and write, so a second box's clean-up that
- * reads it next skips them. Undefined when it's another box's week.
+ * reads it next skips them. The steps get the last one's start, as it was. Undefined when it's
+ * another box's week.
  */
-export async function sweepOnce(
+export async function sweepOnce<T>(
   at: Date,
   record: {
     read: () => StatusIssueState;
     update: (change: (s: StatusIssueState) => string | undefined) => unknown;
   },
-  steps: () => Promise<string>,
-): Promise<string | undefined> {
+  steps: (last?: string) => Promise<T>,
+): Promise<T | undefined> {
   if (!sweepDue(record.read().watch.sweep, at)) return undefined;
   let mine = false;
+  let last: string | undefined;
   record.update((s) => {
-    mine = sweepDue(s.watch.sweep, at);
+    last = s.watch.sweep;
+    mine = sweepDue(last, at);
     if (mine) s.watch.sweep = at.toISOString();
     return undefined;
   });
-  return mine ? steps() : undefined;
+  return mine ? steps(last) : undefined;
 }
 
 /** A clean start's close says so on its status line (ADR 0070). */

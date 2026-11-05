@@ -99,6 +99,10 @@ describe("box/here.sh: before it changes anything", () => {
     expect(r.code).toBe(1);
     expect(r.out).toContain("it needs a terminal");
     expect(r.left).toEqual([]);
+    // Ubuntu 26.04 LTS gets as far: the OS check lets it through.
+    const next = runIt(UBUNTU("26.04"));
+    expect(next.out).not.toContain("a box needs Ubuntu Server");
+    expect(next.out).toContain("it needs a terminal");
   });
 
   it("refuses an option it doesn't know, and slots out of range", () => {

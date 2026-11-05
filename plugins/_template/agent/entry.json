@@ -15,7 +15,9 @@
     "install": {
       "version": "1.0.0",
       "run": ["npm", "install", "-g", "--silent", "--prefix", "{prefix}", "example-agent@1.0.0"],
-      "bin": "bin/example"
+      "bin": "bin/example",
+      "newest": "https://registry.npmjs.org/example-agent/latest",
+      "advisories": "https://api.github.com/advisories?ecosystem=npm&affects=example-agent%40{version}&per_page=100"
     },
     "task": ["example", "run", "-"]
   }

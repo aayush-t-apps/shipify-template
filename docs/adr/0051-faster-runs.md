@@ -263,3 +263,7 @@ found, in one PR that changes `task.yml` too. The differences:
   as a box makes it (this commit's files, no packages): its plug-ins found, each tool's server
   started. Every flow test isn't run twice: the source and the build are the same code, and what
   differs (loading and paths) these cover.
+- **The tests start the built CLI too (2026-11-05, task #662).** `ship()` in the tests starts the
+  CLI built once per test run (`tests/built.ts`, vitest's global setup), not the source through
+  tsx: 0.7 s a start on a Raspberry Pi against 2.2 s, about 150 starts a run. An edit still needs
+  no build: each test run makes its own. Your PC, the `github` job and the watch keep tsx.

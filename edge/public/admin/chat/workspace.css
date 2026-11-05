@@ -18,6 +18,18 @@
 .items .mark {
   flex: none;
 }
+/* A repo's page: its figures in one row, a phone's too; a chat's title in two lines at most. */
+.strip.counts {
+  grid-template-columns: repeat(auto-fit, minmax(5rem, 1fr));
+}
+.counts ~ .items .what > a:first-child {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
 .tile.need b {
   color: var(--warn);
 }
@@ -106,6 +118,28 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: 0.8125rem / 1.55 var(--mono);
+}
+/* A doc (ADR 0071): Edit and History in its head; its words in Markdown, in a box as tall as the
+   pane; an Inbox's finds under it. */
+.dtools {
+  display: flex;
+  flex: none;
+  gap: 0.25rem;
+}
+.dbody .edit {
+  display: block;
+  width: 100%;
+  min-height: 60dvh;
+  resize: vertical;
+  font: 0.8125rem / 1.55 var(--mono);
+}
+.dbody h3 {
+  margin: 1.5rem 0 0.5rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+.dbody .msg + .msg {
+  margin-top: 0.75rem;
 }
 .csv table {
   display: block;

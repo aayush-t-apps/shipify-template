@@ -47,6 +47,7 @@ follows.
 | [security-and-hardening](security-and-hardening/SKILL.md) | user input, sessions, secrets, third parties, dependencies | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills/tree/d1463fd0d6675c6e145d9c57802d70faf84d1f51/skills/security-and-hardening) | MIT |
 | [notion](notion/SKILL.md) | a task reads or changes the owner's Notion (Shipify's Notion tool, `tools/notion`) | this repo | this repo's |
 | [drop](drop/SKILL.md) | a task shares files it made as a link, or changes the owner's drops (Shipify's Drop tool, `tools/drop`) | this repo | this repo's |
+| [pdf](pdf/SKILL.md) | a run makes a PDF for the owner or a guest: HTML printed by headless Chromium (`pdf.mjs`) | this repo | this repo's |
 | [knowledge](knowledge/SKILL.md) | a run in a project, a reply kept on its pages, a check of them, a collate of its Inbox, the Journal organized, what's known found (ADR 0069, 0070) | this repo | this repo's |
 | [plug-ins](plug-ins/SKILL.md) | adding or changing any plug-in: a tool, a chat channel, a stack, an agent | this repo | this repo's |
 | [new-project](new-project/SKILL.md) | a `new: …` task: its plan's PR, then its build | this repo | this repo's |

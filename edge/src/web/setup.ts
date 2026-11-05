@@ -10,15 +10,19 @@ import {
   zoneName,
   effortsFor,
   gatewayName,
+  guestLabel,
+  guestOwns,
 } from "../../../cli/contracts/index.ts";
 import executors from "../../../executors.json" with { type: "json" };
 import pkg from "../../../package.json" with { type: "json" };
 import tools from "../../../tools.json" with { type: "json" };
 import { CHANNELS } from "../channels/index.ts";
 import type { Deps, Env, Kept } from "../env.ts";
-import { devicesOf, kvOf, missing } from "../env.ts";
+import { bucketOf, build, devicesOf, kvOf, missing } from "../env.ts";
 import { cached } from "../cache.ts";
 import { github } from "../github.ts";
+import { guestsOf } from "../guests.ts";
+import { listed } from "../store.ts";
 import { publicKey, serviceOf } from "../push.ts";
 import { boxOf, runners, type Settings, statusTask, toBoxes } from "../settings.ts";
 import { MOST_BYTES, MOST_FILES } from "./files.ts";
@@ -111,11 +115,29 @@ export const statusOf = (env: Env, deps: Deps) =>
     deps.now(),
   );
 
-export async function menu(env: Env, deps: Deps, files: boolean): Promise<Menu> {
-  const record = await statusOf(env, deps)
-    .then((s) => s?.record)
-    .catch(() => undefined);
+/**
+ * The commands a guest's menu shows (ADR 0071): asking, and models. The rest are yours: they say or
+ * change your tasks, apps, boxes, repos, pages and repeats.
+ */
+export const GUEST_COMMANDS = new Set(["ask", "use", "models", "help"]);
+
+export async function menu(
+  env: Env,
+  deps: Deps,
+  files: boolean,
+  guest?: { name: string },
+): Promise<Menu> {
+  // A guest's menu holds nothing of yours: no repos, projects, apps or record read for them.
+  const record = guest
+    ? undefined
+    : await statusOf(env, deps)
+        .then((s) => s?.record)
+        .catch(() => undefined);
   const key = pushKey(env);
+  const commands = [
+    ...CHATS.map((c): [string, string] => [c.chat, c.says]),
+    ...INSTANT.map(([c, says]): [string, string] => [c, says]),
+  ];
   return {
     v: 1,
     ...models(),
@@ -129,10 +151,8 @@ export async function menu(env: Env, deps: Deps, files: boolean): Promise<Menu> 
       failing: Boolean(a.failing),
       paused: Boolean(a.paused),
     })),
-    commands: [
-      ...CHATS.map((c): [string, string] => [c.chat, c.says]),
-      ...INSTANT.map(([c, says]): [string, string] => [c, says]),
-    ],
+    commands: guest ? commands.filter(([c]) => GUEST_COMMANDS.has(c)) : commands,
+    ...(guest ? { guest } : {}),
     files: { on: files, most: MOST_FILES, bytes: MOST_BYTES },
     ...(key ? { notifications: { key } } : {}),
     chars: MOST_CHARS,
@@ -143,7 +163,7 @@ export async function menu(env: Env, deps: Deps, files: boolean): Promise<Menu> 
       when: REPEAT_WHEN,
       zone: zoneName(new Date(deps.now()).toISOString()),
     },
-    version: pkg.version,
+    version: build(env),
   };
 }
 
@@ -162,7 +182,7 @@ const list = (v: unknown) =>
 export async function setup(env: Env, deps: Deps, s: Settings, chat: string): Promise<Setup> {
   const gh = github(env, deps);
   const kv = kvOf(env);
-  const [raw, record, runs, devices] = await Promise.all([
+  const [raw, record, runs, devices, guests] = await Promise.all([
     runners(gh, deps.now(), 30_000, reader(env, deps)).catch(() => []),
     statusOf(env, deps)
       .then((x) => x?.record)
@@ -178,6 +198,7 @@ export async function setup(env: Env, deps: Deps, s: Settings, chat: string): Pr
           .then(devicesSeen)
           .catch(() => [])
       : undefined,
+    guestsSeen(env, deps, s).catch(() => undefined),
   ]);
   // Which task each busy slot is on: each live run's job names its runner (four runs at most).
   const live = (runs.workflow_runs ?? []).filter((r) => r.status === "in_progress").slice(0, 4);
@@ -269,5 +290,48 @@ export async function setup(env: Env, deps: Deps, s: Settings, chat: string): Pr
       issues: `${repo}/issues`,
     },
     ...(devices ? { devices } : {}),
+    ...(guests ? { guests } : {}),
   };
+}
+
+/** Where guests sign in: the guests' door, at your edge's own address (ADR 0071). */
+export const guestLink = (env: Env) =>
+  `${env.SHIPIFY_DOOR_URL ? new URL(env.SHIPIFY_DOOR_URL).origin : ""}/guest/`;
+
+/**
+ * Setup → Guests (ADR 0071): on once SHIPIFY_ACCESS names the guests' Access application, the link
+ * to send, and each guest with their chats (one issue list a guest, by their label), their files'
+ * size (from the Files list, kept a minute) and when they were last in. None with no file store.
+ */
+async function guestsSeen(env: Env, deps: Deps, s: Settings) {
+  const bucket = bucketOf(env);
+  if (!bucket) return undefined;
+  const gh = github(env, deps);
+  const [g, files] = await Promise.all([
+    guestsOf(env, deps),
+    cached("web:files", 60_000, () => listed(bucket), deps.now()).catch(() => undefined),
+  ]);
+  const list = await Promise.all(
+    g.guests.map(async (x) => {
+      const chats = await read<unknown[]>(
+        env,
+        deps,
+        `repos/${gh.repo}/issues?labels=${encodeURIComponent(guestLabel(x.id))}&state=all&per_page=100`,
+        { html: false },
+      ).catch(() => []);
+      const bytes = (files?.files ?? [])
+        .filter((f) => guestOwns(x.id, f.ref))
+        .reduce((n, f) => n + f.meta.size, 0);
+      return {
+        id: x.id,
+        email: x.email,
+        name: x.name,
+        added: new Date(x.added).toISOString(),
+        ...(x.seen ? { seen: new Date(x.seen).toISOString() } : {}),
+        chats: chats.length,
+        bytes,
+      };
+    }),
+  );
+  return { on: Boolean(s.access?.guests), link: guestLink(env), list };
 }

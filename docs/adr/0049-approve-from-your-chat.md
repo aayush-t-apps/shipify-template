@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #319) and built (task #317; the owner's go on 2026-10-10); see [As built](#as-built-2026-10-10)
+status: accepted (merged #319) and built (task #317; the owner's go on 2026-10-10); see [As built](#as-built-2026-10-10). Amended by 0071 (a guest's words approve nothing)
 date: 2026-10-10
 amends: 0030 (a `yes` from a channel approves a list; merges and the words that act on code stay on GitHub), 0031 (rule 6: a `yes` the door wrote approves a list; a pre-approved call counts after the tools its form names), 0036 (the web chat's `yes` is a button), 0042 (approving from a chat, its one deliberate difference, narrowed to merges and the words that act on code)
 ---

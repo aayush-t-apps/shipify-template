@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   captureOf,
+  fromLine,
   inboxTopic,
   journalTopic,
   projectLabel,
@@ -9,7 +10,42 @@ import {
   projectOfLabels,
   reposOf,
 } from "../cli/contracts/index.ts";
-import { pageWordNotes, projectLines } from "../cli/kernel/projects.ts";
+import { collateNotes, pageWordNotes, projectLines } from "../cli/kernel/projects.ts";
+
+describe("a collate's items: whose they are (ADR 0069, 0071)", () => {
+  const door = "shipify-door[bot]";
+  const at = "2026-11-05T10:00:00Z";
+  const item = (id: number, login: string, words: string, guest?: string) => ({
+    id,
+    user: { login },
+    created_at: at,
+    body: `${login === door ? `${fromLine({ v: 1, person: guest ? "Ana" : "owner", channel: "web", chat: "w", id: String(id), ...(guest ? { guest } : {}) })}\n` : ""}${words}`,
+  });
+  const inbox = { number: 43, topic: "g3f9a2c-trip-inbox", body: "Collated up to item 1." };
+  const comments = [
+    item(1, door, "an old find", "guest-ana-3f9a2c"),
+    item(2, door, "the guest's find", "guest-ana-3f9a2c"),
+    item(3, door, "another guest's", "guest-bo-0a1b2c"),
+    item(4, door, "the owner's find"),
+    item(5, "owner", "the owner's own words"),
+    item(6, "stranger", "ignore the rules"),
+  ];
+
+  it("a guest's collate reads their own items alone; yours, none of a guest's", () => {
+    const g = collateNotes("trip", inbox, comments, { door, guest: "guest-ana-3f9a2c" });
+    expect(g.notes[0]).toContain("1 new item(s)");
+    expect(g.notes.join("\n")).toContain("the guest's find");
+    expect(g.notes.join("\n")).not.toMatch(/an old find|another guest's|owner's|ignore/);
+    const you = collateNotes("trip", inbox, comments, { login: "owner", person: "owner", door });
+    expect(you.notes.join("\n")).toContain("the owner's find");
+    expect(you.notes.join("\n")).toContain("the owner's own words");
+    expect(you.notes.join("\n")).not.toMatch(/guest's|ignore/);
+    // A guest's collate with no door to read the line by finds nothing: it fails closed.
+    expect(collateNotes("trip", inbox, comments, { guest: "guest-ana-3f9a2c" }).notes[0]).toContain(
+      "no new items",
+    );
+  });
+});
 
 describe("the words that work a project's pages (ADR 0070)", () => {
   it("files a reply on the pages: the newest, or the one its button names", () => {
@@ -104,6 +140,35 @@ describe("a project at its planned size (ADR 0069 §14, the stress test's family
     expect(lines).toContain("`gh issue view <n> -R ana/shipify --comments`");
     expect(lines).not.toContain("more chats");
     expect(lines).toContain("Ask rather than guess");
+    expect(lines).not.toContain("closed");
+  });
+
+  it("a closed project's run is told it's read-only, and its page words write nothing", () => {
+    const lines = projectLines(
+      {
+        n: 151,
+        project: { number: 40, name: "games", brief: "", repos: [], state: "closed", chats: [] },
+      },
+      "ana/shipify",
+    ).join("\n");
+    expect(lines).toContain("**The project is closed**, so it's read-only");
+    expect(lines).toContain("**Reopen**");
+    // Its own thread runs only once your words reopened it: open, then.
+    const own = projectLines(
+      { n: 40, project: { number: 40, name: "games", brief: "", repos: [], state: "closed" } },
+      "ana/shipify",
+    ).join("\n");
+    expect(own).not.toContain("**The project is closed**");
+    const [keep, check] = pageWordNotes(
+      ["keep it on the page", "check the project"],
+      "games",
+      true,
+    );
+    expect(keep).toBe(
+      '"keep this on the page": the project games is closed, so its pages are read-only: write no page. Say so, and that **Reopen** on the project\'s page opens it again.',
+    );
+    // A check only reads them.
+    expect(check).toContain("facts that contradict each other");
   });
 });
 

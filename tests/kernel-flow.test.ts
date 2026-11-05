@@ -16,8 +16,9 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { workspace } from "../cli/commands/task/context.ts";
+import { ensureLabels, forgetLabels, LABELS_KEPT_MS } from "../cli/commands/task/issue.ts";
 import { keepRecipes, taskDue } from "../cli/commands/task/due.ts";
 import { QUIET_CLOSED, sweep } from "../cli/commands/task/sweep.ts";
 import { fromLine, readReply } from "../cli/contracts/index.ts";
@@ -39,6 +40,7 @@ import {
 import type { Result } from "../cli/lib/output.ts";
 import { StatusIssueState, setUpcoming } from "../cli/lib/status-issue.ts";
 import { findStatus, newState, renderStatus, type TaskState } from "../cli/lib/task.ts";
+import { BUILT } from "./built.ts";
 import { ROOT, sandbox } from "./helpers.ts";
 
 interface Fake {
@@ -579,6 +581,61 @@ describe("apply when GitHub refuses a write", () => {
     expect(body).toContain("502");
     expect(body).toContain("About 12 GB free.");
   });
+
+  it("names each run file on its reply's line by a ref the door keeps it under; a guest's never reach shipify-files (ADR 0071)", async () => {
+    Object.assign(process.env, { EVENT: "issues", ACTION: "opened", GITHUB_RUN_ID: "44" });
+    writeFileSync(outputs, "");
+    await runPlan(12);
+    const { s, p } = JSON.parse(
+      readFileSync(join(workspace(), ".tasks", "12", "plan.json"), "utf8"),
+    );
+    const out = mkdtempSync(join(tmpdir(), "out-"));
+    writeFileSync(join(out, "guide.pdf"), "pdf");
+    const reply = (text: string) => ({
+      w: "reply" as const,
+      kind: "answer" as const,
+      state: "Done",
+      text,
+      files: ["guide.pdf"],
+      step: "think-new",
+    });
+    const sent: string[][] = [];
+    const tellDoor = async (_: number, __: number, made: string[]) => void sent.push(made);
+    // Yours, with no files key here: its ref is yours, and the door gets the file.
+    await apply(s, p.state, [reply("Made it.")], { defaults: [], tokens: {}, out, tellDoor });
+    const mine = readReply(lastReply()?.c.body)?.files;
+    expect(mine).toEqual([
+      {
+        name: "guide.pdf",
+        ref: expect.stringMatching(/^f-\d{13}-/),
+        type: "application/pdf",
+        size: 3,
+      },
+    ]);
+    expect(sent.at(-1)).toEqual([join(out, "guide.pdf")]);
+    // A guest's task: their prefix on the ref, no backup though a files key is there, and the
+    // reply goes to their chat alone.
+    set((f) => f.calls.splice(0));
+    const guest = {
+      ...s,
+      issue: { ...s.issue, from: { ...s.issue.from, guest: "guest-ana-3f9a2c" } },
+    };
+    await apply(guest, p.state, [reply("Made it again.")], {
+      defaults: ["telegram"],
+      owner: { name: "owner", on: { github: "owner", telegram: "1" } },
+      tokens: { files: "files-token" },
+      out,
+      tellDoor,
+    });
+    const line = readReply(lastReply()?.c.body);
+    expect(line?.files?.[0]?.ref).toMatch(/^g3f9a2c-\d{13}-/);
+    expect(line?.files?.[0]?.backup).toBeUndefined();
+    expect(line?.to).not.toContain("telegram:1");
+    expect(lastReply()?.c.body).toContain("**Files:** guide.pdf");
+    expect(read().calls.filter((c) => /git\/(blobs|trees|commits)|shipify-files/.test(c))).toEqual(
+      [],
+    );
+  });
 });
 
 // Two whole runs, kept as functions: each runs here and again from the built CLI (ADR 0051 B1).
@@ -597,7 +654,7 @@ async function aChange() {
   expect(lastReply()?.line).toMatchObject({ kind: "needs-you" });
   expect(lastReply()?.c.body).toContain("https://github.com/o/demo/pull/1");
   expect(status()?.prs).toEqual(["https://github.com/o/demo/pull/1"]);
-  // A whole job: about 40 seconds on a Raspberry Pi box, more while its other slots work.
+  // A whole job: about 10 seconds on a Raspberry Pi box, more while its other slots work.
 }
 
 async function neverTwice() {
@@ -632,8 +689,8 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     expect(git(origin, "merge-base", "--is-ancestor", "main", branch)).toBe("");
     expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
     expect(lastReply()?.c.body).toContain("brought the branch up to date");
-    // A job and a refresh (`ship refresh`: a merge and `make version` twice): about 50 s on a
-    // Raspberry Pi box, over 90 while its other slots run their own checks.
+    // A job and a refresh (`ship refresh`: a merge and `make version` twice): about 15 s on a
+    // Raspberry Pi box, more while its other slots run their own checks.
   }, 180_000);
 
   it("main moved and conflicts: the PR opens as the agent left it, and the reply says `continue` brings it up to date (ADR 0059)", async () => {
@@ -738,8 +795,8 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
     // The PR carries on from the kept commits.
     expect(git(origin, "log", "--format=%s", branch)).toContain("Work in progress: it crashed");
-    // Two whole jobs: each takes about 40 seconds on a Raspberry Pi box, over 80 while its other
-    // slots run their own checks (the box's verify took 159 s here): the clock leaves room for that.
+    // Two whole jobs: about 13 seconds on a Raspberry Pi box, more while its other slots run their
+    // own checks: the clock leaves room for that.
   }, 300_000);
 
   it("a PR asked for again while it's open gets this run's body: `closes`, then `part-of`, no longer closes the task", async () => {
@@ -795,6 +852,19 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     expect(lastReply()?.c.body).not.toContain("went wrong");
     expect(status()?.phase).toBe("needs-you");
     expect(branches(origin).some((b) => b.startsWith("task/12-"))).toBe(false);
+  }, 90_000);
+
+  it("a change with what looks like a key is never pushed, and the reply names its file and line", async () => {
+    const origin = await onProject();
+    process.env.FAKE_WORK = "ok";
+    // The stand-in gitleaks (tests/env.ts) flags a line with the word LEAK, as the real one a key.
+    process.env.FAKE_CHANGE = "const TOKEN = 'LEAK';";
+    await job("issues", "opened");
+    expect(branches(origin).some((b) => b.startsWith("task/12-"))).toBe(false);
+    expect(read().prs ?? {}).toEqual({});
+    expect(lastReply()?.c.body).toContain(
+      "looks like a key (change.txt:1 (generic-api-key)), so it wasn't pushed",
+    );
   }, 90_000);
 
   it("a job re-run after it died inside a question's kept push: the question, nothing about the push (ADR 0041)", async () => {
@@ -900,6 +970,27 @@ describe("a run end to end", () => {
     const seen = readTaskSeen(line);
     expect(seen?.working).toBeUndefined();
     expect(seen?.cursor).toMatchObject({ id: 0 });
+  });
+
+  it("a box looks at the state labels once a day, not in each step that saves a status", () => {
+    const keep = mkdtempSync(join(tmpdir(), "box-cache-"));
+    const looks = () => read().calls.filter((c) => c.includes("repos/o/shipify/labels?")).length;
+    const day = 1_000_000_000;
+    // Each step is a process of its own: plan, then apply an hour on.
+    forgetLabels();
+    ensureLabels(keep, day);
+    forgetLabels();
+    ensureLabels(keep, day + 3_600_000);
+    expect(looks()).toBe(1);
+    // A day on, it looks again; a process looks once, however many statuses it saves.
+    forgetLabels();
+    ensureLabels(keep, day + LABELS_KEPT_MS);
+    ensureLabels(keep, day + LABELS_KEPT_MS);
+    expect(looks()).toBe(2);
+    // Off a box (no cache of the runner's): one look a process, as before.
+    forgetLabels();
+    ensureLabels(undefined);
+    expect(looks()).toBe(3);
   });
 
   it("each step stays inside its call budget, and plan and apply never re-read the issue (ADR 0051 B0, B2)", async () => {
@@ -1873,7 +1964,8 @@ describe("a run end to end", () => {
         updated_at: new Date(Date.now() - 40 * 24 * 3600_000).toISOString(),
       });
     });
-    expect(await sweep(new Date())).toBe("closed 1 chat quiet for 30 days (#12)");
+    // No door here: its files step is said apart (tests/sweep.test.ts).
+    expect((await sweep(new Date())).said).toContain("closed 1 chat quiet for 30 days (#12)");
     expect(read().issue).toMatchObject({ state: "closed", state_reason: "completed" });
     expect(labels()).not.toContain("answered");
     expect(status()).toMatchObject({ phase: "done", action: { text: QUIET_CLOSED } });
@@ -2413,6 +2505,8 @@ describe("a project you make, end to end (ADR 0069)", () => {
       pages: [
         { page: "games-pricing", file: "report.txt" },
         { page: "games-engines", file: "report.txt" },
+        // One new doc a run at most (ADR 0071): a second isn't made.
+        { page: "games-stores", file: "report.txt" },
       ],
     });
     await job("issues", "opened");
@@ -2420,6 +2514,9 @@ describe("a project you make, end to end (ADR 0069)", () => {
     expect(others[44]?.issue.body).toBe("- $5 once (#9)\n");
     const engines = Object.values(others).find((o) => o.issue.title === "Notebook: games-engines");
     expect(engines?.issue.body).toBe("- Godot: MIT (#12)\n");
+    expect(Object.values(others).some((o) => o.issue.title === "Notebook: games-stores")).toBe(
+      false,
+    );
     expect(others[41]?.issue.body).toMatch(
       /^## Map\n\n- Godot runs offline \(#12\)\n\n## Log\n\n- \d{4}-\d{2}-\d{2} · games-engines · from #12\n$/,
     );
@@ -2427,7 +2524,10 @@ describe("a project you make, end to end (ADR 0069)", () => {
     expect(said).toContain(
       "Not written, the page games-pricing: it changed after this run read it",
     );
-    expect(said).toContain("Wrote the page games-engines, new");
+    expect(said).toContain("Not written, the page games-stores: a run makes one new doc at most");
+    // A new doc by its short name, and its link the issue's page, never the API's address.
+    expect(said).toMatch(/New doc: Engines: https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+/);
+    expect(said).not.toContain("api.github.com");
   });
 
   it("a collate gets the Inbox's items after its last collate, yours alone, as data", async () => {
@@ -2505,6 +2605,21 @@ describe("a project you make, end to end (ADR 0069)", () => {
     expect(read().calls.filter((c) => /label=project\b(?!:)/.test(c))).toEqual([]);
   });
 
+  it("`remember games: …` for a closed project is refused: no page of its own that every run reads", async () => {
+    inProject({ title: "remember games: Godot is the pick", body: "" });
+    set((f) => {
+      const p = f.others[40] as { issue: { state: string } };
+      p.issue.state = "closed";
+    });
+    await job("issues", "opened");
+    const pages = Object.values(read().others as Record<string, { issue: { title: string } }>);
+    expect(pages.filter((o) => o.issue.title.startsWith("Notebook: games"))).toHaveLength(1);
+    expect(pages.some((o) => o.issue.title === "Notebook: Games")).toBe(false);
+    expect(replies().at(-1)?.c.body).toContain(
+      "games is closed · #40: Reopen it first. Nothing was written.",
+    );
+  });
+
   it("a collate's rewrite of the Inbox keeps the door's hidden line, so the page stays yours", async () => {
     inProject({ title: "collate the inbox", body: "Part of #40\n\ncollate the inbox" });
     const from = fromLine({ v: 1, person: "owner", channel: "web", chat: "w", id: "1" });
@@ -2555,16 +2670,9 @@ describe("a project you make, end to end (ADR 0069)", () => {
 });
 
 describe("a whole run from the built CLI, every step as a box starts it (ADR 0051 B1)", () => {
-  let file: string;
-  beforeAll(() => {
-    // Its own name in cli/dist (two folders down, as the box's), so no other test file's build races it.
-    file = join(ROOT, "cli", "dist", "flow-test.mjs");
-    execFileSync(process.execPath, [join(ROOT, "scripts", "build-cli.mjs"), "--out", file], {
-      cwd: ROOT,
-    });
-  }, 60_000);
   beforeEach(() => {
-    built = file;
+    // The one built for this test run (tests/built.ts).
+    built = BUILT;
   });
   afterEach(() => {
     built = undefined;

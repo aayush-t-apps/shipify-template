@@ -27,12 +27,18 @@ import {
   errorLine,
   type From,
   fromLine,
+  GUEST_LABEL,
+  GUEST_PREFIX,
+  guestLabel,
+  guestProject,
   helpText,
   instantOf,
+  listCodeOf,
   MOST_LIST,
   modelSearches,
   modelsButtons,
   modelsText,
+  NOT_A_GUESTS,
   notebookText,
   type Picked,
   type Problem,
@@ -41,6 +47,7 @@ import {
   pickLine,
   pickOf,
   pickWords,
+  PROJECT_LABEL,
   pingText,
   problem,
   readFrom,
@@ -51,6 +58,7 @@ import {
   SUB_TASK_LABEL,
   useCommand,
   withUpcoming,
+  wordOf,
 } from "../../cli/contracts/index.ts";
 import { recall, remember, share, shared } from "./cache.ts";
 import { capture, newChatIn } from "./capture.ts";
@@ -59,6 +67,7 @@ import { channelOf } from "./channels/index.ts";
 import {
   ALREADY,
   bareCommand,
+  fromCommand,
   GOT_IT,
   goesTo,
   LINK_EXPIRED,
@@ -71,8 +80,10 @@ import {
   NO_BOX,
   NO_PICK,
   ONLY_ACK,
+  ONLY_YOURS,
   PICK_BUTTONS,
   PIN_UNTAKEN,
+  PROJECT_REOPENED,
   REPLY_TO,
   SET_FOR_NEXT,
   startOf,
@@ -194,8 +205,9 @@ export async function doorIn(req: Request, env: Env, deps: Deps, ch: Channel): P
     if (known && !personOf(known, ch, m.user)) return ignored("not a person");
     return trouble(e, log, say, known !== undefined);
   }
-  // Only a person gets in: anyone else gets nothing at all.
-  const person = personOf(s.people, ch, m.user);
+  // Only a person gets in: anyone else gets nothing at all. A guest (ADR 0071) comes only through
+  // the web chat's routes, which checked them against your guest list.
+  const person = m.guest ? { name: m.guest.name } : personOf(s.people, ch, m.user);
   if (!person) return ignored("not a person");
   if (s.closed) {
     log.info("door.in.refused", { why: "closed", channel: ch.id });
@@ -207,12 +219,42 @@ export async function doorIn(req: Request, env: Env, deps: Deps, ch: Channel): P
   if (m.tap && m.repliesTo === undefined && !tapAlone(m.words))
     return say(TAP_LOST, "tap out of reach");
   try {
+    const refused = m.guest ? guestRefused(m, s) : undefined;
+    if (refused) return await say(refused, "refused");
     const answered = await answerAtOnce(m, ch.id, env, s, gh, deps);
     if (answered) return await say(answered.text, answered.answer, answered);
     return await write(m, ch.id, person.name, env, s, gh, deps, log, say);
   } catch (e) {
     return trouble(e, log, say, true);
   }
+}
+
+/** The commands answered at once that a guest may use (ADR 0071): the rest say what's yours. */
+const GUEST_INSTANT = new Set(["help", "models"]);
+/** What only you save (ADR 0071): a note, or a Journal line. */
+const ONLY_YOU = /^\s*(?:(?:remember|forget)\b[^:\n]*:|jot\s*:)/i;
+
+/**
+ * Whether these words are only yours to say (ADR 0071): a note, a Journal line, or a fixed word a
+ * guest never says (NOT_A_GUESTS, the box's list too). A plain `yes` or `no` stays words: it
+ * answers a guest's own run, and approves nothing (the box never reads a guest's words as yours).
+ */
+function onlyYou(words: string) {
+  const fixed = wordOf(words);
+  const plain = (fixed === "yes" || fixed === "no") && !listCodeOf(words);
+  return ONLY_YOU.test(words) || Boolean(fixed && NOT_A_GUESTS.has(fixed) && !plain);
+}
+
+/** Why the door takes nothing of a guest's words, said at once, or undefined to go on. */
+function guestRefused(m: Message, s: Settings): string | undefined {
+  if (m.forwarded) return undefined;
+  const words = withoutTask(m.words, taskOf(m));
+  const own = instantOf(words);
+  const host = s.people.find((p) => p.on.web)?.name ?? "the person who invited you";
+  if (own && !GUEST_INSTANT.has(own.name)) return ONLY_YOURS(host);
+  // The words as written, and as a chat command leaves them (`/change jot: …` is `jot: …`).
+  if (onlyYou(words) || onlyYou(fromCommand(words))) return ONLY_YOURS(host);
+  return undefined;
 }
 
 /** What the door shows with its words, and for a tap, its acknowledgement. */
@@ -363,7 +405,7 @@ async function answerAtOnce(
     return pickerFor(m, channel, env, s, gh);
   const to = goesTo(m);
   if (to !== null) {
-    const r = await readTask(to, s, gh, true);
+    const r = await readTask(to, s, gh, true, m.guest?.id);
     if (r.why) return { text: r.why, answer: "refused" };
     return {
       text: taskHead(to, r),
@@ -407,7 +449,7 @@ async function pickerFor(
     const note = "unread" in yours ? `\n(${MODEL_UNREAD}: tapping one sets it again.)` : "";
     return { text: p.text + note, answer: "picker", shown: { buttons: p.buttons } };
   }
-  const r = await readTask(task, s, gh, true);
+  const r = await readTask(task, s, gh, true, m.guest?.id);
   if (r.why) return { text: r.why, answer: "refused" };
   const p = picker(task, r.use);
   return { text: p.text, answer: "picker", shown: { ...linked(gh, task), buttons: p.buttons } };
@@ -528,7 +570,10 @@ async function write(
   log: ReturnType<typeof logOf>,
   say: Say,
 ): Promise<Response> {
-  const id = `${channel}:${m.id}`;
+  const guest = m.guest?.id;
+  // A guest's retries and albums are found among their own writes only (ADR 0071), so no id of
+  // theirs can name a task of yours.
+  const id = guest ? `${channel}:${guest}:${m.id}` : `${channel}:${m.id}`;
   const album = m.album;
   const now = deps.now();
   // A lone thanks on a task (`ok`, `#12 ok`) is your answer only while it waits on you ("ok" to its
@@ -536,23 +581,23 @@ async function write(
   const asked = taskOf(m);
   let read: TaskRead | undefined;
   if (!m.file && asked !== null && acknowledgement(withoutTask(textOf(m), asked)) === "thanks") {
-    read = await readTask(asked, s, gh);
+    read = await readTask(asked, s, gh, false, guest);
     if (read.why || !read.waiting) return say(THANKS, "thanks");
   }
   // Its own recent writes first: a retry is answered as before, and an album finds its task.
   const memo = (what: string) => recall<number>(memoKey(gh.repo, what), now);
   // This instance's own writes, then the other instances' (Cloudflare's cache), then GitHub's.
   let mine = memo(`id:${id}`) ?? (await shared(memoKey(gh.repo, `id:${id}`)));
-  const albumKey = album ? `album:${channel}:${album}` : undefined;
+  const albumKey = album ? `album:${channel}:${guest ? `${guest}:` : ""}${album}` : undefined;
   let albumTask = albumKey
     ? (memo(albumKey) ?? (await shared(memoKey(gh.repo, albumKey))))
     : undefined;
   if (mine === undefined && (!album || albumTask === undefined)) {
-    const recent = await recentWrites(gh, now);
-    mine = recent.find((w) => w.from.channel === channel && w.from.id === m.id)?.task;
-    albumTask ??= album
-      ? recent.find((w) => w.from.channel === channel && w.from.album === album)?.task
-      : undefined;
+    const recent = (await recentWrites(gh, now)).filter(
+      (w) => w.from.channel === channel && w.from.guest === guest,
+    );
+    mine = recent.find((w) => w.from.id === m.id)?.task;
+    albumTask ??= album ? recent.find((w) => w.from.album === album)?.task : undefined;
   }
   if (mine !== undefined) {
     log.info("door.in.answered", { answer: "written already", channel });
@@ -565,7 +610,20 @@ async function write(
   let task = asked ?? albumTask ?? null;
   // `project: …`, `add <name>: …`, `jot: …` as a new message (ADR 0069): saved now, with no run. An
   // `add` is an Inbox item only when an open project has that name; else it's words, below.
-  const saving = task === null && !m.forwarded ? captureOf(text) : undefined;
+  const said = task === null && !m.forwarded ? captureOf(text) : undefined;
+  // A guest's project is named with their prefix on GitHub; yours never starts with one (ADR 0071).
+  if (said && "name" in said && !guest && GUEST_PREFIX.test(said.name))
+    return say(
+      `A project's name can't start with ${said.name.slice(0, 8)}: pick another.`,
+      "refused",
+    );
+  // The Journal is yours (ADR 0071): a guest's jot is never saved, however it came in.
+  if (guest && said && "kind" in said && said.kind === "jot") {
+    const host = s.people.find((p) => p.on.web)?.name ?? "the person who invited you";
+    return say(ONLY_YOURS(host), "refused");
+  }
+  const saving =
+    said && "name" in said && guest ? { ...said, name: guestProject(guest, said.name) } : said;
   if (saving && "wrong" in saving && !ADDS.test(text)) return say(saving.wrong, "refused");
   if (saving && !("wrong" in saving)) {
     const from: From = {
@@ -574,6 +632,7 @@ async function write(
       channel,
       chat: m.chat,
       id: m.id,
+      ...(guest ? { guest } : {}),
       ...(file
         ? {
             files: [
@@ -611,7 +670,7 @@ async function write(
   let labels: string[] = [];
   let current: Picked | undefined;
   if (task !== null && task !== albumTask) {
-    const r = task === asked && read && !picks ? read : await readTask(task, s, gh, picks);
+    const r = task === asked && read && !picks ? read : await readTask(task, s, gh, picks, guest);
     if (r.why) {
       log.info("door.in.refused", { why: "task refused", channel });
       return say(r.why, "refused");
@@ -664,16 +723,20 @@ async function write(
     }
     open = !open;
   }
-  // A part's close (ADR 0066) is a run's to see to, as it starts what waited for it: its word is
-  // written as words, so its run is never one that skips. GitHub keeps one waiting run per task,
-  // and the newest takes its place: a setting's run would take the close's and skip.
-  const seenTo = turn === "close" && labels.includes(SUB_TASK_LABEL);
+  // A part's close (ADR 0066) is a run's to see to, as it starts what waited for it, and so is a
+  // project's, as it closes the project's open chats: its word is written as words, so its run is
+  // never one that skips. GitHub keeps one waiting run per task, and the newest takes its place: a
+  // setting's run would take the close's and skip.
+  const seenTo =
+    turn === "close" && (labels.includes(SUB_TASK_LABEL) || labels.includes(PROJECT_LABEL));
   const from: From = {
     v: 1,
     person,
     channel,
     chat: m.chat,
     id: m.id,
+    // A guest's every line names them (ADR 0071): the task is theirs, and runs as theirs.
+    ...(guest ? { guest } : {}),
     ...(album ? { album } : {}),
     ...(setting || (turn && !seenTo) ? { setting: true as const } : {}),
     ...(m.button && task !== null && !file ? { button: true as const } : {}),
@@ -710,13 +773,15 @@ async function write(
   } else if (m.under) {
     // A new chat in a project (ADR 0069): `Part of #n` first, in plain words, then its sub-issue
     // link, the view GitHub shows. A project holds 100 chats.
-    const made = await newChatIn(gh, m.under, titleOf(text, file), body);
+    const made = await newChatIn(gh, m.under, titleOf(text, file), body, guest);
     if ("why" in made) return say(made.why, "refused");
     task = made.number;
   } else {
     const made = await gh.json<{ number: number }>("POST", `repos/${gh.repo}/issues`, {
       title: titleOf(text, file),
       body,
+      // A guest's marks, for their list (ADR 0071): their from-line is the truth.
+      ...(guest ? { labels: [GUEST_LABEL, guestLabel(guest)] } : {}),
     });
     task = made.number;
   }
@@ -734,7 +799,13 @@ async function write(
   // An album's later photos land quietly: its first one was answered.
   if (album && albumTask === task) return nothing();
   const shown = linked(gh, task);
-  if (turn) return say(TURNED(task, Boolean(open)), "written", { shown, ack: { spent: true } });
+  // A project reopened (ADR 0069): what it doesn't change, and how to go on.
+  const reopened = turn === "reopen" && labels.includes(PROJECT_LABEL) ? PROJECT_REOPENED : "";
+  if (turn)
+    return say(`${TURNED(task, Boolean(open))}${reopened}`, "written", {
+      shown,
+      ack: { spent: true },
+    });
   // A pick tapped in the picker: the toast says it, and the picker is drawn again with it.
   if (setting)
     return say(SET_FOR_NEXT(setting.label, task), "setting", {

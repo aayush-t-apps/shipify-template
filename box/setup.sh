@@ -31,6 +31,9 @@
 # network rules leave the machine's own packets alone (a ping's reply, IPv6's neighbour discovery),
 # and let the agents reach no IPv6 address but ::1 (a home network's IPv6 addresses are public).
 # A check at the end proves it; `ship box add` then labels the slots `sandbox`, for run jobs.
+# Setup 12: Ubuntu 26.04 LTS as well as 24.04: the agents' containers reach the network the same
+# way on both (slirp4netns), where 26.04's Podman 5 would take pasta, which isn't installed. A
+# stack's tool that doesn't install is said, and the setup goes on without it.
 # Running it again updates Node to the newest 22.x, and adds or removes slots to match
 # RUNNER_SLOTS.
 # SSH takes keys only, never passwords, once the account running this has a key; with
@@ -49,7 +52,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=11
+SETUP_VERSION=12
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -256,7 +259,9 @@ if [ -n "$PREP" ] && [ -f "$PREP" ]; then
       echo "  ok: $name"
     elif [ -n "$fix" ]; then
       echo "  installing: $name"
-      bash -c "$fix"
+      # A stack's tool that doesn't install (a new Ubuntu its installer doesn't know yet) is said,
+      # and the box is set up without it: only that stack's local tests need it.
+      bash -c "$fix" || echo "  skipped: $name didn't install (above); the box works without it, and \`pnpm ship doctor\` says it again with its fix"
     else
       echo "  missing, and no fix known: $name"
     fi
@@ -435,10 +440,15 @@ lab() {
   # Settings for the agents' users alone, which the runner names in each of their commands
   # (CONTAINERS_CONF_OVERRIDE): your own Podman keeps its defaults.
   install -d -m 755 /etc/containers/registries.conf.d
+  # Setup 12: a container's network through slirp4netns, on every Ubuntu, as 24.04's Podman does by
+  # itself. 26.04's Podman 5 takes pasta (the passt package), which isn't in the list above: there,
+  # no container with a network started.
   printf '%s\n' "# Written by Shipify box setup (docs/box-setup.md, ADR 0064): Podman's settings for the agents' users alone." \
     "# They have no systemd user session: the cgroupfs group manager, and logs and events to files (docker logs works)." \
+    "# Their network through slirp4netns, on every Ubuntu LTS (26.04's Podman would take pasta, not installed)." \
     "[containers]" 'log_driver = "k8s-file"' "" "[engine]" 'cgroup_manager = "cgroupfs"' 'events_logger = "file"' \
-    'compose_providers = ["podman-compose"]' "compose_warning_logs = false" > "$CONTAINERS_CONF"
+    'compose_providers = ["podman-compose"]' "compose_warning_logs = false" "" \
+    "[network]" 'default_rootless_network_cmd = "slirp4netns"' > "$CONTAINERS_CONF"
   chmod 644 "$CONTAINERS_CONF"
   # Docker's habits, for everyone here: a short name (postgres) is Docker Hub's, and no notice.
   printf '%s\n' "# Written by Shipify box setup (docs/box-setup.md, ADR 0064): a short image name is Docker Hub's, as with Docker." \

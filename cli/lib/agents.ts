@@ -117,7 +117,8 @@ export function readExecutors(
     if (!e.install) continue;
     const dir = e.install.dir ?? id;
     const same = dirs.get(dir);
-    const install = JSON.stringify({ ...e.install, dir });
+    // The same install whatever order its fields came in (a variant's `dir` is set where it's made).
+    const install = JSON.stringify(Object.entries({ ...e.install, dir }).sort());
     const kin = same && (e.extends === same.id || r.entries[same.id]?.extends === id);
     if (RESERVED_DIRS.includes(dir) || (same && !(kin && same.install === install))) {
       r.problems.push(

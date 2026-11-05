@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { JOB_ENV } from "./env.ts";
+import { BUILT } from "./built.ts";
+import { FAKE_GITLEAKS, JOB_ENV } from "./env.ts";
 
 export const ROOT = resolve(import.meta.dirname, "..");
 
@@ -38,6 +39,7 @@ export function sandbox(): Sandbox {
       SHIPIFY_PROVIDER: "mock",
       SHIPIFY_MOCK_PRS: join(dir, "mock-prs.txt"),
       SHIPIFY_CREDENTIALS: join(dir, "none.env"),
+      SHIPIFY_GITLEAKS: FAKE_GITLEAKS,
       // Your copy's workers.dev name (ADR 0047: a setting on GitHub), as a run would have it.
       CF_WORKERS_SUBDOMAIN: "example",
       GIT_AUTHOR_NAME: "test",
@@ -48,17 +50,14 @@ export function sandbox(): Sandbox {
   };
 }
 
+/** `ship <args> --json`, from the CLI built for this test run (tests/built.ts), as a box starts it. */
 export function ship(sb: Sandbox, ...args: string[]) {
-  const r = spawnSync(
-    process.execPath,
-    ["--import", "tsx", join(ROOT, "cli/cli.ts"), ...args, "--json"],
-    {
-      cwd: ROOT,
-      env: sb.env,
-      encoding: "utf8",
-      timeout: 600_000,
-    },
-  );
+  const r = spawnSync(process.execPath, [BUILT, ...args, "--json"], {
+    cwd: ROOT,
+    env: sb.env,
+    encoding: "utf8",
+    timeout: 600_000,
+  });
   let json: {
     status: string;
     summary: string;

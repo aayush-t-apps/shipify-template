@@ -54,6 +54,12 @@ export interface Message {
   file?: InFile;
   /** A new chat in this project (ADR 0069, the web chat's **New chat here**): its issue's number. */
   under?: number;
+  /**
+   * A guest wrote it (ADR 0071): only the web chat's routes set it, behind the guests' Access
+   * application and your guest list, on the proof only this Worker can make. Its `user` and `chat`
+   * are the guest's id.
+   */
+  guest?: { id: string; name: string };
 }
 
 /** What a message shows beside its words: its task's link, buttons that send words, the reply box. */

@@ -29,6 +29,7 @@ const ship = shipifyCopy().cli;
 /** The files whose words reach the agent, and the commands in them (`a|b` read as each). */
 const SOURCES = [
   "playbooks/task.md",
+  "playbooks/guest.md",
   "cli/kernel/prompt.ts",
   "cli/lib/notebook.ts",
   // The playbook's rare how-tos, moved into skills it points at.

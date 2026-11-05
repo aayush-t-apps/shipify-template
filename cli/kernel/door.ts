@@ -5,8 +5,9 @@
 //                                reads the reply from GitHub itself; this only says where to look. A
 //                                failed nudge isn't tried again: the watch tells you of the reply.
 //   GET  <door>/door/file/<ref>  a file you sent through a chat, for the agent (100 MB at most)
-//   POST <door>/door/files/forget  closed chats' files deleted from the web chat's store: the weekly
-//                                clean-up's, from watch.yml (the door takes no other workflow's)
+//   POST <door>/door/files/forget  closed chats' files deleted from the web chat's store, and those
+//                                no chat used in 60 days: the weekly clean-up's, from watch.yml
+//                                (the door takes no other workflow's)
 // SHIPIFY_DOOR_URL is the edge's origin.
 import { readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
@@ -62,7 +63,7 @@ const TYPES: Record<string, string> = {
 };
 
 /** A file's type from its name; anything else is plain bytes. */
-const typeOf = (name: string) =>
+export const typeOf = (name: string) =>
   TYPES[/\.([^.]+)$/.exec(name)?.[1]?.toLowerCase() ?? ""] ?? "application/octet-stream";
 
 /**
@@ -135,27 +136,47 @@ export async function doorFile(ref: string): Promise<Buffer | undefined> {
   }).catch(() => undefined);
 }
 
+/** What the door's forget deleted: the closed chats' files, and the files no chat used, with bytes. */
+export interface Forgotten {
+  deleted: number;
+  bytes: number;
+  unclaimed: number;
+  unclaimedBytes: number;
+  /** The door didn't take them all (no door, no token here, or it refused): the rest next week. */
+  failed?: true;
+}
+
+/** The most chats one forget names, as the door takes. */
+const MOST_FORGOTTEN = 500;
+
 /**
  * The weekly clean-up's step (ADR 0069, section 15): these closed chats' files deleted from the web
- * chat's store, proven by this job's OIDC token (watch.yml's: the door takes no other). How many
- * went and their bytes, or undefined when there's no door, no token here, or the door refused.
+ * chat's store, and the files no chat used in 60 days, proven by this job's OIDC token
+ * (watch.yml's: the door takes no other). 500 chats a call, and one call with none: what each
+ * deleted, added up. A call that fails stops the rest, and what went before it is still counted.
  */
-export async function forgetFiles(
-  chats: number[],
-): Promise<{ deleted: number; bytes: number } | undefined> {
+export async function forgetFiles(chats: number[]): Promise<Forgotten> {
+  const all = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0 };
+  const counts = Object.keys(all) as (keyof typeof all)[];
+  const n = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  // No door, no store of files: nothing to clean, and nothing failed.
+  if (!process.env.SHIPIFY_DOOR_URL) return all;
   const d = await door();
-  if (!d) return undefined;
-  const r = await within(60_000, (signal) =>
-    fetch(`${d.origin}/door/files/forget`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${d.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ chats }),
-      signal,
-    }),
-  ).catch(() => undefined);
-  const said = (await r?.json().catch(() => null)) as { deleted?: unknown; bytes?: unknown } | null;
-  const n = (v: unknown) => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : -1);
-  const deleted = n(said?.deleted);
-  const bytes = n(said?.bytes);
-  return r?.ok && deleted >= 0 && bytes >= 0 ? { deleted, bytes } : undefined;
+  if (!d) return { ...all, failed: true };
+  for (let i = 0; i === 0 || i < chats.length; i += MOST_FORGOTTEN) {
+    const r = await within(60_000, (signal) =>
+      fetch(`${d.origin}/door/files/forget`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${d.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ chats: chats.slice(i, i + MOST_FORGOTTEN) }),
+        signal,
+      }),
+    ).catch(() => undefined);
+    const said = (await r?.json().catch(() => null)) as Record<string, unknown> | null;
+    // An edge from before it deleted the files no chat used says nothing of them: none went.
+    const got: Record<string, unknown> = { unclaimed: 0, unclaimedBytes: 0, ...said };
+    if (!r?.ok || !counts.every((k) => n(got[k]))) return { ...all, failed: true };
+    for (const k of counts) all[k] += got[k] as number;
+  }
+  return all;
 }

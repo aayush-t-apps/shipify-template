@@ -3,6 +3,7 @@
 // per isolate until shortly before it expires. The App may do exactly what its install allows:
 // Issues read and write, Actions, Administration and Variables read, on shipify only. Every call
 // goes through a fetch the caller hands in, so a tick can count its subrequests and stop in time.
+import { guestLabel, readFrom } from "../../cli/contracts/index.ts";
 import { cached, recall, remember } from "./cache.ts";
 import type { Deps, Env } from "./env.ts";
 import { BudgetSpent, obj, utf8 } from "./env.ts";
@@ -241,3 +242,21 @@ export const byRun = (item: { user?: { login?: string; id?: number } | null }) =
 /** An issue's number from a comment's `issue_url`. */
 export const issueOf = (issueUrl: string | undefined) =>
   Number(/\/issues\/(\d+)$/.exec(issueUrl ?? "")?.[1] ?? 0);
+
+/**
+ * Whether an issue is this guest's (ADR 0071), from the record: its opening line, written by the
+ * door, names them; or the box wrote it (a doc of their project, from their run) with their label.
+ * Nothing the page sends counts.
+ */
+export const guestsOwn = (
+  gh: GitHub,
+  issue: {
+    body?: string | null;
+    labels?: { name: string }[];
+    performed_via_github_app?: { id?: number } | null;
+    user?: { login?: string; type?: string; id?: number } | null;
+  },
+  guest: string,
+) =>
+  (byDoor(gh, issue) && readFrom(issue.body)?.guest === guest) ||
+  (byRun(issue) && (issue.labels ?? []).some((l) => l.name === guestLabel(guest)));

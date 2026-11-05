@@ -45,7 +45,7 @@ week, it goes on a project's page.
 6. When the digest or the project's page says so: "collate the inbox".
 7. Back after a break: read Now, then the Map, then the chats' Progress.
 8. Before a decision: "check the project".
-9. Finished: **Close** the project. Its pages stay.
+9. Finished: **Close** the project. Its open chats close with it; its pages stay.
 
 ## A project
 
@@ -61,7 +61,8 @@ week, it goes on a project's page.
   open questions), the **Map** (what's where, each a link), then the facts, and at its foot the
   **Log**: a dated line for each run's page writes (`2026-11-03 · games-pricing · from #657`), the
   newest 20, kept by the box. Making a project makes its main page too, with your brief and an
-  empty Now and Map (a page a closed project of that name left is kept, not made twice).
+  empty Now and Map. A closed project keeps its name: `project: games` with it makes nothing, and
+  says to reopen it or pick another name.
 - **Its other pages** hold the rest (`games-pricing`), and **Sources** (`games-sources`) lists
   each source once with a short key (`[who-2024]`) that its facts cite. Ask for "the matrix" and a
   run builds `games-matrix` from it: a row per source, a column per question.
@@ -71,11 +72,41 @@ week, it goes on a project's page.
   the reply says so, and asking again writes it from the new page.
 - **Its Inbox** (`Notebook: games-inbox`) takes `add games: …` and the web chat's **Add**, with no
   run. "collate the inbox" folds the new items into the project's page.
-- **Its page in the web chat** shows Now, then one next step worked out from counts with no run: a
-  chat waiting on you, then 10 finds or more in the Inbox ("Collate the inbox"), a first question,
-  a first answer kept, a check while questions are open, and Close when every chat is done.
-- **It stays.** A project and its chats never close by themselves. **Close** puts it away; its
-  files go 30 days after.
+- **Its screen in the web chat** (ADR 0071) has four tabs: **Overview** (the brief, Now, one next
+  step and its buttons, then the project's own thread), **Chats** (by state), **Docs** (Overview,
+  Sources, the Inbox with its count of new finds, then its topic docs by short name) and **Files**
+  (every file of its chats and docs, newest first). The next step is worked out from counts with
+  no run: a chat waiting on you, then 10 finds or more in the Inbox ("Collate the inbox"), a first
+  question, a first answer kept, a check while questions are open, and Close when every chat is
+  done. The chats waiting on you show under it, each a link. **Collate** and **Check the project**
+  each start a chat in the project, so their questions wait in a chat like any other.
+- **Its docs:** the standard three (the main page, which the window calls **Overview**; Sources;
+  the Inbox), each made when first needed, and a **topic doc** (Research, Pricing) only when you
+  ask for one, or when a topic outgrows the Overview. A run makes one new doc at most, named in its
+  reply ("New doc: Research"). A doc opens in the pane, with **Edit** (plain Markdown): a save is
+  refused when the doc changed after you opened it, and starts no run.
+- **It stays.** A project and its chats never close by themselves. **Close** puts it away, and
+  closes its open chats as done: but one a run is on, or a repeat or an errand keeps open, which
+  its reply names. Writing on a chat opens it again. Their files go 30 days after.
+
+## Open or closed
+
+A project is open or closed, and every screen shows which. Closed means put away: nothing new
+goes into it, and its docs stay.
+- **Close** asks first, in the web chat: "Close games and its 2 open chats? Its docs stay in the
+  Library, read-only. Its files go from 5 Dec, unless you reopen it before." Its reply says the
+  same, every time, and names the chats it closed and the ones it left open.
+- **Closed, it's read-only.** Its screen says when it closed, what stays and when its files go,
+  and shows **Reopen** and **Export** only: no box, New chat here, Add, Collate or Check. Its docs
+  are under **Closed projects** in the Library, and Find and Files mark it "closed".
+- **Words that would add to it** write nothing, and say how to go on: `add games: …` and
+  `remember games: …` answer "games is closed · #n: Reopen it first. Nothing was written." A run
+  in one of its chats is told the project is closed: it keeps no page, and Keep on page and
+  "collate the inbox" say it's read-only.
+- **Reopen** opens the project alone: its chats stay closed. Write on one (its Chats tab) to open
+  it, or start a new chat in it.
+- **Its files** (its chats' and its docs') go at the weekly clean-up 30 days after it closed. A
+  chat left open under it closes after 30 quiet days, as one outside a project does.
 
 ## Keep on page, and check the project
 
@@ -107,7 +138,7 @@ Three layers, cheapest first:
 | Research | chats and Inbox items | "collate the inbox" when 10 finds wait; **Keep on page** on good answers |
 | Decide | facts and open questions in Now | "check the project", then write the decision on the main page |
 | Build | repos named in the brief | a chat per change, a PR each |
-| Done | — | **Close**: its pages stay in the Library |
+| Done | — | **Close**: its pages stay in the Library, read-only, under Closed projects |
 
 A project that never closes is an area (your health, your home): it works the same.
 
@@ -141,12 +172,39 @@ Each message you send starts one run. Its prompt holds these, in this order, and
 | **Progress** | where the chat's work stands, from its last run | 16,000 characters |
 | **The project** | its brief and repos, and its chats by title and state: the newest 30 and every one at work, waiting on you or failed; the rest are counted | 4,000 characters of brief, about 3 KB of chats |
 | **The pages** | Preferences, then the project's main page (Now and the Map first), its other pages, then People and the other always pages: each whole while the budget lasts, the rest by title and first line | 16 KB |
+| **Files** | the chat's newest 5 files in its `in/files`: what you sent and what its runs made (ADR 0071); an older one by its notes | 5 files |
 | **Notes from the box** | what's missing, if anything: a read that failed, or a page left out as someone else last edited it; and what a word asks ("collate the inbox", Keep on page, "check the project") | a line each |
 
 A run reads the rest only when the ask needs it: a chat that bears on it, a page not shown whole,
 an older message, your other projects' pages and the on-demand Library (`ship notebook list`,
 then `ship notebook read`). So a run starts small, reads more on demand, and says what it couldn't
 see.
+
+## Where each thing lives
+
+One job for each store (ADR 0071), the same for you and for guests:
+
+| Store | Its job | What it holds | Kept |
+|---|---|---|---|
+| GitHub issues | **the record** | every word: chats, projects, docs, Inbox finds | for good, each doc's versions in its history |
+| R2 | **the working copy** | every file the window shows: what you and guests send, and what runs make; the guest list | while its chat or project is open, and 30 days after |
+| `shipify-files` | **the backup** | every file your runs make, written as the run's reply is posted; never a guest's | for good |
+| KV | **small settings** | model picks, devices | until changed |
+
+**A file's life:** a file you send goes to R2 as it comes, and the run that answers gets it. A file
+your run makes goes to R2 **and** the backup, in the step that posts the reply; a chip under the
+reply opens it in the pane, and the next run in the chat gets the chat's newest 5 files, a run's
+too ("make the PDF shorter" works on the last PDF). A file is never edited: a run makes a new
+version beside the old one. It leaves R2 30 days after its chat or project closes (or at once,
+with **Delete**); a run's file then shows as **Archived**, linked to the backup. A file no chat
+used (an upload never sent, an old draft's) leaves 60 days after it came. A guest's files live in
+R2 only, and go the same way. A clean-up missed for weeks catches up the next time; two failed in
+a row say so, and the weekly digest's **Files** line says what the last one deleted.
+
+**Who does what:** you ask, read, edit docs and approve; the agent thinks, writes and leaves files
+in `out/`; the box posts the reply, writes docs, puts each file in R2 and the backup, sets labels,
+and cleans up each week; the edge shows the window and checks whose each thing is; GitHub keeps
+the record. Nothing waits on you to file, label, back up or clean up.
 
 ## The Journal
 

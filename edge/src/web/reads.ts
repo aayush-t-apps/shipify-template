@@ -9,16 +9,22 @@
 import {
   AFTER_CLOSE_MS,
   acknowledgement,
+  closedProjectText,
+  GUEST_LABEL,
+  guestLabel,
   IN_PROJECT_LABEL,
   LIBRARY_LABEL,
   NEEDS_YOU_LABEL,
   PROJECT_LABEL,
   projectNameOf,
+  projectOfLabels,
+  shownProject,
   pickIn,
   readFrom,
   readReply,
   readTaskSeen,
   replyButtons,
+  shortDay,
   STARTED_LABEL,
   STATE_LABELS,
   STAYING_LABEL,
@@ -29,11 +35,18 @@ import {
   withUpcoming,
   withZone,
 } from "../../../cli/contracts/index.ts";
-import pkg from "../../../package.json" with { type: "json" };
 import { cached, recall, remember } from "../cache.ts";
 import { channelOf } from "../channels/index.ts";
-import type { Deps, Env } from "../env.ts";
-import { byDoor, byRun, type GitHub, GitHubError, github, RUN_WRITER } from "../github.ts";
+import { build, type Deps, type Env } from "../env.ts";
+import {
+  byDoor,
+  byRun,
+  type GitHub,
+  GitHubError,
+  github,
+  guestsOwn,
+  RUN_WRITER,
+} from "../github.ts";
 import {
   libraryPages,
   NOTEBOOK_LABEL,
@@ -43,7 +56,15 @@ import {
   STATUS_LABEL,
   toBoxes,
 } from "../settings.ts";
-import { clean, esc, splitDetails, withoutEchoes, withoutPick } from "./clean.ts";
+import {
+  clean,
+  esc,
+  type Inside,
+  insideOf,
+  splitDetails,
+  withoutEchoes,
+  withoutPick,
+} from "./clean.ts";
 import { render } from "./docs.ts";
 import { PICTURE } from "./files.ts";
 import { read, readOr, reader } from "./gh.ts";
@@ -130,7 +151,8 @@ const SAID = new Set([
   IN_PROJECT_LABEL,
 ]);
 /** A task's other labels (yours from GitHub, "failed", "deploying"): the list filters by them. */
-const tagsOf = (i: Issue) => labelsOf(i).filter((l) => !SAID.has(l));
+const tagsOf = (i: Issue) =>
+  labelsOf(i).filter((l) => !SAID.has(l) && l !== GUEST_LABEL && !l.startsWith(`${GUEST_LABEL}:`));
 
 /** Not a task the chat lists: a PR, the status task, a notebook or Library page (ADR 0069). */
 const hidden = (i: Issue) =>
@@ -203,6 +225,40 @@ async function parentsOf(gh: GitHub, deps: Deps, issues: Issue[]) {
     if (p) out.set(n, p);
   }
   return out;
+}
+
+/**
+ * The chat each of these tasks is under (a project, or a split's task), by number: one GraphQL read
+ * for 100 at most, kept a minute. For Files (ADR 0069), so a closed project's chats, which the list
+ * doesn't hold, stay under it. None for one that's under nothing, or when GitHub fails.
+ */
+export function chatParents(
+  env: Env,
+  deps: Deps,
+  tasks: number[],
+): Promise<Record<string, number>> {
+  const gh = github(env, deps);
+  const ns = [...new Set(tasks)].sort((a, b) => a - b).slice(0, 100);
+  if (!ns.length) return Promise.resolve({});
+  const [owner, name] = gh.repo.split("/");
+  const each = ns.map((n) => `i${n}: issue(number: ${n}) { parent { number } }`).join(" ");
+  const look = async () => {
+    const d = await gh.graphql<{
+      repository?: Record<string, { parent?: { number: number } | null } | null>;
+    }>(
+      `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${each} } }`,
+      { owner, name },
+    );
+    return Object.fromEntries(
+      ns.flatMap((n) => {
+        const p = d.repository?.[`i${n}`]?.parent?.number;
+        return p ? [[String(n), p]] : [];
+      }),
+    );
+  };
+  return cached(`web:parents:${gh.repo}:${ns.join(",")}`, PLAN_MS, look, deps.now()).catch(
+    () => ({}),
+  );
 }
 
 /** A split task's parts, closed of all: GitHub's count, on the issue already. */
@@ -303,8 +359,21 @@ async function liveRuns(env: Env, deps: Deps, gh: GitHub): Promise<Map<number, R
   return out;
 }
 
-/** Tasks (and PRs) a page of the list reads. */
+/**
+ * Your boxes as a guest's list has them (ADR 0071): only whether one is online, so their chat says
+ * "Starting…", not "Waiting for a box"; no name, slot or load of yours.
+ */
+const unnamed = (b: { online: boolean }[]) => [
+  { name: "", online: b.some((x) => x.online), slots: 0, busy: 0 },
+];
+
+/** Tasks (and PRs) a page of a guest's list reads. */
 export const LIST_PAGE = 50;
+/**
+ * Tasks (and PRs) a page of your list reads (ADR 0071): GitHub's most, still one read, so guests'
+ * open chats, which share the repo's open issues and are left out, don't push yours off the page.
+ */
+export const OWNER_PAGE = 100;
 
 /** The task a PR's body names: "Closes owner/shipify#12", or "Part of …". */
 const taskOfPr = (body: string | null | undefined) =>
@@ -312,28 +381,42 @@ const taskOfPr = (body: string | null | undefined) =>
   undefined;
 
 /**
- * The list: what's running, the boxes, shipify's open PRs (for review), and the 50 open tasks
- * updated last. The closed ones (`closed`), and an older page (`page` 2 on), are only their tasks:
- * what's running, the boxes and the PRs come with the open list's first page.
+ * The list: what's running, the boxes, shipify's open PRs (for review), and the 100 open tasks
+ * updated last, guests' left out. The closed ones (`closed`), and an older page (`page` 2 on), are
+ * only their tasks: what's running, the boxes and the PRs come with the open list's first page.
+ * A guest's (ADR 0071): their own chats and projects, read by their label (an issue list, never a
+ * search, so an unchanged answer is free), what of theirs is running, whether a box is online
+ * (`unnamed`), and nothing else.
  */
-export async function list(env: Env, deps: Deps, page = 1, closed = false): Promise<List> {
+export async function list(
+  env: Env,
+  deps: Deps,
+  page = 1,
+  closed = false,
+  guest?: string,
+): Promise<List> {
   const gh = github(env, deps);
   const first = page === 1 && !closed;
+  const per = guest ? LIST_PAGE : OWNER_PAGE;
+  const theirs = guest ? `&labels=${encodeURIComponent(guestLabel(guest))}` : "";
   const [issues, live, boxes] = await Promise.all([
     read<Issue[]>(
       env,
       deps,
-      `repos/${gh.repo}/issues?state=${closed ? "closed" : "open"}&sort=updated&direction=desc&per_page=${LIST_PAGE}${page > 1 ? `&page=${page}` : ""}`,
+      `repos/${gh.repo}/issues?state=${closed ? "closed" : "open"}${theirs}&sort=updated&direction=desc&per_page=${per}${page > 1 ? `&page=${page}` : ""}`,
       { html: false },
     ),
     first ? liveRuns(env, deps, gh) : new Map<number, Running>(),
     first
       ? runners(gh, deps.now(), 30_000, reader(env, deps))
           .then(toBoxes)
+          .then((b) => (guest ? unnamed(b) : b))
           .catch(() => [])
       : [],
   ]);
-  const shown = issues.filter((i) => !hidden(i));
+  const shown = issues.filter(
+    (i) => !hidden(i) && (guest ? !i.pull_request : !labelsOf(i).includes(GUEST_LABEL)),
+  );
   const parents = await parentsOf(gh, deps, shown);
   const tasks = shown.map((i) => {
     const labels = tagsOf(i);
@@ -351,12 +434,14 @@ export async function list(env: Env, deps: Deps, page = 1, closed = false): Prom
       ...(staying(i) ? { staying: true as const } : {}),
       ...(labels.length ? { labels } : {}),
       ...(parts ? { parts } : {}),
-      ...(name ? { project: { name, chats: i.sub_issues_summary?.total ?? 0 } } : {}),
+      ...(name
+        ? { project: { name: shownProject(name), chats: i.sub_issues_summary?.total ?? 0 } }
+        : {}),
       ...(parent ? { parent } : {}),
     };
   });
   const review = issues
-    .filter((i) => first && i.pull_request && i.state === "open")
+    .filter((i) => first && !guest && i.pull_request && i.state === "open")
     .map((i) => {
       const task = taskOfPr(i.body);
       return {
@@ -368,16 +453,24 @@ export async function list(env: Env, deps: Deps, page = 1, closed = false): Prom
       };
     });
   const titles = new Map(tasks.map((t) => [t.n, t.title]));
+  // A guest sees only their own running, and no run's link (ADR 0071).
+  const running = [...live.values()]
+    .filter((r) => !guest || titles.has(r.n))
+    .map((r) => ({
+      ...r,
+      title: titles.get(r.n) ?? `#${r.n}`,
+      ...(guest ? { url: `https://github.com/${gh.repo}/issues/${r.n}` } : {}),
+    }));
   return {
     v: 1,
-    version: pkg.version,
+    version: build(env),
     boxes,
-    running: [...live.values()].map((r) => ({ ...r, title: titles.get(r.n) ?? `#${r.n}` })),
+    running,
     review,
     tasks,
     closed,
     page,
-    more: issues.length === LIST_PAGE,
+    more: issues.length === per,
   };
 }
 
@@ -407,8 +500,8 @@ function choiceOf(gh: GitHub, owner: string | undefined, all: Comment[], status?
   return (u && [agent, u.model, u.effort].filter(Boolean).join(" ")) || undefined;
 }
 
-const html = (h: string | undefined, url: string) => {
-  const c = clean(h ?? "");
+const html = (h: string | undefined, url: string, inside?: Inside) => {
+  const c = clean(h ?? "", undefined, inside);
   return c.trimmed
     ? `${c.html}<p class="trimmed"><a href="${url.replace(/"/g, "")}" target="_blank" rel="noopener noreferrer">Open on GitHub to see all of it</a></p>`
     : c.html;
@@ -457,18 +550,29 @@ function message(gh: GitHub, owner: string | undefined, c: Comment & { id: numbe
             : {}),
       };
     }),
+    // A run's files (ADR 0071), each kept under the ref its reply's line names; yours, backed up
+    // on `shipify-files` too: where its chip links once the kept copy has gone.
+    ...(reply?.files ?? []).map((f) => ({
+      name: f.name,
+      ...(f.type ? { type: f.type } : {}),
+      ...(f.size !== undefined ? { size: f.size } : {}),
+      src: fileSrc(f.ref),
+      ...(f.backup ? { backup: f.backup } : {}),
+    })),
   ];
-  const split = who === "shipify" ? splitDetails(html(c.body_html, c.html_url)) : undefined;
+  // Its links to shipify's issues, and to the files it names, open in the window (ADR 0071).
+  const inside = insideOf(gh.repo, files);
+  const split = who === "shipify" ? splitDetails(html(c.body_html, c.html_url, inside)) : undefined;
   const use = who === "you" ? useOf(md) : undefined;
   // A reply's question and links show from its line, your pick from its tag: not twice.
-  const shown = split ? split.html : html(c.body_html, c.html_url);
+  const shown = split ? split.html : html(c.body_html, c.html_url, inside);
   const words = use ? withoutPick(shown) : shown;
   return {
     id: c.id,
     who,
     name: who === "shipify" ? "Shipify" : (from?.person ?? login),
     at: c.created_at,
-    html: reply ? withoutEchoes(words, reply) : words,
+    html: reply ? withoutEchoes(words, reply, inside) : words,
     md,
     ...(split?.details ? { details: split.details } : {}),
     ...(reply
@@ -494,6 +598,18 @@ function message(gh: GitHub, owner: string | undefined, c: Comment & { id: numbe
     ...(from?.button ? { tap: true as const } : {}),
     url: c.html_url,
   };
+}
+
+/**
+ * A message as a guest sees it (ADR 0071): no reply's run details (your box, your plan's use, the
+ * run's link, its numbers).
+ */
+function forGuest(m: Msg): Msg {
+  const { details: _d, ...rest } = m;
+  if (!rest.reply) return rest;
+  const { run: _r, ...reply } = rest.reply;
+  // Its Markdown (Copy, Download) without the fold: the same HTML block in it.
+  return { ...rest, md: splitDetails(rest.md).html.trimEnd(), reply };
 }
 
 /**
@@ -548,9 +664,12 @@ async function progressOf(env: Env, deps: Deps, notes: string) {
   const inert = notes
     .replace(/(\\*)!\[/g, (_, bs: string) => `${bs}${bs.length % 2 ? "" : "\\"}![`)
     .replace(FETCHES, "&lt;");
-  return cached(key, PROGRESS_MS, () => render(env, deps, inert), deps.now()).catch(
-    () => `<pre>${esc(notes)}</pre>`,
-  );
+  return cached(
+    key,
+    PROGRESS_MS,
+    () => render(env, deps, inert, env.GITHUB_REPO),
+    deps.now(),
+  ).catch(() => `<pre>${esc(notes)}</pre>`);
 }
 
 /** A PR's state, from its issue: open, merged or closed. */
@@ -565,8 +684,10 @@ const SEARCH_MS = 60_000;
  * projects and pages (an Inbox's items are comments, which it doesn't search). When GitHub refuses
  * it (its 10 a minute) or answers by words, the answer is words', and says so. Kept a minute.
  */
-export async function search(env: Env, deps: Deps, words: string): Promise<Found> {
-  const q = encodeURIComponent(`repo:${env.GITHUB_REPO} is:issue ${words}`);
+export async function search(env: Env, deps: Deps, words: string, guest?: string): Promise<Found> {
+  // A guest's Find is kept to their label; yours leaves guests' out (ADR 0071).
+  const whose = guest ? `label:"${guestLabel(guest)}"` : `-label:${GUEST_LABEL}`;
+  const q = encodeURIComponent(`repo:${env.GITHUB_REPO} is:issue ${whose} ${words}`);
   type Hits = { items?: Issue[]; search_type?: string };
   const look = async (): Promise<Hits> => {
     try {
@@ -579,7 +700,7 @@ export async function search(env: Env, deps: Deps, words: string): Promise<Found
     }
   };
   const r = await cached(
-    `web:search:${env.GITHUB_REPO}:${words.toLowerCase()}`,
+    `web:search:${env.GITHUB_REPO}:${guest ?? ""}:${words.toLowerCase()}`,
     SEARCH_MS,
     look,
     deps.now(),
@@ -588,7 +709,11 @@ export async function search(env: Env, deps: Deps, words: string): Promise<Found
     v: 1,
     ...(r.search_type === "hybrid" ? {} : { words: true as const }),
     items: (r.items ?? [])
-      .filter((i) => !i.pull_request)
+      .filter(
+        (i) =>
+          !i.pull_request &&
+          (guest ? labelsOf(i).includes(guestLabel(guest)) : !labelsOf(i).includes(GUEST_LABEL)),
+      )
       .map((i) => {
         const labels = labelsOf(i);
         const page = /^Notebook: /.test(i.title);
@@ -602,20 +727,45 @@ export async function search(env: Env, deps: Deps, words: string): Promise<Found
   };
 }
 
+/**
+ * A doc's name in the window (ADR 0071): "Research", not "Notebook: health-project-research". A
+ * project's main page is its Overview; its other pages, the rest of their topic. GitHub keeps the
+ * title.
+ */
+export function docName(topic: string, project?: string) {
+  if (!project) return topic;
+  if (topic === project) return "Overview";
+  const rest = topic.startsWith(`${project}-`) ? topic.slice(project.length + 1) : topic;
+  return rest ? `${rest[0]?.toUpperCase()}${rest.slice(1).replace(/-/g, " ")}` : topic;
+}
+
+/**
+ * What Close asks first, on a project (ADR 0069): how many of its chats it closes too, what stays,
+ * and when its files go if it's closed now.
+ */
+export function closeAsk(name: string, chats: { state: string }[], now: number) {
+  const open = chats.filter((c) => c.state !== "closed").length;
+  const them = open ? ` and its ${open} open ${open === 1 ? "chat" : "chats"}` : "";
+  return `Close ${name}${them}? ${closedProjectText(new Date(now).toISOString())}`;
+}
+
 /** Finds waiting in an Inbox that make a collate the next step: the one number here (ADR 0070). */
 export const INBOX_FULL = 10;
 
 /**
  * A project's one next step (ADR 0070), from counts its page reads already, with no run: a chat
  * waiting on you, a full Inbox, a first question, a first fact kept, a check before a decision,
- * and Close when every chat is done.
+ * and Close when every chat is done. Closed (ADR 0069): when, what stays and goes, and Reopen.
  */
 export function nextStep(p: {
   chats: { n: number; state: string }[];
   inbox: number;
   map: number;
   now: string[];
+  closed?: string;
 }): string {
+  if (p.closed)
+    return `Closed ${shortDay(Date.parse(p.closed))}. ${closedProjectText(p.closed)} Reopen it to ask or add again.`;
   const open = p.chats.filter((c) => c.state !== "closed");
   const you = open.find((c) => c.state === "needs-you" || c.state === "stuck");
   if (you) return `#${you.n} waits on you: open it below.`;
@@ -643,6 +793,7 @@ export async function thread(
   n: number,
   since: string | undefined,
   older?: number,
+  guest?: string,
 ): Promise<Thread | null> {
   const gh = github(env, deps);
   const path = `repos/${gh.repo}/issues/${n}/comments?per_page=100`;
@@ -657,6 +808,9 @@ export async function thread(
     first,
   ]);
   if (!issue) return null;
+  // A guest's (ADR 0071): only a chat whose opening line the door wrote names them. Anything else
+  // is none to them, read no further.
+  if (guest && !guestsOwn(gh, issue, guest)) return null;
   const newest = Math.max(1, Math.ceil((issue.comments ?? 0) / 100));
   const at = (p: number) => (p === 1 ? one : page(p));
   const earlierPage = older && older < newest ? older : undefined;
@@ -695,16 +849,30 @@ export async function thread(
   const main = theirs.find((p) => p.now);
   const project = projectName
     ? {
-        name: projectName,
+        // A guest's without their prefix (ADR 0071): the name they gave, which their words use.
+        name: shownProject(projectName),
         chats: plan ?? [],
-        pages: theirs.map(({ n, topic, first, url }) => ({ n, topic, first, url })),
+        pages: theirs.map(({ n, topic, first, size, updated, waiting, url }) => ({
+          n,
+          topic,
+          name: docName(topic, projectName),
+          first,
+          size,
+          updated,
+          ...(waiting !== undefined ? { waiting } : {}),
+          url,
+        })),
         ...(main?.now?.length ? { now: main.now } : {}),
         step: nextStep({
           chats: plan ?? [],
           inbox: theirs.find((p) => p.waiting !== undefined)?.waiting ?? 0,
           map: main?.map ?? 0,
           now: main?.now ?? [],
+          ...(issue.state === "closed" ? { closed: issue.closed_at ?? issue.updated_at } : {}),
         }),
+        ...(issue.state === "open"
+          ? { ask: closeAsk(shownProject(projectName), plan ?? [], deps.now()) }
+          : {}),
       }
     : undefined;
   const owner = s.owner?.toLowerCase();
@@ -733,7 +901,8 @@ export async function thread(
   const messages = all
     .filter((c) => !since || Date.parse(c.created_at) > after)
     .flatMap((c) => messageOnce(gh, owner, c) ?? [])
-    .map((m) => (norun(m) ? { ...m, norun: true as const } : m));
+    .map((m) => (norun(m) ? { ...m, norun: true as const } : m))
+    .map((m) => (guest ? forGuest(m) : m));
   // The run under way, from its status comment (the run writes it first, and clears it at the end).
   const status = [...(await first), ...comments].find(
     (c) => (c.body ?? "").startsWith(TASK_MARK) && byRun(c),
@@ -748,7 +917,7 @@ export async function thread(
         n,
         title: issue.title,
         since: status?.updated_at ?? issue.updated_at,
-        url: `https://github.com/${gh.repo}/actions/runs/${working}`,
+        url: guest ? issue.html_url : `https://github.com/${gh.repo}/actions/runs/${working}`,
         queued: false,
       }
     : undefined;
@@ -779,6 +948,23 @@ export async function thread(
   );
   const model = choiceOf(gh, owner, all, status);
   const labels = labelsOf(issue);
+  // A doc (ADR 0071): its short name, and when it changed, for its Edit.
+  const isDoc = labels.some((l) => l === NOTEBOOK_LABEL || l === LIBRARY_LABEL);
+  const docOf = projectOfLabels(labels);
+  // Its project's number, open or closed, from the index: the doc opens over that project's Docs.
+  const of =
+    isDoc && docOf
+      ? (await projectIndex(env, deps).catch(() => [] as Indexed[])).find((p) => p.name === docOf)
+          ?.n
+      : undefined;
+  const doc = isDoc
+    ? {
+        name: docName(issue.title.replace(/^Notebook: /, ""), docOf),
+        ...(docOf ? { project: shownProject(docOf) } : {}),
+        ...(of ? { of } : {}),
+        updated: issue.updated_at,
+      }
+    : undefined;
   const forTask = issue.pull_request ? taskOfPr(issue.body) : undefined;
   const parent = issue.pull_request ? undefined : (await parentsOf(gh, deps, [issue])).get(n);
   return {
@@ -803,6 +989,7 @@ export async function thread(
       ...(labels.includes(STARTED_LABEL) ? { started: true as const } : {}),
       ...(project ? { project } : plan ? { plan } : {}),
       ...(progress ? { progress: await progress } : {}),
+      ...(doc ? { doc } : {}),
     },
     messages,
     earlier: last > 1 && !since,
@@ -875,9 +1062,75 @@ export async function repeats(env: Env, deps: Deps): Promise<Repeats> {
   };
 }
 
-/** Notebook (the page): its pages, and the Library's (ADR 0069). */
+/** A project in the index: its number, its name on GitHub, open or closed (and when), whose. */
+interface Indexed {
+  n: number;
+  name: string;
+  open: boolean;
+  closed?: string;
+  guest: boolean;
+}
+
+/**
+ * Every project, open and closed (ADR 0069): one read, the newest 100, kept a minute. What the page
+ * knows a project by beyond the list's open tasks: the Library's sections, a doc's way to its
+ * project, Find and Files. A closed project is one of these, never lost.
+ */
+export function projectIndex(env: Env, deps: Deps): Promise<Indexed[]> {
+  const gh = github(env, deps);
+  const look = async () =>
+    (
+      await read<Issue[]>(
+        env,
+        deps,
+        `repos/${gh.repo}/issues?labels=${PROJECT_LABEL}&state=all&sort=created&direction=desc&per_page=100`,
+        { html: false },
+      )
+    ).flatMap((i) => {
+      const name = !i.pull_request && projectNameOf(i.title);
+      return name
+        ? [
+            {
+              n: i.number,
+              name,
+              open: i.state === "open",
+              ...(i.state === "closed" && i.closed_at ? { closed: i.closed_at } : {}),
+              guest: labelsOf(i).includes(GUEST_LABEL),
+            },
+          ]
+        : [];
+    });
+  return cached(`web:projects:${gh.repo}`, PLAN_MS, look, deps.now());
+}
+
+/**
+ * Notebook (the page): its pages, and the Library's (ADR 0069), each by its number, to open in the
+ * pane, and a Library page by its short name too (ADR 0071); and your projects, open and closed.
+ */
 export async function notebook(env: Env, deps: Deps): Promise<Notebook> {
   const gh = github(env, deps);
-  const [pages, library] = await Promise.all([notebookPages(gh), libraryPages(gh)]);
-  return { v: 1, pages, library };
+  const [pages, library, projects] = await Promise.all([
+    notebookPages(gh),
+    libraryPages(gh),
+    projectIndex(env, deps).catch(() => [] as Indexed[]),
+  ]);
+  const n = (url: string) => Number(/\/issues\/(\d+)$/.exec(url)?.[1]) || undefined;
+  return {
+    v: 1,
+    pages: pages.map((p) => ({ ...p, ...(n(p.url) ? { n: n(p.url) } : {}) })),
+    // Guests' are theirs (ADR 0071): yours only.
+    projects: projects.filter((p) => !p.guest).map(({ guest: _, ...p }) => p),
+    // Guests' pages are theirs (ADR 0071): your Library leaves them out.
+    library: library
+      .filter((p) => !p.guest)
+      .map(({ n, topic, first, lines, url, project }) => ({
+        n,
+        topic,
+        name: docName(topic, project),
+        first,
+        lines,
+        url,
+        ...(project ? { project } : {}),
+      })),
+  };
 }

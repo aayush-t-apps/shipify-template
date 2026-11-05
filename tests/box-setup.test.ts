@@ -2,7 +2,8 @@
 // script runs only on a fresh Ubuntu LTS machine as root (pnpm ship box add), so these hold
 // its order and its words: the sandbox's users, the sudo rule, the folders, and the proof at the end.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { isBoxOs, slotsFor } from "../cli/commands/box.ts";
@@ -22,8 +23,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 11, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=11$/m);
+  it("is version 12, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=12$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -471,6 +472,27 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
       '"compose_warning_logs = false"',
     ])
       expect(step, line).toContain(line);
+    // Setup 12: their network goes through slirp4netns on every Ubuntu, as on 24.04. Ubuntu
+    // 26.04's Podman 5 takes pasta by default, which the exact list doesn't install, so no
+    // container with a network started there. The file as setup writes it, section by section.
+    const write =
+      /printf '%s\\n' "# Written by Shipify box setup[^\n]*Podman's settings[\s\S]*?> "\$CONTAINERS_CONF"/.exec(
+        step,
+      )?.[0];
+    expect(write).toBeDefined();
+    const dir = mkdtempSync(join(tmpdir(), "agents-conf-"));
+    const conf = join(dir, "shipify-agents.conf");
+    const r = bash([write ?? ""], { CONTAINERS_CONF: conf });
+    expect(r.status, r.stderr).toBe(0);
+    const sections = Object.fromEntries(
+      readFileSync(conf, "utf8")
+        .split(/^(?=\[)/m)
+        .filter((s) => s.startsWith("["))
+        .map((s) => [/^\[(\w+)\]/.exec(s)?.[1], s]),
+    );
+    expect(sections.network).toContain('default_rootless_network_cmd = "slirp4netns"');
+    expect(sections.engine).toContain('cgroup_manager = "cgroupfs"');
+    rmSync(dir, { recursive: true, force: true });
     // Docker's habits: a short name is Docker Hub's, and no notice from podman-docker.
     expect(step).toContain("'unqualified-search-registries = [\"docker.io\"]'");
     expect(step).toContain("/etc/containers/registries.conf.d/50-shipify.conf");
@@ -866,7 +888,7 @@ esac`),
     expect(calls).toContain("mktemp -d");
     // The script goes in on stdin, as every file does: nothing but ssh reaches the machine.
     expect(calls).toContain("umask 077 && cat > /tmp/tmp.Ab12/setup.sh");
-    expect(readFileSync(join(got, "setup.sh"), "utf8")).toContain("SETUP_VERSION=11");
+    expect(readFileSync(join(got, "setup.sh"), "utf8")).toContain("SETUP_VERSION=12");
     // The slots GitHub has, so setup registers again one it deleted.
     expect(readFileSync(join(got, "box.env"), "utf8")).toContain('RUNNER_REGISTERED="1 2"');
     expect(calls).toContain(

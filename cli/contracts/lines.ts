@@ -5,6 +5,7 @@
 // the author, never the text. Canonical JSON, so both sides read and write the same bytes.
 import { z } from "zod";
 import { canonicalJson } from "./json.ts";
+import { GUEST_ID, WEB_FILE_REF } from "./guests.ts";
 import { REPLY_KINDS } from "./labels.ts";
 import { FileRef, Link, MAX_FILES_IN } from "./shapes.ts";
 
@@ -30,6 +31,11 @@ export const From = z.object({
    * web chat shows no message for it, and its answer goes on the status's Last action line.
    */
   button: z.literal(true).optional(),
+  /**
+   * The guest who wrote it (ADR 0071), by their id: on a task's opening line, the task is theirs,
+   * runs in the guest profile, and shows only in their window. Only the door writes it.
+   */
+  guest: z.string().regex(GUEST_ID).optional(),
 });
 export type From = z.infer<typeof From>;
 
@@ -68,6 +74,24 @@ export const ReplyLine = z.object({
   list: z.union([z.string().regex(/^[0-9a-f]{8}$/), z.literal("github")]).optional(),
   /** An answer in a project's chat (ADR 0070): a chat shows **Keep on page** under it. */
   keep: z.literal(true).optional(),
+  /**
+   * The files the run made, each by its ref in the web chat's store (R2, ADR 0071): the box picks
+   * each ref and the door keeps a copy under it, whatever chat the task came from, so the window
+   * shows them as chips and the next run in the chat gets them.
+   */
+  files: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(200),
+        ref: z.string().regex(WEB_FILE_REF),
+        type: z.string().max(120).optional(),
+        size: z.number().int().nonnegative().optional(),
+        /** Its backup on `shipify-files` (yours only): where its chip links once R2's copy has gone. */
+        backup: z.string().url().max(500).optional(),
+      }),
+    )
+    .max(10)
+    .optional(),
   to: z.array(z.string().max(120)).max(10).default([]),
   key: z.string().min(1).max(200),
 });

@@ -667,6 +667,22 @@ describe("the sandbox: killing and cleaning", () => {
     expect(() => prepareRun(2, "78", refused)).toThrow(/Couldn't stop/);
   });
 
+  it("a guest's run (ADR 0071) gets caches and a containers' store of its own, in its folder", () => {
+    const root = mkdtempSync(join(tmpdir(), "srv-"));
+    mkdirSync(join(root, "shipify-agent-2"));
+    const io = fakeIo((c) => (isLeftCheck(c) ? { code: 1 } : {}), root);
+    const run = prepareRun(2, "79-1", io, true);
+    const script = command(io.calls.at(-1) as Call)[2] ?? "";
+    // Its ~/.cache and ~/.local/share are folders in its run folder, not links to the slot's.
+    expect(script).toContain("mkdir -m 700 home/.cache home/.local/share");
+    expect(script).not.toContain("ln -s");
+    expect(run.env.XDG_CACHE_HOME).toBe(join(run.home, ".cache"));
+    expect(run.env.XDG_DATA_HOME).toBe(join(run.home, ".local", "share"));
+    expect(run.env.XDG_DATA_HOME?.startsWith(run.dir)).toBe(true);
+    // Yours keep the slot's: Podman's store among them.
+    expect(runPaths(2, "79-2", root).env.XDG_DATA_HOME).toBe(join(root, "shipify-agent-2", "data"));
+  });
+
   it("starts a run as after a restart for Podman: runtime/ emptied, the last run's containers pruned only when it used them (ADR 0064)", () => {
     const root = mkdtempSync(join(tmpdir(), "srv-"));
     mkdirSync(join(root, "shipify-agent-1"));
@@ -1046,6 +1062,11 @@ describe("the sandbox's own scripts, run for real (as this user, without the sud
     const root = realpathSync(mkdtempSync(join(tmpdir(), "srv-")));
     const slot = join(root, "shipify-agent-1");
     mkdirSync(slot);
+    // The slot folder as the box's setup makes it (2711), by a group of this user's own: its setgid
+    // passes the group on to the run's folder and to out/. Not mkdir -m's, which Ubuntu 26.04's
+    // coreutils (uutils) never sets, nor TMPDIR's group, which may not be this user's.
+    chownSync(slot, process.getuid?.() ?? -1, process.getgid?.() ?? -1);
+    chmodSync(slot, 0o2711);
     // An earlier run, with a folder the agent made read-only (as Go's module cache does).
     mkdirSync(join(slot, "run-old", "work", "locked"), { recursive: true });
     writeFileSync(join(slot, "run-old", "work", "locked", "f"), "x");

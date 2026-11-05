@@ -81,6 +81,21 @@ export function wordOf(text: string): Word | undefined {
   return undefined;
 }
 
+/**
+ * The fixed words a guest never says (ADR 0071): approvals and what only you decide. The door
+ * refuses them at once (but a plain `yes` or `no`, which answers the guest's own run), and the box
+ * reads any that reach it as plain words.
+ */
+export const NOT_A_GUESTS: ReadonlySet<Word> = new Set<Word>([
+  "yes",
+  "no",
+  "go",
+  "publish",
+  "preview",
+  "start over",
+  "clean start",
+]);
+
 /** A list's own words: its Yes and No send them, and nothing else is a button for them. */
 const LIST_WORDS: Word[] = ["yes", "no"];
 /** The list a `yes <code>` or a `no <code>` names (its Yes or No button's words), or none for a

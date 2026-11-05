@@ -1,39 +1,27 @@
 // The secret scan before a PR (cli/lib/secret-scan.ts): the pipeline's own gitleaks, pinned the
-// same, on what the PR will hold, and what to do when it finds something. A stand-in gitleaks
-// here: a test never downloads.
+// same, on what the PR will hold, and what to do when it finds something. The stand-in gitleaks
+// here (tests/fixtures/fake-gitleaks.mjs, every test's), and the real one once, with this config.
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { GITLEAKS, GITLEAKS_CONFIG, secretScan } from "../cli/lib/secret-scan.ts";
+import {
+  canScan,
+  GITLEAKS,
+  GITLEAKS_CONFIG,
+  secretFindings,
+  secretScan,
+} from "../cli/lib/secret-scan.ts";
 import { ROOT, STATELESS } from "./helpers.ts";
-
-/** A stand-in: flags each line with LEAK in it, and lists every file it was shown. */
-const FAKE = `#!/usr/bin/env node
-const { readdirSync, readFileSync, statSync, writeFileSync, appendFileSync } = require("node:fs");
-const { join } = require("node:path");
-const a = process.argv.slice(2);
-if (process.env.ARGS) writeFileSync(process.env.ARGS, JSON.stringify(a));
-const root = a[1];
-const found = [];
-const walk = (d) => { for (const n of readdirSync(d)) { const p = join(d, n);
-  if (statSync(p).isDirectory()) walk(p); else {
-    appendFileSync(process.env.SEEN, p.slice(root.length + 1) + "\\n");
-    readFileSync(p, "utf8").split("\\n").forEach((l, i) => {
-      if (l.includes("LEAK")) found.push({ File: p, StartLine: i + 1, RuleID: "generic-api-key" }); }); } } };
-walk(root);
-writeFileSync(a[a.indexOf("--report-path") + 1], JSON.stringify(found));
-process.exit(found.length ? 1 : 0);
-`;
 
 describe("the secret scan before a PR", () => {
   const had = process.env.SHIPIFY_GITLEAKS;
   afterEach(() => {
     if (had === undefined) delete process.env.SHIPIFY_GITLEAKS;
     else process.env.SHIPIFY_GITLEAKS = had;
-    delete process.env.SEEN;
-    delete process.env.ARGS;
+    delete process.env.FAKE_GITLEAKS_SEEN;
+    delete process.env.FAKE_GITLEAKS_ARGS;
   });
 
   it("pins the same gitleaks as each project's pipeline", () => {
@@ -51,13 +39,9 @@ describe("the secret scan before a PR", () => {
     writeFileSync(join(dir, "node_modules/x.js"), "LEAK in a dependency\n");
     mkdirSync(join(dir, "tests"));
     writeFileSync(join(dir, "tests/a.test.ts"), "const ok = 1;\n");
-    const fake = join(dir, "..", `gitleaks-${Math.random()}`);
-    writeFileSync(fake, FAKE);
-    chmodSync(fake, 0o755);
-    process.env.SHIPIFY_GITLEAKS = fake;
-    process.env.SEEN = join(dir, "..", `seen-${Math.random()}`);
+    process.env.FAKE_GITLEAKS_SEEN = join(dir, "..", `seen-${Math.random()}`);
     expect(secretScan(dir)).toBeUndefined();
-    expect(readFileSync(process.env.SEEN, "utf8")).not.toContain("node_modules");
+    expect(readFileSync(process.env.FAKE_GITLEAKS_SEEN, "utf8")).not.toContain("node_modules");
     // A new file, not committed yet: the PR will hold it, so it's scanned.
     writeFileSync(join(dir, "tests/b.test.ts"), "const t = 1;\nconst TOKEN = 'LEAK';\n");
     const said = secretScan(dir);
@@ -83,14 +67,23 @@ describe("the secret scan before a PR", () => {
     const dir = mkdtempSync(join(tmpdir(), "scan-"));
     spawnSync("git", ["-C", dir, "init", "-q"]);
     writeFileSync(join(dir, "a.txt"), "fine\n");
-    const fake = join(dir, "..", `gitleaks-${Math.random()}`);
-    writeFileSync(fake, FAKE);
-    chmodSync(fake, 0o755);
-    process.env.SHIPIFY_GITLEAKS = fake;
-    process.env.SEEN = join(dir, "..", `seen-${Math.random()}`);
-    process.env.ARGS = join(dir, "..", `args-${Math.random()}`);
+    process.env.FAKE_GITLEAKS_ARGS = join(dir, "..", `args-${Math.random()}`);
     expect(secretScan(dir)).toBeUndefined();
-    const args = JSON.parse(readFileSync(process.env.ARGS, "utf8")) as string[];
+    const args = JSON.parse(readFileSync(process.env.FAKE_GITLEAKS_ARGS, "utf8")) as string[];
     expect(args[args.indexOf("--config") + 1]).toBe(GITLEAKS_CONFIG);
   });
+
+  it("the pinned gitleaks itself reads this config: the stateless token found, a clean file passed", (ctx) => {
+    // The one real scan in the tests, fetched once a machine (30 s a start on a Raspberry Pi).
+    // Where it can't run (not Linux on x64 or arm64), the pipeline scans on main.
+    delete process.env.SHIPIFY_GITLEAKS;
+    if (!canScan()) ctx.skip();
+    const dir = mkdtempSync(join(tmpdir(), "scan-"));
+    spawnSync("git", ["-C", dir, "init", "-q"]);
+    writeFileSync(join(dir, "fine.ts"), "const ok = 1;\n");
+    writeFileSync(join(dir, "key.ts"), `const t = "${STATELESS}";\n`);
+    const found = secretFindings(dir) ?? [];
+    expect(found).toContain("key.ts:1 (github-token-stateless)");
+    expect(found.filter((f) => !f.startsWith("key.ts:1 "))).toEqual([]);
+  }, 180_000);
 });

@@ -8,21 +8,25 @@ import {
   type Capture,
   type From,
   fromLine,
+  GUEST_LABEL,
+  guestLabel,
   IN_PROJECT_LABEL,
   inboxTopic,
   journalTopic,
   LIBRARY_LABEL,
   MOST_CHATS,
   PROJECT_LABEL,
+  projectClosed,
   projectLabel,
   projectNameOf,
   projectTitle,
   readFrom,
   SUB_TASK_LABEL,
+  shownProject,
   timeZoneNow,
   withoutLine,
 } from "../../cli/contracts/index.ts";
-import type { GitHub } from "./github.ts";
+import { type GitHub, guestsOwn } from "./github.ts";
 
 /** What the chat is told, and the issue it wrote on. */
 interface Captured {
@@ -30,16 +34,31 @@ interface Captured {
   task?: number;
 }
 
-type Issue = { number: number; title: string; body?: string | null; pull_request?: unknown };
+type Issue = {
+  number: number;
+  title: string;
+  body?: string | null;
+  state?: string;
+  pull_request?: unknown;
+};
 
-/** The open issues under a label, newest first: one call, 100 at most. */
-const under = (gh: GitHub, label: string) =>
+/** The issues under a label, newest first, open ones unless `all`: one call, 100 at most. */
+const under = (gh: GitHub, label: string, state: "open" | "all" = "open") =>
   gh
     .json<Issue[]>(
       "GET",
-      `repos/${gh.repo}/issues?labels=${encodeURIComponent(label)}&state=open&sort=created&direction=desc&per_page=100`,
+      `repos/${gh.repo}/issues?labels=${encodeURIComponent(label)}&state=${state}&sort=created&direction=desc&per_page=100`,
     )
     .then((l) => l.filter((i) => !i.pull_request));
+
+/**
+ * The project of this name, open or closed (ADR 0069): an open one first, as a name made again
+ * before closed names were refused may have both. One call.
+ */
+async function projectNamed(gh: GitHub, name: string) {
+  const all = (await under(gh, PROJECT_LABEL, "all")).filter((i) => i.title === projectTitle(name));
+  return all.find((i) => i.state !== "closed") ?? all[0];
+}
 
 /** Now, in your zone: the day (`2026-11-02`) and the minute (`13:40`). */
 function nowIn(now: number) {
@@ -72,11 +91,23 @@ type Labelled = Issue & {
   sub_issues_summary?: { total?: number };
 };
 
-/** An open project by its number, or why it isn't one. */
-async function openProject(gh: GitHub, n: number): Promise<Labelled | { why: string }> {
+/**
+ * Whether an issue is on the right side of the wall (ADR 0071): a guest's own, for a guest; for you,
+ * none of a guest's, so your chats and theirs never share a project.
+ */
+const onSide = (gh: GitHub, i: Labelled, guest: string | undefined) =>
+  guest ? guestsOwn(gh, i, guest) : !(i.labels ?? []).some((l) => l.name === GUEST_LABEL);
+
+/** An open project by its number, or why it isn't one; for a guest, only one of theirs. */
+async function openProject(
+  gh: GitHub,
+  n: number,
+  guest?: string,
+): Promise<Labelled | { why: string }> {
   const r = await gh.call("GET", `repos/${gh.repo}/issues/${n}`);
   const p = r.data as Labelled | null;
-  if (r.status !== 200 || !p) return { why: `There's no project #${n}.` };
+  if (r.status !== 200 || !p || !onSide(gh, p, guest))
+    return { why: guest ? "Not your project." : `There's no project #${n}.` };
   if (!(p.labels ?? []).some((l) => l.name === PROJECT_LABEL) || p.pull_request)
     return { why: `#${n} isn't a project.` };
   if (p.state === "closed") return { why: `The project #${n} is closed: reopen it first.` };
@@ -111,13 +142,15 @@ export async function newChatIn(
   project: number,
   title: string,
   body: string,
+  guest?: string,
 ): Promise<{ number: number } | { why: string }> {
-  const p = await openProject(gh, project);
+  const p = await openProject(gh, project, guest);
   if ("why" in p) return p;
   const [head, ...rest] = body.split("\n");
   const made = await gh.json<{ number: number; id: number }>("POST", `repos/${gh.repo}/issues`, {
     title,
     body: [head, `Part of #${project}`, "", ...rest].join("\n"),
+    ...(guest ? { labels: guestMarks(guest) } : {}),
   });
   // Unlinked, the chat still says its project in plain words; the reply says why.
   const why = await link(gh, p, made);
@@ -131,12 +164,18 @@ export async function newChatIn(
  * project already (its label, or its `Part of #n`) stays there, and a part of a split task (ADR
  * 0066) goes with its task. What to say.
  */
-export async function moveToProject(gh: GitHub, task: number, project: number): Promise<string> {
-  const p = await openProject(gh, project);
+export async function moveToProject(
+  gh: GitHub,
+  task: number,
+  project: number,
+  guest?: string,
+): Promise<string> {
+  const p = await openProject(gh, project, guest);
   if ("why" in p) return p.why;
   const r = await gh.call("GET", `repos/${gh.repo}/issues/${task}`);
   const t = r.data as Labelled | null;
-  if (r.status !== 200 || !t || t.pull_request) return `There's no task #${task}.`;
+  if (r.status !== 200 || !t || t.pull_request || !onSide(gh, t, guest))
+    return guest ? "Not your chat." : `There's no task #${task}.`;
   const labels = (t.labels ?? []).map((l) => l.name);
   if (labels.some((l) => [PROJECT_LABEL, LIBRARY_LABEL].includes(l)))
     return `#${task} is a project or a page: it can't go in a project.`;
@@ -147,7 +186,7 @@ export async function moveToProject(gh: GitHub, task: number, project: number): 
   const why = await link(gh, p, t);
   if (why) return why;
   await gh.json("POST", `repos/${gh.repo}/issues/${task}/labels`, { labels: [IN_PROJECT_LABEL] });
-  const name = projectNameOf(p.title) ?? `#${project}`;
+  const name = shownProject(projectNameOf(p.title) ?? `#${project}`);
   return `Moved #${task} into ${name} · #${project}. Its next run reads the project's pages.`;
 }
 
@@ -155,7 +194,13 @@ export async function moveToProject(gh: GitHub, task: number, project: number): 
 export const inboxOf = (text: string) =>
   Number(/^Added to the [a-z0-9-]+ Inbox · #(\d+)/.exec(text)?.[1]) || undefined;
 
-/** A page by its topic among these, or a new one with its first words. */
+/** A guest's marks on what the door makes for them (ADR 0071): for their lists. */
+const guestMarks = (guest: string) => [GUEST_LABEL, guestLabel(guest)];
+
+/**
+ * A page by its topic among these, or a new one with its first words (a guest's with their marks:
+ * their from-line names them already).
+ */
 async function pageOf(gh: GitHub, from: From, topic: string, labels: string[], first: string) {
   const title = `Notebook: ${topic}`;
   const had = (await under(gh, labels.at(-1) as string)).find((i) => i.title === title);
@@ -163,7 +208,7 @@ async function pageOf(gh: GitHub, from: From, topic: string, labels: string[], f
   const made = await gh.json<Issue>("POST", `repos/${gh.repo}/issues`, {
     title,
     body: `${fromLine({ ...from, files: undefined })}\n${first}`,
-    labels,
+    labels: [...labels, ...(from.guest ? guestMarks(from.guest) : [])],
   });
   return { ...made, made: true };
 }
@@ -180,17 +225,26 @@ export async function capture(
   file: string | undefined,
   now: number,
 ): Promise<Captured | undefined> {
+  // A guest's project is named with their prefix on GitHub (the door named it so); the chat shows
+  // the name they gave.
+  const shown = "name" in c ? shownProject(c.name) : "";
   if (c.kind === "project") {
-    const there = (await under(gh, PROJECT_LABEL)).find((i) => i.title === projectTitle(c.name));
+    const there = await projectNamed(gh, c.name);
+    // A closed project keeps its name: one made again would split its docs across two (ADR 0069).
+    if (there?.state === "closed")
+      return {
+        text: `The project ${shown} was closed · #${there.number}: Reopen it, or pick another name. Nothing was made.`,
+        task: there.number,
+      };
     if (there)
       return {
-        text: `The project ${c.name} is there already · #${there.number}: write in it, or \`add ${c.name}: …\`.`,
+        text: `The project ${shown} is there already · #${there.number}: write in it, or \`add ${shown}: …\`.`,
         task: there.number,
       };
     const made = await gh.json<Issue>("POST", `repos/${gh.repo}/issues`, {
       title: projectTitle(c.name),
-      body: `${fromLine({ ...from, files: undefined })}\n${c.brief || `The project ${c.name}.`}`,
-      labels: [PROJECT_LABEL],
+      body: `${fromLine({ ...from, files: undefined })}\n${c.brief || `The project ${shown}.`}`,
+      labels: [PROJECT_LABEL, ...(from.guest ? guestMarks(from.guest) : [])],
     });
     // Its main page at once, so every project has one: the brief, then an empty Now and Map (ADR
     // 0070), kept by runs; the box adds the Log at its foot. A closed project of this name left its
@@ -200,30 +254,33 @@ export async function capture(
       from,
       c.name,
       [LIBRARY_LABEL, projectLabel(c.name)],
-      `# ${c.name}\n\n${c.brief || `The project ${c.name}.`}\n\n## Now\n\n## Map\n`,
+      `# ${shown}\n\n${c.brief || `The project ${shown}.`}\n\n## Now\n\n## Map\n`,
     );
     return {
-      text: `Project ${c.name} made · #${made.number}, its main page · #${page.number}. No run started. Ask in it, \`add ${c.name}: …\` saves a find, \`remember ${c.name}: …\` a fact.`,
+      text: `Project ${shown} made · #${made.number}, its main page · #${page.number}. No run started. Ask in it, \`add ${shown}: …\` saves a find${from.guest ? "." : `, \`remember ${shown}: …\` a fact.`}`,
       task: made.number,
     };
   }
   if (c.kind === "add") {
-    const project = (await under(gh, PROJECT_LABEL)).find((i) => i.title === projectTitle(c.name));
+    const project = await projectNamed(gh, c.name);
     if (!project) return undefined;
-    if (!c.words && !file) return { text: `Write what you found after \`add ${c.name}:\`.` };
+    // Closed, it's read-only: the find isn't kept, and no chat opens for it.
+    if (project.state === "closed")
+      return { text: projectClosed(shown, project.number), task: project.number };
+    if (!c.words && !file) return { text: `Write what you found after \`add ${shown}:\`.` };
     const inbox = await pageOf(
       gh,
       from,
       inboxTopic(c.name),
       [LIBRARY_LABEL, projectLabel(c.name)],
-      `# ${c.name}: Inbox\n\nWhat you found for ${c.name}, waiting to be collated: one comment each. Say "collate the inbox" in #${project.number}.`,
+      `# ${shown}: Inbox\n\nWhat you found for ${shown}, waiting to be collated: one comment each. Say "collate the inbox" in #${project.number}.`,
     );
     const words = [c.words, file ? `📎 ${file}` : ""].filter(Boolean).join("\n\n");
     await gh.json("POST", `repos/${gh.repo}/issues/${inbox.number}/comments`, {
       body: `${fromLine(from)}\n${words}`,
     });
     return {
-      text: `Added to the ${c.name} Inbox · #${inbox.number}. No run started: "collate the inbox" in #${project.number} folds it in.`,
+      text: `Added to the ${shown} Inbox · #${inbox.number}. No run started: "collate the inbox" in #${project.number} folds it in.`,
       task: inbox.number,
     };
   }

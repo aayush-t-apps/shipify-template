@@ -124,7 +124,9 @@
         "--prefix",
         "{prefix}",
         "@anthropic-ai/claude-code@2.1.284"
-      ]
+      ],
+      "newest": "https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/latest",
+      "advisories": "https://api.github.com/advisories?ecosystem=npm&affects=%40anthropic-ai%2Fclaude-code%40{version}&per_page=100"
     },
     "modelEfforts": {
       "haiku": []
@@ -152,7 +154,9 @@
         "--prefix",
         "{prefix}",
         "@earendil-works/pi-coding-agent@1.0.2"
-      ]
+      ],
+      "newest": "https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent/latest",
+      "advisories": "https://api.github.com/advisories?ecosystem=npm&affects=%40earendil-works%2Fpi-coding-agent%40{version}&per_page=100"
     }
   },
   "opencode": {
@@ -178,7 +182,9 @@
         "--prefix",
         "{prefix}",
         "opencode-ai@1.18.34"
-      ]
+      ],
+      "newest": "https://registry.npmjs.org/opencode-ai/latest",
+      "advisories": "https://api.github.com/advisories?ecosystem=npm&affects=opencode-ai%40{version}&per_page=100"
     }
   }
 }

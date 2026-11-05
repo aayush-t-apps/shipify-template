@@ -95,7 +95,8 @@ export async function api(p, body, k = p) {
   const headers = { "x-shipify-chat": "1", "if-none-match": (!body && tags[k]) || "" };
   if (body) headers["content-type"] = "application/json";
   /** @type {RequestInit} */
-  const init = { method: body ? "POST" : "GET", headers, body: body && JSON.stringify(body) };
+  // A GET with a body (`0` too) is never sent.
+  const init = { method: body ? "POST" : "GET", headers, body: body ? JSON.stringify(body) : null };
   init.signal = AbortSignal.timeout(2e4);
   init.redirect = "manual";
   const r = await fetch(`api/${p}`, init).catch((e) => e);

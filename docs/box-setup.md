@@ -13,7 +13,7 @@ checks out, so every box takes task runs ([The agent's own user](#the-agents-own
 
 ## Anywhere, with one command
 
-On any Ubuntu 24.04 LTS machine (a cloud VM, a spare PC, a friend's laptop), as a user who can
+On any Ubuntu 26.04 or 24.04 LTS machine (a cloud VM, a spare PC, a friend's laptop), as a user who can
 sudo, with nothing on it yet:
 
 ```sh
@@ -54,7 +54,7 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
 **Run it again** for anything: to update the box's setup, to finish one that stopped, or to fix
 what `ship doctor` names. It carries on from what's done, and mends what an older setup left
 (setup 10: the agents' folders that kept containers from starting; setup 11: the slot folders a
-container changed, and the agents' IPv6). Run it while no task runs: `box add` refuses while a
+container changed, and the agents' IPv6; setup 12: containers' network on Ubuntu 26.04). Run it while no task runs: `box add` refuses while a
 slot is busy. A new disk or a fresh OS: [A new disk (an SSD), or a fresh OS](#a-new-disk-an-ssd-or-a-fresh-os).
 
 **It never says done when something isn't:** the setup ends with a line that says what's left
@@ -177,9 +177,9 @@ shares a laptop between its apps.
   and a limit comes only if a slot is ever killed for memory (ADR 0061).
 - **Measure a box:** `box/load-test.sh`, below.
 
-**One OS for every box: Ubuntu Server 24.04 LTS (64-bit),** or a newer LTS. `box add`
-refuses any other, Raspberry Pi OS and Debian included ([About the OS](#about-the-os)), so every
-box is set up and tested the same way.
+**One OS for every box: Ubuntu Server LTS (64-bit):** 26.04 for a new box, and 24.04 as before
+(setup 12 makes both the same). `box add` refuses any other, Raspberry Pi OS and Debian included
+([About the OS](#about-the-os)), so every box is set up and tested the same way.
 
 **More boxes share the work:** any free slot on any box takes the next run. A task runs one at a
 time, and carries on from any box: its branch and status live on GitHub.
@@ -221,7 +221,7 @@ afterwards `gh auth logout` and delete the clone.)
 
 **A Pi:**
 1. In **Raspberry Pi Imager**, pick: Device **Raspberry Pi 4** (or 5); OS **Other general-purpose
-   OS → Ubuntu → Ubuntu Server 24.04.x LTS (64-bit)** (check the version: older ones sit next to
+   OS → Ubuntu → Ubuntu Server 26.04.x LTS (64-bit)** (check the version: older ones sit next to
    it); Storage: the SSD.
 2. At OS customisation, **Edit settings**:
    - a hostname: it becomes the box's name (for example `mybox`);
@@ -229,7 +229,7 @@ afterwards `gh auth logout` and delete the clone.)
    - your Wi-Fi, unless it's on Ethernet;
    - **Services**: enable SSH (password login is fine: step 3 adds your key).
 
-**A laptop or a PC:** write the [Ubuntu Server 24.04.x LTS](https://ubuntu.com/download/server)
+**A laptop or a PC:** write the [Ubuntu Server 26.04.x LTS](https://ubuntu.com/download/server)
 installer to a USB stick (for example with Raspberry Pi Imager's **Use custom**), and start the machine from
 it. In the installer:
 - **Storage:** the internal SSD, and untick **Set up this disk as an LVM group**, so the system gets
@@ -311,10 +311,10 @@ its phone app with the same login.
 
 ## A VPS
 
-Any VPS with Ubuntu Server 24.04 LTS, x64 or arm64, is set up the same way. It costs money every
-month.
+Any VPS with Ubuntu Server 26.04 or 24.04 LTS, x64 or arm64, is set up the same way. It costs
+money every month.
 
-1. **Create it** with Ubuntu 24.04 LTS, your SSH key and a user who can use sudo; a core and 2 GB
+1. **Create it** with Ubuntu 26.04 LTS, your SSH key and a user who can use sudo; a core and 2 GB
    of memory per slot, plus 1 GB (4 GB for 1 slot, 8 GB and 3 cores for 3).
 2. **Firewall:** in the provider's firewall, allow only SSH in. The box only connects out.
 3. **Make it a box:** `pnpm ship box add <user>@<ip> --manage`, then again with `--yes`. It's
@@ -477,7 +477,8 @@ a theory. Nothing to set: `box add` installs it, the same on a Pi, a laptop, a s
   in 6 hours without a login.
 - **The agents' settings,** `/etc/containers/shipify-agents.conf`, which the runner names in each
   agent command: there's no systemd user session, so the cgroupfs group manager, and logs and
-  events to files (`docker logs` works). Healthchecks don't run, and podman-compose 1.0.6 doesn't
+  events to files (`docker logs` works); a container's network through slirp4netns on every
+  Ubuntu (setup 12: 26.04's Podman 5 would take pasta, which isn't installed). Healthchecks don't run, and podman-compose 1.0.6 doesn't
   wait for a healthy service, so an agent waits in its own command. A container stays in its
   slot's group, so its memory counts as the slot's.
 - **Ubuntu's normal updates:** Podman's fix for stopping containers is only in `<codename>-updates`.
@@ -633,19 +634,20 @@ across. Keep the old disk as it is: you can read it later.
 
 1. **Before:** wait until no task runs (`/ping`). In Tailscale's admin page, delete the old
    machine, so the new one gets the same name and Cockpit keeps its address.
-2. **Write Ubuntu Server 24.04 LTS (64-bit) on the new disk:**
+2. **Write Ubuntu Server 26.04 LTS (64-bit) on the new disk** (a box on 24.04 moves to 26.04
+   this way: [About the OS](#about-the-os)):
    - **From a PC:** Raspberry Pi Imager, as in [step 1](#1-write-the-os-on-the-pc), with the same
      hostname as before.
    - **On a Pi, with no PC:** plug the new disk into its other blue USB port, and, over SSH:
      ```sh
      lsblk -d -o NAME,SIZE,MODEL   # the new disk, by its size and model: for example sdb
-     curl -fLO https://cdimage.ubuntu.com/releases/24.04/release/ubuntu-24.04.5-preinstalled-server-arm64+raspi.img.xz
-     curl -fsSL https://cdimage.ubuntu.com/releases/24.04/release/SHA256SUMS | sha256sum -c --ignore-missing   # says OK
-     xzcat ubuntu-24.04.5-preinstalled-server-arm64+raspi.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+     curl -fLO https://cdimage.ubuntu.com/releases/26.04/release/ubuntu-26.04.1-preinstalled-server-arm64+raspi.img.xz
+     curl -fsSL https://cdimage.ubuntu.com/releases/26.04/release/SHA256SUMS | sha256sum -c --ignore-missing   # says OK
+     xzcat ubuntu-26.04.1-preinstalled-server-arm64+raspi.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
      sudo poweroff
      ```
      `sdX` is the new disk's name: `dd` erases the disk you name, so check it twice (never the one
-     the Pi runs from). A newer 24.04.x image works the same.
+     the Pi runs from). A newer 26.04.x image works the same.
 3. **Start from it:** the old disk out, the new one in a blue USB 3 port, power on. Plug the old
    disk in again only once the Pi has started: both carry the same labels, and a Pi can start from
    either. (A Pi that started from an SD card before: [step 2](#2-start-it).)
@@ -734,13 +736,22 @@ CPU and disk.
 
 - **Ubuntu Server LTS only,** on every box: one OS, one setup, tested the same way.
   `box add` checks it first (24.04 or a newer LTS) and refuses any other.
+- **26.04 or 24.04:** both work the same (setup 12). 26.04's own changes, checked in an Ubuntu
+  26.04.1 container: its core tools are uutils (Rust), its sudo is sudo-rs, and its Podman 5
+  would take pasta for a container's network. Setup takes each: the folders keep their setgid bits,
+  sudo-rs takes the rule and the runner's commands, and the agents' Podman uses slirp4netns, as
+  on 24.04. The GitHub runner's own check installs its libraries there too. A new box gets 26.04
+  (updates to 2031). A box on 24.04 needs nothing now (updates to 2029, 2034 with
+  [Ubuntu Pro](https://ubuntu.com/pro), free for five personal machines).
 - **Not Raspberry Pi OS:** `make verify` starts Cloudflare's local runtime, which needs a
   kernel with 48-bit addresses; Raspberry Pi OS's has 39
   ([workerd #5013](https://github.com/cloudflare/workerd/issues/5013)), and Docker can't change
   that (a container uses the host's kernel). `ship doctor` checks it too.
-- **A newer LTS:** write it fresh and run the five steps again (a box holds nothing that isn't on
-  GitHub). 24.04 has updates to 2029, 2034 with [Ubuntu Pro](https://ubuntu.com/pro) (free for
-  five personal machines).
+- **To move a box to a newer LTS: write it fresh,** as for [a new disk](#a-new-disk-an-ssd-or-a-fresh-os)
+  (a box holds nothing that isn't on GitHub), not `do-release-upgrade` in place: that takes hours
+  on a Pi, can stop half done, and keeps what the old release left. A fresh disk leaves the old
+  one as it was, to go back to. If you upgrade in place anyway, run the box's setup again after
+  it (`ship doctor` says so too): Podman's network changed with 26.04.
 
 ## When something's off
 
@@ -757,10 +768,10 @@ PC, `pnpm ship box add <user@host> --manage --yes`. Either works, while no task 
 | `ship doctor` (or the clean-up) says the sandbox isn't right | it names the wall that's open. Run `box add` again: it sets the sandbox up and checks it |
 | the sandbox check says an agent's commands can read its memory, or its login isn't on a pipe | both are Ubuntu's own settings, which `box add` leaves as they are: put `kernel.yama.ptrace_scope = 1` in `/etc/sysctl.d/10-ptrace.conf` and run `sudo sysctl --system`; `/bin/sh` must be dash (`ls -l /bin/sh`). Then `box add` again |
 | `box add` stops at "Checking the sandbox" | the line above names the wall. The box keeps working, without the `sandbox` label. Run it again; if it fails the same way, look at `/etc/sudoers.d/shipify-agents` and `ls -ld /home/shipify /srv/shipify-agent-*`. On WSL, "the agents can reach Windows": make the fix it prints in `/etc/wsl.conf` first ([This PC](#this-pc)) |
-| `box add` says the machine runs another OS | write Ubuntu Server 24.04 LTS (64-bit) on it, then run it again |
+| `box add` says the machine runs another OS | write Ubuntu Server 26.04 LTS (64-bit) on it, then run it again |
 | `box add` can't connect | it says why and prints the fix: `ssh-keygen -R <address>` after a reinstall, `ssh-copy-id` for a missing key; for a key with a passphrase, `eval "$(ssh-agent)" && ssh-add` first |
 | this PC's box goes offline when you close WSL | the `.wslconfig` idle timeouts ([This PC](#this-pc)) |
-| `ship doctor` says the kernel is 39-bit | write Ubuntu Server 24.04 LTS instead |
+| `ship doctor` says the kernel is 39-bit | write Ubuntu Server 26.04 LTS instead |
 | offline after a power cut | wait a minute; then Cockpit, or `ssh` in and `sudo systemctl status shipify-box-<name>` |
 | a box's clean-up waits in the queue | its slots lack the `box-<name>` label: run `box add` again |
 | a box vanished from `box list` | GitHub removes a runner that's been off 14 days: run its setup again, which registers its slots again |

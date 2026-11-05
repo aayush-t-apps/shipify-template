@@ -386,6 +386,42 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
     ]);
   });
 
+  it("reads the closed chats past the first 100, a page a call, so a clean-up missed for weeks catches up", () => {
+    const { record } = make();
+    fake.set((f) => {
+      f.others = Object.fromEntries(
+        Array.from({ length: 150 }, (_, i) => {
+          const n = 100 + i;
+          const at = `2026-09-${String(5 + (i % 20)).padStart(2, "0")}T10:00:00Z`;
+          return [
+            String(n),
+            {
+              issue: {
+                number: n,
+                title: `task ${n}`,
+                body: "",
+                state: "closed",
+                closed_at: at,
+                updated_at: at,
+                labels: [],
+                user: { login: "owner" },
+              },
+              comments: [],
+            },
+          ];
+        }),
+      );
+    });
+    const read = record.sweep({
+      closedFrom: "2026-09-03",
+      closedTo: "2026-10-03",
+      quietBefore: "2026-08-04",
+      quietWithout: [],
+    });
+    expect(read.closed).toHaveLength(150);
+    expect(new Set(read.closed.map((i) => i.number)).size).toBe(150);
+  });
+
   it("reads what the weekly clean-up needs in one read, and a closed project's chats and pages (ADR 0069)", () => {
     const { record } = make();
     const at = (n: number, over: Record<string, unknown>) => ({

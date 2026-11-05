@@ -7,6 +7,180 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-11-05
+
+### Added
+
+- **One window, and guests in it (ADR 0071, task #662).** Built as one PR after your `go`, with no
+  new service, store or key:
+  - **Guests.** Make a second Cloudflare Access application once (path `guest/*`, One-time PIN)
+    and add its AUD tag to shipify's `SHIPIFY_ACCESS` variable as `"guests"`, beside yours, on
+    GitHub (on within a minute; `ship door page` keeps it; no page can set it); then, in
+    **Setup → Guests**, **Add** a guest (an email and a name) and send
+    them `<the edge>/guest/`, or **Remove** one (refused within 10 s, their open chats close). The
+    list lives in one R2 object. A guest gets the same window with only their own chats, projects,
+    docs and files: every route says whose it is (`WHOSE`; a route with none answers 404), a
+    guest's list reads by their label, a thread opens only when the door's line names them, a file
+    only by their prefix. Their marks: labels `guest` and `guest:<id>`, `"guest"` on the door's
+    from-line, `g<6 hex>-` on file refs and project names. The door refuses, writing nothing, what
+    only you say (`remember`, `forget`, `jot`, `/tasks`, `/apps`, `yes <code>`, `go`, `publish`,
+    `preview`, `start over`). Your list (now 100 a page, one read), Find, Library, `/tasks` and
+    digest leave guests' things out.
+  - **Guests' runs** use your agents, models and login, in a fourth profile, `guest`: no GitHub
+    key, notebook, tool or repo of yours, caches of their own, words that approve nothing, files in
+    R2 only (never `shipify-files`), docs only in their own project; a guest's stay hands its agent
+    no token.
+  - **The window:** a project's screen (Overview · Chats · Docs · Files); docs open in the pane
+    with **Edit**, refused when the doc changed since you opened it; a shipify issue link opens in
+    the window; the list's head keeps **New chat** on one line (Find is an icon beside Refresh),
+    and a project's long chat titles on the Desk end in "…"; the list keeps each open project's
+    chats under it whatever the tab, Needs you opens each group and shows a project that needs you
+    as its own row, and Open counts chats, not projects; a link to a project's doc opens it once,
+    in the pane over its project's Docs, with **Download** (Markdown); a reply's files are chips from R2 (**Archived** once gone, linked to the backup);
+    Files by project and chat, past 500; the Library keeps what is no project's; a **Find** button
+    on any device.
+  - **Files and docs:** every run file gets an R2 copy, named on the reply's line, whatever chat
+    the task came from; the next run in the chat gets the chat's newest 5 files, a run's too; one
+    new doc a run at most, named in its reply; a new doc's link is its issue's page.
+  - **A PDF opens in the chat on a phone too.** A browser with no PDF viewer of its own (Chrome
+    on Android) showed only an **open it** link; now pdf.js 6.5.438 draws its pages in the pane,
+    in `/pdf/`, a sandboxed frame like the diagrams' (pinned with SRI hashes, handed the file's
+    bytes alone). A PDF it can't read says so, with Download.
+- **The `pdf` skill: real PDFs from runs, yours and guests'.** The box has no PDF library, so a
+  run wrote a PDF's bytes by hand. Now a run writes the page as HTML and prints it with
+  `skills/pdf/pdf.mjs` (headless Chromium, Playwright's, installed once a slot when missing; a
+  guest's run, with caches of its own, installs it each time, about 30 s), then reads the PDF to
+  check it. The task and guest playbooks point to it.
+
+### Changed
+
+- **Faster from the web chat to a reply, for you and your guests (task #673).** Measured on
+  homepi over 54 runs: a new chat answers in its thinking time plus 37–56 s, and a staying run's
+  answer in its thinking time plus 4–11 s. This change takes out the waits that are Shipify's own:
+  - **A reply shows within 5 s of landing.** The edge kept a read 8 s, longer than the page's
+    5-second poll while a run works, so a thread was read again only every 10 s, and the read a
+    push asked for could be the kept one. A read is now kept 4 s: each poll reads GitHub (an
+    unchanged answer is a free 304). Your words on a task also drop that thread's kept reads, so
+    the read after **Send** shows them and the page keeps its pace for the run (a kept read from
+    before them made it wait 30 s).
+  - **A staying run's next answer starts 2–3 s sooner.** Its 👀 and `working` are written while
+    the agent starts, not before it.
+  - **A box checks the state labels once a day,** not in every step that saves a status: plan,
+    apply and a stay's first turn each read the label list (~0.8 s from a Pi). The mark is in
+    the runner's own cache; a label deleted since comes back, grey, with the write that sets it.
+  - What's left, and what only you can change (the token steps in `task.yml`, the runner's own
+    cache of actions), is in `docs/roadmap.md` under "Faster and cheaper runs".
+- **The weekly digest says when an agent is behind, and an advisory against one first (task
+  #673).** The pins in `executors.json` had not moved for a month (Claude Code 2.1.284, and
+  2.1.318 is out), and nothing said so. Once a week, two reads an agent with no key, at the URLs
+  its install now names in `executors.json` (`newest`: npm's latest; `advisories`: GitHub's
+  advisories for its package at the pin): `Agents behind: claude 2.1.284 → 2.1.318, …`, and an
+  `Advisory:` line, which isn't all clear, for any advisory against a pinned version. The core
+  names no installer: the URLs are the plug-in's data. Nothing is installed: a version still
+  moves in one PR checked live, and `docs/agents.md` ("A new version") lists its steps.
+
+### Fixed
+
+- **A new box's setup goes on when a stack's tool doesn't install (setup 12, task #673).** The
+  stacks' browser libraries (`playwright install-deps`) ran under `set -e`, so on an Ubuntu their
+  installer didn't know yet, the whole setup stopped before the box's users and runners existed,
+  with no hint. Now it says "skipped", and `pnpm ship doctor` says it again with its fix. `box
+  add` and `ship doctor` name 26.04 beside 24.04, and `here.sh`'s test lets 26.04 through.
+- **A note with two dates is one note (task #673).** Lines written before 2026-11-02 can end
+  "(2026-10-09) (2026-10-09)", and a new `remember:` of the same words was added again beside
+  them. Both dates are read as the line's date now.
+- **The weekly lessons read every page of comments (task #673).** The recipe's read had no
+  `--paginate`, so GitHub's first 30 comments were all it saw of a busy fortnight.
+- **An open chat now sees every deploy, not only a release.** The list's and the menu's `version`
+  was Shipify's release number alone, which stays the same between releases. So a chat kept open
+  on a phone never offered **Updated: tap to reload**, and ran the page from before a fix (a
+  project that needs you, with no row of its own under Needs you). The version now carries the
+  commit deployed (`0.1.18+5ee9816`): an open chat reloads by itself when it wakes, or offers it.
+  An open group in the list points down (v), not up, beside a shut one's >.
+- **A chat's Progress kept current.** Every run's Finish now says to bring `handoff.md` up to
+  date before the result: it is the chat's Progress, and runs often left the last one unchanged.
+- **Closing a project closes its chats.** **Close** closed the project alone, and its chats stayed
+  open for good (the 30-day close skips a project's chats). The door now writes a project's `close`
+  as words, as a part's, and its run closes the project's open chats as done, as a clean start
+  does: but one a run is on, or a repeat or an errand keeps open, which the reply names.
+- **A project that needs you shows where to answer.** **Collate** and **Check the project** wrote
+  on the project's own thread, so their question waited under the Overview, and the box there
+  could only start a new chat. Each now starts a chat in the project, as any ask does. When the
+  project's own thread still asks you something, its next step says so and the box answers it; the
+  chats waiting on you show as links under the next step.
+- **A project's group never shows empty.** Its fold read its chats past the list's page with a
+  body of `0` on a GET, which the browser refuses before it's sent: so those chats never came. The
+  page's reads send no body unless there is one. Under **Closed**, a closed project is now its own
+  row, with its closed chats; a group with nothing to show says "No open chats." The list puts
+  projects as cards under a **Projects** heading, their chats indented, and the rest under
+  **Chats**.
+- **A repo's page counts only what's open.** Its Open, Needs you and Working counted the chats this
+  device kept from when you last opened them, in the state they had then: a chat closed since still
+  counted, said Needs you or Staying, and "0d ago". It now counts and lists what the list has open
+  (all of yours, 100 a page), your close or reopen at once; so do Ctrl+K's recent chats, and a kept
+  chat found by name shows no state. On a phone its three figures sit in one row, a chat's title
+  takes two lines at most, and Docs with no files says so in one line.
+- **A project's group in the list shows only open chats.** It read its chats once, when first
+  opened, and kept that copy: a chat closed later stayed under it as open till a reload, and under
+  **Closed** a closed chat showed twice. Its open chats are now the list's alone, with no read;
+  under **Closed** it reads its closed ones each time Closed opens, each shown once. **Older
+  tasks** shows again when your open list has more than a page: a read's "last good copy" mark had
+  taken its place.
+- **Boxes on Ubuntu 26.04 LTS (setup 12).** Checked in an Ubuntu 26.04.1 container: every package
+  setup installs is there, sudo-rs takes the agents' rule and the runner's `sudo -n -u` and
+  `--preserve-env=`, the slot and run folders keep their setgid bits under uutils, and the GitHub
+  runner's own dependency check passes. One thing broke: 26.04's Podman 5 takes pasta for a
+  container's network, and setup installs only the exact list, without passt, so no agent's
+  container with a network started. The agents' Podman now uses slirp4netns on every Ubuntu, as
+  24.04's does by itself. The guide writes 26.04 for a new box (and the new-disk steps' image),
+  and says to move a box to it fresh, not with `do-release-upgrade`. Run a box's setup again
+  after an upgrade in place; `ship doctor` names a box on setup 11.
+- **Tests pass on Ubuntu 26.04.** GitHub's `ubuntu-latest` now starts main's ci on Ubuntu 26.04,
+  whose coreutils (uutils) `mkdir -m 2750` sets no setgid bit. A sandbox check leaned on it and
+  failed there only (750, not 2750). Its slot folder is now made as the box's setup makes it
+  (2711), so out/ takes the bit from the folder above, as on a box. A box on 26.04 runs as before:
+  a run's folders take the bit from the slot folder (checked in a 26.04 container). The failing
+  `stop` read's test waits 2.5 s, not 20.
+- **Tests never start the real gitleaks.** Apply's push scan had no stand-in in the tests, so every
+  flow test that pushed started the real one, fetched from GitHub first on a fresh CI runner. On a
+  Raspberry Pi 4 it takes about 34 s a start (the scan itself, 41 ms), so such a test took about
+  40 s. Every test now has a stand-in (`tests/fixtures/fake-gitleaks.mjs`), one test runs the
+  pinned gitleaks with Shipify's rules, and a new flow test proves a change with what looks like a
+  key is never pushed, its reply naming the file and line.
+- **Tests start the built CLI.** Their about 150 `ship` commands a run started the source through
+  tsx, 2.2 s each on a Raspberry Pi. Each test run now builds the CLI once (`tests/built.ts`, about
+  1 s) and starts that, as a box does: 0.7 s each. An edit still needs no build of yours.
+- **A guest's run holds nothing of yours (the #662 audit).** Its commands' environment had your
+  login, your people list (names and chat ids), the door's slug, your repo and your copy's
+  values (Cloudflare account, domains): `env` showed them. It now starts with `LANG` and
+  `SHIPIFY_TASK` alone. "collate the inbox" in a guest's project reads the items the door wrote
+  for that guest (it read none); a project's close closes only the chats on its own side; the
+  door refuses every fixed word a guest never says from the box's own list (`clean start`,
+  `no <code>` and `go.` were missed), and a plain `yes` or `no` still answers their run.
+- **A project is open or closed, and every screen shows which (the #662 audit).** A closed project
+  was still offered New chat, Add, Collate and Check; `add <name>: …` made a new chat and a run;
+  `remember <name>: …` made a notebook page every run reads; `project: <name>` made a second
+  project; the Library listed it as open, and a doc or a file of it lost its project. Now:
+  - one index of every project, open and closed (one read, kept a minute), for the Library
+    (open projects, then **Closed projects · docs kept**), a doc's way to its project, Find and
+    Files, which mark it "closed";
+  - closed, its screen says when it closed, what stays and when its files go, and shows
+    **Reopen** and **Export** only, with no box; a run in it keeps no page and is told why;
+  - `add`, `remember` and `project:` with its name write nothing: "<name> is closed · #n: Reopen
+    it first";
+  - **Close** asks first ("Close games and its 2 open chats? Its docs stay in the Library,
+    read-only. Its files go from 5 Dec, unless you reopen it before."), and its reply says the
+    same, every time; **Reopen** says its chats stay closed, and how to open one;
+  - a chat left open under a closed project closes after 30 quiet days, as any chat does.
+- **The weekly clean-up clears everything by itself, and says when it can't (the #662 audit).**
+  Files no chat used (an upload never sent, an old draft's, a message answered at once) stayed in
+  R2 for good: they go 60 days after they came. A clean-up missed for over 30 days never caught
+  up, and read 100 closed chats at most: it now reads from 30 days before the last clean-up, past
+  100. More than 500 chats in one forget were refused every week: the box sends them 500 a call.
+  A failed clean-up was only a line on the status task: the record keeps what it did, two failed
+  in a row post an alert, and the weekly digest has a **Files** line (deleted, MB, with no chat,
+  failed).
+
 ## [0.1.18] - 2026-11-03
 
 ### Added
@@ -164,6 +338,23 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
   either, and the watch marks neither Stopped.
 
 ### Fixed
+
+- **Guests: answered while a run stays, a Desk of their own, no line about you (task #662).** A run
+  that stays after its answer (ADR 0057) heard only your words, so a guest's next message went
+  unanswered, and was dropped when the stay ended: it hears theirs now (`newWords`). A guest's
+  window opens on their own Desk (the Guest tag, their chats and projects, New project, Files),
+  with Desk, Projects and Files as its pages; the line "<you> can read your chats" is gone, and
+  their menu no longer carries your name. New project has no repos field for a guest. A new chat
+  shows in the list at once (the list kept from before it is dropped), not "Nothing open" for 8 s.
+  A guest's chat said "Waiting for a box" while a box was online, as their list had no boxes: it
+  now says whether one is online (no name, slot or load), so it says "Starting…". Their marks
+  (`guest`, `guest:<id>`) are no longer filters in their list.
+- **Guests: three holes closed (task #662's security sweep).** A guest's `/change jot: …` (or
+  `/change remember: …`, `/change go`) passed the door's check, which read the words before the
+  command came off: a jot went into your Journal, where your runs read it as yours. The check now
+  reads both, and a guest's jot is refused where captures are saved. A guest's thread no longer
+  carries each reply's run details (your box, the run's link, your plan) in its Markdown, which
+  Copy and Download use. A guest's file sent on a chat that isn't theirs keeps no number of it.
 
 - **A run is told what its prompt is missing (task #655).** When the box couldn't read the
   notebook, a project's pages or a chat's project, or left a page out because someone other than

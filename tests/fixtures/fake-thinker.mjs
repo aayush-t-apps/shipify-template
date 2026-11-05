@@ -125,13 +125,15 @@ if (
     );
   process.exit(process.env.FAKE_WORK === "no-answer" ? 0 : 1);
 }
-// FAKE_WORK=slow: it commits, leaves an edit, then works on until it's stopped (your `stop`).
+// FAKE_WORK=slow: it commits, leaves an edit, then works on until it's stopped (your `stop`), or
+// for FAKE_SLOW_MS (20 s when unset).
 if (process.env.FAKE_WORK === "slow" && !catchUp) {
   writeFileSync("change.txt", "x\n");
   execFileSync("git", ["add", "-A"]);
   execFileSync("git", ["commit", "-q", "-m", "The change"]);
   writeFileSync("draft.txt", "half done\n");
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20_000);
+  const ms = Number(process.env.FAKE_SLOW_MS) || 20_000;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
   process.exit(0);
 } else if (process.env.FAKE_WORK) {
   const argv = process.argv.slice(2);
@@ -142,7 +144,8 @@ if (process.env.FAKE_WORK === "slow" && !catchUp) {
     execFileSync("git", ["commit", "-q", "-m", "What you added"]);
   } else if (!resumed || process.env.FAKE_WORK === "fix") {
     // Appended, so a run that starts from earlier commits still has a change of its own.
-    appendFileSync(resumed ? "fixed" : "change.txt", "x\n");
+    // FAKE_CHANGE: the line its change adds (x when unset).
+    appendFileSync(resumed ? "fixed" : "change.txt", `${process.env.FAKE_CHANGE ?? "x"}\n`);
     execFileSync("git", ["add", "-A"]);
     execFileSync("git", [
       "commit",

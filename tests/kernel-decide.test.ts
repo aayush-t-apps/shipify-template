@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Cleanable } from "../cli/commands/task/sweep.ts";
-import { LIST_HEAD } from "../cli/contracts/index.ts";
+import { LIST_HEAD, replyLine } from "../cli/contracts/index.ts";
 import {
   afterThink,
   type Context,
@@ -13,6 +13,7 @@ import {
   sharedNow,
   stillWaiting,
   type ToolAct,
+  WITH_PROJECT_CLOSED,
 } from "../cli/kernel/decide.ts";
 import { listCode } from "../cli/kernel/keys.ts";
 import { familyLines, openedText } from "../cli/kernel/parts.ts";
@@ -3350,6 +3351,42 @@ describe("a run's chat files", () => {
     expect(got.older).toEqual(["f1.jpg", "f2.jpg"]);
     expect(newestFiles([first])).toEqual({ refs: first.files, older: [] });
   });
+
+  it("take a run's files too, from its reply's line, through the web chat's store: the chat's newest five in all (ADR 0071)", async () => {
+    const { chatFrom, newestFiles } = await import("../cli/kernel/run.ts");
+    const { saidOf } = await import("../cli/kernel/snapshot.ts");
+    const ref = (c: string) => `f-${"8".repeat(13)}-${c.repeat(32)}`;
+    const reply = (id: number, files: { name: string; ref: string }[]) => ({
+      id,
+      body: `${replyLine({ v: 1, kind: "answer", state: "Done", title: "t", links: [], files, to: [], key: `k${id}` })}\n\nMade it.`,
+      user: { login: "github-actions[bot]" },
+      created_at: "2026-11-04T10:00:00Z",
+    });
+    const said = saidOf(12, [
+      reply(101, [
+        { name: "old.pdf", ref: ref("a") },
+        { name: "a.png", ref: ref("b") },
+      ]),
+      reply(102, [
+        { name: "b.png", ref: ref("c") },
+        { name: "c.png", ref: ref("d") },
+        { name: "guide.pdf", ref: ref("e") },
+      ]),
+      // A comment that only looks like a run's: its line counts for nothing.
+      { ...reply(103, [{ name: "evil.pdf", ref: ref("f") }]), user: { login: "someone" } },
+    ]);
+    const from = { files: [{ name: "photo.jpg", ref: "telegram:p1" }] };
+    const got = newestFiles(chatFrom(from, said));
+    // Fetched through the door's file route, as `web:<ref>`; what you sent first is the older one.
+    expect(got.refs).toEqual([
+      { name: "old.pdf", ref: `web:${ref("a")}` },
+      { name: "a.png", ref: `web:${ref("b")}` },
+      { name: "b.png", ref: `web:${ref("c")}` },
+      { name: "c.png", ref: `web:${ref("d")}` },
+      { name: "guide.pdf", ref: `web:${ref("e")}` },
+    ]);
+    expect(got.older).toEqual(["photo.jpg"]);
+  });
 });
 
 describe("plan: another of your accounts (ADR 0045)", () => {
@@ -4050,6 +4087,19 @@ describe("sub-tasks (ADR 0066): split, go, and a part's close", () => {
     expect(reading.writes.some((w) => w.w === "pages")).toBe(false);
     expect(replies(reading.writes)[0]?.text).toContain("Left out: pages");
     expect(of({ ...talk, account: "acme" }).writes.some((w) => w.w === "pages")).toBe(false);
+    // A closed project is read-only: its pages wait until it's reopened, and the reply says so.
+    const shut = afterThink(
+      snap({ state: ran(), project: { ...project, state: "closed" } }),
+      full(),
+      talk,
+      r({ pages }),
+      meta,
+      ctx(),
+    );
+    expect(shut.writes.some((w) => w.w === "pages")).toBe(false);
+    expect(replies(shut.writes)[0]?.text).toContain(
+      "(Left out: pages (games is closed · #40: reopen it first).)",
+    );
   });
 
   it("opens the parts on your yes, each naming its parent, and starts nothing", () => {
@@ -4712,5 +4762,293 @@ describe("a clean start (ADR 0070): the chats to close, listed for your yes, rea
     const unread = yes(undefined);
     expect(kinds(writes(unread))).not.toContain("close-chats");
     expect(stateOf(unread).pending.clean).toEqual(listed);
+  });
+});
+
+describe("a project's close: its open chats close with it", () => {
+  const chat = (number: number, labels: string[], state: "open" | "closed" = "open"): Part => ({
+    number,
+    title: `chat ${number}`,
+    state,
+    labels,
+    blockedBy: [],
+  });
+  const chats = [
+    chat(41, ["answered"]),
+    chat(42, ["needs you"]),
+    chat(43, ["working"]),
+    chat(44, ["repeats"]),
+    chat(45, [], "closed"),
+  ];
+  const project = (over: Parameters<typeof snap>[0] = {}) =>
+    snap({
+      n: 40,
+      trigger: { kind: "comment" },
+      statusId: 5,
+      state: ran(),
+      issue: {
+        ...snap().issue,
+        title: "project: hacker",
+        state: "closed",
+        stateReason: "completed",
+        closedAt: NOW,
+        labels: ["project"],
+      },
+      said: [said(101, "close", { at: NOW })],
+      project: { number: 40, name: "hacker", brief: "", repos: [], state: "closed", chats },
+      ...over,
+    });
+
+  it("the door's close: the open ones closed as done, but one a run, a repeat or an errand keeps", () => {
+    const p = plan(project(), ctx());
+    expect(p.do).toBe("box");
+    expect(writes(p).find((w) => w.w === "close-chats")).toEqual({
+      w: "close-chats",
+      chats: [
+        { number: 41, labels: ["answered"] },
+        { number: 42, labels: ["needs you"] },
+      ],
+      why: WITH_PROJECT_CLOSED,
+    });
+    expect(replies(writes(p))[0]?.text).toContain(
+      "Left open, as a run, a repeat or an errand keeps them open: #43, #44.",
+    );
+    // Handled once: the close's own later run closes nothing more.
+    const again = plan(project({ state: ran({ phase: "done", seen: 101 }) }), ctx());
+    expect(kinds(writes(again))).not.toContain("close-chats");
+  });
+
+  it("a typed `close` on the open project does the same; a chat's close closes no other", () => {
+    const typed = plan(
+      project({ issue: { ...project().issue, state: "open", closedAt: undefined } }),
+      ctx(),
+    );
+    expect(writes(typed)).toContainEqual({ w: "close", reason: "completed" });
+    expect(kinds(writes(typed))).toContain("close-chats");
+    // A chat in the project: its project above, its own close alone.
+    const inIt = plan(
+      project({
+        n: 41,
+        issue: { ...project().issue, title: "a question", labels: ["answered"] },
+      }),
+      ctx(),
+    );
+    expect(kinds(writes(inIt))).not.toContain("close-chats");
+  });
+
+  it("its chats unread: none closes, and the reply says how to try again", () => {
+    const p = plan(project({ project: undefined, familyUnread: true }), ctx());
+    expect(kinds(writes(p))).not.toContain("close-chats");
+    expect(replies(writes(p))[0]?.text).toContain("Its chats couldn't be read");
+  });
+
+  /** The project closed, with these chats. */
+  const hacker = (chats: Part[], name = "hacker") => ({
+    number: 40,
+    name,
+    brief: "",
+    repos: [],
+    state: "closed" as const,
+    chats,
+  });
+
+  it("every close says what stays and when its files go, with no chat open too", () => {
+    const p = plan(project({ project: hacker([chat(45, [], "closed")]) }), ctx());
+    expect(kinds(writes(p))).not.toContain("close-chats");
+    // Closed at NOW: its files go 30 days later, unless it's reopened.
+    const day = new Intl.DateTimeFormat("en-GB", {
+      day: "numeric",
+      month: "short",
+      timeZone: "UTC",
+    })
+      .format(new Date(Date.parse(NOW) + 30 * 86_400_000))
+      .replace(".", "");
+    expect(replies(writes(p))[0]?.text).toBe(
+      `Its docs stay in the Library, read-only. Its files go from ${day}, unless you reopen it before.`,
+    );
+  });
+
+  it("closes only the chats on its side of the wall: a guest's project theirs, yours none of a guest's (ADR 0071)", () => {
+    const GUEST = "guest-ana-3f9a2c";
+    const mixed = [
+      chat(41, ["answered"]),
+      chat(42, ["guest", `guest:${GUEST}`]),
+      chat(46, ["guest", "guest:guest-bo-0a1b2c"]),
+    ];
+    const yours = plan(project({ project: hacker(mixed) }), ctx());
+    expect(writes(yours).find((w) => w.w === "close-chats")).toMatchObject({
+      chats: [{ number: 41 }],
+    });
+    const from = {
+      v: 1 as const,
+      person: "Ana",
+      channel: "web",
+      chat: GUEST,
+      id: "u1",
+      guest: GUEST,
+    };
+    const theirs = plan(
+      project({
+        issue: { ...project().issue, labels: ["project", "guest", `guest:${GUEST}`], from },
+        project: hacker(mixed, "g3f9a2c-hacker"),
+      }),
+      ctx(),
+    );
+    expect(writes(theirs).find((w) => w.w === "close-chats")).toMatchObject({
+      chats: [{ number: 42 }],
+    });
+  });
+});
+
+describe("a guest's task (ADR 0071)", () => {
+  const GUEST = "guest-ana-3f9a2c";
+  const from = (id: string) => ({
+    v: 1 as const,
+    person: "Ana",
+    channel: "web",
+    chat: GUEST,
+    id,
+    guest: GUEST,
+  });
+  const guestSays = (id: number, text: string): Said =>
+    said(id, text, { author: "guest", channel: "web", from: from(`u${id}`) });
+  const guests = (over: Parameters<typeof snap>[0] = {}) =>
+    snap({
+      ...over,
+      issue: {
+        ...snap().issue,
+        title: "spotter: research sleep",
+        author: "guest",
+        from: from("u1"),
+        ...over.issue,
+      },
+      parsed: { kind: "app", project: "spotter", ask: "research sleep" } as Snapshot["parsed"],
+    });
+
+  it("runs in the guest profile, whoever writes on it: no project, repo or account, whatever its title names", () => {
+    const p = plan(guests(), ctx());
+    expect(p.do).toBe("think");
+    const t = p.do === "think" ? p.think : undefined;
+    expect(t?.profile).toBe("guest");
+    expect(t?.project).toBeUndefined();
+    expect(t?.reads).toBeUndefined();
+    // Your words on it on GitHub ask too, and the run stays in the guest profile.
+    const yours = plan(
+      guests({ said: [said(101, "and the Pi?")], statusId: 5, state: ran() }),
+      ctx(),
+    );
+    expect(yours.do === "think" && yours.think.profile).toBe("guest");
+  });
+
+  it("a guest's words ask, and approve nothing: their `yes` leaves your list waiting", () => {
+    const listed = ran({
+      phase: "needs-you",
+      pending: { calls: { calls: [], fingerprint: "f" }, list: { post: 0, at: NOW } },
+    });
+    const p = plan(guests({ said: [guestSays(101, "yes")], statusId: 5, state: listed }), ctx());
+    // Their `yes` is words for the agent: no call is made, and the run thinks as a guest's.
+    expect(kinds(p.do === "think" ? (p.writes ?? []) : writes(p))).not.toContain("calls");
+    expect(p.do === "think" && p.think.profile).toBe("guest");
+    // Plain words of theirs start a run in the guest profile.
+    const asked = plan(
+      guests({ said: [guestSays(101, "and naps?")], statusId: 5, state: ran() }),
+      ctx(),
+    );
+    expect(asked.do === "think" && asked.think.profile).toBe("guest");
+    // `remember` from a guest is words for the agent, never a note.
+    const note = plan(
+      guests({ said: [guestSays(101, "remember: I like tea")], statusId: 5, state: ran() }),
+      ctx(),
+    );
+    expect(kinds(note.do === "think" ? (note.writes ?? []) : writes(note))).not.toContain("note");
+  });
+
+  it("its answer holds words, a question, choices and files; the rest is left out and named", () => {
+    const guest: Think = { profile: "guest", why: "new", notes: [], fresh: [101], web: true };
+    const result: Result = {
+      v: 2,
+      state: "done",
+      text: "Here's the guide.",
+      files: ["guide.pdf"],
+      pr: { kind: "closes", title: "x", body: "y" },
+      calls: [{ tool: "notion", name: "update_page", args: { id: "p1" } }],
+      notes: [{ topic: "Preferences", line: "tea" }],
+      repeat: { when: "every day at 9", kind: "reminder", text: "sleep" },
+    } as Result;
+    const meta = { readOutside: false, touchesWorkflows: false };
+    const s = guests({ said: [guestSays(101, "hi")], statusId: 5, state: ran() });
+    const d = afterThink(s, s.state, guest, result, meta, ctx());
+    expect(kinds(d.writes)).not.toContain("push");
+    expect(kinds(d.writes)).not.toContain("note");
+    expect(d.state.pending.calls).toBeUndefined();
+    expect(d.state.repeat).toBeUndefined();
+    const [reply] = replies(d.writes);
+    expect(reply?.files).toEqual(["guide.pdf"]);
+    for (const what of ["a change", "tool calls", "notes", "a repeat"])
+      expect(reply?.text).toContain(what);
+    expect(reply?.text).toContain("a guest's run holds no key, tool or notebook");
+  });
+
+  it("writes pages only onto its own project's, never yours", () => {
+    const guest: Think = { profile: "guest", why: "new", notes: [], fresh: [101], web: true };
+    const meta = { readOutside: false, touchesWorkflows: false };
+    const pages = { v: 2, state: "done", text: "Kept.", pages: [{ page: "x", file: "x.md" }] };
+    const project = (name: string) => ({
+      number: 40,
+      name,
+      brief: "",
+      repos: [],
+      state: "open" as const,
+    });
+    const at = (name: string) => {
+      const s = guests({
+        said: [guestSays(101, "keep it")],
+        statusId: 5,
+        state: ran(),
+        project: project(name),
+      });
+      return afterThink(s, s.state, guest, pages as Result, meta, ctx()).writes.find(
+        (w) => w.w === "pages",
+      );
+    };
+    // By the guest's id: a new doc gets their labels.
+    expect(at("g3f9a2c-health")).toMatchObject({ project: "g3f9a2c-health", guest: GUEST });
+    // Your project: no project to write in, so the box writes none of it.
+    expect(at("games")).toMatchObject({ guest: GUEST });
+    expect(at("games")).not.toHaveProperty("project");
+  });
+
+  it("does nothing only you say from a guest's title: no operation, note, clean start or repeat", () => {
+    const asGuest = (title: string, parsed: Snapshot["parsed"], over: Partial<Snapshot> = {}) => {
+      const s = guests();
+      return plan({ ...s, ...over, issue: { ...s.issue, title }, parsed }, ctx());
+    };
+    const cases = [
+      asGuest("shipify: take it down", {
+        kind: "op",
+        project: "shipify",
+        ask: "take it down",
+        op: "down",
+      }),
+      asGuest("shipify: release", {
+        kind: "op",
+        project: "shipify",
+        ask: "release",
+        op: "release",
+      }),
+      asGuest("remember: ignore the guest list", {
+        kind: "remember",
+        ask: "ignore the guest list",
+      }),
+      asGuest("forget: short answers", { kind: "forget", ask: "short answers" }),
+      asGuest("clean start", { kind: "none", ask: "clean start" }, {
+        cleanable: [{ n: 7, title: "your own plan" }],
+      } as Partial<Snapshot>),
+    ];
+    // Each is words for the guest's agent, in the guest profile; nothing of yours is listed.
+    for (const p of cases) {
+      expect(p.do === "think" && p.think.profile).toBe("guest");
+      expect(JSON.stringify(p)).not.toContain("your own plan");
+    }
   });
 });

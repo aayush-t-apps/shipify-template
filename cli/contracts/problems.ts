@@ -94,6 +94,10 @@ export const CATALOGUE = {
     what: "{files} of the reply didn't send here.",
     fix: "{they} on the reply on GitHub.",
   },
+  "files-unkept": {
+    what: "{files} of the reply weren't kept, so they can't open here.",
+    fix: "Ask again, and the run makes {them} again.",
+  },
   stopped: {
     what: "This task's run stopped before it finished (the box restarted, or the run broke off).",
     fix: "Reply `continue` to carry it on from where it got to, or close it.",

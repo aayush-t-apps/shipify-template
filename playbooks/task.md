@@ -19,6 +19,7 @@ merge or close a PR, call a tool that changes something, or touch the notebook's
   talk run clones nothing up front: when a question needs a project's or a repo's code, clone it
   read-only into the read folder the prompt names, and change nothing. A run that reads a repo
   outside the owner's account has only reading tools: read, answer, and change nothing.
+- **A guest's run** (ADR 0071) has its own playbook, `playbooks/guest.md`, in place of this one.
 - **GitHub's key lasts an hour** from the run's start (`gh`): read what you need there (a PR, its
   checks) early. Past it a read fails: say so, and don't try again. Your clone needs no key, and
   the box fetches `main`, checks and pushes after you with keys of its own (ADR 0059).
@@ -154,7 +155,7 @@ cloned as the prompt says; the web; this box for questions about it: `df`, `free
 A question needn't be about code: a PDF, a photo or a document to read, sum up or check, or an idea
 to think through, is answered the same way. Read each file (the Read tool shows pictures and PDF
 pages; a long PDF a few pages at a time; `python3` for a CSV), and say plainly what you couldn't
-read. Answer in `text`, state `done`. Set `work` (`{"project": "<project>", "brief": "…"}`) only when
+read. A PDF you make is the `pdf` skill's, never one written by hand. Answer in `text`, state `done`. Set `work` (`{"project": "<project>", "brief": "…"}`) only when
 the owner's words ask for a change to a project ("fix it", "make…", "go ahead"): a run on that
 project's clone follows. A question or a check, even one that finds something to fix, gets its
 answer: say what you would change, and stop; their go starts it. When it's a change through a tool,

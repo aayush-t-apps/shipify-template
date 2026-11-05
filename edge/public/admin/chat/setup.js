@@ -1,7 +1,7 @@
 // @ts-check
 // Shipify chat: Status & setup (ADR 0039), read-only, one page, loaded the first time it opens
 // (ADR 0065): the page you open every day doesn't carry it.
-import { cap, h, icon, nm, pretty, uid } from "./compose.js";
+import { cap, h, icon, nm, pretty, size, uid } from "./compose.js";
 
 /** What the page lends it (app.js `lazy`): its state and a few of its helpers. @type {any} */
 let A;
@@ -105,6 +105,56 @@ const HEALTH =
 const health = async () => {
   const s = await A.get("send", { id: uid(), words: HEALTH, use: "haiku", files: [] }).catch(no);
   if (s?.task) A.go(`#/t/${s.task}`);
+};
+// Guests (ADR 0071): who you let in at /guest/, each with their chats, their files' size and when
+// they were last in; Add (an email and a name) and Remove. Their Access application is set once on
+// GitHub (SHIPIFY_ACCESS's `guests`), so this page only says how.
+const guests = (G) => {
+  const o = A.out();
+  const ask = (b) =>
+    A.get("guests", b).then(
+      (r) => {
+        o.textContent = r.text;
+        A.fresh();
+      },
+      (e) => {
+        o.textContent = `${e.message}`;
+      },
+    );
+  const field = (placeholder, more = {}) =>
+    h("input", { placeholder, autocomplete: "off", ...more });
+  const email = field("Their email", { type: "email" });
+  const name = field("Their name", { maxlength: "40" });
+  const row = (g) => [
+    h("b", g.name),
+    A.meta(
+      g.email,
+      `${g.chats} ${g.chats === 1 ? "chat" : "chats"}`,
+      g.bytes > 0 && size(g.bytes),
+      g.seen ? `last in ${past(g.seen)}` : "not in yet",
+    ),
+    A.btn("Remove", () =>
+      confirm(`Remove ${g.name}? They're refused at once; their open chats close.`)
+        ? ask({ do: "remove", id: g.id })
+        : undefined,
+    ),
+  ];
+  return [
+    G.on
+      ? h("p", "Send each guest the link: ", cmd(G.link))
+      : h(
+          "p",
+          "Guests are off. Make the guests' Access application once (path guest/*, One-time PIN), then add its AUD tag to shipify's SHIPIFY_ACCESS variable as \"guests\" (GitHub → Settings → Secrets and variables → Actions → Variables). It's on within a minute.",
+        ),
+    A.list(G.list, row, "No guests yet."),
+    h(
+      "p.row",
+      email,
+      name,
+      A.btn("Add", () => ask({ do: "add", email: email.value, name: name.value })),
+    ),
+    o,
+  ];
 };
 // Why the watch started a task's run, in plain words (the record says "started #160 (its job)").
 const WHY = {
@@ -257,6 +307,7 @@ export const setup = () =>
         sec("Boxes", "box", boxes, cmd("pnpm ship box status"), " on the box"),
         sec("Projects", "app", list(d.apps, app, "No projects yet."), "Change… starts a chat"),
         sec("Chats", "chat", [list(d.chats, chat, ""), bell(d)], chats.map(cmd)),
+        d.guests && sec("Guests", "open", guests(d.guests)),
         sec("The door", "open", [door, D.repo], vars("SHIPIFY_DOOR"), cmd("pnpm ship door check")),
         lately(d.watch),
       ),

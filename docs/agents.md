@@ -245,7 +245,10 @@ model's price, so their runs show none rather than a guess.
 - **`install`:** how a box installs it: its command's words, with `{prefix}` where it goes, its
   program (`bin`, with `{arch}` for the box's, `arm64` or `x64`, when the program comes in a
   package named for it), its `version`, and its folder (`dir`, the agent's id when not said). A version
-  moves only in a PR that says so ([On a box](#on-a-box)).
+  moves only in a PR that says so ([On a box](#on-a-box)). Optional, for the weekly digest:
+  `newest`, a URL whose JSON names the newest version in `version` (npm's
+  `https://registry.npmjs.org/<package>/latest`), and `advisories`, GitHub's advisory list for its
+  package at `{version}`, the pin (`https://api.github.com/advisories?ecosystem=npm&affects=<package>%40{version}`).
 
 ## Gateways
 
@@ -404,6 +407,15 @@ The listed models are a few of hundreds. The rest are found by a word, on any ch
   Claude Code's runs its install script, as before.
 - **Sizes on a Raspberry Pi:** Claude Code about 233 MB, pi about 166 MB, OpenCode about 177 MB
   (its install takes about 30 s).
+- **A new version:** the weekly digest says which agents are behind their newest (each install's
+  `newest`), and before that any advisory GitHub lists against a pinned version (its
+  `advisories`: the agent's own package; pi's and OpenCode's dependencies are held by
+  `--before`). It installs nothing. A version moves in one
+  PR, made on your PC, because its checks need the agent signed in: in `executors.json`, its
+  `version`, the `@x.y.z` in `run` and (pi, OpenCode) `--before=` its release day; the live checks
+  `tests/plugins/agent.test.ts` names, which fail until they're done again; for Claude Code,
+  `tests/fixtures/claude-decisions.json` recorded again; then `pnpm ship selftest <name>`. An
+  advisory comes first.
 - **A new Claude Code version:** its docs say `--bare` will become the default for headless runs,
   which skips CLAUDE.md, skills and helpers. The version's PR checks, with a recorded run, that a
   run still loads them.

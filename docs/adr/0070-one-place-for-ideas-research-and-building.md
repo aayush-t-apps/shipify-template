@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #656, task #655, 2026-11-03, every open question at its proposed answer) and built in one PR after the owner's `go` of 2026-11-03; see [As built](#as-built-2026-11-03-five-parts-in-one-pr-on-task-655).
+status: accepted (merged #656, task #655, 2026-11-03, every open question at its proposed answer) and built in one PR after the owner's `go` of 2026-11-03; see [As built](#as-built-2026-11-03-five-parts-in-one-pr-on-task-655). Amended by 0071 (a project's screen: Overview, Chats, Docs, Files; one new doc a run).
 date: 2026-11-03
 amends: 0065 (the words: a repo Shipify builds is an app or a package, by its kind; a group of chats with pages is a project), 0069 (a project's main page gets a Now block and a Log; a Sources page; Keep on page and Check the project; a page write checks that the page didn't change since the run read it; search by meaning; one next step on a project's page; a projects line in the weekly digest; a clean start)
 ---

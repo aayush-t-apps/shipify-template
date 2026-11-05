@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #421) and built; see [As built](#as-built-2026-10-15); amended by 0062 (a result that needs a token is applied in the stay's job, not handed over) and 0063 (one rule: a stay does what a normal run would)
+status: accepted (merged #421) and built; see [As built](#as-built-2026-10-15); amended by 0062 (a result that needs a token is applied in the stay's job, not handed over) and 0063 (one rule: a stay does what a normal run would), and 0071 (a guest's run stays too, and its stay hands the agent no token)
 date: 2026-10-15
 amends: 0037 (its option 2, kept small: after a run answers, it keeps reading its task for a few minutes and answers your next words in the same session), 0031 (a run may answer more than once; every answer is still decided and applied as one), 0051 (the run job names no `checkout` or `setup-node`: the box's Node, and Shipify's files fetched only when the box has no copy of the commit)
 ---

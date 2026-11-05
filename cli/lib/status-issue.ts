@@ -5,7 +5,7 @@
 //   been offline (an alert run writes that);
 // - each app, and each chat channel (ADR 0030), the watch has seen failing, since when;
 // - what's coming up, and what happened lately;
-// - each box's weekly clean-up, with doctor's checks.
+// - each box's weekly clean-up, with doctor's checks, and what its steps once a week in all did.
 // Its edits notify nobody; a problem comes as a comment, which does. It's never a task: task.yml
 // and `ship task` skip its label, and the workflow's own token opens it, which starts no workflow.
 import { createHash } from "node:crypto";
@@ -58,6 +58,19 @@ export const StatusIssueState = z.object({
        * close): each box runs a clean-up, and these run once a week in all.
        */
       sweep: z.string().optional(),
+      /**
+       * What those steps last did: the files deleted, their bytes, how many of them no chat used,
+       * and why they failed, if they did; `failures`, how many clean-ups in a row failed.
+       */
+      swept: z
+        .object({
+          deleted: z.number(),
+          bytes: z.number(),
+          unclaimed: z.number(),
+          failed: z.string().optional(),
+          failures: z.number(),
+        })
+        .optional(),
     })
     .default({}),
   upcoming: z.array(Upcoming).default([]),
@@ -231,6 +244,26 @@ export function setCleanup(
       (x) => `- **${x.name}**${x.detail ? `: ${x.detail}` : ""}${x.fix ? ` (${x.fix})` : ""}`,
     ),
   ].join("\n");
+}
+
+/** What the weekly clean-up's steps did, as the record keeps it. */
+export type Swept = Omit<NonNullable<StatusIssueState["watch"]["swept"]>, "failures">;
+
+/**
+ * The weekly clean-up's steps (ADR 0069): what they did, and how many clean-ups in a row failed.
+ * Returns a comment to post at the second in a row: once, as the digest says each one after.
+ */
+export function setSwept(s: StatusIssueState, w: Swept): string | undefined {
+  const failures = w.failed ? (s.watch.swept?.failures ?? 0) + 1 : 0;
+  s.watch.swept = {
+    deleted: w.deleted,
+    bytes: w.bytes,
+    unclaimed: w.unclaimed,
+    ...(w.failed ? { failed: w.failed.slice(0, 200) } : {}),
+    failures,
+  };
+  if (failures !== 2) return undefined;
+  return `The weekly clean-up failed twice: ${w.failed}. Check the door: \`pnpm ship door check\`.`;
 }
 
 /**

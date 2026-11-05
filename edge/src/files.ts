@@ -3,8 +3,8 @@
 // with its GitHub OIDC token, as for /door/replied; the channel's keys stay here. Its adapter fetches
 // the bytes, 100 MB at most, and nothing is kept.
 // And the weekly clean-up's (ADR 0069, section 15): POST /door/files/forget, `{"chats": [n, …]}`,
-// deletes those chats' files from the web chat's store. Only watch.yml's own token gets in, so no
-// agent's run can delete a file.
+// deletes those chats' files from the web chat's store, and the files no chat used in 60 days. Only
+// watch.yml's own token gets in, so no agent's run can delete a file.
 import { channelOf } from "./channels/index.ts";
 import type { Deps, Env } from "./env.ts";
 import { bucketOf, json, logOf, missing, OIDC_NEEDS, unconfigured } from "./env.ts";
@@ -57,9 +57,9 @@ async function chatsOf(req: Request): Promise<number[] | undefined> {
 }
 
 /**
- * The weekly clean-up's delete: every file of these chats, from the web chat's store. Proven by
- * watch.yml's OIDC token alone: task.yml's (any agent's run) is refused, 403. A file with no chat is
- * never named, so it stays. How many went, and their bytes.
+ * The weekly clean-up's delete: every file of these chats, and every file no chat used in 60 days,
+ * from the web chat's store; asked with no chats too. Proven by watch.yml's OIDC token alone:
+ * task.yml's (any agent's run) is refused, 403. How many of each went, and their bytes.
  */
 export async function forgetFiles(req: Request, env: Env, deps: Deps): Promise<Response> {
   const log = logOf(deps, "door.file");
@@ -77,7 +77,9 @@ export async function forgetFiles(req: Request, env: Env, deps: Deps): Promise<R
   if (!chats)
     return json({ error: `chats: a list of task numbers, ${MOST_FORGOTTEN} at most` }, 400);
   const bucket = bucketOf(env);
-  const done = bucket && chats.length ? await forget(bucket, chats) : { deleted: 0, bytes: 0 };
+  const done = bucket
+    ? await forget(bucket, chats, deps.now())
+    : { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0 };
   log.info("door.file.served", { what: "forgotten", chats: chats.length, ...done });
   return json(done);
 }

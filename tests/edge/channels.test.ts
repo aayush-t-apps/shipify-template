@@ -110,14 +110,12 @@ for (const [id, ch] of Object.entries(CHANNELS) as [string, Channel][]) {
     const file = () => new File(["png"], "shot.png", { type: "image/png" });
 
     if (ch.inPlace) {
-      it("is read in place: a reply's send pushes no words, says ok, and its files are kept", async () => {
+      it("is read in place: a reply's send pushes no words and says ok; the door keeps its files", async () => {
         const p = fx.platform();
         expect(await ch.send(env, p.deps, fx.chat, reply())).toEqual({ ok: true });
         expect(p.texts()).toEqual([]);
-        expect(await ch.sendFiles?.(env, p.deps, fx.chat, 12, [file()])).toBe(0);
-        expect(p.files()).toEqual(["shot.png"]);
-        p.mode("down");
-        expect(await ch.sendFiles?.(env, p.deps, fx.chat, 12, [file()])).toBe(1);
+        // Every run's files are kept by the door itself, whatever chat (ADR 0071): never twice.
+        expect(ch.sendFiles).toBeUndefined();
       });
 
       if (fx.platform().device) {

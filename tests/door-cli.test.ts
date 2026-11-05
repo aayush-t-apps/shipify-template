@@ -677,8 +677,13 @@ describe("ship door page (ADR 0032)", () => {
     expect(w.writes()).toEqual([]);
   });
 
-  it("set up, but no sign-in in front: walks you through it again, and Enter keeps both values", async () => {
-    const saved = JSON.stringify({ team: "myteam.cloudflareaccess.com", aud: AUD });
+  it("set up, but no sign-in in front: walks you through it again, and Enter keeps every value", async () => {
+    // The guests' tag (ADR 0071), which you add on GitHub, is kept too.
+    const saved = JSON.stringify({
+      team: "myteam.cloudflareaccess.com",
+      aud: AUD,
+      guests: "e".repeat(64),
+    });
     const w = world({ vars: { ...vars, SHIPIFY_ACCESS: saved } });
     const said: string[] = [];
     let moved = false;

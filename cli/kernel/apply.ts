@@ -3,7 +3,7 @@
 // and tells the door of each new reply. It never runs code the agent wrote: a PR is pushed from the
 // agent's bundle, fetched into apply's own clone with git's hooks and monitors off.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { queue, rec, thisRun, timeZone } from "../commands/task/context.ts";
@@ -15,10 +15,13 @@ import { CLEAN_CLOSED, closeQuiet } from "../commands/task/sweep.ts";
 import {
   asProblem,
   errorLine,
+  fileRefOf,
   type Link,
+  MAX_FILES_OUT,
   maskSecrets,
   type Problem,
   problem,
+  type ReplyLine,
   readReply,
   renderProblem,
   replyLine,
@@ -36,7 +39,8 @@ import { type RunDetails, recordRun, renderRunDetails } from "../lib/runs.ts";
 import { secretFindings } from "../lib/secret-scan.ts";
 import { dropRepeat, tryStatusIssue, upsertRepeat } from "../lib/status-issue.ts";
 import { findStatus, inertImages, MAX_REPLY, safeMarkdown, type TaskState } from "../lib/task.ts";
-import { cursorOf, sentRefs, sharedNow } from "./decide.ts";
+import { cursorOf, guestOf, sentRefs, sharedNow } from "./decide.ts";
+import { typeOf } from "./door.ts";
 import { replyKey } from "./keys.ts";
 import { makeCalls } from "./mcp-client.ts";
 import { openedText, SUB_TASK } from "./parts.ts";
@@ -45,6 +49,9 @@ import { type Person, replyTo, scheduledReply } from "./route.ts";
 import { taskReadOf } from "./snapshot.ts";
 import type { Snapshot, Write } from "./types.ts";
 import { workflowsMismatch } from "./workflows.ts";
+
+/** A run's file as its reply's line names it: its ref in the web chat's store (ADR 0071). */
+type KeptFile = NonNullable<ReplyLine["files"]>[number];
 
 export interface ApplyEnv {
   /** Your default channels and your ids on them, for replies that need you. */
@@ -157,10 +164,16 @@ export async function apply(
   };
 
   /**
-   * A reply's files, shared once (shipify-files): before this run's calls, so a pre-approved one
-   * can name a file this answer made (a drop of it), else as the reply is written.
+   * A reply's files, shared once: before this run's calls, so a pre-approved one can name a file
+   * this answer made (a drop of it), else as the reply is written. Yours are backed up on
+   * shipify-files; a guest's never are (ADR 0071). Each gets a ref in the web chat's store, which
+   * the reply's line names, and the door keeps a copy under it.
    */
-  const shares = new Map<Write, { out: string[]; made?: ReturnType<typeof publishMade> }>();
+  const guest = guestOf(s);
+  const shares = new Map<
+    Write,
+    { out: string[]; made?: ReturnType<typeof publishMade>; kept: KeptFile[] }
+  >();
   const share = (w: Extract<Write, { w: "reply" }>) => {
     const was = shares.get(w);
     if (was) return was;
@@ -171,11 +184,21 @@ export async function apply(
     // Each file's hash as the agent left it (publishMade hides keys in a text one first).
     const hashes = out.map(fileHash);
     const made =
-      out.length && env.tokens.files
+      out.length && env.tokens.files && !guest
         ? withToken(env.tokens.files, () => publishMade(s.n, out))
         : undefined;
     if (made) st.shared = sharedNow(st.shared, out, hashes, made.links);
-    const got = { out, ...(made ? { made } : {}) };
+    const kept = out.slice(0, MAX_FILES_OUT).map((f): KeptFile => {
+      const backup = made?.links.get(f);
+      return {
+        name: basename(f).slice(0, 200),
+        ref: fileRefOf(Date.now(), guest),
+        type: typeOf(f),
+        size: statSync(f).size,
+        ...(backup ? { backup } : {}),
+      };
+    });
+    const got = { out, kept, ...(made ? { made } : {}) };
     shares.set(w, got);
     return got;
   };
@@ -220,7 +243,8 @@ export async function apply(
           outcomes.push(...writePages(w.pages, { ...w, dir: env.out }));
           break;
         case "close-chats":
-          // A clean start's yes (ADR 0070): each closed as the 30-day close does it.
+          // A clean start's yes (ADR 0070), or a project's close: each closed as the 30-day close
+          // does it.
           await journal(
             `close-chats:${s.state.seen}:${s.run.id}`,
             `closing ${w.chats.length} chat(s)`,
@@ -228,7 +252,9 @@ export async function apply(
               const shut: string[] = [];
               const left: string[] = [];
               for (const c of w.chats)
-                ((await closeQuiet(c, s.now, CLEAN_CLOSED)) ? shut : left).push(`#${c.number}`);
+                ((await closeQuiet(c, s.now, w.why ?? CLEAN_CLOSED)) ? shut : left).push(
+                  `#${c.number}`,
+                );
               outcomes.push(
                 ...(shut.length
                   ? [
@@ -237,7 +263,7 @@ export async function apply(
                   : []),
                 ...(left.length
                   ? [
-                      `Not closed, as GitHub refused: ${left.join(", ")}. Say \`clean start\` again.`,
+                      `Not closed, as GitHub refused: ${left.join(", ")}. ${w.why ? "Close each on its own." : "Say `clean start` again."}`,
                     ]
                   : []),
               );
@@ -406,14 +432,20 @@ export async function apply(
           });
           if (written.has(key)) break;
           unsaid = body;
-          const { out, made } = share(w);
-          const filesBlock = made?.text ?? "";
+          const { out, made, kept } = share(w);
+          // A guest's files have no backup: the reply names them, and the window opens them.
+          const filesBlock =
+            made?.text ??
+            (kept.length
+              ? `**Files:** ${kept.map((f) => f.name.replace(/[[\]]/g, "")).join(" · ")}`
+              : "");
           const allLinks = [...(r.links ?? []), ...links];
           const to = replyTo({
             kind: r.kind,
             asked,
             defaults: env.defaults,
-            owner: env.owner,
+            // A guest's replies go to their chat alone, never to yours (ADR 0071).
+            ...(guest ? {} : { owner: env.owner }),
             ownTask: s.issue.author === "run",
             scheduled: scheduledReply(r.step, r.occasion),
           });
@@ -429,6 +461,7 @@ export async function apply(
             ...(question && choices?.length ? { choices } : {}),
             ...(r.list ? { list: r.list } : {}),
             ...(r.keep ? { keep: true as const } : {}),
+            ...(kept.length ? { files: kept } : {}),
             to,
             key,
           });
@@ -537,8 +570,10 @@ function follow(s: Snapshot, st: TaskState, f: { deploy: NonNullable<TaskState["
  * carry on elsewhere is answered there, not where it started.
  */
 export function askedFrom(s: Snapshot): string[] {
+  // A guest's words too (ADR 0071): their reply goes to their chat.
   const fresh = s.said.filter(
-    (c) => (c.author === "owner" || c.author === "door") && c.id > s.state.seen,
+    (c) =>
+      (c.author === "owner" || c.author === "door" || c.author === "guest") && c.id > s.state.seen,
   );
   const out = new Set<string>();
   if (s.issue.from && (!s.state.reply || !fresh.length))

@@ -4,9 +4,8 @@
 // minted for it; plan carries on from that read, reading each repo with its own account's key.
 // This is the run's only read of the task; decide works from it with no GitHub.
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { forms, rec, runUrl, timeZone, workspace } from "../commands/task/context.ts";
+import { boxCache, forms, rec, runUrl, timeZone, workspace } from "../commands/task/context.ts";
 import {
   closingPr,
   deployState,
@@ -26,11 +25,13 @@ import {
   pickedLine,
   pickerAsked,
   readFrom,
+  readReply,
   withoutLine,
   wordOf,
 } from "../contracts/index.ts";
 import { parseUse, useChoices, useCommand } from "../lib/agents.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
+import type { Form } from "../lib/form-reader.ts";
 import { ghRun, platformRepo, RECORD_WRITER, repoOfPr } from "../lib/github.ts";
 import { accountList, platformAccount, taskAccount, yourAccounts } from "../lib/accounts.ts";
 import { planFor } from "../lib/plan.ts";
@@ -49,6 +50,7 @@ import {
   parseTask,
   repeatForm,
   type TaskState,
+  type TaskTitle,
   taskForm,
 } from "../lib/task.ts";
 import { loadTools } from "../lib/tools.ts";
@@ -87,7 +89,8 @@ function authorOf(
   const door = doorLogin();
   if (door && login === door && never) {
     const from = readFrom(body);
-    if (from) return { author: "door", from };
+    // A guest's words (ADR 0071) are never yours: they approve nothing.
+    if (from) return { author: from.guest ? "guest" : "door", from };
   }
   return { author: "other" };
 }
@@ -145,7 +148,7 @@ export function taskReadOf(
 function bodyOf(issue: RecordIssue) {
   const body = issue.body ?? "";
   const ia = authorOf(issue.user.login, body, true);
-  return { words: ia.author === "door" ? withoutLine(body) : body, ia };
+  return { words: ia.from ? withoutLine(body) : body, ia };
 }
 
 /** A task's title and words as a fingerprint (its snapshot's `bodyHash`): an edit changes it. */
@@ -157,13 +160,21 @@ function wordsOf(n: number, r: TaskRecord) {
 }
 
 /**
+ * What a task's title and form ask (ADR 0031). A guest's (ADR 0071) are only words for their
+ * agent: no operation, repo, note or form of theirs reaches the box, whatever they type.
+ */
+function parsedOf(title: string, words: string, guest: string | undefined, all: Form[]) {
+  return guest ? ({ kind: "none", ask: title.trim() } as TaskTitle) : parseTask(title, words, all);
+}
+
+/**
  * The account a task works on besides Shipify's own (ADR 0045), from its record alone: what the
  * task step says, so the token minted before plan is for the account plan reads. None: Shipify's
  * own.
  */
 export function recordAccount(n: number, r: TaskRecord): string | undefined {
-  const { said, words } = wordsOf(n, r);
-  const parsed = parseTask(r.issue.title, words, forms());
+  const { said, words, ia } = wordsOf(n, r);
+  const parsed = parsedOf(r.issue.title, words, ia.from?.guest, forms());
   return taskAccount({
     project: r.state.project,
     work: r.state.pending.work?.project,
@@ -211,13 +222,12 @@ export async function snapshot(
   const account = recordAccount(n, r);
   const { said, words, ia } = wordsOf(n, r);
   const all = forms();
-  const parsed = parseTask(issue.title, words, all);
+  const guest = ia.from?.guest;
+  const parsed = parsedOf(issue.title, words, guest, all);
   // The repo the title names: a list kept on the box must have it, else it's read again.
   const named = parsed.kind === "app" || parsed.kind === "op" ? parsed.project : undefined;
   // A box keeps its repo lists in the runner's own cache for the next runs' plans; elsewhere none.
-  const keep = process.env.SHIPIFY_BOX
-    ? join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "shipify")
-    : undefined;
+  const keep = boxCache();
   const accountToken = account ? process.env.SHIPIFY_ACCOUNT_TOKEN || undefined : undefined;
 
   // Its reads of GitHub, all at once (ADR 0051 B3): each PR the task still thinks open, your
@@ -278,7 +288,7 @@ export async function snapshot(
   const open = (state.prs ?? []).some((u) => state.prInfo?.[u]?.state === "open");
   if (merged && state.branch && !open) state.branch = nextBranch(state.branch);
 
-  const read = taskForm(words, all);
+  const read = guest ? undefined : taskForm(words, all);
   const rf = repeatForm(read);
   const repos = await reposRead;
   // The task's other account (ADR 0045): its repos, by owner/name, when the repos App reached it,
@@ -376,7 +386,12 @@ export async function snapshot(
     ...said.filter((c) => c.id > state.seen && c.author !== "run" && c.author !== "other"),
     ...(statusId ? [] : [{ text: issue.title }]),
   ].map((c) => wordOf(c.text));
-  if (opts.look && asks.some((w) => w === "clean start" || (w === "yes" && state.pending.clean)))
+  // Never for a guest's task: the list is your chats.
+  if (
+    opts.look &&
+    !guest &&
+    asks.some((w) => w === "clean start" || (w === "yes" && state.pending.clean))
+  )
     try {
       s.cleanable = cleanable(rec(), n, s.now);
     } catch (e) {
@@ -439,6 +454,8 @@ export function saidOf(n: number, comments: RecordComment[], statusId?: number):
     .map((c) => {
       const never = unedited(c);
       const a = authorOf(c.user.login, c.body, never);
+      // A run's reply names the files it made (ADR 0071): the next run in the chat gets them.
+      const made = a.author === "run" ? readReply(c.body)?.files : undefined;
       return {
         id: c.id,
         author: a.author,
@@ -447,6 +464,7 @@ export function saidOf(n: number, comments: RecordComment[], statusId?: number):
         edited: !never,
         channel: a.from ? a.from.channel : "github",
         ...(a.from ? { from: a.from } : {}),
+        ...(made?.length ? { made: made.map((f) => ({ name: f.name, ref: f.ref })) } : {}),
       };
     });
 }

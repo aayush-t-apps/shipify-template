@@ -47,6 +47,7 @@ import { apply } from "./apply.ts";
 import {
   afterThink,
   cursorOf,
+  guestOf,
   plan as decidePlan,
   lateStop,
   sharedBefore,
@@ -70,6 +71,7 @@ import {
   ends,
   givesWay,
   needsMint,
+  newWords,
   stay,
   stayMinutes,
   staysAfter,
@@ -161,7 +163,8 @@ export function triggerFromEnv(env: NodeJS.ProcessEnv = process.env): Trigger {
 export function agentRepos(s: Snapshot, p: Plan): string {
   if (p.do !== "think") return "";
   const shipify = platformRepo().split("/")[1] ?? PLATFORM;
-  if (p.think.account) return shipify;
+  // A guest's run (ADR 0071): its agent is handed no key, so the narrowest is minted.
+  if (p.think.account || p.think.profile === "guest") return shipify;
   const name = (n: string) => repoFor(n, s.repos).split("/")[1] ?? n;
   // A read run (ADR 0044): its key stays with the box, for the task and your repos it reads.
   if (p.think.profile === "read")
@@ -302,12 +305,10 @@ export async function runPlan(n: number): Promise<Result> {
 async function marked(n: number, s: Snapshot, p: Plan): Promise<void> {
   // `stuck` comes off (this run takes the task on again), 👀 goes on what this run read, and a
   // think says `working` — all together, one write each (ADR 0051 B3).
-  const newWords = s.said.filter(
-    (c) => (c.author === "owner" || c.author === "door") && c.id > s.state.seen,
-  );
+  const asks = (a: string) => a === "owner" || a === "door" || a === "guest";
+  const newWords = s.said.filter((c) => asks(c.author) && c.id > s.state.seen);
   const newTaskWords =
-    (s.state.bodyHash === undefined || s.state.bodyHash !== s.bodyHash) &&
-    (s.issue.author === "owner" || s.issue.author === "door");
+    (s.state.bodyHash === undefined || s.state.bodyHash !== s.bodyHash) && asks(s.issue.author);
   const alongside: RecordWrite[] = [
     ...(s.issue.labels.includes(STUCK_LABEL)
       ? [{ w: "unlabel", n, name: STUCK_LABEL } as RecordWrite]
@@ -350,8 +351,25 @@ export function newestFiles(from: ({ files?: { ref: string; name: string }[] } |
 }
 
 /**
- * Files you sent through a chat: from the door, by the refs on these `from` lines, into the task's
- * files folder beside what's there. Notes for the agent.
+ * A chat's files in the order they came (ADR 0071): what you sent (the task's and each message's
+ * `from` line), and what each run made (its reply's line names them in the web chat's store, so
+ * they're fetched through the door's file route as `web:<ref>`).
+ */
+export function chatFrom(
+  first: { files?: { ref: string; name: string }[] } | undefined,
+  said: Pick<Said, "from" | "made">[],
+): ({ files?: { ref: string; name: string }[] } | undefined)[] {
+  return [
+    first,
+    ...said.map((c) =>
+      c.made ? { files: c.made.map((f) => ({ name: f.name, ref: `web:${f.ref}` })) } : c.from,
+    ),
+  ];
+}
+
+/**
+ * Files of the chat, yours and its runs': from the door, by the refs on these lines, into the
+ * task's files folder beside what's there. Notes for the agent.
  */
 async function chatFiles(
   n: number,
@@ -375,7 +393,7 @@ async function chatFiles(
   return [
     ...(fetched.length
       ? [
-          `From your chat: ${fetched.join(", ")} (in the files folder). A tool call that takes files (a share) can name one by its ref, in brackets: no copy in your out folder is needed.`,
+          `From your chat (what was sent, and what earlier runs made): ${fetched.join(", ")} (in the files folder). A tool call that takes files (a share) can name one by its ref, in brackets: no copy in your out folder is needed.`,
         ]
       : []),
     ...(missed.length
@@ -429,7 +447,7 @@ export async function runThinkStep(
     videos: 0,
   }));
   const notes = [
-    ...(await chatFiles(n, [s.issue.from, ...s.said.map((c) => c.from)])),
+    ...(await chatFiles(n, chatFrom(s.issue.from, s.said))),
     ...given.notes,
     ...(given.unread.length
       ? [
@@ -565,7 +583,9 @@ function mints(s: Snapshot, d: Decided) {
   output("account", accountOf(repo) ?? "", ACCOUNT);
   output("act", d.needs.act ?? "");
   output("workflows", d.needs.workflows ? "write" : "");
-  output("files", d.writes.some((w) => w.w === "reply" && w.files?.length) ? "yes" : "");
+  // A guest's files never reach shipify-files (ADR 0071): no files key for their run.
+  const backup = !guestOf(s) && d.writes.some((w) => w.w === "reply" && w.files?.length);
+  output("files", backup ? "yes" : "");
   // Its only push keeps a question's commits (ADR 0041): its write token may fail to mint, and the
   // question is still posted (the push, without it, only logged).
   const pushes = d.writes.filter((w) => w.w === "push");
@@ -678,16 +698,13 @@ export async function runStay(n: number): Promise<Result> {
   // The jobs this slot may take: any task's run, and its own box's weekly clean-up (`box-<name>`).
   const box = process.env.SHIPIFY_BOX;
   const mayTake = ["shipify-box", ...(box ? [`box-${box}`] : [])];
-  // Your words, not a setting the door wrote (a `use` or `close` from a chat starts nothing).
-  const yours = (c: Said) =>
-    (c.author === "owner" || c.author === "door") && c.id > after && !c.from?.setting;
   const io = {
     now: () => Date.now(),
     sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
     news() {
       const r = rec().commentsIfChanged(n, since, tags.comments);
       tags.comments = r.tag;
-      if (r.comments) waits = saidOf(n, r.comments, saved.s.statusId).some(yours);
+      if (r.comments) waits = newWords(saidOf(n, r.comments, saved.s.statusId), after).length > 0;
       return waits;
     },
     task(): "open" | "closed" | "edited" | "unlabelled" {
@@ -714,30 +731,42 @@ export async function runStay(n: number): Promise<Result> {
       if (record.issue.state === "closed") return "handover";
       const { s, p } = await planned(n, { kind: "comment" }, record);
       clock.lap("plan");
-      const words = s.said.filter(yours);
+      const words = newWords(s.said, after);
       after = Math.max(after, ...s.said.map((c) => c.id));
       // Words that aren't yours, or only a setting, leave nothing to do.
       if (p.do === "nothing" || !words.length || (p.do === "box" && !p.writes.length))
         return "nothing";
       // What a normal run would do, done here (ADR 0063): plan's choice, a fixed word's too.
       if (!takes(first, p)) return "handover";
-      await marked(n, s, p);
-      clock.lap("marks");
+      // 👀 and `working` go on as the agent starts, not before it (2–3 s of writes): think reads
+      // the plan saved now, decide the one the marks save (the status comment's id, the labels).
+      save(n, "plan", { s, p });
+      const marks = marked(n, s, p).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
       // One read of the task a turn, and one of your words as it answers (ADR 0057): decide takes
       // that newest, apply the turn's. Words after it are the next turn's, which the stay answers.
       let heard: Said[] | undefined;
-      if (p.do === "think") {
-        await runThinkStep(n, {
-          resume: session,
-          used,
-          minutes,
-          record,
-          heard: (said) => {
-            heard = said;
-          },
-        });
-        clock.lap("think");
+      // The marks are done before the turn goes on or fails: never a `working` after its failure.
+      let refused: unknown;
+      try {
+        if (p.do === "think")
+          await runThinkStep(n, {
+            resume: session,
+            used,
+            minutes,
+            record,
+            heard: (said) => {
+              heard = said;
+            },
+          });
+      } finally {
+        refused = await marks;
       }
+      if (refused) throw refused;
+      // A think's lap holds its marks' writes too: they went at the same time.
+      clock.lap(p.do === "think" ? "think" : "marks");
       const got = decided(n, heard);
       clock.lap("decide");
       if (!got) return "handover";

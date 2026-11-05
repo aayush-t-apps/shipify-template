@@ -2,10 +2,12 @@
 // Shipify chat: the list, threads, the pages, downloads, polling and the copy kept in the browser.
 import { $, api, cap, composer, h, icon, pop, said, set, size, timed, uid } from "./compose.js";
 
+// A guest, at /guest/ (ADR 0071): only theirs shows, kept apart from yours in this browser.
+const GUEST = location.pathname.startsWith("/guest");
 // Kept in the browser: the rest under KEY, each thread under a key of its own (TK + its number),
 // written only when it changed, when the page is idle (or as it's left).
-const KEY = "shipify-c";
-const TK = "shipify-t";
+const KEY = GUEST ? "shipify-g" : "shipify-c";
+const TK = GUEST ? "shipify-gt" : "shipify-t";
 const OFF = "Offline: showing what it last had";
 const LS = localStorage;
 const got = (k) => {
@@ -16,12 +18,13 @@ const got = (k) => {
 /** @type {Record<string, any>} */
 const S = { list: null, menu: null, threads: {}, seen: [], saw: {}, fold: [] };
 // The copy kept whole under one key till 2026-11: split once, then gone.
-const was = got("shipify-chat");
+const was = GUEST ? null : got("shipify-chat");
 Object.assign(S, was || got(KEY), { threads: was?.threads || {} });
 // A project's tabs went (ADR 0069): the ones a browser saved go with the next write.
 delete S.tabs;
+const THREAD = new RegExp(`^${TK}\\d+$`);
 for (const k of Object.keys(LS)) {
-  const t = /^shipify-t\d+$/.test(k) && got(k);
+  const t = THREAD.test(k) && got(k);
   if (t) S.threads[k.slice(TK.length)] = t;
 }
 // A reply's Markdown isn't kept, only its HTML (what's drawn): its words stand in for it till the
@@ -33,7 +36,7 @@ for (const t of Object.values(S.threads))
       t.r = x.r = 1;
     }
 /** @type {Record<string, any>} */
-const R = { pend: {}, n: 0, tk: 0, busy: 0, turned: {}, gone: {}, old: {}, miss: 0, pj: {} };
+const R = { pend: {}, n: 0, tk: 0, busy: 0, turned: {}, gone: {}, st: {}, miss: 0, pj: {} };
 const dirty = new Set();
 const slim = (t) => ({
   ...t,
@@ -63,7 +66,7 @@ const keep = (n = "") => {
   dirty.add(`${n}`);
   R.idle ||= (self.requestIdleCallback || setTimeout)(flush, { timeout: 2e3 });
 };
-if (was) {
+if (was && !GUEST) {
   LS.removeItem("shipify-chat");
   for (const n in S.threads) keep(n);
   keep();
@@ -114,19 +117,18 @@ const signin = () => {
   bar("off");
   bar("in", "Your sign-in ended: tap to sign in again", reload);
 };
-// The bar at the top moves only while you wait: a poll for what's on screen already is quiet.
-// GitHub not read just now: a poll says nothing and tries again, slower each time (tick); after a
-// minute, or on the edge's last good copy (`stale`), a calm line says so. A read you waited for
-// that failed says why, and the next good read takes it away.
+// The top bar moves only while you wait. GitHub unread: a poll tries again, slower each time
+// (tick); after a minute, or on the edge's last good copy (`stale`), a calm line says so. A read
+// you waited for that failed says why, till the next good one.
 const DOWN = "Can't reach GitHub · retrying";
 async function get(p, b, quiet = false, k = p) {
   if (!quiet && !R.busy++) document.body.classList.add("busy");
   try {
     const j = await api(p, b, k);
-    if (j) R.old[p] = j.stale;
-    if (R.old[p]) R.down ||= Date.now();
+    if (j) R.st[p] = j.stale;
+    if (R.st[p]) R.down ||= Date.now();
     else R.down = 0;
-    bar("off", R.old[p] && DOWN);
+    bar("off", R.st[p] && DOWN);
     if (!b && R.readErr) {
       R.readErr = false;
       bar("err");
@@ -163,8 +165,7 @@ const ago = (t, s = secs(t)) => (s < 60 ? "now" : unit(s));
 const until = (t, s = -secs(t)) => (s < 60 ? "due" : `in ${unit(s)}`);
 const dur = (t, s = Math.max(0, secs(t) | 0)) =>
   `${(s / 60) | 0}m ${String(s % 60).padStart(2, "0")}s`;
-// The clocks on screen ("Working · 2m 05s", a message's "5m"), each second while the page shows and
-// has one; a text unchanged isn't written again.
+// The clocks on screen ("Working · 2m 05s", "5m"), each second while shown; unchanged, unwritten.
 function tock() {
   const l = document.querySelectorAll("[data-since],[data-at]");
   if (document.hidden || !l.length) R.clk = clearInterval(R.clk);
@@ -243,20 +244,18 @@ const NAME = {
 const named = (k) => NAME[k] || cap(k);
 // A task's project (ADR 0065): the repo its title names, Shipify's own too; none is General.
 const projOf = (t, k = kindIn(t.title)) => (k && !NAME[k] ? k : "");
-// Parts loaded the first time they're needed (ADR 0065), lent what they read here: workspace.js
-// (a repo's page, the doc pane, Files, Ctrl+K), setup.js (Status & setup), plan.js (a split task's
-// Plan card, ADR 0066), and ADR 0069's project.js (a project's page, New project), desk.js (the
-// Desk, the first screen), library.js (the Library) and export.js. One that didn't load (offline)
-// says so, and loads again on the next tap, not only after a reload.
+// Parts loaded when first needed (ADR 0065), lent what they read here. One that didn't load
+// (offline) says so, and loads on the next tap.
 const M = {};
 const LOST = "Part of the page didn't load: tap to reload";
 const lazy = (k) => (f) => {
   M[k] ||= import(`./${k}.js`).then(
     async (m) => {
-      const lent = { S, R, go, get, keep, start, bare, named, projOf, runs, ago, until, secs, to };
+      const lent = { S, R, GUEST, go, get, keep, start, bare, named, projOf, runs, ago, turn };
+      const time = { until, secs, to, save };
       const ui = { page, what, meta, list, btn, view, ext, mark, dot, out, copy, quick, fresh };
-      const does = { ask, join, reg, sync, say, lazy, into, told, moved, reread, redraw };
-      await m.init({ ...lent, ...ui, ...does });
+      const does = { ask, join, reg, sync, say, lazy, into, told, moved, reread, redraw, lost };
+      await m.init({ ...lent, ...time, ...ui, ...does });
       return m;
     },
     (e) => {
@@ -269,11 +268,9 @@ const lazy = (k) => (f) => {
 const ws = lazy("workspace");
 // The tasks a run works on now, as the list shows them.
 const runs = () => new Set((S.list?.running || []).filter(goes).map((r) => r.n));
-// A run the list shows, till a reply comes after it began: what's left of it is its end, or a run
-// queued for words it already read (it finds nothing new). Your words after the reply, or any of
-// yours with no 👀 yet (sent as the reply was written), count again.
-// One begun for a word that starts no agent (`close`, `reopen`…) is only its tidying: not shown.
-// Its one argument only: it's given to `filter`, which passes more.
+// A run the list shows, till a reply after its start (what's left is its end, or a run for words
+// read already); your words after it, or with no 👀 yet, count again. One for a word that starts
+// no agent (`close`…) isn't shown. One argument: `filter` passes more.
 const goes = (r) => {
   const t = S.threads[r.n];
   const m = t?.messages.at(-1);
@@ -289,13 +286,15 @@ const runOf = (T) =>
     Date.now() - R.at < 12e4 && S.list.running.find((r) => r.n === T.n && goes(r)),
   );
 // Closed or open now: the door changes the task as it writes the word, and the next read agrees.
+// A project's Close asks first (ADR 0069).
 function turn(T) {
+  if (T.open && T.project?.ask && !confirm(T.project.ask)) return;
   T.open = !T.open;
   say(T.n, T.open ? "reopen" : "close");
   moved(T.n, T.open, { title: T.title, from: T.from, url: T.url });
 }
-// Your own close, reopen, pause or resume shows at once in every view (Open, Closed, Repeats), and
-// holds till the lists agree: GitHub's can lag a minute behind a change. Five minutes at most.
+// Your close, reopen, pause or resume shows at once in every view, and holds till the lists agree
+// (GitHub's can lag a minute), five minutes at most.
 function moved(n, open, seen = {}) {
   const state = open ? "open" : "closed";
   const copies = [...(S.list?.tasks || []), ...(R.old?.tasks || []), ...(R.closed?.tasks || [])];
@@ -367,6 +366,7 @@ async function olderTasks() {
 // The closed ones, to look back through: read when the tab opens, never polled.
 async function shut(on) {
   R.shut = on;
+  R.pj = {};
   drawList();
   if (!on) return;
   const d = await get("list?closed=1").catch(no);
@@ -380,37 +380,44 @@ async function shut(on) {
   drawList();
 }
 
-// The list by project (ADR 0065): each group folds open and shut (open while you search) and
-// counts what needs you and what works; tasks with no project are General. One group alone is a
-// plain list. Projects you made (ADR 0069) come first, each its name and how many chats, its
-// chats folded under it (shut till you open it: `@n` in S.fold); then repos; then General. A
-// fold open the first time reads the project's thread once, for chats past the list's page, with
-// no ETag: its answer isn't the thread's copy, so neither may have the other's 304.
+// The list by project (ADR 0065, 0069, 0071): projects (shut till opened, `@n` in S.fold), then
+// repos, then General, each counting what needs you and works. Open chats are the list's alone;
+// under Closed, one opened reads its closed ones (no ETag), each time Closed opens.
 function groups(l, row, runs, q) {
   const by = new Map();
-  const pj = l.filter((t) => t.project);
+  const shown = l.filter((t) => t.project);
+  const pj = shown.concat(
+    S.list.tasks.filter((t) => t.project && t.state !== "closed" && !shown.includes(t)),
+  );
   for (const t of pj) by.set(`@${t.n}`, []);
   // A chat's project is its `parent`: its `Part of` line, or GitHub's link once moved in.
   for (const t of l) {
     const k = by.has(`@${t.parent}`) ? `@${t.parent}` : projOf(t);
     if (!t.project) by.set(k, [...(by.get(k) || []), t]);
   }
+  for (const t of pj) if (!shown.includes(t) && !by.get(`@${t.n}`).length) by.delete(`@${t.n}`);
   const gen = by.get("");
   if (by.delete("")) by.set("", gen);
-  if (by.size < 2 && !pj.length) return h("ul.rows", l.map(row));
-  return [...by].map(([p, g]) => {
+  if (by.size < 2 && ![...by.keys()].join().includes("@")) return h("ul.rows", l.map(row));
+  // Projects, then Chats, each under its heading: a project is a card, its chats under it.
+  return [...by].map(([p, g], i, a) => {
     const P = pj.find((t) => `@${t.n}` === p);
-    const shut = !q && S.fold.includes(p) === !P;
+    const shut = !q && !R.need && S.fold.includes(p) === !P;
     const c = P?.project.chats;
-    if (P && !shut && !R.pj[P.n] && g.length < c) {
+    if (P && R.shut && !shut && !R.pj[P.n] && g.length < c) {
       R.pj[P.n] = [];
-      get(`task/${P.n}`, 0, 1, "").then((d) => {
+      get(`task/${P.n}`, undefined, 1, "").then((d) => {
         R.pj[P.n] = d?.task.project?.chats || R.pj[P.n];
         drawList();
       }, no);
     }
-    const more = P && !q ? R.pj[P.n] || [] : [];
-    const rest = more.filter((x) => x.state !== "closed" && !S.list.tasks.some((t) => t.n === x.n));
+    const more = P && R.shut && !q ? R.pj[P.n] || [] : [];
+    const rest = more.filter((x) => x.state === "closed" && !g.some((t) => t.n === x.n));
+    // The project waiting on you, or closed (under Closed): its own row, first.
+    const self = P && shown.includes(P) && (R.shut || P.state === "needs-you") ? [P] : [];
+    const rows = [...self, ...g, ...rest];
+    // None to show, its chats read: said, never an empty group.
+    const none = P && !rows.length && !(R.shut && g.length < c && !R.pj[P.n]?.length);
     const n = (f, c, w, k = (P ? [P, ...g] : g).filter(f).length) =>
       k > 0 && h(`small.${c}`, { title: w }, `${k}`);
     const fold = btn(
@@ -436,16 +443,21 @@ function groups(l, row, runs, q) {
       title: it,
       "aria-label": it,
     };
+    const pk = (k) => k.startsWith("@");
+    const sec = a.some(([k]) => pk(k)) && (!i || pk(a[i - 1][0]) !== pk(p));
     return [
-      h("div.proj", fold, p && h("a.icon", page, icon(P ? "app" : "code"))),
-      !shut && h("ul.rows", g.map(row), rest.map(row)),
+      sec && h("h3.sec", P ? "Projects" : "Chats"),
+      h(`div.proj${P ? ".pj" : ""}`, fold, p && h("a.icon", page, icon(P ? "app" : "code"))),
+      !shut &&
+        (none
+          ? h("p.quiet.none", R.shut ? "No closed chats." : "No open chats.")
+          : h("ul.rows", rows.map(row))),
     ];
   });
 }
 
-// The list: what needs you first, then what runs; open repeats and recipes last. Open, Needs
-// you and Closed are one control; the filters under it (a kind, a project, your labels) count what
-// it shows. No call but for closed ones.
+// The list: what needs you, then what runs; repeats last. Open, Needs you and Closed are one
+// control; its filters count what it shows. No call but for closed ones.
 function drawList() {
   clock();
   const L = S.list;
@@ -510,8 +522,8 @@ function drawList() {
     i.style.width = `${(100 * done) / total}%`;
     return [h("span.bar", i), h("span", `${done}/${total}`)];
   };
-  // A row: a mark for its state, its title and age; then the state's word, its kind and number. A
-  // split task's open parts fold under it, in order (ADR 0066): `#n` in S.fold is one shown open.
+  // A row: its state's mark, title, age, kind and number. A split task's parts fold under it
+  // (ADR 0066): `#n` in S.fold is one open.
   const row = (t) => {
     const job = runs.get(t.n);
     // Its thread's turn only when it's this job's (by the run's id): a kept thread may be older.
@@ -596,11 +608,12 @@ function drawList() {
   const box = { href: "#/setup", title: "Status & setup" };
   const next = h(
     "div",
-    h(`a.boxes${on.length ? ".live" : ""}`, box, boxes || "No box online: tasks wait"),
+    !GUEST && h(`a.boxes${on.length ? ".live" : ""}`, box, boxes || "No box online: tasks wait"),
     h(
       "div.tabs",
       { role: "group", "aria-label": "Show" },
-      tab("Open", R.shut ? 0 : all.length, false),
+      // Chats: a project is a group.
+      tab("Open", R.shut ? 0 : all.filter((t) => !t.project).length, false),
       tab("Needs you", R.shut ? 0 : needs, false, true),
       tab("Closed", 0, true),
     ),
@@ -692,8 +705,8 @@ async function pull(n) {
     !!old && !R.woke,
   );
   if (!d) return;
-  // Only what's newer, or the newest page with older ones loaded: kept with what's here, in order.
-  // Past 100, the edge reads what's newer by time, so a page that fills between reads skips none.
+  // Only what's newer (or the newest page, older ones loaded), kept in order. Past 100 the edge
+  // reads what's newer by time, so none is skipped.
   if (since || old?.page < d.page) {
     const all = new Map(old.messages.map((x) => [x.id, x]));
     for (const x of d.messages) all.set(x.id, x);
@@ -750,7 +763,7 @@ const threadMenu = (t) => {
     phone &&
       task &&
       !T.repeats && [i(T.open ? "check" : "undo", T.open ? "Close" : "Reopen"), () => turn(T)],
-    [i("open", "On GitHub"), gh(T.url)],
+    !GUEST && [i("open", "On GitHub"), gh(T.url)],
     task && runOf(T) && [i("x", "Stop the run"), () => stop(n)],
     T.pr && [i("code", "The changes"), gh(`${T.url}/files`)],
     [
@@ -783,6 +796,13 @@ function drawThread(t) {
   const start = real && !run && starting(T, t);
   const k = !T.pr && kindOf(T);
   const all = totals(t);
+  // The chat's files (ADR 0071): yours and its runs', newest first, each to open in the pane.
+  const fl = t.messages.flatMap((x) => x.files.filter((f) => f.src)).reverse();
+  const fs = (e) =>
+    pop(
+      e.currentTarget,
+      fl.map((f) => [f.name, () => see(f)]),
+    );
   // Its state, number and kind, its runs added up (each reply's line has its own), its PRs.
   const kind = T.pr
     ? [h("span.tag", `PR · ${T.pr}`), T.for && to(T.for, `Task #${T.for}`)]
@@ -798,6 +818,7 @@ function drawThread(t) {
         model,
         all.runs.length > 0 && h("span.sum", summary(all)),
         T.prs.map((p) => pr(p)),
+        fl.length > 0 && btn(`Files ${fl.length}`, fs, ".chip"),
       ];
   const tags = real && h("p.tags", kind);
   const more = real && moreBtn((e) => pop(e.currentTarget, threadMenu(t)));
@@ -829,10 +850,18 @@ function drawThread(t) {
     v.box.querySelector(".plan")?.remove();
     v.pk = undefined;
   }
-  // A project's page (ADR 0069): its chats, pages, Inbox and Export under the header (project.js).
-  if (real && T.project) lazy("project")((m) => R.v === v && m.card(v, t));
-  // Its Progress (ADR 0069): the run's handoff, folded above the thread. Drawn again only when it
-  // changed, as open as you left it. None is "": `v.pg` is the fold or nothing, never `false`.
+  // A project's screen (ADR 0071): Overview, Chats, Docs and Files under the header (project.js).
+  if (real && T.project) lazy("project")((m) => R.v === v && m.screen(v, t));
+  // A project's doc opens once: in the pane, over its project's Docs (ADR 0071), open or closed.
+  const docIn = T.doc?.of;
+  if (real && docIn && !v.pd) {
+    v.pd = 1;
+    R.tab = "Docs";
+    location.replace(`#/t/${docIn}`);
+    ws((w) => w.page(n));
+  }
+  // Its Progress (ADR 0069): the handoff, folded above the thread, drawn again only when changed,
+  // as open as you left it. `v.pg` is the fold or "", never `false`.
   const g = (real && T.progress) || "";
   if ((v.pg?.k || "") !== g) {
     const d =
@@ -865,7 +894,11 @@ function drawThread(t) {
   // Your `stop` is in: the run reads it within a minute.
   const halt = run && /^\s*stop\W*$/i.test(t.messages.at(-1)?.md);
   const work = run
-    ? h("div.msg.work", halt ? dot("working", "Stopping…") : working(run), ext(run.url, "Watch it"))
+    ? h(
+        "div.msg.work",
+        halt ? dot("working", "Stopping…") : working(run),
+        !GUEST && ext(run.url, "Watch it"),
+      )
     : start && h("div.msg.work", start());
   // The newest SHOW are drawn, then from the oldest drawn on (`v.from`), whatever comes after it.
   let cut = t.messages.findIndex((x) => x.id === v.from);
@@ -908,8 +941,8 @@ function drawThread(t) {
   v.pill.hidden = v.low = near(v.msgs);
   v.drawn = !t.ph;
   clock();
-  // A project's box (ADR 0069) opens a new chat in it, or adds to its Inbox: it replies to none.
-  const W = t.writable && (T.project ? 2 : 1);
+  // A project's box (ADR 0069) opens a new chat in it, or adds to its Inbox; its question, answered.
+  const W = t.writable && (T.project && T.state !== "needs-you" ? 2 : 1);
   if (v.w !== W) {
     v.w = W;
     v.seen = T.model;
@@ -927,7 +960,13 @@ function drawThread(t) {
     const changes = ext(`${T.url}/files`, "The changes");
     const note = T.pr
       ? h("p.note", "Read it here. ", changes, " and the merge are on GitHub.")
-      : h("p.note", "This task doesn't take words from here: ", ext(T.url, "open it on GitHub"));
+      : T.doc
+        ? h(
+            "p.note",
+            "A doc: ",
+            btn("Edit it", () => ws((w) => w.page(n)), ".btn"),
+          )
+        : h("p.note", "This task doesn't take words from here: ", ext(T.url, "open it on GitHub"));
     set(v.foot, v.pill, t.writable ? composer(v.co) : note);
     if (R.ask && v.co.attach) R.ask(v.co);
     R.ask = 0;
@@ -936,9 +975,8 @@ function drawThread(t) {
     v.seen = v.co.model = T.model;
     v.co.label();
   }
-  // Words sent while a run works are taken in before it answers (tasks.md): the box says so.
-  // While it works, an empty box's send button stops it, as in other chats. A project's box says
-  // its own (project.js).
+  // Words sent while a run works are read before it answers: the box says so. While it works,
+  // an empty box's send stops it. A project's box says its own (project.js).
   const ta = n && W < 2 && v.foot.querySelector("textarea");
   if (ta) ta.placeholder = run || start ? "Reply · read before it answers" : "Reply";
   if (!v.co?.state) return;
@@ -1005,14 +1043,21 @@ function starts() {
   // Your repos as the record keeps them (ADR 0047): Shipify's own first.
   const p = [...new Set(["shipify", ...(S.menu?.repos || [])])].map((x) => [x, fill(`${x}: `)]);
   const file = fill("Summarize this: ", 1);
+  // A guest's: no repos, apps, notes or repeats.
   const grid = h(
     "div.starts",
     one("chat", "Ask anything", "Plain words are enough", fill("")),
     one("file", "About a file", "A PDF, photo or document: a summary, the key points", file),
-    one("code", "Change a repo", says.change, (e) => pop(e.currentTarget, ["Which one?", ...p])),
-    one("app", "New app", says.new, fill("new: ")),
-    one("pin", "Remember", says.remember, fill("remember: ")),
-    one("repeat", "Repeat", says.repeat, () => go("#/repeats")),
+    GUEST
+      ? one("folder", "New project", "Its own chats, docs and files", fill("project: "))
+      : [
+          one("code", "Change a repo", says.change, (e) =>
+            pop(e.currentTarget, ["Which one?", ...p]),
+          ),
+          one("app", "New app", says.new, fill("new: ")),
+          one("pin", "Remember", says.remember, fill("remember: ")),
+          one("repeat", "Repeat", says.repeat, () => go("#/repeats")),
+        ],
   );
   return h("div.hello", h("h3", "What should Shipify do?"), grid);
 }
@@ -1028,7 +1073,14 @@ function msg(x, i, n) {
   if (x.who !== "shipify" && !x.files.length && TURN.test(x.md))
     return turned(x.md, `${x.who === "other" ? ` by ${x.name}` : ""} · ${ago(x.at)}`);
   const r = x.reply;
-  const md = Object.assign(h("div.md"), { innerHTML: x.html, onclick: zoom });
+  // A file its words name opens in the pane, as its chip does (ADR 0071).
+  const seeIn = (e, a = e.target.closest("a")) => {
+    const f = a && x.files.find((f) => f.src === a.getAttribute("href"));
+    if (!f) return zoom(e);
+    e.preventDefault();
+    see(f);
+  };
+  const md = Object.assign(h("div.md"), { innerHTML: x.html, onclick: seeIn });
   // Copy on each block of code; a diagram's is drawn in its place (draw.js).
   if (x.md.includes("```mermaid")) lazy("draw")((m) => m.draw(md, x.md));
   for (const pre of md.querySelectorAll("pre")) {
@@ -1067,13 +1119,18 @@ function msg(x, i, n) {
   return h(`article.msg.${x.who}`, who, md, x.files.map(file), links, ask, line, det, foot);
 }
 
+// A file's chip; its kept copy gone (ADR 0071), Archived, linked to its backup, else Gone.
+const lost = (f) =>
+  f.backup
+    ? ext(f.backup, `${f.name} · Archived`, ".chip.gone")
+    : h("span.chip.gone", `${f.name}${f.src ? " · Gone" : ""}`);
 function file(f) {
   const u = f.src;
   const s = f.size ? ` · ${size(f.size)}` : "";
-  const gone = () => h("span.chip.gone", `${f.name} · no longer kept`);
-  if (!u) return h("span.chip.gone", f.name);
+  const gone = () => lost(f);
+  if (!u || R.gone[u]) return gone();
   if (!IMG.test(f.type))
-    return btn([icon("file"), h("span", `${f.name}${s}`)], () => see(f), ".chip");
+    return btn([icon("file"), h("span", `${f.name}${s}`)], (e) => see(f, e.currentTarget), ".chip");
   // A picture: yours from here (kept with its chat) or from Telegram (read through the edge).
   const i = h("img", { src: u, alt: f.name, loading: "lazy" });
   const b = btn(i, zoom, ".pic");
@@ -1094,8 +1151,9 @@ function view(...c) {
   $("#view").showModal();
   history.pushState({ view: 1 }, "");
 }
-// A file opens here, never in a new tab: in the doc pane, beside the thread (workspace.js).
-const see = (f) => ws((w) => w.doc(f));
+// A file opens here, never in a new tab: in the doc pane, beside the thread (workspace.js). Its
+// chip (`c`) says Archived once its kept copy has gone.
+const see = (f, c) => ws((w) => w.doc(f, c));
 // `f` takes the box on screen, or a new chat's (in the project on screen).
 const into = (f) => {
   if (R.v?.co?.attach) return f(R.v.co);
@@ -1139,8 +1197,7 @@ function pend(p) {
 }
 
 // Sends a message: shown at once, kept with Retry if it fails; the id is made once. One from a
-// project's box (`box`, inProject) shows in the project's page, and is never kept to send again:
-// what isn't sent goes back in the box.
+// project's box (`box`) is never kept: what isn't sent goes back in the box.
 function send(b, prev = [], note = "", box) {
   const at = box?.n || b.task || 0;
   const L = queue(at);
@@ -1148,9 +1205,8 @@ function send(b, prev = [], note = "", box) {
   L.push({ b, prev, note, at, box, base: base + L.filter((p) => p.b).length });
   sendIt(L.at(-1));
 }
-// A project's box (ADR 0069) replies to none: Send opens a new chat in it (`under`, as New chat
-// here's box does); Add beside it (project.js sets `v.add`) puts what you found in its Inbox, with
-// no run. Not sent: your words and files back in the box, to send again.
+// A project's box (ADR 0069): Send opens a new chat in it (`under`); Add (project.js sets `v.add`)
+// puts what you found in its Inbox, with no run. Not sent: your words and files back in the box.
 const inProject = (v, P) => (b, p) =>
   send(v.add ? { ...b, words: `add ${P.name}: ${b.words}` } : { ...b, under: v.n }, p, "", {
     n: v.n,
@@ -1169,7 +1225,8 @@ const sent = (task, words, id = uid()) => ({
   files: [],
   button: TAP.test(words) || undefined,
 });
-const say = (n, words) => send(sent(n, words));
+// With `under` (a project's Collate, Check), a new chat in it.
+const say = (n, words, under) => send({ ...sent(n, words), under });
 async function sendIt(p) {
   p.st = "sending";
   redraw();
@@ -1206,9 +1263,8 @@ async function sendIt(p) {
       p.box.back();
       return redraw();
     }
-    // Not sent for want of a line (offline, the edge's answer late, or GitHub not reached): sent
-    // again by itself, with the same id (so never twice), at most three times, and when you're
-    // online again. Retry stays.
+    // Not sent for want of a line (offline, late, GitHub unreached): sent again with the same id
+    // (never twice), up to three times and when back online. Retry stays.
     const late = e.off || e.late || e.status === 503;
     if (late) p.again = (p.again || 0) + 1;
     if (late && p.again <= 3) setTimeout(() => p.st === "fail" && sendIt(p), 5e3 * 2 ** p.again);
@@ -1300,10 +1356,14 @@ const sync = async () => {
   }
   R.mine = s && (await hex(s.endpoint));
 };
+/** Your pages: a guest never opens them. */
+const YOURS = new Set(["repeats", "notebook", "setup"]);
 function route() {
-  const [, p = "", n = ""] = location.hash.match(/^#\/(\w*)\/?(\d*)/) || [];
+  const [, at = "", n = ""] = location.hash.match(/^#\/(\w*)\/?(\d*)/) || [];
+  const p = GUEST && YOURS.has(at) ? "" : at;
   R.n = p === "t" ? +n : 0;
   R.proj = p === "p";
+  // A guest's Desk is theirs: their chats and projects (desk.js).
   R.home = !p || p === "desk";
   R.v = null;
   document.body.classList.toggle("in", !!p);
@@ -1346,8 +1406,8 @@ const gotList = (d) => {
   if (k !== R.lk) redraw();
   R.lk = k;
 };
-// On a phone the list and a page take turns: only what's on screen is asked for, the list while
-// your words wait for a run, to show it start, and once on coming back (a newer page shows there).
+// On a phone the list and a page take turns: only what's on screen is read, the list too while
+// your words wait for a run, and once on coming back.
 const WIDE = matchMedia("(min-width: 800px)");
 async function tick() {
   clearTimeout(R.timer);
@@ -1385,10 +1445,9 @@ async function tick() {
   R.woke = false;
   R.timer = setTimeout(tick, next);
 }
-// Back from away (another app, the phone asleep, the tab again) or ↻: what's on screen reads again
-// at once, a page too, and a newer page loads by itself (ver); the times shown ("5m") are drawn
-// again even when nothing else changed. Away, nothing is asked for, and what changed is written now
-// (a phone may close the app).
+// Back from away, or ↻: what's on screen reads again at once, a newer page loads by itself (ver),
+// and the times ("5m") are drawn again. Away, nothing is read, and what changed is kept now (a
+// phone may close the app).
 async function wake() {
   if (document.hidden) return flush() || clearTimeout(R.timer);
   R.woke = true;
@@ -1414,9 +1473,11 @@ set(
     ["folder", "Files"],
     ["book", "Library", "notebook"],
     ["pulse", "Setup", "setup"],
-  ].map(([k, l, p = l.toLowerCase()]) =>
-    h(`a${p ? "" : ".home"}`, { href: `#/${p}`, "data-p": p }, icon(k), h("span", l)),
-  ),
+  ]
+    .filter(([, l]) => !GUEST || l === "Desk" || l === "Projects" || l === "Files")
+    .map(([k, l, p = l.toLowerCase()]) =>
+      h(`a${p ? "" : ".home"}`, { href: `#/${p}`, "data-p": p }, icon(k), h("span", l)),
+    ),
 );
 // Back: the list (Projects) is under every page; a tab from another page takes its place, the
 // list's too, by its hash (never Back, which leaves the app when it was opened from elsewhere).
@@ -1438,10 +1499,14 @@ $("#q").onkeydown = (e) => {
   const m = /^#(\d+)$/.exec(e.target.value.trim());
   if (e.key === "Enter" && m) go(`#/t/${m[1]}`);
 };
-// Ctrl+K (⌘K) finds a project, a task or a doc; with nothing typed, the chats seen last.
+// Ctrl+K (⌘K), or Find beside New chat (ADR 0071: a phone too), finds a project, a task or a doc;
+// with nothing typed, the chats seen last.
+const find = () => ws((w) => w.quick());
+$("#find").onclick = find;
+$("#find").prepend(icon("search"));
 addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey) || e.key !== "k") return;
-  ws((w) => w.quick());
+  find();
   e.preventDefault();
 });
 $("#view").onclick = (e) =>
@@ -1468,7 +1533,7 @@ get("menu").then((d) => {
   redraw();
   sync().catch(no);
 }, no);
-// A phone opens on the Desk (ADR 0069).
+// A phone opens on the Desk (ADR 0069), a guest's too.
 if (!location.hash.slice(2) && !WIDE.matches) history.replaceState(null, "", "#/desk");
 // Opened on a page or a thread with nothing behind: the list goes under, so Back stays in.
 if (history.length < 2 && /^#\/\w/.test(location.hash)) {

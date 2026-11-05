@@ -492,7 +492,7 @@ export function boxAdd(
     );
   if (!isBoxOs(os ?? ""))
     throw new ShipError(
-      `${m.label} runs ${os || "an unknown OS"}; a box runs Ubuntu Server 24.04 LTS (64-bit) or a newer LTS, the one setup Shipify tests (Raspberry Pi OS's kernel is too small for some stacks' tests). Write it fresh, then run this again: docs/box-setup.md.`,
+      `${m.label} runs ${os || "an unknown OS"}; a box runs Ubuntu Server 24.04 LTS (64-bit) or a newer LTS (26.04), the one setup Shipify tests (Raspberry Pi OS's kernel is too small for some stacks' tests). Write it fresh, then run this again: docs/box-setup.md.`,
       "unsupported",
     );
   const all = runners(repo);
