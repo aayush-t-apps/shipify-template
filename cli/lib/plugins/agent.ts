@@ -195,8 +195,20 @@ export const ExecutorEntry = z.object({
   modelEfforts: z.record(z.string(), z.array(z.string())).optional(),
   /** The agent a task runs when nothing chooses one (the repo variable SHIPIFY_AGENT wins). */
   default: z.boolean().optional(),
-  /** Its login on a box: the GitHub secret holding it, and how to make one (`ship box list`). */
-  login: z.object({ secret: z.string().regex(/^[A-Z][A-Z0-9_]*$/), how: z.string() }).optional(),
+  /**
+   * Its login on a box: the GitHub secret holding it, and how to make one (`ship box list`).
+   * `file`: its agent reads it only from a file, which its commands can read too (Codex's ChatGPT
+   * session, ADR 0074), so it never thinks for a read run or a guest's: the `default` entry does.
+   * `renews`: its agent renews it in a run, and the box writes the renewed one back to the secret.
+   */
+  login: z
+    .object({
+      secret: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+      how: z.string(),
+      file: z.boolean().optional(),
+      renews: z.boolean().optional(),
+    })
+    .optional(),
   /**
    * The gateway its models are served by (executors.json's `gateways`); its key is the login. Its
    * `models` are then ids there ("z-ai/glm-5.3"), listed first; any other its pattern takes runs too.
@@ -349,7 +361,8 @@ export interface Adapter {
   tools: boolean;
   /** The command for one run. It may write the agent's config files into run.tools.dir. */
   argv(run: AgentRun): string[];
-  reader(): OutputReader;
+  /** Its output's reader; `run`, the run it reads, for an agent whose output doesn't name its model. */
+  reader(run?: Pick<AgentRun, "model">): OutputReader;
   /**
    * How this agent names a tool's call, for the prompt: tools.json's
    * notion.search is Claude Code's mcp__notion__search. Without it, tool.call.
@@ -373,6 +386,33 @@ export interface Adapter {
    * goes in its environment, as for an agent without an adapter.
    */
   loginFromPipe?(name: string): Record<string, string> | undefined;
+  /**
+   * For an agent that reads its login only from a file (its entry's `login.file`: Codex's
+   * auth.json, ADR 0074): where in the run's folders (as `env` gets them). The run writes it there,
+   * as the agent, before its first ask, and hands it neither on the pipe nor in its environment.
+   */
+  loginFile?(paths: AgentPaths): string;
+  /**
+   * For an agent that renews that login in a run (its entry's `login.renews`): whether what the file
+   * holds after the run (`found`) is the given login (`given`), renewed: its newer self, for the same
+   * account. Only then does the box write it back to the login's secret (`ship run renew`).
+   */
+  renewed?(given: string, found: string): boolean;
+  /**
+   * For an agent whose login is a sign-in, not a key you paste (Codex's ChatGPT session, ADR 0074):
+   * signs in as a session of Shipify's own, and gives back the login to set as its secret and what
+   * to say (never the login), or only what to say when it stopped. In your browser on your PC, or,
+   * with `code`, with a one-time code you type on any device: it gets the link and the code as soon
+   * as the agent has them, and the sign-in waits for you after. `ask`: a question for you on your
+   * PC; with none (from a chat), what it would ask is a warning in what it says. `ship setup agent
+   * <id>` and the github job (`<id> sign in`, from a chat) call it, with the version executors.json
+   * pins.
+   */
+  signIn?(o: {
+    version: string;
+    ask?(question: string): Promise<string>;
+    code?(c: { link: string; code: string; minutes: number }): Promise<void>;
+  }): Promise<{ login?: string; said: string[] }>;
   /**
    * For an agent that reads skills only from its own settings, with no flag for a folder (Claude
    * Code: `$CLAUDE_CONFIG_DIR/skills`): where in the run's folders (as `env` gets them) the run links
@@ -424,3 +464,27 @@ export const skillsSeen = (seen: Iterable<string>): string[] | undefined => {
   const all = [...new Set(seen)].filter(Boolean).sort();
   return all.length ? all : undefined;
 };
+
+/** Anything as one line for the live log or a report: its spaces made one, cut at `max`. */
+export const oneLine = (v: unknown, max = 140) => {
+  const s = String(v).replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+};
+
+/**
+ * An agent's final message as the result (AgentReport.result), when that's the result's JSON (in a
+ * fence or bare), for an agent that gives its answer as words.
+ */
+export function asResult(text: string): unknown {
+  const body = /```(?:json)?\s*\n([\s\S]*?)\n```/.exec(text)?.[1] ?? text.trim();
+  if (!body.startsWith("{")) return undefined;
+  try {
+    const r = JSON.parse(body) as { v?: unknown };
+    return r && r.v === 2 ? r : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A gateway's model for people: its id without its maker ("laguna-s-2.1:free"). */
+export const gatewayModelName = (id: string) => /^[a-z0-9-]+\/([^/\s]+)$/.exec(id)?.[1];

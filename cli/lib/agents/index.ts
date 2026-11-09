@@ -4,7 +4,8 @@
 // never an adapter.
 import type { Adapter } from "../plugins/agent.ts";
 import { claude } from "./claude.ts";
+import { codex } from "./codex.ts";
 import { opencode } from "./opencode.ts";
 import { pi } from "./pi.ts";
 
-export const ADAPTERS: Record<string, Adapter> = { claude, pi, opencode };
+export const ADAPTERS: Record<string, Adapter> = { claude, pi, opencode, codex };

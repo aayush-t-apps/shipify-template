@@ -60,7 +60,7 @@ start:
 
 | Skill | When |
 |---|---|
-| `frontend-design` | any screen or UI change |
+| `frontend-design` | any screen or UI change, and a one-file page (ADR 0072) |
 | `test-driven-development` | any behaviour change or fix |
 | `systematic-debugging` | a failing test, CI run or bug |
 | `verification-before-completion` | before saying something is done |
@@ -68,7 +68,7 @@ start:
 | `api-and-interface-design` | an API, a package's exports, data shapes |
 | `security-and-hardening` | input, auth, secrets, anything exposed |
 | `notion` | a task that reads or changes the owner's Notion (`tools/notion`) |
-| `drop` | a task that shares files as a link, or changes the owner's drops (`tools/drop`) |
+| `drop` | a task that shares files as a link, makes a page, or changes the owner's drops (`tools/drop`) |
 | `pdf` | a run that makes a PDF: HTML printed by headless Chromium (`skills/pdf/pdf.mjs`) |
 | `knowledge` | a run in a project, a reply kept on its pages, a check of them, a collate of its Inbox, the Journal organized, a project's pages written (`docs/knowledge.md`) |
 | `plug-ins` | adding or changing any plug-in, through its contract and conformance test |

@@ -3,8 +3,8 @@
 // per isolate until shortly before it expires. The App may do exactly what its install allows:
 // Issues read and write, Actions, Administration and Variables read, on shipify only. Every call
 // goes through a fetch the caller hands in, so a tick can count its subrequests and stop in time.
-import { guestLabel, readFrom } from "../../cli/contracts/index.ts";
-import { cached, recall, remember } from "./cache.ts";
+import { guestLabel, RUN_WRITER, readFrom } from "../../cli/contracts/index.ts";
+import { recall, remember } from "./cache.ts";
 import type { Deps, Env } from "./env.ts";
 import { BudgetSpent, obj, utf8 } from "./env.ts";
 
@@ -137,26 +137,6 @@ export async function installationToken(env: Env, deps: Pick<Deps, "fetch" | "no
   return token;
 }
 
-/** The door App's own login (`<slug>[bot]`), from GitHub's record of its id, for its reactions. */
-export const appLogin = (env: Env, deps: Pick<Deps, "fetch" | "now">) =>
-  cached(
-    `gh:app:${env.SHIPIFY_DOOR_APP_ID}`,
-    24 * 3_600_000,
-    async () => {
-      const jwt = await appJwt(
-        env.SHIPIFY_DOOR_APP_ID ?? "",
-        env.SHIPIFY_DOOR_APP_KEY ?? "",
-        deps.now(),
-      );
-      const res = await send(deps, `${API}/app`, { headers: headers(jwt) });
-      if (res.status === 401) throw new DoorKeyRefused(401);
-      const slug = obj(await res.json().catch(() => null))?.slug;
-      if (!res.ok || typeof slug !== "string") throw new GitHubError(res.status, "the door App");
-      return `${slug}[bot]`;
-    },
-    deps.now(),
-  );
-
 // ---------------------------------------------------------------- the client
 
 export interface GitHub {
@@ -232,8 +212,9 @@ export const byDoor = (
   item.performed_via_github_app?.id === gh.appId ||
   (gh.bot !== undefined && item.user?.login === gh.bot && item.user?.type === "Bot");
 
-/** The workflow token's own login: replies and status comments count only from it. */
-export const RUN_WRITER = "github-actions[bot]";
+/** The workflow token's own login (cli/contracts/labels.ts): replies and status comments count only
+ * from it. */
+export { RUN_WRITER };
 /** github-actions[bot]'s fixed user id, so a look-alike name can't stand in for it. */
 export const RUN_WRITER_ID = 41898282;
 export const byRun = (item: { user?: { login?: string; id?: number } | null }) =>

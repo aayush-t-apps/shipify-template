@@ -14,8 +14,9 @@ design is ADR 0031's; the baseline every project gets is ADR 0006's.
 
 ## Who holds which key
 
-Names only: no value appears in any doc, file or log. How to make and replace each:
-[setup.md](setup.md), "Tokens and secrets".
+Names only: no value appears in any doc, file or log. This table says what each key may do and
+which steps hold it. The list of every key, when each expires and how to replace it:
+[setup.md](setup.md#tokens-and-secrets).
 
 | Key | What it may do | Where it lives | Lasts |
 |---|---|---|---|
@@ -24,10 +25,11 @@ Names only: no value appears in any doc, file or log. How to make and replace ea
 | `SHIPIFY_BOT_KEY` | mint the bot's one-hour tokens | shipify secret; a run's mint steps and the `github` job, never the agent's step | doesn't expire |
 | `SHIPIFY_REPOS_KEY` | mint the repos App's one-hour tokens, on the accounts that installed it (ADR 0045) | shipify secret; its mint steps in a run and the `github` job, never the agent's step; the one step that reads every secret (a new project's keys) skips it by name, as the bot's | doesn't expire |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code's login | shipify secret; the think step (and a stay's, ADR 0057) only when the run's agent is Claude Code, handed to the agent on a pipe it reads once, never in its environment | a year |
+| `CODEX_AUTH` | Codex's login: your ChatGPT session (ADR 0074): it can use Codex on your plan | shipify secret; the think step (and a stay's) only when the run's agent is Codex, written as a file in its run's own home, which its commands can read, so never in a read run or a guest's; written back by `ship run renew` with a token for that alone, only as the same account's newer session | until OpenAI ends the session (sign out of all sessions in ChatGPT's security settings to end it at once) |
 | `AI_GATEWAY_API_KEY` | pi's and OpenCode's models, through Vercel's AI Gateway (a gateway; the `-vercel` agents): it can spend your Vercel credits | shipify secret; the think step only when the run's agent is one of those, handed to the agent on a pipe it reads once, never in its environment; the PC's credentials file | until you delete it in Vercel. Set a spend limit there |
-| `OPENROUTER_API_KEY` | pi's models, through OpenRouter (a gateway): it can spend your credits there | shipify secret; the think step only when the run's agent is pi, handed to the agent on a pipe it reads once, never in its environment; the PC's credentials file | until you delete it on OpenRouter. Set a spend limit there |
-| `SHIPIFY_NOTION_READ` | read the Notion pages you connect | shipify secret; the think step (a look key), never a guest run's (ADR 0071) | no expiry |
-| `SHIPIFY_NOTION_WRITE` | change those pages | shipify secret; the apply step only, and only for calls decide found approved | no expiry |
+| `OPENROUTER_API_KEY` | pi's and OpenCode's models, through OpenRouter (a gateway): it can spend your credits there | shipify secret; the think step only when the run's agent is pi or OpenCode, handed to the agent on a pipe it reads once, never in its environment; the PC's credentials file | until you delete it on OpenRouter. Set a spend limit there |
+| `SHIPIFY_NOTION_READ`; Drop's read token (`SHIPIFY_DROP_READ_ID`, `SHIPIFY_DROP_READ_SECRET`) | read the Notion pages you connect; list your drops (Drop refuses a change from it once its `ACCESS_READ_ID` names it: [tools.md](tools.md#drop-setting-it-up-once-about-10-minutes)) | shipify secret; the think step (a look key), never a guest run's (ADR 0071) | no expiry; Drop's, the duration you gave it |
+| `SHIPIFY_NOTION_WRITE`; Drop's write token (`SHIPIFY_DROP_WRITE_ID`, `SHIPIFY_DROP_WRITE_SECRET`) | change those pages; make, change or revoke drops | shipify secret; the apply step only, and only for calls decide found approved | no expiry; Drop's, the duration you gave it |
 | `SHIPIFY_DOOR_APP_KEY` | the door App (below): write your words onto tasks, read runs, runners and variables, on shipify only | the edge Worker only, put there from the PC by `ship door setup` | doesn't expire; rotate yearly (the watch reminds you) |
 | `TELEGRAM_TOKEN` | the bot speaks and reads its own chats | the edge Worker; the PC's credentials file. Never on a box | until you revoke it in @BotFather |
 | `TELEGRAM_SECRET` | proves a call to `/door/telegram` came from Telegram | the edge Worker; the PC's credentials file | until `ship add telegram --new` |
@@ -42,7 +44,7 @@ Names only: no value appears in any doc, file or log. How to make and replace ea
 | the bot's read-only tokens (one hour each, minted right before each phase) | plan's; the finish's, decide's and apply's (ADR 0059: the finish fetches main with it, with no agent) | read every project: code, PRs, issues, statuses, runs |
 | the agent's read-only token (one hour, minted right before think, and not renewed: an agent working longer reads GitHub only in its first hour, ADR 0059) | think (the agent's copy) | read the same, but in a work run only its project or repo and Shipify; a talk run reads every project, as its profile says. A read run's agent gets none: the box keeps it, for the task and your repos it reads (ADR 0044). A guest run's agent gets no GitHub key at all: its secrets are empty but for its login, and a guest's stay hands its agent no token (ADR 0071, [below](#a-guests-run)) |
 | `GITHUB_TOKEN` (the workflow's own) | the task step, plan, decide, apply; the runner of think and of a stay, never their agent (below) | write shipify's issues and comments, start runs |
-| the write token | apply, minted after decide | contents and PRs on the one repo decide named; workflows write only for files that match the stack (below) |
+| the write token | apply, minted after decide | contents and PRs on the one repo decide named; workflows write whenever the run's commits touch a workflow file, and for the push of a workflow change you approved (below) |
 | the files token | apply, when the run made files | write shipify's `shipify-files` branch |
 | an act key (a tool's write key) | apply, when decide found the calls approved | the approved calls, made by the box |
 | the run's OIDC token | apply, and the plan step's file fetch | prove the run to the door; nothing else |
@@ -93,6 +95,24 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
   the kernel lets a process read only its own children's (`kernel.yama.ptrace_scope` 1, Ubuntu's
   own). The sandbox check proves both with a dummy login. The read-only GitHub token and the look
   keys stay in its environment, since `gh` and the tools' servers read them there.
+- **Codex's login is a file its commands can read** (ADR 0074, accepted with its merge): Codex
+  takes your ChatGPT session only from its home, so the run writes it there (the run's own
+  `config/codex/auth.json`, mode 600). A page that tricks it into running a command could send
+  the session out: someone could then use Codex on your plan until you sign out of all sessions in
+  ChatGPT's security settings. So Codex thinks for your own runs only, as they hold your read-only
+  GitHub key: never for a read run (it runs no command, and Codex has no way to turn its commands
+  off) or a guest's (their commands could read your session, and OpenAI's terms forbid sharing
+  your account). Those runs go to the default agent; a guest's picker doesn't list Codex, and a
+  guest's `use codex` is refused. The box writes a renewed session back only when it's the same
+  account's, refreshed later.
+- **Codex's sign-in from a chat** (`codex sign in`, ADR 0074) runs on GitHub's machine, in the
+  github job, with no agent: never on a box, which holds no key to set secrets. Only you say it:
+  the door refuses it from a guest, and the box reads a guest's as words. Its one-time code is
+  shown on your task and in your chat, which only you see; it works once, for 15 minutes, and
+  only signs in the account that types it (someone who saw it could at most put their own session
+  in its place, which the ✓ reply's plan would show). Codex's sign-in is handed none of the job's
+  keys (only what `npx` needs: `PATH`, `HOME` and the like). The session goes from Codex's own file
+  straight to the secret, never printed, and the folder is gone after.
 - **Its clone's key** reaches git through the clone's own environment, on stdin (`GIT_CONFIG_*`,
   `cli/lib/clones.ts`), never on its command line, where `ps` would show it to the box's other
   users. The agent's own git is given no key: its clone has every object it needs (the same read
@@ -248,7 +268,17 @@ of its own. The walls keep your things yours:
   reaches a run of yours.
 - **Its own playbook** (`playbooks/guest.md`) and a prompt with nothing of yours: no notebook,
   tools, Shipify CLI, clone command or earlier files of yours, and the answer fields it may use
-  only (words, a question, files, its own project's pages).
+  only (words, a question, files, its own project's pages, and its tools' guest calls).
+- **Its calls are a tool's guest forms alone** (ADR 0073): the box makes one at once when it fits
+  a form in `tools.json` (your merge approved it), and leaves out every other. For Drop, that is a
+  drop only the guest can open, or a new title or files on one made for them. The box asks the door
+  for the guest's email (`GET /door/guest/<id>`, task.yml's OIDC token only: their run holds no
+  token for it) and gives it to the tool's server as `SHIPIFY_GUEST`; the Drop tool sets the drop's
+  `by` from it, and changes only a drop whose `by` is that guest. No rule on reads: their calls
+  share nothing and list nothing, so a web page that tricks their run can open nothing to anyone.
+  A removed guest's run makes none, as the door no longer knows them. Their email stays in R2 and
+  Drop: never in a call's arguments, an answer, a reply or GitHub. Sharing is in Drop's My drops,
+  signed in as them, where Drop checks `by`, its own Origin and the guest options.
 - **A guest's words approve nothing:** their author is `guest`, never you, so `yes`, `no`, `go`,
   `publish`, `preview`, `start over` or `clean start` in them counts for nothing. The door refuses
   each at once, from the same list the box reads (`NOT_A_GUESTS`, `cli/contracts/words.ts`), but a
@@ -317,9 +347,38 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
   installation tokens (`ghs_<app id>_<JWT>`, from 2026-04-27), which those miss. Every reply, log
   and chat message is masked for the same shapes (`cli/contracts/mask.ts`, the box's and the
   edge's).
-- **Workflow files** are refused unless each one is exactly what the project's stack renders (what
-  `ship upgrade` writes). Only then does the write token get workflows write. A repo that isn't a
-  project has no stack: a change to its workflow files is always refused (you make those).
+- **Workflow files: the run's change is held** (ADR 0075). The run's workflow change is each file
+  under `.github/workflows/` or `.github/actions/` that its commits change, against the task's
+  branch on GitHub (else against `main`, from where the branch left it), but for a project's file
+  that is exactly what its stack renders (what `ship upgrade` writes). One helper finds it, for
+  `ship pr --check`, decide and apply (`cli/kernel/workflows.ts`); a rename counts as both its
+  files. Apply scans the change for keys first, its workflow lines too: a key refuses the whole
+  push, as any key does. Then it adds one commit of the bot's, "Hold the workflow change for your
+  yes", that puts each held file back as the branch on GitHub has it (else as `main` had it, where
+  the branch left it), or removes it. Then apply's workflow check runs on what the push changes
+  after the hold, and finds nothing of the run's. The run's lines stay in the branch's history,
+  and never run. When the held change is all the run changed and it's listed, nothing is pushed
+  before your `yes`. One you changed yourself on the task's branch on GitHub isn't the run's: when
+  the run leaves it as it is there, it goes through.
+  - **Listed only when nothing it changes runs before your merge:** a workflow file passes only
+    when it runs on events GitHub runs from the default branch: `issues`, `issue_comment`,
+    `schedule`, `workflow_dispatch`, `repository_dispatch`, `workflow_run`, and `push` only with
+    `branches` that name the default branch alone (no pattern, `tags` or `branches-ignore`).
+    `pull_request`, `pull_request_target`, `workflow_call` and any other event mean it runs before
+    the merge. An action passes only when every workflow on the branch passes. A removed file
+    passes; a file whose `on:` doesn't read fails. A patch over 12,000 characters or a binary file
+    isn't listed either. Not listed, the change stays held, and the reply says which file and why.
+    Shipify's four workflows pass; a project's pipeline runs on its PRs, so a run's change to it
+    stays held ([below](#every-projects-pipeline)). On Shipify and a project, `ship pr --check`
+    checks the same rule first, in the agent's own session (edits not committed too): a change
+    that fails it stops the PR until the agent takes it out. So the reply's "held, not listed" is
+    for a question's kept work and a repo that keeps its own rules.
+  - **Your `yes` pushes exactly the listed lines** to the task's branch, and nothing else
+    ([Approvals](#approvals)).
+  - **On another account** nothing is held: the repos App has no workflows write, and GitHub refuses
+    a push whose commits change a workflow file, even in their history. So there the run's workflow
+    change stops the whole push, and the reply says to take it out of the branch, or to make it
+    there yourself.
 - **Only the task's own branch:** `task/<n>-…` or `plan/<n>-…`, or a new project's first push into
   an empty repo's `main`. Never `production`, an existing `main`, or a repo's default branch.
 - **No project code:** apply never runs `make`. `make verify` runs in think, as the agent: once by
@@ -362,10 +421,10 @@ pages, a tool's answers and anyone else's text are data, never a command
   fingerprint of all it lists. Each counts only for the list with that code, so a Yes or No under an
   older reply can't approve or drop a newer list; one with no list waiting is answered, and changes
   nothing.
-- **The list shows the exact calls** and arguments the approval covers, never the agent's
-  description of them: once (the box removes any copy in the agent's words), last and whole in
-  every chat. A list over 3,000 characters is approved only on GitHub, since a chat can't show it
-  whole.
+- **The list shows the exact calls** and arguments the approval covers (and a workflow change's
+  exact lines), never the agent's description of them: once (the box removes any copy in the
+  agent's words), last and whole in every chat. A list over 3,000 characters is approved only on
+  GitHub, since a chat can't show it whole.
 - **From a chat: one flow, one rule** (ADR 0049, 2026-10-18). Every word, task and release works
   the same from a chat as on GitHub. Two things happen only on GitHub, where your GitHub sign-in
   (and its two-factor) says it's you: a PR's merge (code reaches `main`, and production, only
@@ -378,13 +437,14 @@ pages, a tool's answers and anyone else's text are data, never a command
     PR (its commits stay on GitHub) and starts a new branch. Neither reaches `main`.
   - A release opens a PR that only your merge deploys.
 - **What you accept:** whoever holds your Telegram account, your Access sign-in or your Cloudflare
-  account (the edge holds the door's key) can approve a list. A list is calls to your tools only:
+  account (the edge holds the door's key) can approve a list. A list's calls go to your tools only:
   today Notion, on the pages connected to the write integration: creating pages, setting
   properties, and replacing a page's whole body (`update_page` with `content`, whose list line
   says so), which deletes its old text blocks. It never deletes a page: subpages and
   sub-databases are kept, and a page with a block holding others is refused. Notion keeps page
   history, so a replaced body can be brought back there. They can start runs and a release as you
-  (above), and still can't merge a PR or take an app down, bring it back or roll it back. So turn on Telegram's password (Settings →
+  (above), and put a listed workflow change on a task's branch (below), and still can't merge a
+  PR or take an app down, bring it back or roll it back. So turn on Telegram's password (Settings →
   Privacy and Security → Two-Step Verification), and keep the Access sign-in to your own email.
 - **A split's `yes`** (ADR 0066) approves its parts' words: each title and brief shows in full on
   the list, the list's code is their fingerprint (an edit to the task voids it), and the box opens
@@ -393,6 +453,23 @@ pages, a tool's answers and anyone else's text are data, never a command
   starts nothing: only your `go` does, and after it a part's merge. The parts and their links are
   written with the workflow's own token (`issues: write`), and a part's run reads its parent and
   siblings as data, but for the parent's description, which is yours.
+- **A workflow change's `yes`** (ADR 0075): a list may hold a run's held workflow change
+  ([above](#apply-never-runs-the-agents-code)), with the box's facts, never the agent's: the file,
+  the lines added and removed, when it runs (from its `on:`), and each secret and action its new
+  lines name. After a read from outside, the list says to read each line first. A chat's `yes` can
+  put exactly those lines on a task's branch, once, and never on `main`, `production` or any
+  default branch. It's safe because the box lists a change only when nothing it changes runs before
+  your merge. So whoever holds your chat can place lines on a branch, and can't run them: your merge
+  on GitHub, with your GitHub sign-in and its two-factor, stays the approval. The `yes` is a run
+  with no agent: decide asks for the write token with workflows write. Apply checks the patch's
+  SHA-256 against the list and that the branch is a task's own (`task/<n>-…`), and refuses when
+  the PR merged with none open. Then, in a fresh clone of the task's branch, it checks that the
+  patch touches only the listed files under `.github/workflows/` or `.github/actions/`, applies it
+  (`git apply`, refused when the branch changed), checks the rule and the key scan again, and
+  pushes one commit of the bot's to the task's branch only, once (a journal entry). A refusal
+  replies ✗ and why. The repos App still never gets workflows write.
+- **A task first's `yes`** (ADR 0075): approves its title and brief as your words, as a split's
+  does, opens it as a sub-task this task is blocked by, and starts its run. No key.
 - **A routine's form:** a page someone else wrote that a routine reads (a shared page, a web clip)
   could steer what it writes, but only within its form: its one target, its caps, its `max`. Keep
   the target private. What it writes is text blocks only, so the form isn't a way out.
@@ -451,8 +528,8 @@ then each copy.
   Node's downloads against their checksums. Your approval is a GitHub code you enter on your
   phone. The login lives in a folder it deletes on every exit, and it prints where to revoke it.
   A start-up script can't run it: it needs your terminal. With `--manage` it adds the firewall
-  and Tailscale as `box add --manage` does, and leaves the machine's SSH settings as they are,
-  since you set it up there and not over SSH: SSH by key only comes from a `box add` over SSH.
+  and Tailscale as `box add --manage` does, and SSH by key only once your account there has a
+  key (without one, SSH's settings stay, behind the firewall).
 
 ## The edge: the door and the watch
 
@@ -469,6 +546,7 @@ previews. Details: [door.md](door.md).
   | `/admin/chat/`, `/admin/chat/api/*` | the same as `/admin/status`, on every route; a `POST` also needs the edge's own `Origin` and `x-shipify-chat: 1` ([below](#the-web-chat)) |
   | `POST /door/replied` | the run's GitHub OIDC token |
   | `GET /door/file/<ref>` | the run's GitHub OIDC token |
+  | `GET /door/guest/<id>` | task.yml's GitHub OIDC token only: a guest's email and name, for their calls (ADR 0073) |
   | `GET /health` | none: its version and commit only |
   | `GET /draw/` | none: the chat's diagram frame, a static page with no data ([below](#the-web-chat)) |
   | `GET /pdf/` | none: the chat's PDF frame, a static page with no data ([below](#the-web-chat)) |
@@ -597,7 +675,9 @@ Nothing secret:
 - **A job's tokens** live in its processes' memory and expire within the hour.
 - **On GitHub's machines instead:** CI and deploys, a merged plan's repo, settings and keys
   (`prepare`), and operations. They run from `main`, with no agent.
-- **The box itself:** SSH by key only, a firewall with `--manage`, no private network for the
+- **The box itself:** SSH by key only, a firewall with `--manage` that lets in nothing but
+  Tailscale (setup 13: no SSH from the home network, IPv6 filtered too; a rule of your own that
+  lets more in is listed, never hidden), no private network for the
   agents and their containers (setup 9), automatic security updates, and a runner user
   (`shipify`) with no sudo but the one rule ([box-setup.md](box-setup.md)).
 
@@ -615,7 +695,9 @@ Nothing secret:
 
 ADR 0006, for every stack, in each project's own `ship.yml` (ADR 0048):
 - **Its own:** it calls no other repo's workflow and hands no secret to one. Only its stack's
-  render may change it, or `.github/actions/`: a run pushing anything else there is refused.
+  render may change it, or `.github/actions/`: any other change a run makes there is held, and
+  never listed, since it runs on a PR, before your merge (ADR 0075). The reply says to change it
+  through its stack (a `shipify:` task).
 - **CI:** read-only permissions by default; actions pinned to commit SHAs; gitleaks by version and
   SHA-256; no `pull_request_target`; forks and Dependabot get no secrets and no previews.
 - **Every merge** runs a secret scan, `make audit` and `make verify`.
@@ -655,6 +737,7 @@ the door App.
 | the door App's key | regenerate it on the App's page, `pnpm ship door setup --new --yes`, then delete the old key there |
 | Telegram's token | @BotFather → `/revoke`, then `pnpm ship add telegram --new --yes` |
 | a gateway's key (`OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`) | delete it on the gateway's page, make a new one, then `pnpm ship add <gateway> --new --yes` |
+| Codex's session (`CODEX_AUTH`) | sign out of all sessions in ChatGPT's security settings, then `codex sign in` in a chat (or `pnpm ship setup agent codex --new`) |
 | a box lost or stolen | `pnpm ship box remove <name> --yes`; a new agent login (`claude setup-token`, then set the secret); a new bot key (the App's settings → Private keys) and delete the old; remove the machine from Tailscale |
 | a run did something it shouldn't | its run details and log show what it called, and the task's history who started it. Close the task, and fix the rule in a PR |
 

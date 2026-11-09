@@ -248,11 +248,13 @@ describe("the sign-in and the page", () => {
     expect(await head.text()).toBe("");
   });
 
-  it("/ and /admin send you to the chat; nothing else moves", async () => {
+  it("/admin sends you to the chat; / with no sign-in is a page; nothing else moves", async () => {
     const t = setUp();
     const to = async (path: string, method = "GET") =>
       (await t.call(path, { method, redirect: "manual" }, false)).headers.get("location");
-    expect(await to("/")).toBe("/admin/chat/");
+    expect(await to("/")).toBeNull();
+    expect((await t.call("/", {}, false)).status).toBe(200);
+    expect((await t.call("/", { method: "POST" }, false)).status).toBe(404);
     expect(await to("/admin")).toBe("/admin/chat/");
     expect(await to("/admin/")).toBe("/admin/chat/");
     expect(await to("/status")).toBeNull();
@@ -1938,6 +1940,43 @@ describe("what the page reads", () => {
       expect.objectContaining({ topic: "Journal 2026-11", first: "a thought" }),
       expect.objectContaining({ topic: "games", first: "Map", project: "games" }),
     ]);
+  });
+
+  it("Notebook's reads carry their ETags, and the Library's is kept a minute", async () => {
+    const t = setUp();
+    t.f.issue({ title: "Notebook: Preferences", body: "- short answers", labels: ["notebook"] });
+    t.f.issue({ title: "Notebook: Journal 2026-11", body: "- a thought", labels: ["library"] });
+    // GitHub's tags on these two: the same answer is a 304.
+    const asked: { what: string; status: number }[] = [];
+    const fetch = t.f.deps.fetch;
+    t.f.deps.fetch = async (input, init = {}) => {
+      const url = String(input);
+      const what = url.includes("labels=notebook&")
+        ? "notebook"
+        : url.includes("labels=library&")
+          ? "library"
+          : "";
+      const res = await fetch(input, init);
+      if (!what) return res;
+      const body = await res.text();
+      const etag = `"${body.length}"`;
+      const status = new Headers(init.headers).get("if-none-match") === etag ? 304 : res.status;
+      asked.push({ what, status });
+      return new Response(status === 304 ? null : body, {
+        status,
+        headers: { etag, "content-type": "application/json" },
+      });
+    };
+    const of = (what: string) => asked.filter((x) => x.what === what).map((x) => x.status);
+    for (let i = 0; i < 2; i++) expect((await t.call("/admin/chat/api/notebook")).status).toBe(200);
+    expect(of("notebook")).toEqual([200, 304]);
+    expect(of("library")).toEqual([200]);
+    // Past a minute, read again: unchanged, a 304, and the same pages.
+    t.f.later(61_000);
+    const nb = await (await t.call("/admin/chat/api/notebook")).json();
+    expect(of("library")).toEqual([200, 304]);
+    expect(nb.pages).toEqual([expect.objectContaining({ topic: "Preferences" })]);
+    expect(nb.library).toEqual([expect.objectContaining({ topic: "Journal 2026-11" })]);
   });
 
   it("menu, repeats, notebook and setup answer in their shapes, with nothing secret", async () => {

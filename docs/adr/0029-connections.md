@@ -1,5 +1,5 @@
 ---
-status: proposed (the owner's requests of 2026-10-03, after ADR 0028 went live; reviewed four ways and then checked by a second round, both answered here; merging its PR accepts it)
+status: superseded by 0031 (recipes, hooks and connections removed). Accepted (merged #93) and built in part (#94, #95: parts 1 to 3; part 4 archived), then removed in 0031's build. Proposed from the owner's requests of 2026-10-03, after ADR 0028 went live; reviewed four ways and then checked by a second round, both answered here
 date: 2026-10-03
 ---
 

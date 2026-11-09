@@ -15,7 +15,8 @@
 #      tools in it, and the link to revoke the approval on GitHub
 # After it the box holds no key: each job brings its own (ADR 0031).
 # --manage, for a machine you keep as a box (a laptop, a spare PC): it never sleeps, and gets
-# Tailscale, Cockpit and a firewall, as `box add --manage` over SSH. Its SSH settings stay.
+# Tailscale, a firewall that lets in only Tailscale, and Cockpit, as `box add --manage` over SSH; its
+# SSH takes keys only, once your account here has one.
 # --replace takes the place of a machine that had the same box name (this one, reinstalled).
 # --fresh starts over on this machine: Shipify off it first (box remove --purge), then set up again,
 # with the same slots, in one go.

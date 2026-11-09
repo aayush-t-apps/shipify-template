@@ -19,6 +19,7 @@ import {
   readFrom,
   readTaskSeen,
   STATE_LABELS,
+  STATUS_LABEL,
   STUCK_LABEL,
   TASK_MARK,
   taskRows,
@@ -30,14 +31,7 @@ import {
 import type { Shown } from "./channels/channel.ts";
 import { NO_SUCH_TASK, NOT_YOURS, REFUSED } from "./chat.ts";
 import { byDoor, byRun, type GitHub, GitHubError, guestsOwn, RUN_WRITER } from "./github.ts";
-import {
-  NOTEBOOK_LABEL,
-  type RawRunner,
-  type Settings,
-  STATUS_LABEL,
-  statusTask,
-  toBoxes,
-} from "./settings.ts";
+import { NOTEBOOK_LABEL, type RawRunner, type Settings, statusTask, toBoxes } from "./settings.ts";
 
 /** A task's label while a run of it works. */
 const WORKING_LABEL = STATE_LABELS[0];
@@ -240,8 +234,8 @@ function modelName(model: string, gateway: boolean): string {
 /**
  * The picker: the pick of task #`task`, or your model (the one new tasks start with), then each
  * agent in executors.json in its own rows, its Auto first and then each model it lists, ✓ on the
- * current one; and, while the pick's agent takes efforts and has no gateway (its own models take
- * them all; a gateway's may ignore them), a row of its efforts. Every button names the whole pick,
+ * current one; and, while the pick's agent takes efforts and has no gateway (a gateway's models
+ * may ignore them), a row of the efforts its model takes. Every button names the whole pick,
  * so an old one means exactly what it says.
  */
 export function picker(
@@ -271,13 +265,14 @@ export function picker(
       })),
     ]),
   );
-  const takes = own && !own.gateway && effortsFor(own, current.model).length > 0;
+  // The efforts the picked model takes (Codex's Luna has no ultra), not all its agent's.
+  const takes = own && !own.gateway ? effortsFor(own, current.model) : [];
   const base = current.model ? pickWord(current.model) : agent;
   const efforts: Button[] =
-    takes && own.efforts?.length
+    takes.length > 0
       ? [
           { label: tick(!current.effort, "Auto"), words: `use ${base} auto` },
-          ...own.efforts.map((x) => ({
+          ...takes.map((x) => ({
             label: tick(x === current.effort, EFFORT_NAMES[x] ?? title(x)),
             words: `use ${base} ${x}`,
           })),

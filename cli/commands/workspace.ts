@@ -26,13 +26,14 @@ import {
 import { hasMakeTarget, run } from "../lib/exec.ts";
 import { FORMS_DIR, formUpdates } from "../lib/forms.ts";
 import { ghJson, ghRun, platformOwner, platformRepo, previewLabel, repoOf } from "../lib/github.ts";
-import { fixesLine, madeByLine, taskLine, taskOf } from "../lib/links.ts";
+import { madeByLine, taskLine, taskOf } from "../lib/links.ts";
 import { readManifest, writeManifest } from "../lib/manifest.ts";
 import { type Check, ok, type Result, ShipError } from "../lib/output.ts";
 import { sourceControl, useMocks } from "../lib/providers.ts";
 import { loadRegistry } from "../lib/registry.ts";
 import { secretScan } from "../lib/secret-scan.ts";
 import { submitFiles } from "../lib/submit.ts";
+import { type Git, isWorkflowFile, runsBeforeMerge, workflowChange } from "../kernel/workflows.ts";
 import { appEntry, versionApp } from "./evolve.ts";
 import { reconcile } from "./operate.ts";
 
@@ -197,9 +198,10 @@ function changedFiles(dir: string): string[] {
  * and a task's box before its commits go anywhere (`ship pr <clone> --check`), so nothing CI or a
  * later run would refuse gets in. Against origin/main as it is: the caller fetches when it can.
  *   Shipify:   a CHANGELOG entry under Unreleased, a new version for each stack whose files
- *              changed, and from a task no workflow change.
+ *              changed.
  *   A project: every change doc readable, and when merging ships a version (packages, apps
  *              without staging), the version bumped past main's with its changelog section.
+ *   Both, from a task: no workflow change that would run before the owner's merge (ADR 0075).
  */
 export function prRules(dir: string): string | undefined {
   return isPlatformCheckout(dir) ? platformRules(dir) : projectRules(dir, readManifest(dir));
@@ -232,15 +234,39 @@ function leftConflicts(dir: string): string | undefined {
   return `A merge's conflict is still in ${left.join(", ")}: keep what fits from each side, take out the <<<<<<< ======= >>>>>>> lines, then run ship pr again.`;
 }
 
+/**
+ * A task's workflow change (ADR 0075): the box holds it and lists it for the owner's yes, so it goes
+ * through here, unless it would run before their merge, which no yes lists. Its files are the ones
+ * that differ from the task's branch on GitHub (the clone's upstream, else main), committed or not.
+ */
+function workflowRule(dir: string): string | undefined {
+  if (!process.env.SHIPIFY_TASK) return undefined;
+  const base = ["@{upstream}", "origin/main"].find((b) =>
+    gitOk(dir, "rev-parse", "--verify", "-q", b),
+  );
+  const g: Git = (...args) => git(dir, ...args);
+  const edited = run("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: dir })
+    .stdout.split("\n")
+    .map((l) => l.slice(3).trim())
+    .filter(isWorkflowFile);
+  const files = [...new Set([...(base ? workflowChange(g, dir, base, "HEAD") : []), ...edited])];
+  if (!files.length) return undefined;
+  const read = (f: string) =>
+    existsSync(join(dir, f)) && statSync(join(dir, f)).isFile()
+      ? readFileSync(join(dir, f), "utf8")
+      : undefined;
+  const workflows = existsSync(join(dir, ".github/workflows"))
+    ? readdirSync(join(dir, ".github/workflows")).map((f) => `.github/workflows/${f}`)
+    : [];
+  const why = runsBeforeMerge(files, read, workflows);
+  if (!why) return undefined;
+  return `This workflow change would run before the owner's merge, so the box can't list it for their yes: ${why}. Take it out of the branch (git checkout ${base ?? "origin/main"} -- <file>, or git rm a new one, then commit), and say in your reply what it would do. A project's pipeline (its ship.yml and actions) changes through its stack, with a \`shipify:\` task; any other is the owner's to make on GitHub.`;
+}
+
 function platformRules(dir: string): string | undefined {
-  const recorded = recordedCheckout(dir) ?? leftConflicts(dir);
+  const recorded = recordedCheckout(dir) ?? leftConflicts(dir) ?? workflowRule(dir);
   if (recorded) return recorded;
   const changed = changedFiles(dir);
-  // A workflow pushed on a branch can run on that push, with this repo's keys, before any review:
-  // a task never pushes one (its token can't), and the PR says what to change instead.
-  const workflows = changed.filter((f) => f.startsWith(".github/workflows/"));
-  if (workflows.length && process.env.SHIPIFY_TASK)
-    return `A task can't push workflow changes (${workflows.join(", ")}): they could run with Shipify's keys before your review. Take them out of the branch (playbooks/task.md, "Shipify itself", says how), and put the change in the PR's summary as a diff for the owner to apply.`;
   const docsOnly = changed.every((f) => /\.md$/.test(f) || f.startsWith("docs/"));
   if (!docsOnly && !changed.includes("CHANGELOG.md"))
     return "Add a CHANGELOG.md entry under ## [Unreleased] for this change, then run ship pr again.";
@@ -276,7 +302,7 @@ function platformRules(dir: string): string | undefined {
 }
 
 function projectRules(dir: string, m: ReturnType<typeof readManifest>): string | undefined {
-  const recorded = recordedCheckout(dir) ?? leftConflicts(dir);
+  const recorded = recordedCheckout(dir) ?? leftConflicts(dir) ?? workflowRule(dir);
   if (recorded) return recorded;
   // A change doc `ship version` can't read stops every later release, so it never gets in.
   try {
@@ -477,7 +503,6 @@ export function openPr(
   const body = [
     opts.summary?.trim(),
     taskLine(task, Boolean(opts.partOf)),
-    fixesLine(repo),
     `${made ?? "Opened by Shipify."} Merging it is the approval: CI checks it again, then ships it.`,
     opts.verify === false ? undefined : CHECKED_MARK,
   ]

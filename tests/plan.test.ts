@@ -61,6 +61,12 @@ describe("plans", () => {
       /visibility/,
     );
   });
+  it("caps the summary at GitHub's 350-character repo description", () => {
+    const withSummary = (n: number) =>
+      skeleton.replace('summary: "A small demo app for tests."', `summary: ${"a".repeat(n)}`);
+    expect(parsePlan(withSummary(350)).meta.summary).toHaveLength(350);
+    expect(() => parsePlan(withSummary(351))).toThrow(/350 characters at most/);
+  });
 });
 
 describe("renderString", () => {

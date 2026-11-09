@@ -5,7 +5,7 @@ import type { FormRead } from "../lib/form-reader.ts";
 import type { SessionUsed } from "../lib/plugins/agent.ts";
 import type { NewPart, RecordFamily } from "../lib/plugins/record.ts";
 import type { RepoRef } from "../lib/projects-on-github.ts";
-import type { TaskState, TaskTitle } from "../lib/task.ts";
+import type { HeldList, TaskState, TaskTitle } from "../lib/task.ts";
 import type { Result } from "./result.ts";
 
 /**
@@ -216,6 +216,10 @@ export interface ThinkMeta {
    */
   elsewhere?: true;
   touchesWorkflows: boolean;
+  /** Its commits touch a workflow or an action (ADR 0075): decide reads the change apply holds. */
+  holds?: true;
+  /** That change, as decide read it from the commits (the box's, never the agent's). */
+  held?: Held;
   /** When the box read the pages it gave this turn (ADR 0070): a page changed after it isn't
    * written over. */
   pagesAt?: string;
@@ -235,10 +239,32 @@ export interface ThinkMeta {
   handoff?: string;
   /** The agent's session, for a stay's next turn to carry on in (ADR 0057). */
   session?: string;
-  /** A stay's turn: it pushes nothing, so a change it's asked for goes to a work run (ADR 0060). */
+  /** A stay's turn (ADR 0057): a change it commits goes to its job's own push (ADR 0076). */
   stayed?: true;
   /** What that session had counted, for an agent that counts from its start: the next turn's base. */
   used?: SessionUsed;
+}
+
+/**
+ * A run's workflow change, held (ADR 0075 §5.2): apply pushes the rest of its work without it, and
+ * your yes pushes this patch. Read by the box from the run's commits, never said by the agent.
+ */
+export interface Held {
+  files: string[];
+  /** Where the task's branch left its base: what each held file goes back to, the patch's start. */
+  at: string;
+  patch: string;
+  sha256: string;
+  /** Each file's facts (§5.3), in the order of `files`. */
+  facts: string[];
+  /** It's all the run's commits change: nothing else is pushed before your yes. */
+  only: boolean;
+  /** Why it isn't listed (§5.4, a key, a patch too big for one yes): it stays held, said. */
+  why?: string;
+  /** What looks like a key is in it: the scan refuses the whole push, as any key's. */
+  key?: true;
+  /** `main` changed one of its files since the branch's copy: the patch carries main's lines too. */
+  mainNewer?: true;
 }
 
 /** One change a run makes, as data; apply makes it, each safe to repeat. */
@@ -321,6 +347,10 @@ export type Write =
       base?: string;
     }
   | { w: "preview"; repo: string; pr: string }
+  /** The workflow change you approved (ADR 0075 §5.5): its patch pushed to the task's branch, once. */
+  | { w: "workflow"; change: HeldList; code: string }
+  /** A task first (ADR 0075 §6), on your yes: opened as a sub-task this task waits for, and started. */
+  | { w: "first"; part: NewPart; parent: number }
   | { w: "dispatch"; job: "run" | "github" }
   /** A split's parts opened as sub-issues of the task, on your `yes` (ADR 0066); nothing starts. */
   | { w: "split"; parts: NewPart[] }
@@ -333,6 +363,8 @@ export type Write =
   | {
       w: "tell";
       n: number;
+      /** That task's title, when it isn't the parent (a task first's, ADR 0075). */
+      title?: string;
       kind: ReplyKind;
       state: string;
       text: string;
@@ -348,7 +380,12 @@ export type Plan =
   | { do: "box"; writes: Write[]; state: TaskState; why: string }
   /** `writes`: what the box makes anyway (a note, a command's answer), applied before the agent's. */
   | { do: "think"; think: Think; state: TaskState; why: string; writes?: Write[] }
-  | { do: "github"; job: "operate" | "prepare" | "close-prs"; state: TaskState; why: string };
+  | {
+      do: "github";
+      job: "operate" | "prepare" | "close-prs" | "sign-in";
+      state: TaskState;
+      why: string;
+    };
 
 /** What a think's result became: the writes, and what the run needs minted for them. */
 export interface Decided {

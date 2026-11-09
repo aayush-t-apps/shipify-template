@@ -7,6 +7,232 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-11-09
+
+### Added
+
+- **Nothing by hand: workflow changes you approve in the chat, and a fix on main as its own task
+  (ADR 0075, task #692).** A run never asks you to edit a file, apply a patch or copy words into a
+  new chat (the playbook's rule). A run's own change to `.github/workflows/` or
+  `.github/actions/` is held: apply sends the rest of its work with one commit, "Hold the workflow
+  change for your yes", and the reply lists the change's exact lines with the box's facts (when it
+  runs, the secrets and actions its new lines use). Your Yes pushes exactly those lines to the
+  task's branch (workflows write, checked again, once), and opens the PR when the change was all
+  the run made; `no` drops it. Only a change that runs after your merge is listed (Shipify's four
+  workflows do); one that would run before it (a repo's PR checks, a project's `ship.yml`) is
+  refused by `ship pr --check` in the agent's own session, or held and said. On another account
+  the push is refused whole, as before. `first`: when `main`'s code blocks a task, the run lists
+  one task to do first; your Yes opens it as a sub-task, links this task as blocked by it and
+  starts it; its merge tells this task, and `continue` carries on. It never makes this task's PR
+  `part-of`. One helper (`cli/kernel/workflows.ts`) finds the run's workflow change for all three
+  checks. No new key, permission, setting or workflow change.
+- **Codex on your ChatGPT plan, as a plug-in agent (ADR 0074, task #692).** `use codex`, or
+  **Codex** in Who thinks: GPT-6.1 Sol (Auto, medium), GPT-6 Astra, GPT-6.1 Terra and GPT-6 Luna,
+  low to ultra effort, and any new OpenAI model by its id, in the dropdown, `/models` and the
+  Repeat form with no UI code (Codex 0.167.0, installed on a box the first time a run picks it,
+  about 393 MB on a Pi). Sign in once with no PC: say `codex sign in` in a chat, and the reply
+  shows a link and a one-time code for your phone (Codex's own sign-in, run by the github job on
+  GitHub's machine; Plus or Pro, Go warns). Or on a PC: `pnpm ship setup agent codex` (your
+  browser; `--device` for the code). The secret `CODEX_AUTH` holds the session, and after a run
+  that refreshed it, `ship run renew` writes the newer session back (same account only), with
+  the token step you added to `task.yml`. Shipify's gate is Codex's PreToolUse hook, so it
+  refuses the same commands as every agent; Codex's own config, rules and bundled skills aren't
+  read. Its commands can read its login, so a read run and a guest's go to the default agent, and
+  a guest's picker leaves it out.
+- **Guests share their own pages through Drop, private until they share them (ADR 0073, task
+  #679).** Built in two parts after your `go`: Drop 0.6.0 (task #689: a drop's `by`, My drops,
+  every new drop Only me), and this is Shipify's part (task #690). The chat makes pages and Drop
+  manages them. A guest asks for a page in a chat and gets a drop only they can open, for 30
+  days: the reply is its link and "Manage it in Drop" (their **My drops**, your drop list and drop
+  page, reused, with only the guest options: a link, people by email, a new link, up to 30 days,
+  delete). "Change it" puts a new page on the same drop, so the link stays. The page stays in
+  their chat too. Every new drop, yours too, is Only me until its owner adds people or makes it
+  open to anyone with the link. Sign-in is Google only, through Cloudflare Access, for both apps
+  (your one-time step in `docs/channels.md`, Guests; until you switch, the email code works).
+  - **A tool's guest forms:** `tools.json` gains `guest`, `pre`'s shape with no fixed target
+    (`cli/lib/plugins/tool.ts`). Drop's: `publish` with `share` fixed to `me`, and `update` of a
+    drop's title and files; 5 of each a run. Your merge approves them; a guest's words still
+    approve nothing.
+  - **The box:** decide keeps a guest's calls that fit a form and makes them at once, after the
+    web too, as they share nothing; the reply names the rest. A guest's prompt lists the
+    connected tools' guest forms. Apply asks the door who the guest is (`GET /door/guest/<id>`,
+    task.yml's OIDC token only; a removed guest makes no call), takes their files from the run's
+    folder, and starts the tool with `SHIPIFY_GUEST`.
+  - **The Drop tool:** `publish`'s `share` is optional, and Only me when left out, with how to
+    share it in its answer. Its guest mode makes a drop `by` the guest, only theirs, 30 days at
+    most; changes only the title and files of a drop `by` them; and never names their email. Your
+    `list` shows "only Ana" or "for Ana" on a guest's drop.
+  - **Docs:** `docs/tools.md` (Guests' calls; Only me first), `docs/channels.md` (Google sign-in,
+    seats, a guest's pages), `docs/door.md`, `docs/security.md`, `docs/tasks.md`,
+    `docs/troubleshooting.md`, `docs/plug-ins.md`, `docs/glossary.md`, `playbooks/guest.md`,
+    `skills/drop` (no who said is `me`; a guest's page), the setup page's guests line, and ADR
+    0073 accepted and built, with As built; ADR 0071 and 0072 amended.
+- **ADR 0075, proposed (task #692): nothing by hand.** A run never asks you to edit a file, apply
+  a patch or copy words into a new chat. A workflow change a task needs is committed as any
+  change: the box holds it back, pushes the rest of the work, and lists the exact lines under its
+  reply with what they can reach. Your Yes pushes exactly those lines to the task's branch, and
+  your merge still decides what reaches `main`. It's listed only when nothing it changes runs
+  before your merge, which Shipify's own workflows meet. When `main`'s code blocks a task, the run
+  proposes the fix as one task first (`first`): your Yes opens and starts it, and `continue`
+  carries on once it merges. No new key, permission or workflow change. Nothing in it is built
+  until your `go`.
+- **ADR 0074, proposed (task #692): Codex on your ChatGPT plan, as a plug-in agent.** An entry, an
+  adapter and a recorded run, with no core change. The model dropdown, `/models` and `use codex`
+  show it with no UI code. Your personal plan only, for now: you sign in with ChatGPT once, and
+  the box writes the session Codex refreshes back to the secret `CODEX_AUTH` after a run. A
+  Business or Enterprise access token is left for later. OpenAI's plans page lists Codex on Go
+  for the desktop app only, so setup warns on Go. Codex reads its login from a file its commands can read, so it
+  never thinks for a guest's run or a read run. Nothing in it is built until your `go`.
+- **Pages, like Claude's artifacts: ask in the chat, get Drop's link (ADR 0072, task #679).**
+  Built in two parts after your `go`, with no new service, key or setting: Drop 0.5.0 shows pages
+  (task #682), and this is Shipify's part (task #683). Ask "make a page of my trip plan" (and, if
+  you want, "share it with Mom and Dad for 7 days"). The run makes one self-contained `.html` page
+  and gives it to Drop in the same run (the pre-approved `publish`, only you unless you said who).
+  The reply is only Drop's link, which opens the page, sandboxed, with **Share** at the top. A
+  change ("add Tuesday's dinner") is one `update` for your Yes, so the link stays the same.
+  - **The box:** a file that a call took, when the call worked, is left out of the reply's files,
+    its **Files:** block and the web chat's store: the call's answer (Drop's link) stands for it.
+    It stays on `shipify-files`, where a later run reads it. When the call fails or waits for your
+    Yes, the file shows as before. This is for any tool's call: the core names no tool
+    (`cli/kernel/apply.ts`, `callFiles` in `cli/kernel/mcp-client.ts`).
+  - **Skills and playbooks:** `skills/frontend-design` has "A one-file page" (everything inside
+    the file, what works and what doesn't in Drop's sandbox, links in a new tab, small screens
+    first, light and dark, under 1 MB) and a `scenarios.md`; `skills/drop` has "A page" (its drop
+    in the same answer, alone, the reply its link, a change by one `update`).
+    `playbooks/task.md` points to both; `playbooks/guest.md` says a guest's page is a file in
+    their chat.
+  - **Docs:** `docs/tools.md`, `docs/tasks.md`, `docs/glossary.md` (**page**), and ADR 0072
+    accepted and built, its findings in As built. The playground stays on Cloudflare: the ADR
+    compares GitHub Pages and says why not.
+
+### Changed
+
+- **A stay makes the change you ask for itself, with no new run (ADR 0076, task #708).** A run on
+  a project's clone that stays after its answer used to hand a change you asked for to a new work
+  run, which cloned, set up and read the whole thread again. Now the stay's turn commits in the
+  same session, the box checks it, and the stay's own job pushes it and opens or updates the PR.
+  `work` starts a run only on a project or repo the run has no clone of (a talk run's first
+  change, another repo); a work run's `work` for its own project starts nothing, and the reply
+  says so. A push in a stay is no longer taken for the run's earlier push in the same job (apply's
+  journal key names the words it answers), and the box's "A work run … starts now" line is said
+  once. A new model or effort already kept the session (ADR 0063). A new run still comes for
+  another agent, `start over`, `go`, an edit of the task, and your words after a stay's push.
+- **`--manage` boxes take connections only through Tailscale (setup 13, task #708).** The
+  firewall no longer lets SSH in from the box's own network, nor Tailscale's port (41641/udp):
+  Tailscale connects from its own outgoing traffic, or else through its relays. Running the setup
+  again takes those rules out by their comment; your own ufw rules stay. A session from the home
+  network that runs it goes on, and the setup says the next one must come through Tailscale.
+  Avahi (mDNS), which a Pi's image has and ufw lets in by default, is masked, so nothing on the
+  home network gets an answer.
+  `box add` asks a box's Cockpit address before the setup and removes the setup's folder in the
+  same session, so it needs no new SSH connection after it, and says to set the alias's
+  `HostName` to the box's Tailscale name. With Tailscale down, the way in is a keyboard on the box
+  (a VPS's web console). `ship doctor` names the boxes to set up again.
+  Every path ends locked down or says it isn't: the firewall comes right after Tailscale's
+  sign-in, before Cockpit (a Cockpit that didn't serve left it off), and fails when Tailscale
+  isn't up. The setup is recorded as done only once `--manage` finishes; else it ends "Done,
+  except --manage" with exit 4, `box add` says the firewall may not be on, and `ship doctor` names
+  the box until a run finishes it. `here.sh --manage` turns SSH passwords off too, once your
+  account has a key. `box add` over SSH without `--manage` says it gets no firewall, and an SSH
+  that times out names the box's Tailscale name.
+- **Sign-in, written as one setup for Shipify and Drop (task #679).** `docs/channels.md`
+  (Guests) now has one table and six steps in place of two partial lists: Google is the one
+  login, for you too; three policies are made once and reused (`owner`, `anyone with Google`,
+  `shipify service`), each requiring Google, so an email code can't let anyone in; four
+  applications each say which policies they use; then you test and delete the One-time PIN. The
+  rule throughout is that Access says who someone is and each app says what they get, so a guest
+  is added in one place only. Docs only: no code or setting changes.
+- **Leaner and cleaner, from an efficiency audit (task #697).**
+  - **Docs: one home for each fact.** `docs/setup.md` lists every key once ("Tokens and
+    secrets"), now with each run's own tokens. `docs/security.md` keeps what each key may do, now
+    with Drop's two tokens and OpenCode on OpenRouter. `docs/design.md` and `docs/product.md` link
+    to them instead of their own tables. The road in `docs/product.md` is current: ADR 0047 is
+    live, the template is public under the MIT licence, the box's image is built, and setup's core
+    is four steps. ADRs 0027 to 0032 say accepted and built (0029: superseded by 0031).
+    `docs/README.md` lists `knowledge.md` and the glossary once. `docs/design.md` and
+    `docs/tour.md` name every command the door answers at once, and every agent.
+  - **Runs on a box: fewer processes and calls.** A stay reads the task every 2 s through Node's
+    `fetch` on one kept connection (GitHub Actions' `GITHUB_API_URL`), not a new `gh` process a
+    read: a 20-minute quiet stay started ~760 of them, ~3.5 CPU-minutes the other slots needed. An
+    agent's install that's marked done is only put on the `PATH`: no `chmod -R` of its files and
+    no `--version` start (4–6 s off each pi run). A run's `stop` check every minute is an ETag
+    read, free when nothing changed; decide reads the comments since the task step's read once,
+    and apply takes them (one read less a run); decide's step reads nothing else of GitHub (1–5
+    calls less with a deploy, a release or an errand pending). A work run's clone finds the task's
+    branch in what it cloned (no `ls-remote` and second fetch), and apply's clone (its push, and
+    a held workflow change's read and push) makes one fetch, not two calls (~3–5 s a work run).
+  - **The edge: fewer calls a watch tick and a web chat tab.** The notice duty reads the door's
+    marks on every reply it might notice in one GraphQL call, not one a reply each tick (about 14
+    a reply over its window), and knows the door's bot by `SHIPIFY_DOOR_SLUG` (no `GET /app`, at
+    the door's `/door/replied` too). Telegram's webhook and menu (every 30 minutes) and the
+    runners' newest release (every 6 hours) go by the tick's number, so a tick on a new edge
+    instance doesn't read them again (about 4 calls a quiet tick). The stopped duty finds a
+    working task's run in the task runs' list it read already, and reads a run alone only when
+    it's older than the list's 30. Notebook's reads carry their ETags and the Library's pages are
+    kept a minute. A wide-screen tab reads the list every 30 s while a run works, not every 5 s
+    (the thread shows the run): ~10 reads a minute less.
+  - **The prompt: each run gets only what applies to it.** `playbooks/task.md` marks its work-only
+    parts (lanes, checks, the PR's shape) and its "Later runs": a talk run gets neither work part,
+    and a task's first run no "Later runs". Each rule is said once (the prompt's header, Finish and
+    result fields, the notebook's section, a skill), and the repeats, own-rules and lesson rules
+    live in their skills. A talk run's prompt is ~8.7k characters shorter (about 2k tokens, a
+    third less), a work run's 3.0k–4.4k (11–17%).
+  - **Code: smaller, one copy of each thing.** Gone: names nothing used (`madeFiles`, `getComments`,
+    `markedGuest`, `deployRun` and others), and what removed features left (the fake door's send
+    route, `SHIPIFY_TASK_FIXES`'s `fixesLine`, `ship connect`'s `contents`, `Kv.getWithMetadata`).
+    One copy each, in `cli/contracts` where the box and the edge share it: the images guard
+    `inertImages` (a security check, so it can't drift), `timeUntil`, the run writer's login,
+    `boxOf` and the box and status labels; the agents' `oneLine`, `asResult` and gateway model
+    name; GitHub's `gh` and `withToken`; the `preview` label (one colour). `decide.ts`'s 28 answers
+    with no agent go through two small helpers (`answered`, `told`), not the same lines each time.
+  - **Checks: nothing left on the disk.** Each test run has one temp folder, removed after it: a
+    run left ~700 folders (~240 MB) on the disk before.
+
+### Fixed
+
+- **Runs stay where they should, and a stay can put a refused push right (ADR 0076, task #708).**
+  A run on a task your words reopened (after its PR merged, or its app went live) now stays after
+  its answer: plan reopened the task but kept a read that said closed, so it never stayed. A stay's
+  turn that commits nothing needs no key: it named its open PR again, git refused an empty bundle,
+  and the turn before's bundle was taken for its own, so the box ran its checks, sent the old
+  commits again and ended the stay. A stay's fix on top of a push the secret scan refused is now
+  sent with the refused commits (its bundle had no base GitHub knew), and the turn is told what
+  went wrong after its last answer.
+- **Box setup: no token left behind, and nothing said "only" that isn't (task #708).** `box add`
+  removes its folder (the one-hour registration tokens) as you, after sudo, in the same session:
+  a wrong sudo password left it on the machine. With `--manage`, a ufw rule of your own that lets
+  something in (a VPS guide's `ufw allow OpenSSH`) is listed, with how to take it out, instead of
+  "in through Tailscale only"; ufw's IPv6 goes on where it was off; the setup's record is written
+  as the `shipify` user (a link can't send root's write elsewhere); exit 4 says to run it again
+  over Tailscale when SSH from your network no longer answers. Doctor's fix names the command the
+  box was set up with, not always `--manage`.
+- **`plan check` refuses a summary over 350 characters (task #709).** Publish makes a plan's
+  `summary` the GitHub repo's description, and GitHub refuses one over 350 characters, so a
+  418-character summary passed `plan check` and then stopped publish. The plan's schema now caps
+  it with a message that says why; nothing is cut short by itself. The plan template notes the
+  limit.
+- **The bare address works for everyone, guests too (task #679).** `<the edge>/` always sent
+  people to your `/admin/chat/`, so a guest got Access's "no access" page unless they typed
+  `/guest/`. Now Access's sign-in cookie, checked as its token is (the signature, the audience,
+  the team, the time), sends you to your chat and a guest to theirs; with no cookie, or one that
+  doesn't check out, a small page shows two ways in: **Sign in as a guest** and **Owner**. It
+  only sends people on, and needs no GitHub read without a cookie (`edge/src/web/home.ts`). At
+  `/guest/`, a signed-in email that isn't on the list gets a page that says so, with the way to
+  your chat, in place of raw JSON (the page's own calls stay JSON). `/admin` still goes to the
+  chat. Main's checks are green again: one comment's indent in `cli/commands/workspace.ts`.
+  `docs/channels.md` (Guests) and `docs/door.md` say how.
+- **The web chat: a project's count of chats is what it shows.** A project's group in the list
+  said GitHub's total, closed chats too, so under Open it said "3 chats" over the 2 open ones. It
+  now counts the chats it shows: its open ones under Open, its closed ones under Closed. The
+  Desk's line for a project counts the open chats it shows too. A project's screen keeps the
+  total, as its Chats tab lists them all.
+- **A workflow change you make on a task's branch no longer blocks its later runs (task #692).**
+  A run never pushes a workflow file, but the box's check and its push also refused a branch that
+  held one you added yourself on GitHub, so every later run on that task stopped. Both now let
+  through a workflow file that is exactly as you left it on the branch on GitHub (your two edits
+  on main), and still refuse any change a run makes to one. Tests hold both, and the format of the
+  first edit's comment is fixed.
+
 ## [0.1.19] - 2026-11-05
 
 ### Added

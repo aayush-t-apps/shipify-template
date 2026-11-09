@@ -5,10 +5,15 @@
 // of each one whose time has come; it keeps "Coming up" on the status task, and the apps list the
 // edge reads.
 
-import { STATE_LABELS, SUB_TASK_LABEL } from "../../contracts/index.ts";
+import {
+  DEPLOYING_LABEL,
+  RUN_WRITER,
+  STATE_LABELS,
+  SUB_TASK_LABEL,
+} from "../../contracts/index.ts";
 import { doorLogin } from "../../kernel/snapshot.ts";
 import { PLATFORM_ROOT } from "../../lib/config.ts";
-import { platformRepo, RECORD_WRITER } from "../../lib/github.ts";
+import { platformRepo } from "../../lib/github.ts";
 import { ok, type Result } from "../../lib/output.ts";
 import { projectsOnGitHub, reposOnGitHub } from "../../lib/projects-on-github.ts";
 import { RECIPE_LABEL, readRecipes, recipeOf, recipeTitle } from "../../lib/recipes.ts";
@@ -25,7 +30,7 @@ import {
 import { isStatusIssue } from "../../lib/status-issue.ts";
 import { findStatus, TASK_LABELS, type TaskState } from "../../lib/task.ts";
 import { type Issue, owner, queue, rec, timeZone, tryOr } from "./context.ts";
-import { DEPLOYING, deployState, errandState, GIVE_UP_MS, releaseState } from "./deploys.ts";
+import { deployState, errandState, GIVE_UP_MS, releaseState } from "./deploys.ts";
 
 /** A due repeat whose task is busy is looked at again after this long. */
 const BUSY_AGAIN_MS = 10 * 60_000;
@@ -66,7 +71,7 @@ export function taskDue(at = new Date()): Result<Due> {
     !isStatusIssue(i) &&
     (i.user.login === who ||
       (door !== undefined && i.user.login === door) ||
-      (i.user.login === RECORD_WRITER &&
+      (i.user.login === RUN_WRITER &&
         i.labels.some((l) => l.name === RECIPE_LABEL.name || l.name === SUB_TASK_LABEL)));
   const listed = new Map<number, Issue>();
   // An answered task is listed only when it's a split's part, the one that closes after a quiet
@@ -78,7 +83,7 @@ export function taskDue(at = new Date()): Result<Due> {
   ])
     for (const i of tryOr(() => rec().issues({ labels }), [])) if (mine(i)) listed.set(i.number, i);
   // A merge closes its task: a deploy, and an errand (ADR 0054), are followed open or closed.
-  for (const label of [DEPLOYING.name, WAITING_LABEL.name])
+  for (const label of [DEPLOYING_LABEL, WAITING_LABEL.name])
     for (const i of tryOr(() => rec().issues({ labels: [label], state: "all", newest: 30 }), []))
       if (mine(i)) listed.set(i.number, i);
   const busy = tryOr(activeTasks, new Set<number>());

@@ -51,7 +51,7 @@ doc: [the index](README.md).
 | `door.ts` | tells the door of a new reply, and fetches your files, with the run's OIDC token |
 | `mcp-client.ts` | the approved tool calls, made by the box |
 | `github-job.ts` | the `github` job: prepare, operate, closing PRs |
-| `workflows.ts` | a push that touches workflow files: only when they match the stack |
+| `workflows.ts` | the run's workflow change, the rule it's listed by (nothing it changes runs before your merge), its facts on the list, and the hold that keeps it out of the push until your Yes (ADR 0075) |
 
 **What the core and the edge share** (`cli/contracts/`): `shapes.ts` (`Incoming`, `Reply`,
 `FileRef`, `ToolCall`, `ToolResult`), `lines.ts` (the hidden `from` and `reply` lines), `labels.ts`
@@ -65,7 +65,7 @@ doc: [the index](README.md).
 | `cli/cli.ts` | every command (`pnpm ship help`) |
 | `cli/lib/sandbox.ts` | the agent's own user per slot: its run folder, commands as that user, what it leaves |
 | `cli/commands/task/` | parts the run reuses: `files.ts` (your files, files a run made), `issue.ts` (the status comment), `notebook.ts`, `plans.ts` (a merged plan's needs), `due.ts` (what's due), `deploys.ts` (a deploy's state), `lifecycle.ts` (a box's clean-up, every slot's workspace) |
-| `cli/lib/` | `runs.ts` (run details), `notebook.ts`, `repeat.ts` (schedules), `status-issue.ts` (the status task), `tools.ts`, `agents.ts` and `agents/` (the adapters: `claude.ts`, `pi.ts`, `opencode.ts`, and the gate: pi's, and OpenCode's plugin), `agent-install.ts` (an agent installed on a box), `intents.ts`, `channels.ts`, `github.ts`, `accounts.ts` (your accounts, and the one a task works on: ADR 0045), `clones.ts`, `plugins/` (each plug-in kind's contract) |
+| `cli/lib/` | `runs.ts` (run details), `notebook.ts`, `repeat.ts` (schedules), `status-issue.ts` (the status task), `tools.ts`, `agents.ts` and `agents/` (the adapters: `claude.ts`, `pi.ts`, `opencode.ts`, `codex.ts`, and the gate: pi's, OpenCode's plugin and Codex's hook), `agent-install.ts` (an agent installed on a box), `intents.ts`, `channels.ts`, `github.ts`, `accounts.ts` (your accounts, and the one a task works on: ADR 0045), `clones.ts`, `plugins/` (each plug-in kind's contract) |
 | `cli/commands/` | the other commands: `plan.ts`, `project.ts`, `evolve.ts`, `workspace.ts`, `upgrade.ts`, `operate.ts`, `box.ts`, `bot.ts`, `setup.ts`, `add.ts`, `doctor.ts`, `plugins.ts` (`plugins`, `selftest`), `tools.ts`, `notebook.ts`, `watch.ts` |
 | `edge/` | the edge Worker: the door (`door-in.ts`, `door-out.ts`, `files.ts`, `chat.ts`), the chat channels' adapters (`channels/`), the watch, the status page (`page.ts`, `access.ts`), the web chat (`web/`, and its page in `public/admin/chat/`, its diagram frame in `public/draw/`, its notifications' pictures in `public/note/`), and its PC-side setup in `edge/setup/` |
 | `recipes/` | recipes, repeats kept as files ([recipes.md](recipes.md)); `examples/` to copy |
@@ -102,10 +102,11 @@ sequenceDiagram
 ```
 
 1. **The door lets it in.** Telegram's adapter (`edge/src/channels/telegram.ts`) proves the
-   webhook and reads it into one message; the door checks you're in `SHIPIFY_PEOPLE`. `/ping`,
-   `/apps`, `/repos`, `/notebook`, `/recipes`, `/models` and `/help` it answers itself. Anything else it writes as the door App: a new task, or a
-   comment on `#12` when you reply to one of its messages. The first line is a hidden
-   `<!-- shipify-from {…} -->` (`cli/contracts/lines.ts`). It answers "Got it · #12".
+   webhook and reads it into one message; the door checks you're in `SHIPIFY_PEOPLE`. `/tasks`,
+   `/ping`, `/apps`, `/repos`, `/notebook`, `/recipes`, `/models`, `/help` and the `/use` picker it
+   answers itself ([door.md](door.md#in-your-messages)). Anything else it writes as the door App:
+   a new task, or a comment on `#12` when you reply to one of its messages. The first line is a
+   hidden `<!-- shipify-from {…} -->` (`cli/contracts/lines.ts`). It answers "Got it · #12".
 2. **GitHub starts a run.** The issue event starts `task.yml`'s `run` job, because its sender is the
    door App (`SHIPIFY_DOOR_SLUG`). The task's group, `task-<n>`, keeps its runs in order.
 3. **The task, then plan.** The job first makes a copy of Shipify with its CLI built as one file
@@ -118,8 +119,9 @@ sequenceDiagram
    runs it through `place.ts`. On a box, that's `cli/lib/sandbox.ts`: user `shipify-agent-<k>`, a
    fresh folder `/srv/shipify-agent-<k>/run-<id>/`, an empty environment, a read-only token on
    stdin, and the agent's login on a pipe (fd 3). The prompt comes from `prompt.ts`, the agent and
-   model from `agent.ts`, `executors.json` and its adapter (`cli/lib/agents/claude.ts`, `pi.ts`, `opencode.ts`),
-   and the look tools speak `tools/mcp.ts`. It writes `result.json` (`result.ts`).
+   model from `agent.ts`, `executors.json` and its adapter (`cli/lib/agents/claude.ts`, `pi.ts`,
+   `opencode.ts`, `codex.ts`), and the look tools speak `tools/mcp.ts`. It writes `result.json`
+   (`result.ts`).
 5. **Decide.** `ship run decide` (`afterThink()`) turns the result into one write, a reply of kind
    `answer`. Nothing to mint.
 6. **Apply.** `ship run apply` (`apply.ts`) posts the reply. Its first line is a hidden
@@ -153,8 +155,8 @@ You write `acme-site: bigger margins`.
    `make verify`). If they fail, the agent gets one round in the same session to fix them. Then
    `think.ts` takes the commits back as a git bundle, even when the checks still fail: decide then
    keeps them on the task's branch with no PR.
-3. **Decide:** a push write. It outputs `repo=acme-site`, and `workflows=write` only when the
-   workflow files match what the stack renders (`workflows.ts`).
+3. **Decide:** a push write. It outputs `repo=acme-site`, and `workflows=write` when the run's
+   commits touch a workflow file, or for a workflow change you approved (`workflows.ts`).
 4. **Mint:** a write token for acme-site alone.
 5. **Apply:** fetches the bundle into its own clone (hooks off), scans it for secrets, pushes
    `task/<n>-…`, and opens the PR with `Closes`. The reply, kind `needs-you`, carries the PR's link.

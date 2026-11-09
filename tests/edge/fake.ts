@@ -173,6 +173,8 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     graphqlFails: false,
     /** How many times moved chats' parents were read (one GraphQL call for all). */
     parentReads: 0,
+    /** How many times comments' reactions were read by GraphQL (the watch's notice: one for all). */
+    markReads: 0,
     /** GitHub's next this many calls get a 502 (a moment's hiccup), its token's left alone. */
     githubBlips: 0,
     /** One task's read fails (a GitHub hiccup), by its number. */
@@ -308,7 +310,6 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
             body: { token: "inst-token", expires_at: new Date(w.at + 3_600_000).toISOString() },
           }
         : { status: w.tokenStatus, body: { message: "Bad credentials" } };
-    if (path === "app") return { body: { id: APP_ID, slug: "shipify-door" } };
     if (path === "app/installations/555")
       return {
         body: {
@@ -371,6 +372,34 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
       );
       return { body: { data: { repository } } };
     }
+    // Comments' reactions by kind, with who gave each, as GitHub's GraphQL gives them: a bot by its
+    // `<slug>`, with no `[bot]`; a comment that isn't there, null and an error.
+    if (path === "graphql" && /reactionGroups/.test(asked)) {
+      w.markReads++;
+      const ids = (body as { variables: { ids: string[] } }).variables.ids;
+      const nodes = ids.map((id) => {
+        const c = w.comments.find((x) => x.node_id === id);
+        if (!c) return null;
+        const kinds = [...new Set(c.reactions.map((r) => r.content))];
+        return {
+          databaseId: c.id,
+          reactionGroups: kinds.map((k) => ({
+            content: k.toUpperCase(),
+            reactors: {
+              nodes: c.reactions
+                .filter((r) => r.content === k)
+                .map((r) =>
+                  r.user.type === "Bot"
+                    ? { __typename: "Bot", login: r.user.login.replace(/\[bot\]$/, "") }
+                    : { __typename: "User" },
+                ),
+            },
+          })),
+        };
+      });
+      const missing = nodes.some((n) => !n);
+      return { body: { data: { nodes }, ...(missing ? { errors: [{ type: "NOT_FOUND" }] } : {}) } };
+    }
     if (path === "graphql") {
       const id = (body as { variables?: { id?: string } }).variables?.id;
       const c = w.comments.find((x) => x.node_id === id);
@@ -399,8 +428,12 @@ export function world(k: Keys, start = Date.parse("2026-10-04T12:00:00Z")) {
     }
     if (p === "actions/runners")
       return { body: { total_count: w.runners.length, runners: w.runners } };
+    // Newest first, a page of `per_page` (30 unless asked), as GitHub lists them.
     m = at(/^actions\/workflows\/([\w.-]+)\/runs$/);
-    if (m) return { body: { workflow_runs: [...(w.runs[m[1] as string] ?? [])].reverse() } };
+    if (m) {
+      const runs = [...(w.runs[m[1] as string] ?? [])].reverse();
+      return { body: { workflow_runs: runs.slice(0, Number(q.get("per_page") ?? 30)) } };
+    }
     m = at(/^actions\/runs\/(\d+)$/);
     if (m) {
       const run = Object.values(w.runs)

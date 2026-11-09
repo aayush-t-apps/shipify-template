@@ -51,6 +51,9 @@ const counted = (cmd: string, args: string[], started: number) => {
   if (cmd === "gh") ghCalls.push({ name: ghName(args), ms: Date.now() - started });
 };
 
+/** A read made with fetch (ghIfChanged), counted as the `gh api <path>` it stands for. */
+export const countedRead = (path: string, started: number) => counted("gh", ["api", path], started);
+
 /**
  * What a plug-in's command starts with instead of this process's environment: enough to run and
  * tell the time, and none of the run's keys (the door key, the bot's token, the issues token).

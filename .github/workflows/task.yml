@@ -613,6 +613,29 @@ jobs:
           SHIPIFY_DROP_WRITE_ID: ${{ steps.stay.outputs.act == 'drop' && secrets.SHIPIFY_DROP_WRITE_ID || '' }}
           SHIPIFY_DROP_WRITE_SECRET: ${{ steps.stay.outputs.act == 'drop' && secrets.SHIPIFY_DROP_WRITE_SECRET || '' }}
         run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run apply "$ISSUE"
+      # A login its agent renewed in this run (ADR 0074: Codex's ChatGPT session), back to its
+      # secret once the agent and its stay are done: a token for that alone, on this repo, only
+      # when plan says the run's agent renews its login. `run renew` keeps only the same account's
+      # newer session, never prints it, and never fails the run (a write it can't make is a warning).
+      - name: A token for the agent's renewed login (its secret only; one hour)
+        id: renew_token
+        if: always() && steps.plan.outputs.renews == 'yes' && steps.think.outcome != 'skipped' && vars.SHIPIFY_BOT_CLIENT_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHIPIFY_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SHIPIFY_BOT_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-secrets: write
+          permission-metadata: read
+      - name: The agent's renewed login, back to its secret (ADR 0074)
+        id: renew
+        if: always() && steps.renew_token.outcome == 'success'
+        env:
+          SHIPIFY_AGENT_LOGIN: ${{ secrets[steps.plan.outputs.login] }}
+          GH_TOKEN: ${{ steps.renew_token.outputs.token }}
+        run: node "$SHIPIFY_COPY/cli/dist/ship.mjs" run renew "$ISSUE"
       # However the job ends (a crash, a cancel, its clock): your next words are never skipped.
       - name: Its stay's label off, however the job ends
         if: always() && steps.decide.outputs.stay == 'yes'

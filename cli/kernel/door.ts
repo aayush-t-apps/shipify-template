@@ -5,6 +5,7 @@
 //                                reads the reply from GitHub itself; this only says where to look. A
 //                                failed nudge isn't tried again: the watch tells you of the reply.
 //   GET  <door>/door/file/<ref>  a file you sent through a chat, for the agent (100 MB at most)
+//   GET  <door>/door/guest/<id>  a guest's email and name, for their calls (ADR 0073)
 //   POST <door>/door/files/forget  closed chats' files deleted from the web chat's store, and those
 //                                no chat used in 60 days: the weekly clean-up's, from watch.yml
 //                                (the door takes no other workflow's)
@@ -133,6 +134,31 @@ export async function doorFile(ref: string): Promise<Buffer | undefined> {
     }
     const body = Buffer.from(await r.arrayBuffer());
     return body.length > MOST_FETCHED_BYTES ? undefined : body;
+  }).catch(() => undefined);
+}
+
+/** A guest as the door gives them for their calls (ADR 0073): never written to GitHub. */
+export interface GuestWho {
+  email: string;
+  name: string;
+}
+
+/**
+ * A guest's email and name from the door's list, for the calls of their run (ADR 0073): undefined
+ * when they aren't on it (removed), or the door can't say.
+ */
+export async function doorGuest(id: string): Promise<GuestWho | undefined> {
+  const d = await door();
+  if (!d) return undefined;
+  return within(30_000, async (signal) => {
+    const r = await fetch(`${d.origin}/door/guest/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${d.token}` },
+      signal,
+    });
+    const g = (await r.json().catch(() => ({}))) as Partial<GuestWho>;
+    return r.ok && typeof g.email === "string" && typeof g.name === "string"
+      ? { email: g.email, name: g.name }
+      : undefined;
   }).catch(() => undefined);
 }
 

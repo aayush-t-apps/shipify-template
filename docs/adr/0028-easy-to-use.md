@@ -1,5 +1,5 @@
 ---
-status: proposed (the owner's asks of 2026-10-03, after ADR 0027 went live; merging its PR accepts it)
+status: accepted (merged #90) and built (#92); 0031 removed its console and all forms but Repeat and Operate. Proposed from the owner's asks of 2026-10-03, after ADR 0027 went live
 date: 2026-10-03
 ---
 

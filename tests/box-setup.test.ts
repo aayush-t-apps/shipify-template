@@ -23,8 +23,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 12, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=12$/m);
+  it("is version 13, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=13$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -92,7 +92,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     const services = at('say "The slots as services');
     const updates = at('say "The updates waiting now"');
     const proof = at('say "Checking the sandbox"');
-    const recorded = at('echo "$SETUP_VERSION" > /home/shipify/.shipify-setup');
+    const recorded = at('record "$SETUP_VERSION" "manage: not finished"');
     const managed = at("  (manage)\n");
     // The registration tokens last an hour: a long first update comes after they're used.
     expect(at('say "The GitHub runners')).toBeLessThan(updates);
@@ -629,7 +629,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
 
   it("checks the containers' walls: no agent writes a root container socket, and the box's kill leaves nothing", () => {
     const proof = at('say "Checking the sandbox"');
-    const check = setup.slice(proof, at('echo "$SETUP_VERSION" > /home/shipify/.shipify-setup'));
+    const check = setup.slice(proof, at('record "$SETUP_VERSION" "manage: not finished"'));
     // A wall, on every box (Podman or not): a docker group or a root socket would give an agent
     // the box.
     expect(check).toContain("for sock in /run/docker.sock /run/podman/podman.sock; do");
@@ -693,9 +693,9 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     // What failed may be a container's start or the box's clean-up after one: the ✗ line says which.
     expect(end).toContain("Done, except containers: their check failed (✗ above)");
     expect(end).toContain("Done, except containers: they didn't install");
-    const exit = at('  exit 3\nfi\nsay "Done: ask');
+    const exit = at('[ -z "$no_lab" ] || exit 3\nsay "Done: ask');
     // The rest of the box is recorded first: it works, and gets its label.
-    expect(exit).toBeGreaterThan(at('echo "$SETUP_VERSION" > /home/shipify/.shipify-setup'));
+    expect(exit).toBeGreaterThan(at('record "$SETUP_VERSION" "manage: not finished"'));
     expect(exit).toBeGreaterThan(at("(manage)"));
     // An image that didn't pull is the network's, not the box's: the store's check still holds.
     expect(fn("lab_check")).toContain('[ -z "$lab_ok" ] || lab_ok=unproven');
@@ -705,9 +705,136 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(setup).toMatch(/^left_of\(\) \{/m);
   });
 
+  it("records the setup as done only once --manage finishes, else ends with exit 4, which box add reads (setup 13)", () => {
+    // The end of setup.sh, as it runs, with --manage and the sandbox's result stood in for.
+    const dir = sandbox().dir;
+    const end = setup
+      .slice(at("record() {"))
+      .replaceAll("/home/shipify/.shipify-setup", `${dir}/.shipify-setup`)
+      .replace("sudo -u shipify tee", "tee");
+    const run = (manage: number, lab = "ok", env: Record<string, string> = {}) => {
+      const r = bash(
+        [
+          "SETUP_VERSION=13 CONTAINER=''",
+          `lab_ok='${lab}'`,
+          'say() { echo "== $*"; }',
+          `manage() { echo "  managing"; return ${manage}; }`,
+          end,
+        ],
+        { SHIPIFY_MANAGE: "1", ...env },
+      );
+      return {
+        code: r.status,
+        out: r.stdout,
+        file: readFileSync(join(dir, ".shipify-setup"), "utf8"),
+      };
+    };
+    // A missed sign-in, Cockpit not served, a Ctrl-C: noted, never done, and doctor names the box.
+    const stopped = run(1);
+    expect(stopped.code).toBe(4);
+    expect(stopped.file).toBe("13\nmanage: not finished\n");
+    expect(stopped.out).toContain("Done, except --manage: it stopped (above)");
+    expect(stopped.out).not.toContain("== Done: ask");
+    // Containers failing too: both said, and exit 4, as the firewall matters more.
+    const both = run(1, "");
+    expect(both.code).toBe(4);
+    expect(both.out).toContain("Done, except containers: their check failed");
+    // Finished: the plain version, and done.
+    const done = run(0);
+    expect(done.code).toBe(0);
+    expect(done.file).toBe("13\n");
+    expect(done.out).toContain("== Done: ask");
+    expect(run(0, "").code).toBe(3);
+    // No --manage: nothing for it to finish.
+    const plain = run(1, "ok", { SHIPIFY_MANAGE: "" });
+    expect(plain.code).toBe(0);
+    expect(plain.file).toBe("13\n");
+    expect(plain.out).not.toContain("managing");
+  });
+
+  it("puts the firewall right after Tailscale's sign-in, before Cockpit, and fails --manage when Tailscale isn't up (setup 13)", () => {
+    const manage = fn("manage");
+    const signIn = manage.indexOf("tailscale up --ssh --timeout 15m");
+    const wall = manage.indexOf("\n  firewall\n");
+    expect(signIn).toBeGreaterThan(0);
+    expect(wall).toBeGreaterThan(signIn);
+    // A Cockpit that doesn't install or serve never leaves the machine open.
+    expect(manage.indexOf("apt_get install")).toBeGreaterThan(wall);
+    expect(manage.indexOf("tailscale serve")).toBeGreaterThan(wall);
+    // No Tailscale address: the firewall says so and fails, so --manage does too.
+    const r = bash([
+      "ip() { :; }",
+      "sleep() { :; }",
+      'say() { echo "== $*"; }',
+      'ufw() { echo "ufw $*"; }',
+      fn("firewall"),
+      "firewall && echo on || echo failed",
+    ]);
+    expect(r.stdout).toContain("✗ not on: Tailscale isn't up");
+    expect(r.stdout).not.toContain("ufw ");
+    expect(r.stdout.trim().split("\n").pop()).toBe("failed");
+  });
+
+  it("takes out older setups' rules, says each of yours that lets more in, never 'only' then, and filters IPv6 (setup 13)", () => {
+    const dir = sandbox().dir;
+    const run = (rules: string[], defaults: string) => {
+      writeFileSync(join(dir, "added"), `${rules.join("\n")}\n`);
+      writeFileSync(join(dir, "defaults"), defaults);
+      writeFileSync(join(dir, "calls"), "");
+      // A ufw that keeps its rules in a file: `show added` lists them, `delete` takes one out.
+      const r = bash([
+        "ip() { echo '    inet 100.101.102.103/32 scope global tailscale0'; }",
+        "sleep() { :; }",
+        "ss() { :; }",
+        "systemctl() { return 1; }",
+        'say() { echo "== $*"; }',
+        `ufw() { echo "ufw $*" >> "${dir}/calls"; case "$1" in show) echo "Added user rules (see 'ufw status' for running firewall):"; cat "${dir}/added" ;; delete) shift; grep -vF "ufw $*" "${dir}/added" > "${dir}/kept" || true; mv "${dir}/kept" "${dir}/added" ;; esac; }`,
+        fn("firewall").replaceAll("/etc/default/ufw", join(dir, "defaults")),
+        "firewall",
+      ]);
+      return {
+        out: r.stdout,
+        calls: readFileSync(join(dir, "calls"), "utf8"),
+        defaults: readFileSync(join(dir, "defaults"), "utf8"),
+      };
+    };
+    const ours = "ufw allow in on tailscale0 comment 'Tailscale: Cockpit, SSH'";
+    // A VPS whose guide allowed SSH, a box from setup 12, and ufw's IPv6 off.
+    const vps = run(
+      [
+        ours,
+        "ufw allow from 192.168.1.0/24 to any port 22 proto tcp comment 'SSH from this network'",
+        "ufw allow 41641/udp comment 'Tailscale direct connections'",
+        "ufw allow OpenSSH",
+        "ufw allow out 53",
+      ],
+      'IPV6=no\nDEFAULT_INPUT_POLICY="DROP"\n',
+    );
+    expect(vps.out).toContain("taken out: allow from 192.168.1.0/24 to any port 22 proto tcp");
+    expect(vps.out).toContain("taken out: allow 41641/udp");
+    expect(vps.out).toContain(
+      "on: in through Tailscale, and through rules of your own that are still there:\n    allow OpenSSH\n",
+    );
+    expect(vps.out).toContain(
+      "For Tailscale only, take each out: sudo ufw delete <the rule above>",
+    );
+    expect(vps.out).not.toContain("Tailscale only; out as before");
+    expect(vps.out).not.toContain("allow out 53");
+    expect(vps.defaults).toBe('DEFAULT_INPUT_POLICY="DROP"\nIPV6=yes\n');
+    expect(vps.out).toContain("IPv6 filtered too now");
+    expect(vps.calls.indexOf("ufw reload")).toBeGreaterThan(
+      vps.calls.indexOf("ufw --force enable"),
+    );
+    // Nothing of yours: Tailscale only, and no reload when IPv6 was on already.
+    const plain = run([ours], "IPV6=yes\n");
+    expect(plain.out).toContain("on: in through Tailscale only; out as before");
+    expect(plain.calls).not.toContain("ufw reload");
+    expect(plain.defaults).toBe("IPV6=yes\n");
+  });
+
   it("proves the sandbox before it records setup 5", () => {
     const proof = at('say "Checking the sandbox"');
-    const record = at('echo "$SETUP_VERSION" > /home/shipify/.shipify-setup');
+    const record = at('record "$SETUP_VERSION" "manage: not finished"');
     expect(record).toBeGreaterThan(proof);
     const check = setup.slice(proof, record);
     for (const wall of [
@@ -725,7 +852,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
 
   it("on WSL, gives no sandbox while an agent can reach Windows, and names the fix in wsl.conf", () => {
     const proof = at('say "Checking the sandbox"');
-    const check = setup.slice(proof, at('echo "$SETUP_VERSION" > /home/shipify/.shipify-setup'));
+    const check = setup.slice(proof, at('record "$SETUP_VERSION" "manage: not finished"'));
     for (const wall of [
       "grep -qi microsoft /proc/version",
       '"$(head -n 1 "$f" 2>/dev/null)" = enabled',
@@ -758,6 +885,7 @@ describe("ship box add: setup 5 over SSH, or on this PC (a fake ssh, bash, sudo 
     repo = "true",
     wsl = false,
     status = "online",
+    tailnet = "",
   ) => {
     const sb = sandbox();
     const bin = join(sb.dir, "bin");
@@ -816,6 +944,7 @@ case "$*" in
   *"systemctl cat"*) echo same ;;
   *"mktemp -d"*) echo /tmp/tmp.Ab12 ;;
   *"cat > "*) f=\${*##* }; cat > "${got}/\${f##*/}" ;;
+  *"tailscale status"*) echo '${tailnet}' ;;
   *"sudo bash"*) exit ${setupExit} ;;
 esac`),
       { mode: 0o755 },
@@ -888,13 +1017,15 @@ esac`),
     expect(calls).toContain("mktemp -d");
     // The script goes in on stdin, as every file does: nothing but ssh reaches the machine.
     expect(calls).toContain("umask 077 && cat > /tmp/tmp.Ab12/setup.sh");
-    expect(readFileSync(join(got, "setup.sh"), "utf8")).toContain("SETUP_VERSION=12");
+    expect(readFileSync(join(got, "setup.sh"), "utf8")).toContain("SETUP_VERSION=13");
     // The slots GitHub has, so setup registers again one it deleted.
     expect(readFileSync(join(got, "box.env"), "utf8")).toContain('RUNNER_REGISTERED="1 2"');
+    // The folder goes in the same session as the setup: no SSH connection after it (setup 13). As
+    // you, after sudo: a wrong password, which never runs the setup, leaves no token there either.
     expect(calls).toContain(
-      "sudo bash /tmp/tmp.Ab12/setup.sh /tmp/tmp.Ab12/box.env /tmp/tmp.Ab12/prep.tsv /tmp/tmp.Ab12/box.service",
+      "ssh -t homepi sh -c 'sudo bash /tmp/tmp.Ab12/setup.sh /tmp/tmp.Ab12/box.env /tmp/tmp.Ab12/prep.tsv /tmp/tmp.Ab12/box.service; r=$?; rm -rf /tmp/tmp.Ab12; exit $r'",
     );
-    expect(calls).toContain("rm -rf /tmp/tmp.Ab12");
+    expect(calls.slice(calls.indexOf("ssh -t homepi") + 1)).not.toMatch(/^ssh /m);
     expect(calls).not.toContain("/tmp/shipify-box");
     // The registration tokens went to the file on stdin, never on a command line.
     expect(calls).not.toContain("reg-token-never-shown");
@@ -929,6 +1060,39 @@ esac`),
     expect(r.summary).toContain('docs/troubleshooting.md, "Containers don\'t start"');
     // The rest of the box works: its slots get their label, so task runs go to them.
     expect(log()).toMatch(/runners\/1\/labels -f labels\[\]=sandbox/);
+  });
+
+  it("labels the slots when --manage stopped (setup's exit 4), and says the firewall may not be on, never done (setup 13)", () => {
+    const { sb, log } = machine(4);
+    const r = ship(sb, "box", "add", "homepi", "--slots", "2", "--manage", "--yes");
+    expect(r.status).toBe("failed");
+    expect(r.summary).toContain("takes tasks, but its --manage part stopped");
+    expect(r.summary).toContain("its firewall may not be on");
+    expect(r.summary).toContain("ship doctor names this box");
+    // Its firewall may still let in SSH from the home network: no "from now on, over Tailscale".
+    expect(r.nextSteps?.join("\n") ?? "").not.toContain("reach it over Tailscale only");
+    // Or it came on before Cockpit's part stopped: then the same command runs over Tailscale.
+    expect(r.nextSteps).toContain(
+      "if SSH from your network no longer answers, its firewall came on before it stopped: run it again over Tailscale (in ~/.ssh/config, its HostName is its Tailscale name)",
+    );
+    expect(log()).toMatch(/runners\/1\/labels -f labels\[\]=sandbox/);
+  });
+
+  it("over SSH without --manage, says plainly that it gets no firewall (setup 13)", () => {
+    const { sb } = machine(0);
+    const plain = (ship(sb, "box", "add", "homepi", "--slots", "2").plannedActions ?? []).join(
+      "\n",
+    );
+    expect(plain).toContain(
+      "no --manage, so no firewall: its SSH (keys only) answers on its network",
+    );
+    const managed = (
+      ship(sb, "box", "add", "homepi", "--slots", "2", "--manage").plannedActions ?? []
+    ).join("\n");
+    expect(managed).not.toContain("no --manage");
+    expect(managed).toContain(
+      "Tailscale (installed, and signed in at a link it prints within 15 minutes, if it isn't yet), then the firewall, then Cockpit",
+    );
   });
 
   it("is done only when every slot has the sandbox label and one is online, and says so plainly (setup 9)", () => {
@@ -1131,7 +1295,7 @@ esac`),
     expect(calls).toContain(
       "sudo bash /tmp/tmp.Ab12/setup.sh /tmp/tmp.Ab12/box.env /tmp/tmp.Ab12/prep.tsv /tmp/tmp.Ab12/box.service",
     );
-    expect(calls).toContain("rm -rf /tmp/tmp.Ab12");
+    expect(calls).toContain("bash -c rm -rf /tmp/tmp.Ab12");
     expect(calls).not.toContain("reg-token-never-shown");
     expect(readFileSync(join(got, "box.env"), "utf8")).toContain("SHIPIFY_HERE=1");
   });
@@ -1142,7 +1306,7 @@ esac`),
     expect(off.log()).not.toContain("registration-token");
   });
 
-  it("on this machine with --manage: a box you keep, as over SSH, but its SSH stays as it is", () => {
+  it("on this machine with --manage: a box you keep, as over SSH, its SSH by key too", () => {
     const { sb, got } = machine(0);
     const plan = ship(sb, "box", "add", "--manage");
     expect(plan.status).toBe("requires-approval");
@@ -1151,9 +1315,13 @@ esac`),
     expect(said).toContain("and the box never sleeps: the lid does nothing, and sleep is off");
     expect(said).not.toContain("power settings stay as they are");
     expect(said).toContain("--manage, last, once the sandbox checks out: Tailscale");
-    expect(said).toContain("--manage: a firewall");
-    // You're at the machine, not over SSH: its SSH settings are left as they are.
-    expect(said).toContain("this machine's SSH settings stay as they are");
+    expect(said).toContain("--manage: the firewall");
+    // A box you keep: SSH by key, once your account has one (setup.sh checks it), as over SSH.
+    expect(said).toContain(
+      "SSH takes keys only (no passwords, no root), once your account there has a key",
+    );
+    expect(said).not.toContain("SSH settings stay as they are");
+    expect(said).not.toContain("no --manage, so no firewall");
     expect(plan.nextSteps).toEqual(["pnpm ship box add --manage --yes"]);
     const r = ship(sb, "box", "add", "--manage", "--yes");
     expect(r.status, r.summary).toBe("succeeded");
@@ -1169,6 +1337,31 @@ esac`),
     expect(r.summary).toContain("--manage isn't for WSL");
     expect(log()).not.toContain("registration-token");
     expect(log()).not.toContain("sudo bash");
+  });
+
+  it("with --manage over SSH: Cockpit's address before the setup, and the way in over Tailscale after (setup 13)", () => {
+    const ts = '{"Self":{"DNSName":"homepi.tail1.ts.net."}}';
+    const { sb, log } = machine(0, pi, true, "true", false, "online", ts);
+    const r = ship(sb, "box", "add", "homepi", "--slots", "2", "--manage", "--yes");
+    expect(r.status, r.summary).toBe("succeeded");
+    const calls = log();
+    // Asked once, before the setup: after it, the firewall takes no SSH from the home network.
+    expect(calls.match(/tailscale status/g)).toHaveLength(1);
+    expect(calls.indexOf("tailscale status")).toBeLessThan(calls.indexOf("sudo bash"));
+    expect(calls).toMatch(
+      /gh variable set \S+ -R \S+ --body \{"homepi":"https:\/\/homepi\.tail1\.ts\.net"\}/,
+    );
+    expect(r.nextSteps).toContain(
+      "from now on, reach it over Tailscale only: in ~/.ssh/config, its HostName is homepi.tail1.ts.net",
+    );
+    // Not on Tailscale before (a new box): asked again after, and said either way.
+    const fresh = machine(0);
+    const first = ship(fresh.sb, "box", "add", "homepi", "--slots", "2", "--manage", "--yes");
+    expect(first.status, first.summary).toBe("succeeded");
+    expect(fresh.log().match(/tailscale status/g)).toHaveLength(2);
+    expect(first.nextSteps?.join("\n")).toContain(
+      "its HostName is its Tailscale name (Cockpit's address above, without https://)",
+    );
   });
 });
 

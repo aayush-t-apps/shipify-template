@@ -9,7 +9,7 @@ import { run } from "../../lib/exec.ts";
 import { type Form, loadForms } from "../../lib/form-reader.ts";
 import { FORMS_DIR } from "../../lib/forms.ts";
 import { githubQueue, githubRecord, platformRepo } from "../../lib/github.ts";
-import { type Result, ShipError } from "../../lib/output.ts";
+import { ShipError } from "../../lib/output.ts";
 import type { Queue, RecordIssue, TaskRecord } from "../../lib/plugins/record.ts";
 
 export type Issue = RecordIssue;
@@ -19,7 +19,6 @@ export type Issue = RecordIssue;
 export const rec = (opts?: { timeoutMs?: number }): TaskRecord => githubRecord(opts);
 export const queue = (): Queue => githubQueue();
 
-export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /**
  * Where a box keeps what its next runs' steps reuse (plan's repo lists, the labels' check): the
  * runner's own cache, which no agent's user can read. None off a box.
@@ -49,8 +48,6 @@ export const tryOr = <T>(f: () => T, fallback: T): T => {
   }
 };
 export const now = () => new Date().toISOString();
-/** The key for issue calls outside the record (a permission check): the workflow's own token. */
-export const token = () => process.env.SHIPIFY_ISSUES_TOKEN || undefined;
 export const runUrl = () =>
   process.env.GITHUB_RUN_ID
     ? `${process.env.GITHUB_SERVER_URL ?? "https://github.com"}/${platformRepo()}/actions/runs/${process.env.GITHUB_RUN_ID}`
@@ -88,11 +85,4 @@ export const git = (dir: string, ...args: string[]) => {
 
 // ---------------------------------------------------------------- times
 
-/** "Close with comment" closes first and comments up to half a minute later (that one doesn't count). */
-export const AFTER_CLOSE_MS = 60_000;
 export const DAY = 24 * 60 * 60 * 1000;
-export const skipped = (n: number, why: string): Result => ({
-  command: "task run",
-  status: "skipped",
-  summary: `task #${n}: ${why}`,
-});

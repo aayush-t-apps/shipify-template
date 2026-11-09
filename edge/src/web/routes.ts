@@ -68,6 +68,7 @@ import { deviceOf } from "../push.ts";
 import { type Settings, settings } from "../settings.ts";
 import { copyFor, head, listed, newRef, put, remove, stamp } from "../store.ts";
 import { docOf } from "./docs.ts";
+import { doorPage } from "./door-page.ts";
 import { saveDoc } from "./edit.ts";
 import { type FileMeta, GONE, MOST_BYTES, PICTURE, safeName, safeType, serve } from "./files.ts";
 import { type RepeatAnswers, repeatProblems, repeatWords } from "./forms.ts";
@@ -305,7 +306,10 @@ export async function webChat(req: Request, env: Env, deps: Deps): Promise<Respo
     if ("why" in d) {
       log.warn("page.refused", { why: `guest ${d.why}` });
       const [what, fix] = GUEST_WHY[d.why];
-      return problem(d.status, what, fix);
+      // A browser opening the page gets a page, with the way to yours; the page's own calls, JSON.
+      return path.startsWith(`${GUEST_BASE}/api/`)
+        ? problem(d.status, what, fix)
+        : doorPage(d.status, what, fix, [[`${BASE}/`, "I'm the owner: open my chat"]]);
     }
     who = { id: d.guest.id, guest: d.guest };
   } else {

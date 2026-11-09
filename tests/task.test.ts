@@ -16,7 +16,7 @@ import {
   exchangeCode,
   REPOS_PERMISSIONS,
 } from "../cli/commands/bot.ts";
-import { boxOf, boxUnit, slotName, slotOf, sshAdvice } from "../cli/commands/box.ts";
+import { boxUnit, slotName, slotOf, sshAdvice } from "../cli/commands/box.ts";
 import { errandSeen } from "../cli/commands/task/deploys.ts";
 import {
   countSkills,
@@ -33,7 +33,7 @@ import {
   whereThisRuns,
 } from "../cli/commands/task.ts";
 import { addToPrBody, CHECKED_MARK } from "../cli/commands/workspace.ts";
-import { helpGuide, useTimeZone, wordOf } from "../cli/contracts/index.ts";
+import { boxOf, helpGuide, useTimeZone, wordOf } from "../cli/contracts/index.ts";
 import {
   ADD_ALL_BUT_CHECKOUTS,
   gitTakesPathspecFiles,
@@ -993,6 +993,10 @@ describe("boxes: adding one over SSH", () => {
     expect(
       sshAdvice("shipify-pi", "connect to host 192.168.1.100 port 22: Connection timed out", cfg),
     ).toContain("is it on");
+    // A --manage box takes SSH only through Tailscale (setup 13): the way to it, said.
+    expect(
+      sshAdvice("shipify-pi", "connect to host 192.168.1.100 port 22: Connection timed out", cfg),
+    ).toContain("use the box's Tailscale name");
   });
 });
 
@@ -1034,19 +1038,56 @@ describe("boxes: what setup opens and closes", () => {
     expect(check).toBeGreaterThan(write);
     expect(undo).toBeGreaterThan(check);
     expect(setup).toContain("PasswordAuthentication no");
+    // On the machine itself, only with --manage (a box you keep); this PC without it keeps its own.
+    expect(setup).toContain(
+      'elif [ "${SHIPIFY_HERE:-}" = 1 ] && [ "${SHIPIFY_MANAGE:-}" != 1 ]; then\n  echo "  skipped: this is the PC you set it up from, so its SSH stays as it is"',
+    );
   });
-  it("lets the firewall in only once Tailscale is up, with every allow before it turns on", () => {
-    const fw = setup.slice(setup.indexOf("firewall() {"));
+  it("lets the firewall in only once Tailscale is up, with Tailscale's allow before it turns on", () => {
+    const fw = setup.slice(
+      setup.indexOf("firewall() {"),
+      setup.indexOf("\n}\n", setup.indexOf("firewall() {")),
+    );
     const gate = fw.indexOf("tailscale0 2>/dev/null | grep -q inet");
-    const enable = fw.indexOf("ufw --force enable");
+    const allow = fw.indexOf("ufw allow in on tailscale0");
     expect(gate).toBeGreaterThan(0);
-    for (const allow of ["ufw allow in on tailscale0", 'ufw allow from "$net" to any port 22'])
-      expect(fw.indexOf(allow)).toBeGreaterThan(gate);
-    expect(enable).toBeGreaterThan(fw.indexOf("ufw allow from"));
-    // No moment without the allows: the default turns to deny only after them.
-    expect(fw.indexOf("ufw default deny incoming")).toBeGreaterThan(fw.indexOf("ufw allow from"));
+    expect(allow).toBeGreaterThan(gate);
+    // No moment without the allow: the default turns to deny only after it, then the firewall on.
+    expect(fw.indexOf("ufw default deny incoming")).toBeGreaterThan(allow);
+    expect(fw.indexOf("ufw --force enable")).toBeGreaterThan(
+      fw.indexOf("ufw default deny incoming"),
+    );
     // Added, never reset: the owner's own rules stay.
     expect(setup).not.toMatch(/ufw (--force )?reset/);
+  });
+  it("lets in nothing but Tailscale, and takes out what older setups let in by their comment (setup 13)", () => {
+    const fw = setup.slice(
+      setup.indexOf("firewall() {"),
+      setup.indexOf("\n}\n", setup.indexOf("firewall() {")),
+    );
+    // Only one allow: no SSH from the home network, no open port for Tailscale.
+    expect(fw.match(/ufw allow /g)).toHaveLength(1);
+    expect(fw).not.toContain("41641");
+    // The old rules, as `ufw show added` prints them, become `ufw delete` lines; the owner's stay.
+    const take = /old=\$\(ufw show added \| sed -n "(.+)"\)$/m.exec(fw)?.[1] ?? "";
+    expect(take).not.toBe("");
+    const shown = [
+      "Added user rules (see 'ufw status' for running firewall):",
+      "ufw allow in on tailscale0 comment 'Tailscale: Cockpit, SSH'",
+      "ufw allow 41641/udp comment 'Tailscale direct connections'",
+      "ufw allow from 192.168.1.0/24 to any port 22 proto tcp comment 'SSH from this network'",
+      "ufw allow 8080/tcp comment 'mine'",
+    ].join("\n");
+    const out = spawnSync("sed", ["-n", take], { input: shown, encoding: "utf8" }).stdout;
+    expect(out).toBe("allow 41641/udp\nallow from 192.168.1.0/24 to any port 22 proto tcp\n");
+    expect(fw).toContain("ufw delete $rule");
+    expect(fw.indexOf("ufw delete $rule")).toBeGreaterThan(
+      fw.indexOf("ufw allow in on tailscale0"),
+    );
+    // A session from outside Tailscale is told how to come back in.
+    expect(fw).toContain("from now on, connect through Tailscale");
+    // Nothing answers the home network: avahi (mDNS), which ufw lets in by default, is off.
+    expect(fw).toContain("systemctl mask --now avahi-daemon.socket avahi-daemon.service");
   });
 });
 
@@ -1961,9 +2002,9 @@ describe("the weekly digest (ADR 0053)", () => {
       return Response.json({ version: u.includes("claude-code") ? "99.0.0" : "0.0.1" });
     }) as typeof fetch;
     const news = (await agentNews(all, reads)) ?? [];
-    expect(news.map((x) => x.id).sort()).toEqual(["claude", "opencode", "pi"]);
+    expect(news.map((x) => x.id).sort()).toEqual(["claude", "codex", "opencode", "pi"]);
     // Two reads an agent, the advisories' at its pinned version.
-    expect(asked).toHaveLength(6);
+    expect(asked).toHaveLength(8);
     expect(asked).toContainEqual(expect.stringContaining(`claude-code%40${pinned}&`));
     const base = { boxes: [], apps: [], waiting: [], upcoming: { count: 0 }, keys: [] };
     const text = digestText({ ...base, agents: news }, (i) => i);

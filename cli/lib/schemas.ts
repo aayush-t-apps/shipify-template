@@ -48,7 +48,11 @@ export type Manifest = z.infer<typeof Manifest>;
 export const PlanFrontMatter = z.object({
   app: ProjectId,
   title: z.string().min(3),
-  summary: z.string().min(10),
+  /** Publish makes it the GitHub repo's description, which GitHub caps at 350 characters. */
+  summary: z
+    .string()
+    .min(10)
+    .max(350, "summary is the GitHub repo description: 350 characters at most"),
   stack: z.string(),
   preset: z.string(),
   visibility: Visibility,

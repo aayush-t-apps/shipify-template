@@ -416,6 +416,7 @@ function groups(l, row, runs, q) {
     // The project waiting on you, or closed (under Closed): its own row, first.
     const self = P && shown.includes(P) && (R.shut || P.state === "needs-you") ? [P] : [];
     const rows = [...self, ...g, ...rest];
+    const k = g.length + rest.length;
     // None to show, its chats read: said, never an empty group.
     const none = P && !rows.length && !(R.shut && g.length < c && !R.pj[P.n]?.length);
     const n = (f, c, w, k = (P ? [P, ...g] : g).filter(f).length) =>
@@ -424,7 +425,7 @@ function groups(l, row, runs, q) {
       [
         icon("down"),
         h("b", P ? P.project.name : p ? named(p) : "General"),
-        P && h("span", `${c} chat${c === 1 ? "" : "s"}`),
+        P && h("span", `${k} chat${k === 1 ? "" : "s"}`),
         n((t) => t.state === "needs-you", "n", "Needs you"),
         n((t) => runs.has(t.n), "w", "Working"),
       ],
@@ -1406,8 +1407,8 @@ const gotList = (d) => {
   if (k !== R.lk) redraw();
   R.lk = k;
 };
-// On a phone the list and a page take turns: only what's on screen is read, the list too while
-// your words wait for a run, and once on coming back.
+// Only what's on screen is read: the list (a wide screen's, a project page's, the Desk's) 30 s
+// apart, and at once while your words wait for a run or on coming back.
 const WIDE = matchMedia("(min-width: 800px)");
 async function tick() {
   clearTimeout(R.timer);
@@ -1425,10 +1426,11 @@ async function tick() {
   try {
     const t = S.threads[R.n];
     const wait = (t?.task.open || t?.task.wakes) && !t.task.running && waits(t);
-    // A project's page and the Desk (a phone's first screen) show the list's tasks: it's read there
-    // too.
     const listed =
-      WIDE.matches || !document.body.classList.contains("in") || wait || R.woke || R.proj || R.home;
+      wait ||
+      R.woke ||
+      ((WIDE.matches || !document.body.classList.contains("in") || R.proj || R.home) &&
+        (!S.list || Date.now() - R.at > 25e3));
     await Promise.all([
       listed && get("list", undefined, !!S.list).then(gotList, no),
       R.n && pull(R.n).catch(gone),

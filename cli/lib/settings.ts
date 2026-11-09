@@ -5,7 +5,7 @@
 // the workflows' test read it, never a list of their own.
 import { EDGE_SETTINGS } from "../../edge/setup/settings.ts";
 import { CORE_SETTINGS, type Home, type Setting } from "../contracts/index.ts";
-import { defaultAgent, loadExecutors, loginOf, readExecutors } from "./agents.ts";
+import { adapterOf, defaultAgent, loadExecutors, loginOf, readExecutors } from "./agents.ts";
 import { listStacks } from "./catalog.ts";
 import { loadTools } from "./tools.ts";
 
@@ -95,14 +95,16 @@ function pluginSettings(): Setting[] {
       lives: gateway ? ["secret", "pc"] : ["secret"],
       what: gateway
         ? `${gateway}'s key: ${ids.map((i) => `${i}'s`).join(" and ")} models`
-        : `${id}'s login`,
+        : `${id}'s login${e.login?.renews ? ", which the box renews after a run (`ship run renew`)" : ""}`,
       setBy: gateway
         ? `\`ship add ${gateway}\``
         : id === first
           ? `\`ship setup agent\` (${login.how}; \`--new\` for a new one)`
-          : `you: ${login.how}, then \`gh secret set ${login.secret}\``,
+          : adapterOf(e)?.signIn
+            ? `\`${id} sign in\` in a chat (a one-time code, for any device), or \`ship setup agent ${id}\` (a sign-in in your browser; \`--new\` to sign in again)`
+            : `you: ${login.how}, then \`gh secret set ${login.secret}\``,
       ...(ids.includes(first) ? { steps: ["agent"], core: true } : {}),
-      readBy: `\`task.yml\`'s think step, when ${all("or")} runs`,
+      readBy: `\`task.yml\`'s think step, when ${all("or")} runs${e.login?.renews ? ", and its renew step" : ""}`,
     });
   }
   return out;

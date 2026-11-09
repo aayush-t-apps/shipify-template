@@ -2,6 +2,8 @@
 //   POST /door/<channel>     your messages from a chat (its adapter's proof: channels/)
 //   POST /door/replied       a run's reply to copy to your chats (the run's GitHub OIDC token)
 //   GET  /door/file/<ref>    a file you sent the bot, for a run (its OIDC token)
+//   GET  /door/guest/<id>    a guest's email and name, for the box's job that makes their drop
+//                            (task.yml's OIDC token only, ADR 0073)
 //   POST /door/files/forget  closed chats' files deleted, by the weekly clean-up (watch.yml's
 //                            OIDC token only, ADR 0069)
 //   *    /admin/…            what's private, behind one Cloudflare Access application (path
@@ -9,10 +11,12 @@
 //     GET  /admin/status     the status page: read-only (page.ts)
 //     *    /admin/chat[/…]   the web chat (web/routes.ts): what you send goes through doorIn as the
 //                            `web` channel
-//     GET  /admin, /         send you to the chat
+//     GET  /admin            sends you to the chat
 //   *    /guest[/…]           the guests' door (ADR 0071): the same chat, behind a second Access
 //                            application (path guest/*) and your guest list, each route kept to
 //                            what is the guest's (web/routes.ts `WHOSE`)
+//   GET  /                   the bare address, for everyone: Access's sign-in cookie sends you to
+//                            your chat or a guest to theirs, else a page with both ways in (web/home.ts)
 //   GET  /draw               the chat's diagram frame: a static page with no data, outside the
 //                            sign-in so the chat's sandboxed frame can load it (web/routes.ts)
 //   GET  /note/icon.png, /note/badge.png   a notification's pictures, outside the sign-in so a
@@ -34,8 +38,10 @@ import type { Deps, Env } from "./env.ts";
 import { GITHUB_NEEDS, json, logOf, missing, obj } from "./env.ts";
 import { fileOut, forgetFiles } from "./files.ts";
 import { appJwt, DoorKeyRefused, github } from "./github.ts";
+import { guestOut } from "./guests.ts";
 import { statusPage } from "./page.ts";
 import { zoneOf } from "./settings.ts";
+import { home } from "./web/home.ts";
 import {
   BASE,
   drawFrame,
@@ -46,9 +52,9 @@ import {
   webChat,
 } from "./web/routes.ts";
 
-/** Where a bare address (/ or /admin) sends you: the chat. */
+/** Where /admin sends you: the chat. The bare address `/` is everyone's (web/home.ts). */
 export function moved(path: string): string | undefined {
-  return path === "/" || path === "/admin" || path === "/admin/" ? `${BASE}/` : undefined;
+  return path === "/admin" || path === "/admin/" ? `${BASE}/` : undefined;
 }
 
 /** The door App's install, as GitHub says it: what it reaches and may do. Kept 10 minutes. */
@@ -122,15 +128,19 @@ export async function handle(req: Request, env: Env, deps: Deps): Promise<Respon
     if (path === "/draw/" || path === "/draw/draw.js") return await drawFrame(req, env);
     if (path === "/pdf/" || path === "/pdf/pdf.js") return await pdfFrame(req, env);
     if (NOTE_PICTURES.includes(path)) return await notePicture(req, env);
-    const home = moved(path);
-    if (home && (req.method === "GET" || req.method === "HEAD"))
-      return new Response(null, { status: 302, headers: { location: home } });
+    const to = moved(path);
+    if (to && (req.method === "GET" || req.method === "HEAD"))
+      return new Response(null, { status: 302, headers: { location: to } });
+    if (path === "/" && (req.method === "GET" || req.method === "HEAD"))
+      return await home(req, env, deps);
     if (req.method === "POST" && path === "/door/replied") return await replied(req, env, deps);
     if (req.method === "POST" && path === "/door/files/forget")
       return await forgetFiles(req, env, deps);
     const file = /^\/door\/file\/([^/]{1,600})$/.exec(path);
     if (req.method === "GET" && file?.[1])
       return await fileOut(req, decodeURIComponent(file[1]), env, deps);
+    const guest = /^\/door\/guest\/([a-z0-9-]{1,64})$/.exec(path);
+    if (req.method === "GET" && guest?.[1]) return await guestOut(req, guest[1], env, deps);
     const chat = /^\/door\/([a-z][a-z0-9-]{0,30})$/.exec(path);
     const ch = chat?.[1] ? channelOf(chat[1]) : undefined;
     if (req.method === "POST" && ch) return await doorIn(req, env, deps, ch);

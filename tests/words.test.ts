@@ -12,6 +12,8 @@ import {
   WORDS,
   wordOf,
   listCodeOf,
+  NOT_A_GUESTS,
+  signInOf,
 } from "../cli/contracts/index.ts";
 import { WORDS as BOX_WORDS } from "../cli/kernel/words.ts";
 import { turnOf } from "../edge/src/chat.ts";
@@ -54,6 +56,30 @@ describe("the fixed words, defined once", () => {
       "go #22",
       "go #23",
     ]);
+    // An agent's sign-in, named whole (ADR 0074): its button sends it.
+    expect(asked("Signed out: say `codex sign in`, or `pi-2 sign in`.")).toEqual([
+      "codex sign in",
+      "pi-2 sign in",
+    ]);
+  });
+
+  it("`sign in` names the agent, before it or after `to`; anything longer is words (ADR 0074)", () => {
+    const named = {
+      "sign in": "",
+      "Sign in again.": "",
+      "codex sign in": "codex",
+      "Codex signin": "codex",
+      "codex sign in again": "codex",
+      "sign in to Codex": "codex",
+      "please sign in": "please",
+    };
+    for (const [text, agent] of Object.entries(named)) {
+      expect(wordOf(text), text).toBe("sign in");
+      expect(signInOf(text), text).toBe(agent);
+    }
+    for (const text of ["sign in to codex with my plan", "how do I sign in?", "sign in codex"])
+      expect(signInOf(text), text).toBeUndefined();
+    expect(NOT_A_GUESTS.has("sign in")).toBe(true);
   });
 
   it("the door acts on `close` and `reopen` alone, after a leading #n, as the box reads them", () => {

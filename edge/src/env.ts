@@ -144,10 +144,6 @@ export const ownProof = async (env: Env, channel: string) => {
  */
 export interface Kv {
   get(key: string, type: "stream"): Promise<ReadableStream | null>;
-  getWithMetadata<M>(
-    key: string,
-    type: "stream",
-  ): Promise<{ value: ReadableStream | null; metadata: M | null }>;
   put(
     key: string,
     value: ReadableStream | ArrayBuffer | string,

@@ -51,6 +51,17 @@ export function taskAgent(state: TaskState): string {
   return all[named] ? named : defaultAgentOf(all, "");
 }
 
+/**
+ * The agent a run thinks with (ADR 0074): the task's, but never one whose login is a file its
+ * commands can read (its entry's `login.file`) for a read run (ADR 0044) or a guest's (ADR 0071):
+ * those go to the entry marked `default`. None when that one keeps its login in a file too.
+ */
+export function agentForRun(agent: string, profile: string, all = executors()): string | undefined {
+  if ((profile !== "read" && profile !== "guest") || !all[agent]?.login?.file) return agent;
+  const fallback = defaultAgentOf(all, "");
+  return all[fallback]?.login?.file ? undefined : fallback;
+}
+
 /** The model and effort for this agent, from the task's `use` lines, or the agent's Auto. */
 export const choiceFor = (executorId: string, use: { model?: string; effort?: string }): Choice =>
   choose(executorId, executors()[executorId], use);
@@ -87,6 +98,32 @@ export function promptTools(executorId: string): string | undefined {
         ]
       : []),
   ].join("\n");
+}
+
+/**
+ * The calls a guest's run may ask for (ADR 0073): each connected tool's guest forms, one line each,
+ * as decide takes them. None when no connected tool has one.
+ */
+export function guestCalls(): string | undefined {
+  const { tools } = readTools();
+  const { ready } = runTools(tools, "look");
+  const said = (v: unknown) => JSON.stringify(v);
+  const lines = Object.entries(tools)
+    .filter(([tool]) => tool in ready)
+    .flatMap(([tool, t]) =>
+      (t.guest ?? []).map((g) =>
+        [
+          `- \`${tool}.${g.call}\`:`,
+          [
+            ...Object.entries(g.fixed).map(([k, v]) => `\`${k}\` always ${said(v)}`),
+            ...Object.entries(g.caps).map(([k, n]) => `\`${k}\` (${n} characters at most)`),
+            ...g.any.map((k) => `\`${k}\``),
+          ].join(", "),
+          `and nothing else; ${g.max} a run at most.`,
+        ].join(" "),
+      ),
+    );
+  return lines.length ? lines.join("\n") : undefined;
 }
 
 /**

@@ -1,17 +1,8 @@
 // What a task's round takes in and gives out besides words: the owner's pasted images and linked
 // files, and the files a run shares, on a side branch (ADR 0021).
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { basename, extname, join, sep } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { basename, extname, join } from "node:path";
 import { gh, ghJson, ghRun, platformOwner, platformRepo } from "../../lib/github.ts";
 import { maskSecrets } from "../../lib/safety.ts";
 import { attachmentsIn, type Comment } from "../../lib/task.ts";
@@ -338,41 +329,6 @@ export function publishToBranch(
 const stamp = () => new Date().toISOString().replace(/[:.]/g, "-");
 
 const SHOWN = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
-const MAX_MADE_BYTES = 25 * 1024 * 1024;
-
-/**
- * The files a run made for the owner (its result's `files`), checked: each must be a file in the
- * task's own files folder (a link out of it, or anything elsewhere on the box, is refused), and
- * 25 MB at most. Returns the ones to publish, and notes for the rest.
- */
-export function madeFiles(dir: string, paths: string[]): { files: string[]; notes: string[] } {
-  const files: string[] = [];
-  const notes: string[] = [];
-  let root: string;
-  try {
-    root = realpathSync(dir);
-  } catch {
-    return {
-      files,
-      notes: paths.length ? ["The files folder is missing, so no files were shared."] : [],
-    };
-  }
-  for (const p of paths) {
-    try {
-      const real = realpathSync(p.startsWith("/") ? p : join(dir, p));
-      if (!real.startsWith(`${root}${sep}`)) throw new Error("not in the task's files folder");
-      const st = statSync(real);
-      if (!st.isFile()) throw new Error("not a file");
-      if (st.size > MAX_MADE_BYTES) throw new Error("over 25 MB");
-      if (!files.includes(real)) files.push(real);
-    } catch (e) {
-      notes.push(
-        `Not shared: ${basename(p)} (${(e as Error).message.replace(/^ENOENT.*/, "not found")}).`,
-      );
-    }
-  }
-  return { files, notes };
-}
 
 /** Files read as text, so anything like a key is hidden in them before they're shared. */
 const TEXT = new Set([
@@ -404,14 +360,14 @@ export const fileHash = (file: string) =>
   createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 16);
 
 /**
- * A run's files on Shipify's `shipify-files` branch: images shown, the rest linked, as markdown,
- * and each file's link by its path here.
+ * A run's files on Shipify's `shipify-files` branch: each file's markdown line (an image shown, the
+ * rest linked) and its link, by its path here.
  */
 export function publishMade(
   n: number,
   files: string[],
-): { text: string; links: Map<string, string> } {
-  if (!files.length) return { text: "", links: new Map() };
+): { lines: Map<string, string>; links: Map<string, string> } {
+  if (!files.length) return { lines: new Map(), links: new Map() };
   for (const f of files)
     if (TEXT.has(extname(f).toLowerCase())) writeFileSync(f, maskSecrets(readFileSync(f, "utf8")));
   const urls = publishToBranch(
@@ -421,14 +377,12 @@ export function publishMade(
     files,
     `Files for task ${n}`,
   );
-  const lines = files.map((f) => {
-    const u = urls.get(f);
+  const line = (f: string, u: { view: string; raw: string }) => {
     const name = basename(f).replace(/[[\]]/g, "");
-    if (!u) return "";
     return SHOWN.has(extname(f).toLowerCase()) ? `![${name}](${u.raw})` : `- [${name}](${u.view})`;
-  });
+  };
   return {
-    text: ["**Files:**", ...lines.filter(Boolean)].join("\n"),
+    lines: new Map([...urls].map(([f, u]) => [f, line(f, u)])),
     links: new Map([...urls].map(([f, u]) => [f, u.view])),
   };
 }

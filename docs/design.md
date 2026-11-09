@@ -15,11 +15,11 @@ think if needed, and applies the changes; the edge carries your words in and the
 | **You** | the owner | what gets done, and every approval | anything |
 | **The record** | GitHub: tasks, comments, the status task, PRs, plans, the notebook | nothing: it keeps | nothing by itself |
 | **The queue** | GitHub Actions: runs waiting for a slot | which slot takes a run | nothing |
-| **The door** | the edge's way in and out ([door.md](door.md)) | only whether a sender is you | writes your words onto tasks as the door App; copies replies to your chats; answers the chat commands (`/ping`, `/apps`, `/notebook`, `/recipes`, `/models`, `/help`) at once; closes or reopens a task on your `close` or `reopen`, with no run (ADR 0040) |
+| **The door** | the edge's way in and out ([door.md](door.md)) | only whether a sender is you | writes your words onto tasks as the door App; copies replies to your chats; answers the chat commands (`/tasks`, `/ping`, `/apps`, `/repos`, `/notebook`, `/recipes`, `/models`, `/help`, the `/use` picker) at once ([door.md](door.md#in-your-messages)); closes or reopens a task on your `close` or `reopen`, with no run (ADR 0040) |
 | **The watch** | the edge's check every 5 minutes ([watch.md](watch.md)) | only when to ring | adds a label: `run` on a task whose words waited with no box, `stuck` (Stopped) on one whose run ended early, `watch:due` or `watch:alert` on the status task |
 | **A box** | a machine with one slot or more (as many as its memory and cores suggest, ADR 0061), one runner each | nothing | runs what the queue hands it, and keeps nothing between runs |
 | **The core** | `ship`, inside a run | what the run does next, from the task | replies, labels, notes, repeats, pushes to the task's branch, PRs, the calls you approved. Never a merge |
-| **The agent** | Claude Code, as the slot's own Linux user | nothing: it proposes | only its own clone and `result.json` |
+| **The agent** | Claude Code, pi, OpenCode or Codex ([agents.md](agents.md)), as the slot's own Linux user | nothing: it proposes | only its own clone and `result.json` |
 | **Plug-ins** | agents, tools, chat channels (adapters in the edge), stacks, checks, recipes: each behind its kind's contract, held to its conformance test, found through a registry ([plug-ins.md](plug-ins.md)) | nothing | what their contract allows |
 | **The Apps** | GitHub Apps: the bot, on Shipify's own account; the repos App, on your other accounts (ADR 0045) | nothing | mint a run's one-hour tokens for their own account's repos. A repo attaches to Shipify by an App's install there |
 
@@ -62,25 +62,9 @@ memory.
 
 ## The keys
 
-Each key is as narrow as it can be. Scopes, expiry and how to replace each:
-[security.md](security.md), [setup.md](setup.md).
-
-| Key | Lives | Reaches | Can |
-|---|---|---|---|
-| **Your GitHub login** (`shipify-pc`) | this PC | `ship` on the PC | what you can |
-| **`GITHUB_TOKEN`** | GitHub, per job | the task step, plan, decide, apply, the `github` job, `watch.yml` | write the record. Never in think |
-| **The bot App's key** (`SHIPIFY_BOT_KEY`) | a shipify secret | the token steps | mint one-hour tokens: read-only ones; a write one for one repo, after think |
-| **The repos App's key** (`SHIPIFY_REPOS_KEY`) | a shipify secret | its token steps, for a task on another of your accounts | the same, on that account: code and PRs, never workflows (ADR 0045) |
-| **The agent's login** (`CLAUDE_CODE_OAUTH_TOKEN`) | a shipify secret | think, on a pipe the agent reads once (fd 3), never in its environment | your Claude subscription |
-| **A tool's look key** (`SHIPIFY_NOTION_READ`) | a shipify secret | think | read the tool |
-| **A tool's act key** (`SHIPIFY_NOTION_WRITE`) | a shipify secret | apply, only when decide found approved calls | change the tool |
-| **The run's OIDC token** | GitHub, per job | plan, apply | prove to the door it's shipify's `main` |
-| **The door App's key** | an edge Worker secret, set by `ship door setup` | the edge | Issues read and write; Actions, Administration, Variables and Metadata read; shipify only |
-| **Telegram's token and secret** | edge Worker secrets, set by `ship add telegram` | the edge | the bot |
-| **Cloudflare's deploy token** (`CF_DEPLOY_TOKEN`; each app's `CLOUDFLARE_API_TOKEN`) | GitHub secrets | the edge's deploy job, `prepare`, each app's pipeline | deploy Workers |
-| **A box's runner registration** | the box | its runners | take shipify's jobs |
-
-No key is shared between boxes and the door, and a box holds no secret between runs.
+Each key is as narrow as it can be. No key is shared between boxes and the door, and a box holds
+no secret between runs. Every key: [setup.md](setup.md#tokens-and-secrets); what each may do, and
+which steps hold it: [security.md](security.md#who-holds-which-key).
 
 ## A run
 
@@ -97,7 +81,7 @@ order.
 | **decide** | `ship run decide <n>` | the runner | `GITHUB_TOKEN`, a fresh read-only token, shared with apply | turns the result into writes. Outputs what to mint: `repo`, its `account`, `act`, `workflows`, `files` |
 | **mint** | workflow steps | | the bot App's key, or the repos App's | a write token for exactly the one repo decide named, from the App on its account; a token for shipify's files branch; an act key only for approved calls |
 | **apply** | `ship run apply <n>` | the runner | the minted tokens | makes the writes, tells the door of each reply as it's written, and saves the status comment last |
-| **stay** | `ship run stay <n>` | the runner; the agent as the slot's own user | `GITHUB_TOKEN`, its own read-only token (every project, as a talk run's; the repos App's on another account), the agent's login, the tools' look keys; no write key | after every answer to your words, unless it started another run or closed the task (decide's `stay`, ADR 0060). For `SHIPIFY_STAY` quiet minutes (20) it reads the task every 2 s (a read that finds nothing costs nothing) and does with your words what a normal run would (ADR 0063): each turn is plan, think in the same session (a new model or effort too), decide and apply, as a run's are. Only what needs another agent, account or repo, a fresh clone (`start over`, `go`) or an edit goes to a normal run; an answer that needs a token (files, a call, a push) ends the stay, and the job's steps after it mint those keys and apply it (ADR 0062); on a project it pushes nothing, and a change it's asked for starts a work run; it gives way when a box job waits. `staying` is on the task meanwhile, and taken off however it ends (ADR 0057) |
+| **stay** | `ship run stay <n>` | the runner; the agent as the slot's own user | `GITHUB_TOKEN`, its own read-only token (every project, as a talk run's; the repos App's on another account), the agent's login, the tools' look keys; no write key | after every answer to your words, unless it started another run or closed the task (decide's `stay`, ADR 0060). For `SHIPIFY_STAY` quiet minutes (20) it reads the task every 2 s (a read that finds nothing costs nothing) and does with your words what a normal run would (ADR 0063): each turn is plan, think in the same session (a new model or effort too), decide and apply, as a run's are. Only what needs another agent, account or repo, a fresh clone (`start over`, `go`) or an edit goes to a normal run; an answer that needs a token (files, a call, a push) ends the stay, and the job's steps after it mint those keys and apply it (ADR 0062); on a project it makes a change it's asked for itself, and its job pushes it (ADR 0076); it gives way when a box job waits. `staying` is on the task meanwhile, and taken off however it ends (ADR 0057) |
 
 If a step breaks before a reply, `ship run failed <n>` says so on the task. Outputs come from fixed
 lists only, never free text.
@@ -111,10 +95,11 @@ commands, start `node "$SHIPIFY_COPY/cli/dist/ship.mjs"`: 0.66 s a start, agains
 2.65 s through tsx. A copy already built is only named. Your PC, CI and the `github` job keep the
 source through `pnpm ship`, so an edit needs no build; the tests build the CLI once per test run
 (`tests/built.ts`) and start that. Each step writes one line to the
-job's summary: its time, and each `gh` call it made with its time (`cli/lib/exec.ts` counts them),
-so a slow step names its slow call. The run reads its task once: plan writes its status from the
-task step's read, and apply reads only the comments written since (`comments(n, since)`), with the
-reply keys from the saved read. Writes that don't depend on each other (👀, labels, the status,
+job's summary: its time, and each `gh` call it made with its time (`cli/lib/exec.ts` counts them,
+and the ETag reads made with `fetch` as the calls they stand for), so a slow step names its slow
+call. The run reads its task once: plan writes its status from the task step's read, decide reads
+only the comments written since (`comments(n, since)`), and apply takes those, with the reply keys
+from the saved read. Writes that don't depend on each other (👀, labels, the status,
 telling the door) start together through the record's `together`; the status comes last.
 
 Each phase mints its read-only token right before it, since an App's token lasts one hour, so a
@@ -146,9 +131,10 @@ environment, never on a command line.
 `/proc` or another slot's runs. It asks for a PR, calls, notes or a repeat in `result.json`. Apply
 fetches its git bundle into apply's own clone (hooks and fsmonitor off), scans for secrets, and
 pushes only to the task's branch (`task/<n>-…`), or to a new project's empty repo. A change to
-workflow files must match what the stack renders, exactly. Every PR reads the same way: the repo's
-own template or Shipify's sections, then the core's footer (the task, and what made it), its commits
-in the App's name (ADR 0045).
+workflow files must match what the stack renders, exactly, or be one you approved: any other is
+held out of the push (ADR 0075), or, on another account, refuses it whole. Every PR reads the
+same way: the repo's own template or Shipify's sections, then the core's footer (the task, and
+what made it), its commits in the App's name (ADR 0045).
 
 ## Inside the code
 

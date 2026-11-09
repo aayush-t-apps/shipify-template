@@ -11,11 +11,6 @@ import { repoFor } from "../../lib/projects-on-github.ts";
 import { type ErrandOn, type ErrandSeen, errandName, errandPrUrl } from "../../lib/repeat.ts";
 import type { TaskState } from "../../lib/task.ts";
 
-export const DEPLOYING = {
-  name: "deploying",
-  color: "8250df",
-  description: "Merged: Shipify tells you when its deploy is up",
-};
 export { GIVE_UP_MS };
 
 /** How often a run following its deploy looks: a deploy takes about a minute. */

@@ -197,6 +197,65 @@ describe("the guests' door", () => {
     expect(moved.headers.get("location")).toBe(`${ORIGIN}/guest/`);
   });
 
+  it("a page load refused at /guest/ is a page with the way to yours; the page's calls stay JSON", async () => {
+    const t = setUp();
+    await t.ready();
+    const res = await t.call("/guest/", {}, { guest: "eve@example.com" });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("This email isn't on the guest list.");
+    expect(html).toContain('href="/admin/chat/"');
+    expect(html).not.toContain("<script");
+    const api = await t.call("/guest/api/list", {}, { guest: "eve@example.com" });
+    expect(api.headers.get("content-type")).toContain("application/json");
+  });
+
+  /** The bare address `/`, outside Access: only the sign-in cookie, if any, says who calls. */
+  const root = (t: ReturnType<typeof setUp>, cookie?: string) =>
+    t.call("/", cookie ? { headers: { cookie } } : {}, false);
+
+  it("the bare address sends you to your chat, and a guest to theirs, by Access's cookie", async () => {
+    const t = setUp();
+    await t.ready();
+    const mine = await root(t, `theme=dark; CF_Authorization=${await token(t.f.w.at, AUD, ANA)}`);
+    expect(mine.status).toBe(302);
+    expect(mine.headers.get("location")).toBe("/admin/chat/");
+    const theirs = await root(t, `CF_Authorization=${await token(t.f.w.at, GUEST_AUD, ANA)}`);
+    expect(theirs.status).toBe(302);
+    expect(theirs.headers.get("location")).toBe("/guest/");
+  });
+
+  it("the bare address with no cookie, a bad one, or guests off, shows both ways in", async () => {
+    const t = setUp();
+    await t.ready();
+    const good = await token(t.f.w.at, GUEST_AUD, ANA);
+    const [h, p] = good.split(".");
+    const forged = `${h}.${p}.${"A".repeat(342)}`;
+    const old = await token(t.f.w.at - 3_600_000, GUEST_AUD, ANA);
+    const other = await token(t.f.w.at, "d".repeat(64), ANA);
+    for (const cookie of [
+      undefined,
+      `CF_Authorization=${forged}`,
+      `CF_Authorization=${old}`,
+      `CF_Authorization=${other}`,
+      "CF_Authorization=",
+    ]) {
+      const res = await root(t, cookie);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/html");
+      expect(res.headers.get("content-security-policy")).toContain("default-src 'none'");
+      const html = await res.text();
+      expect(html).toContain('href="/guest/"');
+      expect(html).toContain('href="/admin/chat/"');
+      expect(html).not.toContain("<script");
+    }
+    const off = setUp({ aud: false });
+    await off.ready();
+    const res = await root(off, `CF_Authorization=${await token(off.f.w.at, GUEST_AUD, ANA)}`);
+    expect(res.status).toBe(200);
+  });
+
   it("a removed guest is refused within 10 seconds, and their open chats close", async () => {
     const t = setUp();
     await t.ready();

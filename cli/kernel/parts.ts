@@ -3,6 +3,7 @@
 // the snapshot reads the family once, and these plain functions say what follows from it. Decide
 // calls them; apply makes their writes. Nothing starts but your `go`, and after it a part's merge.
 import {
+  FIRST_LABEL,
   pickWords,
   STARTED_LABEL,
   STATE_LABELS,
@@ -12,7 +13,7 @@ import {
   withoutLine,
 } from "../contracts/index.ts";
 import type { NewPart, RecordLabel } from "../lib/plugins/record.ts";
-import type { SplitEntry } from "../lib/task.ts";
+import type { FirstEntry, SplitEntry } from "../lib/task.ts";
 import type { Family, Part, Snapshot, Write } from "./types.ts";
 
 /** The label on a part, made the first time a split opens. */
@@ -45,6 +46,47 @@ export const openParts = (s: Pick<Snapshot, "n" | "family">): Part[] =>
   s.family && s.family.parent.number === s.n
     ? s.family.parts.filter((p) => p.state === "open")
     : [];
+/** A task first (ADR 0075): a part this task waits for, never one of a split. */
+export const isFirst = (p: Pick<Part, "labels">) => p.labels.includes(FIRST_LABEL);
+/** This task's own open parts of a split: a task first leaves its `go`, `stop` and PR as they are. */
+export const splitParts = (s: Pick<Snapshot, "n" | "family">): Part[] =>
+  openParts(s).filter((p) => !isFirst(p));
+
+/** A task first's line naming the task that waits for it: its close tells that one. */
+const firstFor = (n: number) => `First for #${n}: that task waits for this one, a fix on main.`;
+const FIRST_FOR = /^First for #(\d+):/m;
+
+/**
+ * A task first as the box opens it (ADR 0075 §6): under this task, or under this task's parent when
+ * it's a part (one level), with its body the line naming that parent, the line naming this task,
+ * the brief you approved, and the parent's pick; this task blocked by it.
+ */
+export function firstPart(
+  s: Pick<Snapshot, "n" | "family">,
+  e: FirstEntry,
+  use?: Use,
+): { parent: number; part: NewPart } {
+  const parent = isPart(s) ? (s.family as Family).parent.number : s.n;
+  const brief = e.brief.trim();
+  const pick = use && useLine(brief) === undefined ? `\n\nuse ${pickWords(use)}` : "";
+  return {
+    parent,
+    part: {
+      title: e.title.trim(),
+      body: `${partOfLine(parent)}\n\n${firstFor(s.n)}\n\n${brief}${pick}`,
+      after: [],
+      waits: [],
+      blocks: s.n,
+    },
+  };
+}
+
+/** A task first's line on the list you approve. */
+export const firstLine = (e: FirstEntry) =>
+  `Open and start \`${e.title.replace(/`/g, "'")}\` first; this task waits for it: ${e.brief}`.replace(
+    /\s+/g,
+    " ",
+  );
 
 const and = (xs: string[]) =>
   xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
@@ -191,8 +233,32 @@ export function partClosed(
   }));
   const parent = fam.parent.number;
   const mine = parts.filter((p) => p.state === "open" && p.blockedBy.some((b) => b.number === s.n));
+  // A task first (ADR 0075): the task that waits for it is told, and goes on with your `continue`.
+  const waiting = Number(FIRST_FOR.exec(s.issue.body)?.[1] ?? 0);
+  const told: Write[] =
+    s.issue.labels.includes(FIRST_LABEL) && waiting
+      ? [
+          {
+            w: "tell",
+            n: waiting,
+            title: (waiting === parent
+              ? fam.parent.title
+              : (parts.find((p) => p.number === waiting)?.title ?? `#${waiting}`)
+            ).slice(0, 256),
+            kind: "needs-you",
+            state: "Needs you",
+            text: done(me)
+              ? `#${s.n} ${how.pr ? "merged" : "was closed as done"}, so this task can go on: say \`continue\`.`
+              : `#${s.n} was closed without a merge, and this task still needs its fix.`,
+            step: `first-closed-${s.n}`,
+          },
+        ]
+      : [];
+  // A parent with no split, only tasks first, closes with its own PR, as a task without parts.
+  if (!parts.some((p) => !isFirst(p))) return told;
   if (parts.every((p) => p.state === "closed"))
     return [
+      ...told,
       {
         w: "tell",
         n: parent,
@@ -203,6 +269,7 @@ export function partClosed(
         close: true,
       },
     ];
+  if (told.length) return told;
   if (dropped(me))
     return mine.length
       ? [
@@ -226,8 +293,18 @@ export function familyLines(s: Pick<Snapshot, "n" | "family">): string[] {
   if (!fam) return [];
   const rows = fam.parts.map(
     (p) =>
-      `- #${p.number} \`${p.title}\`: ${p.number === s.n ? "**this one**" : stateOf(p)}${p.labels.includes(SUB_TASK_LABEL) ? "" : " (added by hand)"}`,
+      `- #${p.number} \`${p.title}\`: ${p.number === s.n ? "**this one**" : stateOf(p)}${isFirst(p) ? " (a task first)" : p.labels.includes(SUB_TASK_LABEL) ? "" : " (added by hand)"}`,
   );
+  // Only tasks first (ADR 0075): fixes on main this task waits for, which leave its PR `closes`.
+  if (!isPart(s) && fam.parts.every(isFirst))
+    return [
+      "## Its tasks first",
+      "",
+      "This task waits for these fixes on main (ADR 0075), each a task of its own. Its PR stays as it",
+      "is: `closes` when it finishes the task.",
+      "",
+      ...rows,
+    ];
   if (!isPart(s))
     return [
       "## Its sub-tasks",

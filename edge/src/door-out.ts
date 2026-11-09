@@ -28,15 +28,7 @@ import { channelOf } from "./channels/index.ts";
 import { alertOf, outgoingOf } from "./chat.ts";
 import type { Deps, Env } from "./env.ts";
 import { bucketOf, GITHUB_NEEDS, json, logOf, missing, OIDC_NEEDS, unconfigured } from "./env.ts";
-import {
-  appLogin,
-  byRun,
-  DoorKeyRefused,
-  type GitHub,
-  github,
-  issueOf,
-  passing,
-} from "./github.ts";
+import { byRun, DoorKeyRefused, type GitHub, github, issueOf, passing } from "./github.ts";
 import { bearer, verifyRun } from "./oidc.ts";
 import {
   type Chat,
@@ -142,13 +134,18 @@ export async function deliver(env: Env, deps: Deps, chats: Chat[], out: Out): Pr
   return d;
 }
 
-/** Whether the door App has marked this comment with this reaction already. */
-async function markedBy(gh: GitHub, login: string, comment: number, content: string) {
+/**
+ * Whether the door App (its bot user, `gh.bot`) has marked this comment with this reaction
+ * already: any App's mark counts while its name isn't known, so a reply is never sent twice.
+ */
+async function markedBy(gh: GitHub, comment: number, content: string) {
   const list = await gh.json<{ user?: { login?: string; type?: string } }[]>(
     "GET",
     `repos/${gh.repo}/issues/comments/${comment}/reactions?content=${content}&per_page=100`,
   );
-  return list.some((r) => r.user?.login === login && r.user?.type === "Bot");
+  return list.some(
+    (r) => r.user?.type === "Bot" && (gh.bot === undefined || r.user.login === gh.bot),
+  );
 }
 
 /** The door App's reaction on a comment: 🚀 reached, 😕 given up (told another way). */
@@ -224,8 +221,7 @@ export async function replied(req: Request, env: Env, deps: Deps): Promise<Respo
   try {
     // Its reads at once: the settings, the comment, and whether the door App marked it already. A
     // mark that couldn't be read (a comment that isn't there) is read again after the checks.
-    const marked = (c: number) =>
-      appLogin(env, deps).then((door) => markedBy(gh, door, c, "rocket"));
+    const marked = (c: number) => markedBy(gh, c, "rocket");
     const [s, got, early] = await Promise.all([
       settings(gh, deps.now()),
       gh.call("GET", `repos/${gh.repo}/issues/comments/${out.comment}`),

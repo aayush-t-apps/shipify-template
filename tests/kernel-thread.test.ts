@@ -1,7 +1,7 @@
 // A long thread (ADR 0069 section 8): its Progress, and a lighter prompt past 40 KB of conversation,
 // with older messages read whole on demand (`ship task read`). The sizes are the stress test's
 // (ADR 0069 section 14, whose script these tests replaced): #632's and #633's messages, at 20,
-// 100 and 200 of them.
+// 100 and 200 of them. And the playbook a run gets: only the parts that apply to it.
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -128,6 +128,67 @@ describe("a long thread's prompt (ADR 0069 section 8)", () => {
     expect(9 * 4_400).toBeLessThan(CUT_AT);
     expect(buildPrompt(input({ conversation: big(9) }))).not.toContain("is one line");
     expect(buildPrompt(input({ conversation: big(10) }))).toContain("is one line");
+  });
+});
+
+describe("the playbook a run gets: only what applies to it", () => {
+  /** The playbook's lines outside its `tags` blocks, read line by line; no comment line. */
+  const outside = (tags: string[]) => {
+    const kept: string[] = [];
+    const open: string[] = [];
+    let comment = false;
+    for (const line of playbook.split("\n")) {
+      const marker = /^\s*<!-- (\/?)(\w+) -->\s*$/.exec(line);
+      if (marker) {
+        if (marker[1]) expect(open.pop(), `${line} closes the block it's in`).toBe(marker[2]);
+        else open.push(marker[2] ?? "");
+        continue;
+      }
+      if (line.trim().startsWith("<!--")) comment = true;
+      if (!comment && line.trim() && !open.some((t) => tags.includes(t))) kept.push(line);
+      if (line.includes("-->")) comment = false;
+    }
+    expect(open, "every block is closed").toEqual([]);
+    return kept;
+  };
+  const work = (over: Partial<PromptInput> = {}) =>
+    buildPrompt(input({ profile: "work", project: "links", ...over }));
+
+  it("a talk run's: no lanes, checks or PR format, and every other line, the Never list too", () => {
+    const talk = buildPrompt(input({ why: "new" }));
+    for (const line of outside(["work", "later"])) expect(talk).toContain(line);
+    for (const cut of ["## 1. Pick the lane", "**Check at the end:**", "**The PR you ask for**"])
+      expect(talk, cut).not.toContain(cut);
+    for (const kept of [
+      "- **Never:** `git push`, `git stash`",
+      "never builds in the read folder",
+      "Publish ports on `127.0.0.1`",
+      'one line that starts exactly so: "Lesson for',
+      // Said once, in the prompt's Finish, not in the playbook too.
+      "you never push, open,\nmerge or close a PR",
+    ])
+      expect(talk, kept).toContain(kept);
+    expect(talk).not.toContain("<!--");
+  });
+
+  it("a work run's: all of it, with no marker line", () => {
+    const p = work({ why: "comment" });
+    for (const line of outside([])) expect(p).toContain(line);
+    expect(p).not.toContain("<!--");
+  });
+
+  it("its Later runs only on a later run, a talk run's without the work in it", () => {
+    for (const why of ["new", "sub-task"] as const) {
+      expect(work({ why }), why).not.toContain("## 3. Later runs");
+      expect(work({ why }), why).toContain("**The PR you ask for**");
+    }
+    for (const why of ["comment", "continue", "go", "work", "scheduled", "edited"] as const)
+      expect(work({ why }), why).toContain("## 3. Later runs");
+    const talk = buildPrompt(input({ why: "scheduled" }));
+    expect(talk).toContain("the NEW messages are this run's instructions.");
+    expect(talk).toContain("--log-failed");
+    for (const cut of ["Change the same work", "When you're asked to fix it", "**After a merge**"])
+      expect(talk, cut).not.toContain(cut);
   });
 });
 

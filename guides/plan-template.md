@@ -1,7 +1,7 @@
 ---
 app: {{APP}}
 title: {{TITLE}}
-summary: {{SUMMARY}}
+summary: {{SUMMARY}}   # the GitHub repo description: 350 characters at most
 stack: {{STACK}}
 preset: {{PRESET}}
 visibility: {{VISIBILITY}}

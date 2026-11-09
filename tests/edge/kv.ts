@@ -27,13 +27,6 @@ export function memoryKv(now: () => number = Date.now) {
       const it = alive(key);
       return it ? stream(it.bytes) : null;
     },
-    async getWithMetadata<M>(key: string) {
-      check();
-      const it = alive(key);
-      return it
-        ? { value: stream(it.bytes), metadata: it.metadata as M }
-        : { value: null, metadata: null };
-    },
     async put(key, value, options) {
       check();
       state.puts++;

@@ -19,7 +19,6 @@ export type FileRef = z.infer<typeof FileRef>;
 
 /** Limits on what you send: more is named, and left out. */
 export const MAX_FILES_IN = 5;
-export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 /** Files a run makes for you, at most. */
 export const MAX_FILES_OUT = 10;
 

@@ -22,8 +22,6 @@ import { boxCache, type Issue, now, rec, runUrl, timeZone } from "./context.ts";
  * holds both (ADR 0051 B2), so no step re-reads the issue to save a status. */
 export type StatusIssue = Pick<Issue, "number" | "labels">;
 
-export const getComments = (n: number) => rec().comments(n);
-
 /**
  * A reply on the task: what the agent wrote, made safe to post (anything like a credential hidden,
  * an open fold or code block closed) and cut to fit one comment.

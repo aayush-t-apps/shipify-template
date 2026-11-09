@@ -20,13 +20,16 @@ import {
   type AgentReport,
   type AgentRun,
   agentFile,
+  asResult,
   command,
   fetchesOutside,
   type Gateway,
+  gatewayModelName,
   LOGIN_FD,
   loadTools,
   type OutputReader,
   offered,
+  oneLine,
   runTools,
   secretFor,
   skillRead,
@@ -161,11 +164,6 @@ const toolName = (name: string) => {
   return m ? `${m[1]}.${m[2]}` : name;
 };
 
-const oneLine = (v: unknown, max = 140) => {
-  const s = String(v).replace(/\s+/g, " ").trim();
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
-};
-
 /**
  * A model's error in its own words: a gateway's JSON after its status ("503: {"message": …}") read
  * for its message, else the line as it is.
@@ -189,18 +187,6 @@ function brief(input: Record<string, unknown> | undefined): string {
     .map((k) => input[k])
     .find((v) => typeof v === "string" && v);
   return oneLine(pick ?? JSON.stringify(input));
-}
-
-/** Its final message as the result, when that's the result's JSON (in a fence or bare). */
-function asResult(text: string): unknown {
-  const body = /```(?:json)?\s*\n([\s\S]*?)\n```/.exec(text)?.[1] ?? text.trim();
-  if (!body.startsWith("{")) return undefined;
-  try {
-    const r = JSON.parse(body) as { v?: unknown };
-    return r && r.v === 2 ? r : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 type Usage = {
@@ -342,14 +328,11 @@ function reader(): OutputReader {
   };
 }
 
-/** A gateway's model for people: its name without its maker ("laguna-s-2.1:free"). */
-const modelName = (id: string) => /^[a-z0-9-]+\/([^/\s]+)$/.exec(id)?.[1];
-
 export const pi: Adapter = {
   name: "pi",
   tools: true,
   callName,
-  modelName,
+  modelName: gatewayModelName,
   // Its settings folder is the run's tools folder; nothing in the background.
   env: (p) => ({
     PI_CODING_AGENT_DIR: p.tools,

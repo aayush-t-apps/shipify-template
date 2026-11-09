@@ -60,7 +60,7 @@ You don't need to know any word: type what you want, and tap the rest (ADR 0042)
 | `/ask …`, `/new …`, `/change …`, `/repeat …` | always a new task, even sent as a reply: a command never carries one on |
 | `remember: …`, `forget: …` | the notebook, at once, as on GitHub |
 | a photo or a file, with a caption | on the task, for the agent. An album lands on one task |
-| a reply that's a fixed word: `yes`, `no`, `continue`, `start over`, `preview`, `go`, `publish`, `stop`, `stop repeating`, `resume`, `close`, `reopen`, `clean start`, `use <model>`; or a lone `ok` to a question waiting on you | the same as on GitHub ([tasks.md](tasks.md#fixed-words)). **Yes** under a list sends yes and the list's code: it approves only that list |
+| a reply that's a fixed word: `yes`, `no`, `continue`, `start over`, `preview`, `go`, `publish`, `stop`, `stop repeating`, `resume`, `close`, `reopen`, `clean start`, `sign in`, `use <model>`; or a lone `ok` to a question waiting on you | the same as on GitHub ([tasks.md](tasks.md#fixed-words)). **Yes** under a list sends yes and the list's code: it approves only that list |
 | `/tasks` | your open tasks as buttons, grouped: **Working**, **Needs you**, **Repeating** (with each one's next time), **Answered**. A tap is `#12` alone. Up to 100 open issues are read; past that it says the rest are on GitHub |
 | `/use` | your model, or that task's as a reply or after its number (`#12 /use`): the model picker ([below](#picking-a-model-your-model)) |
 | `/ping`, `/apps`, `/repos`, `/notebook`, `/recipes`, `/models`, `/help` | answered at once, with no task |
@@ -144,8 +144,8 @@ the models `executors.json` lists, plain names, "free" on free ones, ✓ on the 
 **The bot's menu** has four: `/ask`, `/tasks`, `/use`, `/help` (`chatMenu`,
 `cli/contracts/answers.ts`). Everything else works typed and is listed by `/help`. Its start screen
 and `/help` show `intents.json`'s `help`. After a change to them is merged and the edge deployed,
-the watch finds the menu differs and sets it again (checked once an edge instance, while the
-webhook is fine). The deployed edge's `intents.json` wins.
+the watch finds the menu differs and sets it again (checked with the webhook, every 30 minutes,
+once an edge instance, while the webhook is fine). The deployed edge's `intents.json` wins.
 
 **Approve a list with a tap.** A list's **Yes** approves exactly what it shows, and **No** drops
 it. Merges stay on GitHub: a message that needs one links to the PR (the GitHub app works on your
@@ -498,7 +498,8 @@ as **Change a repo** writes it); a task with none is **General**.
 - **It refreshes** every 5 seconds while the open thread has a run going, every 10 seconds while
   your words wait for a run to start, every 30 seconds otherwise, and never while the page is
   hidden; and at once when you come back to it. On a phone it asks only for what's on screen:
-  the list, or the thread. The list reads tasks without GitHub's rendering of each, a lighter answer.
+  the list, or the thread. The list reads tasks without GitHub's rendering of each, a lighter answer,
+  and while a run works it's read every 30 seconds (the thread shows the run every 5).
 - **↻** in each header (left of **New chat**, and in a thread's or a page's) does what coming back
   does: what's on screen is read at once, and a newer version of the page loads if nothing is
   typed. It turns until the read ends, and what you've typed stays. Dragging down is the
@@ -520,7 +521,8 @@ edge's one Worker on Cloudflare's free plan, and GitHub is the record:
   Working line). Each carries an `ETag`, so an unchanged answer is a
   304 that costs none of them. A Markdown file opened in the doc pane is one more, once a file
   (GitHub renders it; the Worker keeps that a day).
-- **The Worker's memory:** each read for 4 seconds (the boxes for 30), so a burst asks once and
+- **The Worker's memory:** each read for 4 seconds (the boxes for 30; the Library's pages for 60,
+  for Notebook and a project's page, till a doc saved here drops them), so a burst asks once and
   each 5-second poll while a run works reads GitHub, which shows a reply within 5 seconds; your
   words on a task drop its thread's kept reads, so the read after **Send** shows them; and
   each message as the page shows it (its HTML cleaned), built once and again only when its
@@ -649,27 +651,66 @@ A guest is a person you let use the web chat, in a space of their own (ADR 0071)
 ask, research and get files, with nothing of yours in reach. Two roles only: you, and guests.
 Guests use the web chat alone (no Telegram, no GitHub).
 
-**Set up once, in Cloudflare's dashboard (a phone works):**
+**Sign-in, all of it: one login, three policies, four applications (ADR 0073).** Shipify and
+Drop use the same Cloudflare Access setup, made once. One rule holds everywhere: **Access says
+who someone is; each app says what they get.** Shipify's guest list decides who is a guest; in
+Drop, a drop's owner and its people decide who opens it. So no guest is ever listed in Access,
+and you add each guest in one place only (Setup → Guests).
 
-1. **Zero Trust → Access → Applications → Add → Self-hosted.** Name: `shipify guests`. Domain:
-   your edge's host, path `guest/*`. Session: 24 hours.
-2. Its policy `guests`: **Allow**; Include **Everyone**; login method **One-time PIN** only.
-   Shipify's own guest list decides who gets in, so Everyone is safe: an email not on the list
-   signs in to Access and sees nothing. To keep strangers out of Access too, list each guest's
-   email here instead of Everyone; Shipify works the same.
-3. In Zero Trust's settings, turn on removing inactive users from seats (Access's free plan has
-   50 seats; a stranger who tries the sign-in takes one until it's freed).
-4. Copy the application's **Application Audience (AUD) tag** (its Overview) into shipify's
-   `SHIPIFY_ACCESS` variable as `"guests"`, beside your own: GitHub → shipify → **Settings →
-   Secrets and variables → Actions → Variables** (a phone works), so it reads
-   `{"team": "…", "aud": "<yours>", "guests": "<the guests' tag>"}`. Guests are on within a
-   minute, with no deploy. Remove the key to turn guests off.
+| Application | Where | Policies | What the app then checks |
+|:--|:--|:--|:--|
+| `shipify admin` | your edge's host, path `admin/*` | `owner` | the token is this application's |
+| `shipify guests` | your edge's host, path `guest/*` | `anyone with Google` | the email is on your guest list |
+| `drop admin` | Drop's host, paths `admin/*` and `api/*` | `owner`, `shipify service` | the token, or the service token on `/api` only |
+| `drop sign-in` | Drop's host, path `in` | `anyone with Google` | each drop's owner and people |
 
-Your `/admin` application doesn't change: only your email gets in there. The web chat only adds
-and removes guests: which application their sign-in must come from is set on GitHub alone.
+**The steps (about 15 minutes, easier on a PC):**
+
+1. **Google, the one login.** Google Cloud: an OAuth client (web app) that asks for name and
+   email only, its consent screen published, with Cloudflare's return address
+   `https://<your team>.cloudflareaccess.com/cdn-cgi/access/callback`. Then Zero Trust →
+   **Settings → Authentication → Login methods → Add → Google**, with its client ID and secret.
+   Everyone, you included, signs in with Google: no email codes, and each person's own 2-step
+   check and passkeys.
+2. **Three policies, made once** (Zero Trust → **Access controls → Policies → Add a policy**; a
+   policy made there can serve many applications):
+   - `owner`: **Allow**. Include **Emails**: yours. Require **Login Methods**: Google.
+   - `anyone with Google`: **Allow**. Include **Everyone**. Require **Login Methods**: Google.
+     Safe, because each app's own list decides: a stranger signs in and sees nothing.
+   - `shipify service`: **Service Auth**. Include **Service Token**: Shipify's two Drop tokens
+     ([tools.md](tools.md), Drop).
+   The **Require Google** rule is what makes it strong: even if an email code is turned on again
+   by mistake, no one gets in with it.
+3. **The four applications, as the table says** (Zero Trust → Access → Applications; add the
+   ones you don't have yet). On each: login methods **Google** only, **Apply instant
+   authentication** on (Access goes straight to Google, with no page of its own), session 24
+   hours, and **Cookie Path Attribute** off (so `<the edge>/` knows who you are; below). Keep
+   Shipify and Drop in the same Zero Trust team: one Google sign-in then serves both.
+4. **Seats:** Settings → Admin controls → **Remove inactive users from seats** on. The free plan
+   has 50 seats; each person who signs in takes one, a stranger who tries too, until it's freed.
+   A link takes none.
+5. **Shipify's side:** copy the two Shipify applications' **Application Audience (AUD) tags**
+   (each one's Overview) into shipify's `SHIPIFY_ACCESS` variable: GitHub → shipify → **Settings
+   → Secrets and variables → Actions → Variables** (a phone works), so it reads
+   `{"team": "<your team>.cloudflareaccess.com", "aud": "<shipify admin's>", "guests": "<shipify
+   guests'>"}`. Guests are on within a minute, with no deploy. Remove `guests` to turn them off.
+6. **Test, then take the email code away.** In a private window: you at `<the edge>/` (to your
+   chat), a guest's email at `<the edge>/guest/`, and Drop's `/in`. When all three sign in with
+   Google, delete **One-time PIN** in Settings → Authentication → Login methods. If Google ever
+   fails, your Cloudflare dashboard has a login of its own: add the email code back there.
+
+A person with no Google account makes a free one for the email they already have (Google's "use
+your existing email"), or the guest shares a page with them by a link, which needs no sign-in.
 
 **Then, each time: Setup → Guests → Add** (an email and a name), and send them the link it shows,
-`<the edge>/guest/`. They sign in with a code Access emails them. **Remove** is one tap: they're
+`<the edge>/guest/`. They sign in with Google (or a code Access emails them, until step 6).
+The bare address works too, for everyone: `<the edge>/` sends you to `/admin/chat/` and a guest
+to `/guest/` when Access's sign-in cookie (CF_Authorization) shows who it is, else it shows a
+small page with two ways in, **Sign in as a guest** and **Owner**. It only sends people on: Access
+still guards both places. The cookie reaches `/` unless an application turns on Access's **Cookie
+Path Attribute**; then the page is the way in. A signed-in email that isn't on the list gets a page
+that says so, with the way to your chat.
+**Remove** is one tap: they're
 refused within 10 seconds, their open chats and projects close, and their files go 30 days later.
 Their chats stay on GitHub; added again, the same email finds them.
 
@@ -681,21 +722,35 @@ in again.
 what works, their projects, New project and Files) and **Desk, Projects and Files** as its pages,
 with no line about you on top. New chat, Find, their own projects (Overview,
 Sources, an Inbox, docs, Keep on page, collate, check, Export), their chats and their files; any of
-your agents and models (`use …`). No Jot, Library, Apps, Repeats, Setup, status page or run details.
+your agents and models (`use …`) but Codex, which thinks with your own ChatGPT sign-in (ADR 0074:
+their picker doesn't list it, and `use codex` is refused). No Jot, Library, Apps, Repeats, Setup,
+status page or run details.
 A run that stays after its answer (ADR 0057) answers a guest's next words as it does yours.
 Refused with one line, writing nothing: `remember`, `forget`, `jot`, `/tasks`, `/apps`, `/ping`,
 `/repos`, `/notebook`, `/recipes`, and every fixed word only you say: `yes <code>`, `no <code>`,
 `go` (`go #n`, `go.`), `publish`, `preview`, `start over`, `clean start`. A plain `yes` or `no`
 answers their own run. A repo's name in their words is only words: no clone, no PR.
 
+**A guest's pages, in Drop (ADR 0073).** With Drop connected, a guest asks for a page ("make a
+page of our trip plan") and the box gives it to Drop at once, as a drop only they can open, for
+30 days, marked as theirs. The reply is its link and "Manage it in Drop" (their **My drops**,
+where they share it: a link, people by email, a new link, 1 to 30 days, or delete). "Change it"
+puts a new page on the same drop, so the link stays. The page also stays in their chat. Their run
+holds no key or tool: it asks for two calls, and the box makes them only when they fit Drop's
+guest forms in `tools.json` (docs/tools.md, Drop), for that guest alone. A guest you remove makes
+no more calls; in Drop, their drops end within 30 days, or at once with **Revoke all**.
+
 **What keeps your things yours:**
 - Each person sees only their own: the edge checks every read and write against the record (the
   door's from-line naming the guest, their files' prefix), never against what the page sends.
 - Their runs hold no GitHub key, notebook or tool of yours, and get caches of their own. Your
-  login reaches their agent on a pipe, as for your runs, so no command finds it. Their commands'
+  login reaches their agent on a pipe, as for your runs, so no command finds it: never an agent
+  whose login is a file (Codex), whose task the default agent takes instead. Their commands'
   environment holds nothing of yours: no login, people list, repo or Cloudflare values.
-- Their words approve nothing.
-- Their files stay in R2, never on `shipify-files`.
+- Their words approve nothing. Their only calls are a tool's guest forms, which your merge of
+  `tools.json` approved: a drop only they open, or a new page on one of theirs.
+- Their files stay in R2, never on `shipify-files`. Their email stays in R2 and Drop: never on
+  GitHub, in a call's arguments or a reply.
 
 **What to watch:** guests have no limits of their own. Their runs use your plan's 5-hour and
 weekly limits, as yours do (the **Your plan** line in a run's details). To stop a guest at once,

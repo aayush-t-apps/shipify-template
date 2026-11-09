@@ -4,9 +4,10 @@
 import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { githubQueue, githubRecord } from "../../cli/lib/github.ts";
 import type { Queue, RecordComment, TaskRecord } from "../../cli/lib/plugins/record.ts";
+import { fakeApi } from "../fake-api.ts";
 import { ROOT } from "../helpers.ts";
 
 type FakeIssue = {
@@ -30,10 +31,18 @@ interface Fake {
   runs?: Record<string, unknown[]>;
 }
 
-/** GitHub against the fake gh, in this process: PATH and the fake's state, put back after. */
+/**
+ * GitHub against the fake gh, in this process: PATH and the fake's state, put back after; the reads
+ * made with fetch go to the fake API, which answers from the same state.
+ */
 function fakeGithub() {
   const saved = { ...process.env };
   let file = "";
+  let api: Awaited<ReturnType<typeof fakeApi>> | undefined;
+  beforeAll(async () => {
+    api = await fakeApi();
+  });
+  afterAll(() => api?.stop());
   beforeEach(() => {
     const dir = mkdtempSync(join(tmpdir(), "record-"));
     symlinkSync(join(ROOT, "tests/fixtures/fake-gh.mjs"), join(dir, "gh"));
@@ -69,6 +78,7 @@ function fakeGithub() {
     Object.assign(process.env, {
       PATH: `${dir}:${saved.PATH}`,
       FAKE_GH_STATE: file,
+      GITHUB_API_URL: api?.url(file),
       GITHUB_REPOSITORY: "o/shipify",
       SHIPIFY_ISSUES_TOKEN: "issues-token",
     });
@@ -512,28 +522,30 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
     ]);
   });
 
-  it("reads a task's comments and the task again only when they changed (ADR 0057)", () => {
+  it("reads a task's comments and the task again only when they changed (ADR 0057)", async () => {
     const { record } = make();
     const since = "2026-01-01T00:00:00Z";
-    const first = record.commentsIfChanged(12, since);
+    const first = await record.commentsIfChanged(12, since);
     expect(first.comments).toEqual([]);
     expect(first.tag).toEqual(expect.any(String));
     // Nothing changed: no comments, the same tag, and nothing to pay.
-    expect(record.commentsIfChanged(12, since, first.tag)).toEqual({ tag: first.tag });
+    expect(await record.commentsIfChanged(12, since, first.tag)).toEqual({ tag: first.tag });
     record.comment(12, "and the disk?");
-    const next = record.commentsIfChanged(12, since, first.tag);
+    const next = await record.commentsIfChanged(12, since, first.tag);
     expect(next.comments?.map((c) => c.body)).toEqual(["and the disk?"]);
     expect(next.tag).not.toBe(first.tag);
-    const issue = record.issueIfChanged(12);
+    const issue = await record.issueIfChanged(12);
     expect(issue.issue?.state).toBe("open");
-    expect(record.issueIfChanged(12, issue.tag)).toEqual({ tag: issue.tag });
+    expect(await record.issueIfChanged(12, issue.tag)).toEqual({ tag: issue.tag });
     record.updateIssue(12, { state: "closed", state_reason: "completed" });
-    expect(record.issueIfChanged(12, issue.tag).issue?.state).toBe("closed");
+    expect((await record.issueIfChanged(12, issue.tag)).issue?.state).toBe("closed");
+    // A read the record refuses says so.
+    await expect(record.issueIfChanged(404)).rejects.toThrow(/404/);
   });
 
-  it("says whether a job waits for a machine with a label, never counting a run with no job (ADR 0057)", () => {
+  it("says whether a job waits for a machine with a label, never counting a run with no job (ADR 0057)", async () => {
     const { queue } = make();
-    expect(queue.waitingFor(["shipify-box"]).waiting).toBe(false);
+    expect((await queue.waitingFor(["shipify-box"])).waiting).toBe(false);
     fake.set((f) => {
       Object.assign(f, {
         queued: [
@@ -542,7 +554,7 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
         ],
       });
     });
-    const none = queue.waitingFor(["shipify-box"]);
+    const none = await queue.waitingFor(["shipify-box"]);
     expect(none.waiting).toBe(false);
     fake.set((f) => {
       Object.assign(f, {
@@ -572,14 +584,14 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
       });
     });
     // Waiting, and since when the longest-waiting job was queued: which stay gives way first.
-    expect(queue.waitingFor(["shipify-box"], none.tag)).toMatchObject({
+    expect(await queue.waitingFor(["shipify-box"], none.tag)).toMatchObject({
       waiting: true,
       since: "2026-10-15T12:00:01Z",
       run: 10,
     });
   });
 
-  it("counts a box's own clean-up for that box alone (ADR 0057)", () => {
+  it("counts a box's own clean-up for that box alone (ADR 0057)", async () => {
     const { queue } = make();
     fake.set((f) => {
       Object.assign(f, {
@@ -597,8 +609,8 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
         ],
       });
     });
-    expect(queue.waitingFor(["shipify-box", "box-homepi"]).waiting).toBe(true);
-    expect(queue.waitingFor(["shipify-box", "box-vps"]).waiting).toBe(false);
+    expect((await queue.waitingFor(["shipify-box", "box-homepi"])).waiting).toBe(true);
+    expect((await queue.waitingFor(["shipify-box", "box-vps"])).waiting).toBe(false);
   });
 
   it("opens an issue, and pins and unpins it without failing when it can't", () => {

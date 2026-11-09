@@ -45,7 +45,6 @@ import { namesOf, type RunComment, react, ready } from "./door-out.ts";
 import type { Deps, Env } from "./env.ts";
 import { GITHUB_NEEDS, logOf, missing, obj } from "./env.ts";
 import {
-  appLogin,
   BudgetSpent,
   budgeted,
   byDoor,
@@ -95,6 +94,12 @@ export const APP_CONFIRM_MS = MINUTE;
 export const MAX_APPS = 8;
 /** The cron's step (wrangler.jsonc: every 5 minutes): a tick's number is the time over it. */
 const TICK_MS = 5 * MINUTE;
+const tickOf = (now: number) => Math.floor(now / TICK_MS);
+/**
+ * Whether a check done every `ms` is due at this tick: by the tick's number, so an instance new to
+ * the tick (it remembers nothing) doesn't do it again.
+ */
+const turn = (now: number, ms: number) => tickOf(now) % Math.round(ms / TICK_MS) === 0;
 /** GitHub stops sending jobs to a runner 30 days after a newer one came out: said 5 days before. */
 const RUNNER_WARN_MS = 25 * DAY;
 /** A rung doorbell's run shows within this: a label still on later, with no run of its kind, is lost. */
@@ -423,7 +428,12 @@ async function stopped(t: Tick) {
     }
     let note: Findings["notes"][number];
     if (seen?.working) {
-      const run = await t.gh.call("GET", `repos/${t.gh.repo}/actions/runs/${seen.working}`);
+      // Its run as the task runs' list has it (one read a tick), or read alone when it's older.
+      const id = seen.working;
+      const listed = (await t.runs("task.yml")).find((r) => r.id === id);
+      const run = listed
+        ? { status: 200, data: listed }
+        : await t.gh.call("GET", `repos/${t.gh.repo}/actions/runs/${id}`);
       const r = obj(run.data);
       if (run.status === 200 && r?.status !== "completed") continue;
       if (run.status !== 200 && run.status !== 404) continue;
@@ -501,20 +511,40 @@ async function dropStaying(t: Tick, n: number) {
 
 // ---------------------------------------------------------------- notice
 
-/** The door App's own 🚀 or 😕 on a comment: it reached its chats, or they were told. */
-async function doorMarked(t: Tick, c: RunComment) {
-  // The listing counts everyone's: none at all is none of the door's, with no call.
-  if (!c.reactions?.rocket && !c.reactions?.confused) return false;
-  const door = await appLogin(t.env, t.deps);
-  const list = await t.gh.json<{ content?: string; user?: { login?: string; type?: string } }[]>(
-    "GET",
-    `repos/${t.gh.repo}/issues/comments/${c.id}/reactions?per_page=100`,
-  );
-  return list.some(
-    (r) =>
-      r.user?.login === door &&
-      r.user?.type === "Bot" &&
-      (r.content === "rocket" || r.content === "confused"),
+/** Comments' reactions by kind, with who gave each: GraphQL names a bot `<slug>`, with no `[bot]`. */
+const MARKS =
+  "query($ids: [ID!]!) { nodes(ids: $ids) { ... on IssueComment { databaseId reactionGroups { content reactors(first: 100) { nodes { __typename ... on Bot { login } } } } } } }";
+
+interface Marks {
+  databaseId?: number;
+  reactionGroups?: {
+    content?: string;
+    reactors?: { nodes?: { __typename?: string; login?: string }[] };
+  }[];
+}
+
+/**
+ * The comments the door App marked 🚀 or 😕 (they reached their chats, or were told): one GraphQL
+ * read for them all. The listing counts everyone's: a comment with none is none of the door's, and
+ * isn't asked. Any App's mark counts while the door's name (SHIPIFY_DOOR_SLUG) isn't known, so a
+ * notice is never sent twice.
+ */
+async function doorMarked(t: Tick, list: RunComment[]): Promise<Set<number>> {
+  const ids = list
+    .filter((c) => c.reactions?.rocket || c.reactions?.confused)
+    .map((c) => c.node_id ?? "");
+  if (!ids.length) return new Set();
+  const data = await t.gh.graphql<{ nodes?: (Marks | null)[] }>(MARKS, { ids });
+  const door = (r: { __typename?: string; login?: string }) =>
+    r.__typename === "Bot" && (t.gh.bot === undefined || `${r.login}[bot]` === t.gh.bot);
+  const marked = (n: Marks) =>
+    (n.reactionGroups ?? []).some(
+      (g) =>
+        (g.content === "ROCKET" || g.content === "CONFUSED") &&
+        (g.reactors?.nodes ?? []).some(door),
+    );
+  return new Set(
+    (data.nodes ?? []).flatMap((n) => (n?.databaseId && marked(n) ? [n.databaseId] : [])),
   );
 }
 
@@ -526,19 +556,26 @@ async function doorMarked(t: Tick, c: RunComment) {
  */
 async function notice(t: Tick) {
   if (t.s.closed) return;
-  let done = 0;
-  for (const c of await t.comments()) {
-    if (done >= MAX_NOTICES) break;
-    if (!byRun(c)) continue;
-    const reply = readReply(c.body);
-    if (!reply) continue;
+  // Run replies 2 to 70 minutes old, each with its chats that are pushed to: one that reads in place
+  // has the reply already.
+  const due = (await t.comments()).flatMap((c) => {
+    const reply = byRun(c) ? readReply(c.body) : undefined;
     const age = t.now - Date.parse(c.created_at);
-    if (age < NOTICE_AFTER_MS || age >= NOTICE_UNTIL_MS) continue;
-    // Chats that are pushed to: one that reads in place has the reply already.
+    if (!reply || age < NOTICE_AFTER_MS || age >= NOTICE_UNTIL_MS) return [];
     const chats = chatsIn(reply.to, t.s.people).filter(
       (x) => ready(t.env, x.channel) && !channelOf(x.channel)?.inPlace,
     );
-    if (!chats.length || (await doorMarked(t, c))) continue;
+    return chats.length ? [{ c, chats }] : [];
+  });
+  if (!due.length) return;
+  const marked = await doorMarked(
+    t,
+    due.map((x) => x.c),
+  );
+  let done = 0;
+  for (const { c, chats } of due) {
+    if (done >= MAX_NOTICES) break;
+    if (marked.has(c.id)) continue;
     const task = issueOf(c.issue_url);
     done++;
     // Marked first, so a notice is never sent twice: if GitHub won't take the mark, nothing is sent
@@ -635,7 +672,7 @@ async function guard(t: Tick) {
   // Boxes and apps, each confirmed a little later, both waits at once.
   const boxes = boxChanges(t.runners, rec);
   const all = rec?.apps ?? [];
-  const from = all.length > MAX_APPS ? (Math.floor(t.now / TICK_MS) * MAX_APPS) % all.length : 0;
+  const from = all.length > MAX_APPS ? (tickOf(t.now) * MAX_APPS) % all.length : 0;
   const apps = [...all.slice(from), ...all.slice(0, from)].slice(0, MAX_APPS);
   const looks = await Promise.all(
     apps.map(async (a) => ({ a, ok: a.paused ? undefined : await healthy(t, a.url) })),
@@ -666,27 +703,18 @@ async function guard(t: Tick) {
   ]);
   t.found.boxes = boxes;
   t.found.apps = appFound;
-  // Each chat channel's own health, read at most every 30 minutes, and its menu kept in step.
+  // Each chat channel's own health, read every 30 minutes, and its menu kept in step.
   for (const ch of Object.values(CHANNELS)) {
     const check = ch.health;
-    if (!check || !ready(t.env, ch.id)) continue;
-    const info = await cached(
-      `watch:channel:${ch.id}`,
-      30 * MINUTE,
-      async () => {
-        const h = await check(t.env, t.deps);
-        if (!h) throw new Error(`${ch.name} didn't say`);
-        return h;
-      },
-      t.now,
-    ).catch((e) => {
+    if (!check || !ready(t.env, ch.id) || !turn(t.now, 30 * MINUTE)) continue;
+    const info = await check(t.env, t.deps).catch((e) => {
       if (e instanceof BudgetSpent) throw e;
       return null;
     });
     const change = channelChange(info, Boolean(rec?.channels[ch.id]));
     if (change) t.found.channels[ch.id] = change;
     // What it shows of Shipify (its menu) changes only with a deploy, which starts new instances:
-    // checked once an instance, while the channel is fine.
+    // checked with its health once an instance, while the channel is fine.
     const menu = ch.menu;
     if (menu && info && !info.failing)
       await cached(
@@ -716,20 +744,16 @@ async function guard(t: Tick) {
   }
   // Runners: GitHub's newest, read every 6 hours, against each box's own from its health.
   const withRunner = Object.entries(rec?.boxes ?? {}).filter(([, b]) => b.runner);
-  if (withRunner.length) {
-    const latest = await cached(
-      "watch:runner",
-      6 * HOUR,
-      () =>
-        t.gh.json<{ tag_name?: string; published_at?: string }>(
-          "GET",
-          "repos/actions/runner/releases/latest",
-        ),
-      t.now,
-    ).catch((e) => {
-      if (e instanceof BudgetSpent) throw e;
-      return null;
-    });
+  if (withRunner.length && turn(t.now, 6 * HOUR)) {
+    const latest = await t.gh
+      .json<{ tag_name?: string; published_at?: string }>(
+        "GET",
+        "repos/actions/runner/releases/latest",
+      )
+      .catch((e) => {
+        if (e instanceof BudgetSpent) throw e;
+        return null;
+      });
     const version = latest?.tag_name?.replace(/^v/, "") ?? "";
     const out = Date.parse(latest?.published_at ?? "");
     if (/^\d+\.\d+\.\d+$/.test(version) && t.now - out >= RUNNER_WARN_MS)

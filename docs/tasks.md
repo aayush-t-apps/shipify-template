@@ -4,7 +4,9 @@ A **task** is one issue on the shipify repo: a conversation and everything it le
 repeat, a deploy). You write on GitHub, or to the bot on Telegram, which the door writes onto the
 task for you. Every answer is a **reply** on the task, and the door copies it to your chat
 ([door.md](door.md), [channels.md](channels.md)). The agent's side of a run:
-[playbooks/task.md](../playbooks/task.md).
+[playbooks/task.md](../playbooks/task.md). A run gets only what applies to it: a talk run (no
+clone) has no `<!-- work -->` part (lanes, checks, the PR's shape), and a task's first run no
+`<!-- later -->` part (`cli/kernel/prompt.ts`, `playbookFor`).
 
 ## Writing a task
 
@@ -82,7 +84,7 @@ picks it up on a box. A run has five steps:
     reads a repo outside your account uses this ([Any repo](#any-repo)).
   - **guest:** a guest's task (ADR 0071): the web, commands and containers, as talk has them, but
     no GitHub key and nothing of yours: no notebook, Library, other projects, tools, repos or
-    clones. Its answer is words and files ([below](#a-guests-run)).
+    clones. Its answer is words and files, and a tool's guest calls ([below](#a-guests-run)).
 - **A second run, only when you asked for a change:** words that ask for one with no project
   prefix ("fix acme-site's button") get a work run on that project, which follows by itself. Its
   reply always ends "A work run on <project> starts now, from this reply: say `stop` to stop it." A
@@ -138,17 +140,21 @@ A run reads its task when it starts, and the agent can't take a message mid-step
 ### A run that stays
 
 After a run answers your words, it stays (ADR 0057): for `SHIPIFY_STAY` quiet minutes (20 unless
-you set it; `0` turns it off) it reads the task every 2 seconds. **One rule** (ADR 0063): it does
+you set it; `0` turns it off) it reads the task every 2 seconds: an ETag read on one kept
+connection (Node's `fetch`, not a `gh` process a read), free when nothing changed. **One rule**
+(ADR 0063): it does
 with your next words what a normal run would do, in the same job and agent session, so they're
 answered in seconds rather than in a new run. It hands over only what needs something a stay
 can't have.
 
 - **When:** after every answer to your words (ADR 0060), whatever the run did: an answer, a
-  question, a PR it opened or updated, a list for your `yes`. Not when its answer started another
-  run (a work run, the GitHub job) or closed the task, nor after a repeat, a due run or a check.
-- **On a project:** the stay carries on in the run's clone, and pushes nothing. Asked for a change,
-  it says what it will change and starts a work run on the task's branch, which does it with the
-  whole thread.
+  question, a PR it opened or updated, a list for your `yes`; on a task your words reopened too
+  (after its PR merged, or its app went live). Not when its answer started another run (a work
+  run, the GitHub job) or closed the task, nor after a repeat, a due run or a check.
+- **On a project:** the stay carries on in the run's clone, the same session, and makes a change
+  you ask for itself (ADR 0076): it commits, the box checks it, and the stay's own job pushes it
+  and opens or updates the PR. No new run starts, and nothing is thought again. Only a talk run,
+  which has no clone, starts a work run for a change (once: that run then stays on the project).
 - **The same answer as a run's:** each turn is plan, think, decide and apply, with 👀, the run
   details ("The run stayed…") and one reply for everything you sent meanwhile, each ask numbered.
 - **A new model or effort keeps the session** (ADR 0063): `use opus high`, alone or with your
@@ -168,8 +174,11 @@ can't have.
 - **An answer that needs a write key** (a new or changed file, your `yes` to a list, a push; ADR
   0062): the stay ends with it decided, and its own job mints just those keys and posts it. No new
   run, nothing thought twice. Words you send after it go to a normal run, which reads every word
-  the stay hasn't answered. A stay on a project sends only its own turn's commits: what the run
-  pushed before it never needs a key again.
+  the stay hasn't answered. A turn that commits nothing needs no key: its PR, when one is open,
+  stays as it is, even when the agent names it again. A turn that commits sends every commit
+  GitHub may not have yet, so a fix on top of a push the secret scan refused goes with the
+  refused commits. What went wrong after the stay's last answer (that refusal, a call that
+  failed) is told to its next turn, as its session never saw it.
 - **It ends** after its quiet minutes, when its job's time is nearly up (no cap of its own: past an
   hour, only the agent's own GitHub reads fail, as in a long work run), on a close, when its label
   is taken off (your merge of its plan does that, so the build runs next), or when another
@@ -188,15 +197,15 @@ what a normal run would do with them, else a new run does.
 |---|---|---|---|
 | plain words, `continue`, `stop`, a `use` of the same agent (any model or effort) | the stay | the same, resumed (`--resume`) | warm: only the new words are new |
 | `no`, `resume`, `stop repeating`, `reopen`, a thanks, `/ping` | the stay, with no agent | kept for your next words | warm |
-| `yes` to a list, an answer with a new file or a push | the stay decides; its job mints the key and posts it | ends with that job | — |
-| `close`, `publish`, a change (a PR) | the stay; then the task closes, the build or a work run starts | new, with the thread and the handoff | cold, once |
+| a change on the stay's project (a PR), `yes` to a list, an answer with a new file | the stay thinks and decides; its job mints the key and posts it | ends with that job | — |
+| `close`, `publish`; from a talk run, a change to a project | the stay; then the task closes, the build or a work run starts | new, with the thread and the handoff | cold, once |
 | another agent, repo or account; `start over`, `go`; an edit | a normal run | new | cold, once |
 
-A change goes to a work run because a PR needs what no stay holds: the project's clone set up, and a
-write key, which the job mints in its own step after the agent and never hands it (ADR 0031, ADR
-0059). The stay says so in its reply ("A work run on … starts now"), then leaves. Why a stay can't
-come back after its job posts an answer: GitHub runs a job's steps once, in order, and the keys are
-made after the agent's step. Only a new job can stay again, and that's a normal run.
+A change on a project is the stay's own (ADR 0076): its clone is set up already, and the write key
+it needs is minted by its job's own steps after the agent, never handed to it (ADR 0031, 0062). A
+stay can't come back after its job posts an answer: GitHub runs a job's steps once, in order, and
+the keys are made after the agent's step. So your words after a push go to a normal run, which
+reads every word and the handoff.
 
 **Where you see it:**
 - **👀** on your comment, and on the task itself for its own words: a run has read it (the web
@@ -221,9 +230,11 @@ run stays in the guest profile, so nothing of yours reaches it.
 - **The same as yours:** the web, commands and containers, as talk has them; your agents, models
   and login (your pick, or the guest's `use`); the run's clock; and the stay
   ([above](#a-run-that-stays)), whose turn hands the agent no token.
-- **Its answer** may hold only words, a question, choices, files, and pages onto its own project's
-  docs (docs that carry that guest's mark). Anything else (a PR, work, calls, a split, notes, a
-  repeat, quiet) is dropped, and the reply names why, as a read run's refusals are.
+- **Its answer** may hold only words, a question, choices, files, pages onto its own project's
+  docs (docs that carry that guest's mark), and calls that fit a tool's guest forms (ADR 0073:
+  Drop's, a page only they open, or a change to one made for them), which the box makes at once
+  for that guest ([tools.md](tools.md#guests-calls)). Anything else (a PR, work, other calls, a
+  split, notes, a repeat, quiet) is dropped, and the reply names why, as a read run's refusals are.
 - **A guest's words are never yours:** their author is `guest`, so `yes`, `no`, `go`, `publish`,
   `preview`, `start over` or `clean start` in them approves nothing (`NOT_A_GUESTS`).
 - **Nothing of yours in its environment:** its commands start with `LANG` and `SHIPIFY_TASK`
@@ -247,7 +258,8 @@ ADR 0044. Shipify reads any GitHub repo, and changes any repo in your account th
     and the task's runs, on a schedule too, are in the **read** profile: the agent reads files and nothing else (no
     command, no web, no key, nothing outside the repos it was given), notes and calls from it wait
     for your `yes`, it sets no repeat, and images in its reply are inert (shown as links). Nothing in
-    such a repo is ever run. To
+    such a repo is ever run. An agent whose login is a file its commands can read (Codex, ADR 0074)
+    never takes such a run: the default agent does, on its Auto, and the run's details say why. To
     change something because of it, ask in a new task, saying what to take from the answer.
   - **The disk is the one limit:** GitHub's size before the clone, then the files' own size before
     they're written, each leaving doctor's 5 GB free. A repo that doesn't fit, isn't there (or is
@@ -258,9 +270,11 @@ ADR 0044. Shipify reads any GitHub repo, and changes any repo in your account th
 - **`<repo>: …` on another of your repos** (one in your account with no `shipify.json`): a change
   run on it, its own way. The agent follows the repo's own rules first (its `AGENTS.md`,
   `CONTRIBUTING`, README, its commands and CI), then Shipify's: its own branch, a PR you merge, the
-  secret scan, and no change to its workflow files. The box runs no project checks on it: its CI
-  checks the PR. Shipify adds none of its own files to it. Its PR goes against its default
-  branch, `main` or not (ADR 0045). It isn't deployed, released or listed as an app.
+  secret scan, and a change to its workflow files held, listed for your `yes` when it runs only
+  after your merge ([PRs and Live](#prs-and-live)): a change to its PR checks stays yours. The box
+  runs no project checks on it: its CI checks the PR. Shipify adds none of its own files to it.
+  Its PR goes against its default branch, `main` or not (ADR 0045). It isn't deployed, released or
+  listed as an app.
 
 ## Any account
 
@@ -273,7 +287,9 @@ App** there ([setup.md](setup.md#another-account-the-repos-app)).
   someone installed the App. A change asked there gets the box's own reply, saying how to add it.
 - **`<account>/<repo>: …`** (`acme/api: rate-limit /login`): a change on it, its own way, as for
   your own repos. Its PR goes against its default branch, opened by the repos App (`<name>[bot]`),
-  its commits in the App's name.
+  its commits in the App's name. A change to its workflow files isn't held: the repos App can't
+  push one, so the push is refused, and the reply says to take it out of the branch, or to make it
+  there yourself.
 - **`look at acme/api`** reads it, private repos too.
 - **One task, one account.** A task works on the account its repo is on: from its title, or, for a
   question, the first of your accounts its `look at` names. A repo on another account is said in
@@ -330,8 +346,8 @@ changes the live app at once (taking an app down, bringing it back, a rollback) 
 
 | Word | What it does | When it counts |
 |---|---|---|
-| `yes` | makes exactly the listed tool calls (and notes), once each. A list's **Yes** in a chat sends `yes <its code>` | your whole, unedited message, after the list, within a day. A list over 3,000 characters can't be shown whole in a chat, so it's approved on GitHub, where you see it all |
-| `no` | drops the listed calls: nothing changes. A list's **No** in a chat sends `no <its code>` | a list waits |
+| `yes` | makes exactly the listed tool calls (and notes), once each; pushes a listed workflow change to the task's branch ([PRs and Live](#prs-and-live)); opens and starts a listed task first ([Sub-tasks](#sub-tasks-one-task-a-few-prs)). A list's **Yes** in a chat sends `yes <its code>` | your whole, unedited message, after the list, within a day. A list over 3,000 characters can't be shown whole in a chat, so it's approved on GitHub, where you see it all |
+| `no` | drops the list (its calls, a workflow change, a task first): nothing changes. A list's **No** in a chat sends `no <its code>` | a list waits |
 | `continue` (or `again`) | tries again after a failure; on an operation, runs it again. `again` on a repeat or a recipe runs its job now | always; taking an app down, bringing it back or a rollback runs again only from GitHub |
 | `start over` | closes the open PR and begins again from the repo's default branch | a PR is open, or not |
 | `preview` | a live preview of the open PR, with its checks run against it | a PR is open |
@@ -343,6 +359,7 @@ changes the live app at once (taking an app down, bringing it back, a rollback) 
 | `reopen` | reopens a closed task with no agent, and it waits for what you'd like next. From a chat, the door reopens it at once ("Reopened · #12") and no run starts: your next words do. On GitHub, a run reopens it, a minute or more after it closed, and says so | it's closed |
 | `stop` | stops the run that's going, within a minute: what it committed stays on the task's branch, and the run stays ([above](#a-run-that-stays)), so your next words carry on in the same session ([below](#words-while-a-run-works)). On a split task, no more sub-tasks start; the ones that run finish | always |
 | `clean start` | lists, with no agent, the open chats outside your projects that nothing keeps open (the 30-day close's rules, whatever their age: no repeat, errand, open PR or part, none at work or waiting on you), the oldest 100, but this one (ADR 0070). On `yes`, the box reads them again and closes each as done, as the 30-day close does: one with new words since the list stays open. Their files go 30 days later; your projects and pages stay. Export first what you want to keep | anywhere, as a whole message or a new chat |
+| `sign in` · `<agent> sign in` | signs an agent whose login is a sign-in (Codex, ADR 0074) in to your own account, with no agent and no box: `codex sign in` (or `sign in to codex`; `sign in` alone when only one agent signs in). On GitHub's machine, the github job starts the agent's own sign-in with a code; in a minute or two a reply shows a link and a one-time code (15 minutes, once), for your phone or any device. Once you've used them, the job keeps the session as the agent's secret (`CODEX_AUTH`) and says ✓ with your plan; else it says why, and nothing changes. Words that name no such agent ("please sign in") are plain words | anywhere, as a whole message or a new chat; never a guest's |
 | `remember: …` · `forget: …` | keeps or removes a note in the notebook, with no agent ([notebook.md](notebook.md)) | always |
 | `jot: …` · `add <project>: …` · `project: <name>` | from a chat, the door saves them with no run (ADR 0069): a dated line in this month's Journal, an item in a project's Inbox, a new project ([knowledge.md](knowledge.md)) | from a chat, as a new message |
 | `/ping` · `/apps` · `/repos` · `/help` · `/notebook` · `/recipes` · `/models` | the same answer a chat gets, with no agent | anywhere |
@@ -603,8 +620,8 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
 
 - **One level:** a part can't split; say it as a task of its own.
 - **Its own repo, one PR:** a part's PR is `closes`, so its merge closes the part. The parent's own
-  PR, once it has parts, is `part-of`: it closes with its parts. A split isn't listed while the
-  task's own `closes` PR is open: merge or close it first.
+  PR, once it has a split's parts, is `part-of`: it closes with its parts. A split isn't listed
+  while the task's own `closes` PR is open: merge or close it first.
 - **Parts on the same repo go one after the other** (each waits for the one before), unless the run
   says why they touch different files: each then starts from a `main` that has the part before it.
 - **A split comes alone:** a PR, a change or calls in the same answer aren't made (a PR's commits
@@ -629,6 +646,19 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
 - **The parent closed:** no part starts. Its open parts stay open, for you to close or keep.
 - **In the web chat** ([channels.md](channels.md)): a bar and "2/4" on the task, its parts folded
   under it, a grey **Waiting** state, and a **Plan card** with Start, Start all ready and Stop.
+
+**A task first** (`first`, ADR 0075): when `main`'s code must change before this task can go on
+(the box runs `main`'s code), a run proposes the fix as one task, its brief 600 characters at most.
+It comes alone: a PR, work or calls in the same answer aren't made (the run's commits are kept on
+the task's branch), and with a split, the split is listed and the task first left out. Never from
+a read run, a guest's run or a project's own thread. The list says "Open and start `<title>`
+first; this task waits for it: <brief>". On your `yes`, the box opens it as a sub-task (labels
+`sub-task` and `first`) of this task, or of this task's parent when this task is a part, marks
+this task blocked by it, and starts it at once. When it merges, its close run tells this task: "#N
+merged, so this task can go on: say `continue`." ("was closed as done" when you closed it so by
+hand). Closed as not planned: "#N was closed without a merge, and this task still needs its fix."
+Nothing starts by itself. It never turns this task's PR into `part-of`: a parent with only tasks
+first closes with its own PR, and a split's parent closes with its parts, as before.
 
 ## Projects, and long threads (ADR 0069)
 
@@ -682,8 +712,8 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
    **A question mid-change keeps its work too** (ADR 0041): when the agent stops to ask you
    something, its commits wait on the task's branch the same way, and your answer's run carries on
    from them. Its reply reads as any question does; the same two exceptions apply, silently, and
-   a push that fails (a workflow file among its edits, a key the scan finds, no write token) is in
-   the run's log only, the question posted as before.
+   a push that fails (a workflow file on another account, a key the scan finds, no write token) is
+   in the run's log only, the question posted as before.
    **Its handoff:** the agent keeps the task's Progress current as it works (Goal, Done, Next,
    Decisions, Open), and the box keeps it in the status comment however the run ends, even when
    it's stopped. The next run reads it, then checks the branch and the tests before trusting it.
@@ -694,11 +724,29 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
    rule binds them, since the rules sit outside the agent: its own user, read-only keys, the box
    making every change. A checkout inside the clone (a helper's worktree) is never committed.
 3. **Apply pushes and opens the PR** from the agent's commits, on `task/<n>-<words>`, after a scan
-   for keys. Workflow files go only as `ship upgrade` renders them for the stack. Every PR reads the
-   same way (ADR 0045): the repo's own PR template filled in, or Shipify's sections (what and why,
-   Changes, Checked, Notes), then, below a line, the task it's for and what made it ("Made by
-   Claude Code (Opus 5.5) with Shipify", with the run's link on Shipify's own account). Its commits
-   carry the App's name (`<name>[bot]`), so GitHub shows them as Shipify's.
+   for keys. Every PR reads the same way (ADR 0045): the repo's own PR template filled in, or
+   Shipify's sections (what and why, Changes, Checked, Notes), then, below a line, the task it's
+   for and what made it ("Made by Claude Code (Opus 5.5) with Shipify", with the run's link on
+   Shipify's own account). Its commits carry the App's name (`<name>[bot]`), so GitHub shows them
+   as Shipify's.
+   **A workflow change is held** (ADR 0075): a file under `.github/workflows/` or `.github/actions/`
+   goes only as `ship upgrade` renders it for the stack, or as you approved. For any other change
+   the run made there, one commit of the bot's ("Hold the workflow change for your yes") puts the
+   file back as the branch on GitHub has it (else as `main` had it), and the rest of the work is
+   pushed. The run's lines stay in the branch's history, and never run. When the held change is all
+   the run changed and it's listed, nothing is pushed yet. The reply lists the change for your
+   `yes` only when nothing it changes runs before your merge (Shipify's four workflows, or one that
+   runs only from `main`): one item for each file, "Change `<file>` on `<branch>` (PR #n) (+a −r).
+   It runs only from `main`, after your merge: on … .", the secrets and actions its new lines use,
+   then its exact lines. A change that runs on a PR (a project's `ship.yml`, a repo's PR checks),
+   a patch over 12,000 characters or a binary file isn't listed: it stays held, and the reply says
+   which file and why. On Shipify and a project, `ship pr --check` refuses a change that runs on a
+   PR before that, so the agent takes it out in its own session. A project's pipeline changes
+   through its stack (a `shipify:` task). A key in it refuses the whole push, as any key does. Your
+   `yes` pushes exactly those lines to the task's branch, once, and opens the PR the run asked for
+   when there was none; a refusal (its PR merged, the branch changed) replies ✗ and why. Your merge
+   still decides what reaches `main`. On another account the push is refused: the repos App can't
+   push a workflow file.
 4. **You review and merge.** Comment to change it: the next run updates the same PR, its title
    and description too (`Closes` or `Part of` as that run asked).
 5. **Live:** the run your merge starts follows the deploy itself and replies as soon as the
@@ -778,6 +826,10 @@ new branch, since a merge ends its branch.
 - **Each also gets a copy in the web chat's store (R2),** whatever chat the task came from (ADR
   0071). The reply's line names each copy (its ref), so the web chat shows them as chips under the
   reply and opens them there. A guest's run's files go to R2 only, never to `shipify-files`.
+- **A file a tool's call took, when the call worked** (a page given to Drop, ADR 0072), is in
+  neither the reply nor the web chat's store: the call's answer, with its link, stands for it. It
+  stays on `shipify-files`, and a later run reads it there (its prompt's "Files earlier runs
+  made"). When the call fails or waits for your Yes, the file shows as above.
 - **The next run in the chat gets them:** the chat's newest 5 files, the ones runs made too, as it
   gets yours. So "make the PDF shorter" works on the PDF the last run made.
 - **One new doc a run at most:** a reply names a new doc plainly ("New doc: Research"). The box

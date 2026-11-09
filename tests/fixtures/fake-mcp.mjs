@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // A stand-in MCP tool over stdio for run tests: `list` (look) and `add` (act). Each call is logged
 // to the file its key names (JOT_LOG), so a test sees exactly which calls were made, with which key.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readdirSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const log = process.env.JOT_LOG;
@@ -20,7 +20,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   else if (m.method === "tools/list")
     send({ id: m.id, result: { tools: [{ name: "list" }, { name: "add" }] } });
   else if (m.method === "tools/call") {
-    if (log) appendFileSync(log, `${JSON.stringify(m.params)}\n`);
+    // A guest's call (ADR 0073): who it's for, and the files the box gave it.
+    const guest = process.env.SHIPIFY_GUEST
+      ? {
+          guest: JSON.parse(process.env.SHIPIFY_GUEST),
+          got: process.env.SHIPIFY_FILES ? readdirSync(process.env.SHIPIFY_FILES) : [],
+        }
+      : {};
+    if (log) appendFileSync(log, `${JSON.stringify({ ...m.params, ...guest })}\n`);
     send({
       id: m.id,
       result: { content: [{ type: "text", text: `added ${m.params.arguments.text}` }] },

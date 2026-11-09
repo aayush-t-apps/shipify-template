@@ -1,5 +1,5 @@
 ---
-status: proposed (the owner's requests of 2026-10-04: a researched, brutal rethink of the core for a clean first release, with a full breaking release allowed; reviewed three ways against the code (security, completeness, simplicity) and rewritten on their findings; the owner agreed every recommendation and decision on 2026-10-04; merging its PR accepts the design and its build plan). Amended by 0071 (a fourth run profile, `guest`; rule 7: the guests you add start work on their own chats)
+status: accepted (merged #124) and built as 0.1.0 (#126). Proposed from the owner's requests of 2026-10-04: a researched, brutal rethink of the core for a clean first release, with a full breaking release allowed; reviewed three ways against the code (security, completeness, simplicity) and rewritten on their findings; the owner agreed every recommendation and decision on 2026-10-04. Amended by 0071 (a fourth run profile, `guest`; rule 7: the guests you add start work on their own chats)
 date: 2026-10-04
 amends: 0019 (boundary 3), 0027 (the envelope, the file run, send, recipes, the console), 0029 (all of it), 0030 (§5's tell and outbox, the send key, previews of the admin Worker)
 ---

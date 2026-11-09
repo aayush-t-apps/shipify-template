@@ -20,7 +20,7 @@ new one is a plug-in, not a change to the core:
 | **tool** | an MCP server whose calls are each look or act, a key per verb | `cli/lib/plugins/tool.ts` | Notion, Drop | `plugins/_template/tool/` → `tools/<name>/`, and its `tools.json` entry | `tests/plugins/tool.test.ts` |
 | **channel** | an adapter in the edge: prove a webhook, read it (a message or a button tap) into one Message, answer at once, send an Outgoing reply with its buttons; its files, a tap's acknowledgement, a file, its health and its menu if it can | `edge/src/channels/channel.ts` | Telegram, the web chat (`web`) | `edge/src/channels/<id>.ts`, one line in `channels/index.ts`, its fixtures in `tests/edge/channels/`, its `tools.json` entry | `tests/edge/channels.test.ts` |
 | **stack** | the `make` targets, `shipify.json`, `/health`, the docs every project has | [design.md](design.md) | ts-worker, ts-static, ts-package, custom-* | a folder in `stacks/`, from a second real project | `tests/golden.test.ts` (`pnpm test:golden`) |
-| **agent** | a prompt, a model and an effort in, with the commands every agent must never run (or none at all: the read profile); `result.json` and a report out | `cli/lib/plugins/agent.ts` | Claude Code, pi, OpenCode | an `executors.json` entry (its install, its login or the `gateways` it goes through) and an adapter in `cli/lib/agents/` | `tests/plugins/agent.test.ts` |
+| **agent** | a prompt, a model and an effort in, with the commands every agent must never run (or none at all: the read profile); `result.json` and a report out | `cli/lib/plugins/agent.ts` | Claude Code, pi, OpenCode, Codex | an `executors.json` entry (its install, its login or the `gateways` it goes through) and an adapter in `cli/lib/agents/` | `tests/plugins/agent.test.ts` |
 | **record** | read and write tasks, comments and labels, and make independent writes together (`together`, ADR 0051); start runs | `cli/lib/plugins/record.ts` | GitHub (`cli/lib/github.ts`) | a module like `github.ts` | `tests/plugins/record.test.ts` |
 | **check** | a script with no input and no keys that prints one value to watch | [checks/README.md](../checks/README.md) | `example` | `checks/<name>.mjs` in a PR | `tests/checks.test.ts` |
 | **recipe** | a Markdown file: `when`, an optional `check` and `model`, the job as its body | `cli/lib/recipes.ts` | the examples in `recipes/examples/` | `recipes/<name>.md` in a PR ([recipes.md](recipes.md)) | `tests/recipes.test.ts` |
@@ -36,6 +36,9 @@ A `tools.json` entry, checked on its own (a broken one is left out, and `ship to
   `yes` (or pre-approved under `pre`), with the act key.
 - **`keys`, `args`, `pre`, `check`, `setup`:** its keys by verb, its act calls' argument checks and
   pre-approved forms, a key check, and how `ship add` sets it up.
+- **`guest`** (ADR 0073): the forms a guest's run may ask for, made at once by the box with
+  `SHIPIFY_GUEST` set; the tool's server checks that what a call changes is that guest's, and its
+  own tests prove it.
 
 Everything about tools, and adding one: [tools.md](tools.md).
 

@@ -71,6 +71,8 @@ export interface NewPart {
   after: number[];
   /** The parent's parts that exist already, by number, it waits for. */
   waits: number[];
+  /** A task that waits for it (ADR 0075's task first): the parent, or one of its parts. */
+  blocks?: number;
 }
 
 export interface RecordComment {
@@ -201,17 +203,18 @@ export interface TaskRecord {
   /** Every comment, oldest first; with `since`, only those written or edited since then. */
   comments(n: number, since?: string): RecordComment[];
   /**
-   * As `comments(n, since)`, only when anything changed since the answer `tag` names (ADR 0057: a
-   * run that stays reads its task every few seconds): unchanged is `{ tag }` with no comments, and
-   * costs the record nothing. The first read has no tag.
+   * As `comments(n, since)` (its first 100), only when anything changed since the answer `tag`
+   * names (ADR 0057: a run that stays reads its task every few seconds): unchanged is `{ tag }` with
+   * no comments, and costs the record nothing. The first read has no tag. Without waiting: a read
+   * this often starts no process.
    */
   commentsIfChanged(
     n: number,
     since: string,
     tag?: string,
-  ): { tag?: string; comments?: RecordComment[] };
+  ): Promise<{ tag?: string; comments?: RecordComment[] }>;
   /** As `issue(n)`, only when it changed since `tag`: unchanged is `{ tag }` with no issue. */
-  issueIfChanged(n: number, tag?: string): { tag?: string; issue?: RecordIssue };
+  issueIfChanged(n: number, tag?: string): Promise<{ tag?: string; issue?: RecordIssue }>;
   /**
    * The issue's and its comments' rendered HTML: where pasted images and attached files show as
    * links the record signs. With `since`, only the comments written or edited since then (and no
@@ -338,5 +341,5 @@ export interface Queue {
   waitingFor(
     labels: string[],
     tag?: string,
-  ): { tag?: string; waiting: boolean; since?: string; run?: number };
+  ): Promise<{ tag?: string; waiting: boolean; since?: string; run?: number }>;
 }

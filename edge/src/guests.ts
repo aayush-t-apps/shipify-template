@@ -1,22 +1,25 @@
 // Guests (ADR 0071): the people you add in Setup → Guests, kept in one object in the web chat's
 // store (R2, `_guests`, which no file's ref can be). The guests' Access application is set once on
 // GitHub, with yours (SHIPIFY_ACCESS's `guests`): no page can change which door a guest's token opens.
-// Access signs a guest in with a code it emails them, and only proves their email; this list says
+// Access signs a guest in (with Google, ADR 0073), and only proves their email; this list says
 // who is a guest. An email that isn't on it gets nothing (fails closed), as does every guest while
 // the list can't be read. Read at most every 10 s, so a removed guest is refused within 10 s.
+// GET /door/guest/<id> gives the box's job a guest's email and name, for their drop (ADR 0073):
+// task.yml's OIDC token only, so no agent's run asks it, and a removed guest is 404.
 import {
   emailOf,
-  GUEST_LABEL,
   guestIdOf,
   guestLabel,
+  isGuestId,
   STATE_LABELS,
   STAYING_LABEL,
 } from "../../cli/contracts/index.ts";
 import { accessClaims } from "./access.ts";
 import { cached, forget } from "./cache.ts";
 import type { Bucket, Deps, Env } from "./env.ts";
-import { bucketOf } from "./env.ts";
+import { bucketOf, json, logOf, missing, OIDC_NEEDS, unconfigured } from "./env.ts";
 import type { GitHub } from "./github.ts";
+import { bearer, verifyRun } from "./oidc.ts";
 import type { Settings } from "./settings.ts";
 
 /** The store's key for the list: no file's ref looks like it, so Files never lists it. */
@@ -201,5 +204,31 @@ export async function guestAt(req: Request, env: Env, deps: Deps, s: Settings): 
   return { guest };
 }
 
-/** Whether an issue carries a guest's mark: your reads leave these out. */
-export const markedGuest = (labels: string[]) => labels.includes(GUEST_LABEL);
+/**
+ * A guest's email and name, for the box's job that makes their calls (ADR 0073): proven by
+ * task.yml's OIDC token, as `/door/file/<ref>`. A removed guest, or an id that isn't one, is 404,
+ * so their run makes no call.
+ */
+export async function guestOut(req: Request, id: string, env: Env, deps: Deps): Promise<Response> {
+  const log = logOf(deps, "door.guest");
+  const gone = missing(env, OIDC_NEEDS);
+  if (gone.length) return unconfigured(log, gone);
+  const token = bearer(req);
+  const verdict = token
+    ? await verifyRun(token, env, deps, ["task.yml"])
+    : { ok: false as const, why: "no token" };
+  if (!verdict.ok) {
+    log.warn("door.in.refused", { why: `guest: unproven: ${verdict.why}` });
+    return json({ error: "unproven", why: verdict.why }, 401);
+  }
+  if (!isGuestId(id)) return json({ error: "not a guest" }, 404);
+  let g: Guests;
+  try {
+    g = await guestsOf(env, deps);
+  } catch {
+    return json({ error: "the guest list couldn't be read" }, 503);
+  }
+  const guest = g.guests.find((x) => x.id === id);
+  if (!guest) return json({ error: "not a guest" }, 404);
+  return json({ email: guest.email, name: guest.name });
+}

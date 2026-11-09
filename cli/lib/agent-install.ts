@@ -29,22 +29,26 @@ export function installedAt(id: string, entry: Executor, tools: string) {
  * Inside the lock: an install with its mark is kept, and so is one made before the mark whose
  * program starts (marked now, so a slot running it is never pulled from under); any other (a
  * download cut short leaves a program that doesn't start) is removed and done again, and marked
- * once its program starts.  $1 the prefix  $2 the program  $3 the mark  then the install's words
+ * once its program starts. Before the mark, its folders are opened to the agents' users (a folder
+ * made before under the service's umask is only the runner's), so a marked install needs nothing
+ * more.  $1 the prefix  $2 the program  $3 the mark  then the install's words
  */
 const INSTALL = [
   "umask 022",
   'prefix="$1"; p="$2"; done="$3"; shift 3',
   '[ -f "$done" ] && exit 0',
-  'if [ -x "$p" ] && "$p" --version >/dev/null 2>&1; then : > "$done"; exit 0; fi',
+  'mark() { chmod a+rx "$(dirname "$prefix")"; chmod -R a+rX "$prefix"; : > "$done"; }',
+  'if [ -x "$p" ] && "$p" --version >/dev/null 2>&1; then mark; exit; fi',
   'rm -rf -- "$prefix"',
   '"$@" || exit',
   '"$p" --version >/dev/null || exit',
-  ': > "$done"',
+  "mark",
 ].join("\n");
 
 /**
- * The agent installed (once; a run that finds it there does nothing), opened to the agents' users,
- * and checked by running it. Returns the folder its program is in, for the run's PATH.
+ * The agent installed (once: a run that finds its mark only puts it on the PATH), opened to the
+ * agents' users, and checked by running it. Returns the folder its program is in, for the run's
+ * PATH.
  */
 export function installAgent(
   id: string,
@@ -57,49 +61,42 @@ export function installAgent(
   const at = installedAt(id, entry, tools);
   const i = entry.install;
   if (!at || !i) throw new ShipError(`${id} has no install in executors.json.`, "blocked");
-  // The agents run it as their own users (box setup 5): theirs to read and run, though the
-  // runner's service makes its own files for itself alone (UMask=0077).
-  process.umask(0o022);
-  mkdirSync(at.dir, { recursive: true, mode: 0o755 });
-  // One install at a time for every slot (flock). Each word is executors.json's, passed as an
-  // argument, never into the script's text.
-  const words = i.run.map((w) => w.replaceAll("{prefix}", at.prefix));
-  const r = run(
-    "flock",
-    [
-      join(at.dir, ".lock"),
-      "sh",
-      "-c",
-      INSTALL,
-      "install",
-      at.prefix,
-      at.program,
-      at.done,
-      ...words,
-    ],
-    {
-      encoding: "utf8",
-      stdio: "pipe",
-    },
-  );
-  if (r.status !== 0)
-    throw new ShipError(
-      `${id} ${i.version} didn't install: ${String(r.stderr || r.error || "")
-        .trim()
-        .slice(-300)}`,
-      "blocked",
+  // Marked: installed, opened and started before, so no lock, no walk of its files and no start
+  // (pi's --version alone takes 3-4 s on a Pi).
+  if (!existsSync(at.done)) {
+    // The agents run it as their own users (box setup 5): theirs to read and run, though the
+    // runner's service makes its own files for itself alone (UMask=0077).
+    process.umask(0o022);
+    mkdirSync(at.dir, { recursive: true, mode: 0o755 });
+    // One install at a time for every slot (flock). Each word is executors.json's, passed as an
+    // argument, never into the script's text.
+    const words = i.run.map((w) => w.replaceAll("{prefix}", at.prefix));
+    const r = run(
+      "flock",
+      [
+        join(at.dir, ".lock"),
+        "sh",
+        "-c",
+        INSTALL,
+        "install",
+        at.prefix,
+        at.program,
+        at.done,
+        ...words,
+      ],
+      {
+        encoding: "utf8",
+        stdio: "pipe",
+      },
     );
-  // A folder made before under the service's umask is only the runner's: open it to them.
-  run("chmod", ["a+rx", at.dir], { stdio: "ignore" });
-  run("chmod", ["-R", "a+rX", at.prefix], { stdio: "ignore" });
-  const v = run(at.program, ["--version"], { encoding: "utf8", stdio: "pipe" });
-  if (v.status !== 0)
-    throw new ShipError(
-      `${id} ${i.version} is installed but doesn't start: ${String(v.stderr || "")
-        .trim()
-        .slice(-300)}`,
-      "blocked",
-    );
+    if (r.status !== 0)
+      throw new ShipError(
+        `${id} ${i.version} didn't install: ${String(r.stderr || r.error || "")
+          .trim()
+          .slice(-300)}`,
+        "blocked",
+      );
+  }
   const bin = dirname(at.program);
   if (process.env.GITHUB_PATH) appendFileSync(process.env.GITHUB_PATH, `${bin}\n`);
   return bin;

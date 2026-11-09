@@ -54,7 +54,8 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
 **Run it again** for anything: to update the box's setup, to finish one that stopped, or to fix
 what `ship doctor` names. It carries on from what's done, and mends what an older setup left
 (setup 10: the agents' folders that kept containers from starting; setup 11: the slot folders a
-container changed, and the agents' IPv6; setup 12: containers' network on Ubuntu 26.04). Run it while no task runs: `box add` refuses while a
+container changed, and the agents' IPv6; setup 12: containers' network on Ubuntu 26.04; setup 13:
+`--manage` boxes take connections through Tailscale only). Run it while no task runs: `box add` refuses while a
 slot is busy. A new disk or a fresh OS: [A new disk (an SSD), or a fresh OS](#a-new-disk-an-ssd-or-a-fresh-os).
 
 **It never says done when something isn't:** the setup ends with a line that says what's left
@@ -78,16 +79,17 @@ settings stay as they are (a laptop still sleeps when its lid closes), and there
 Cockpit or firewall. That fits a machine you also use for other things.
 
 **With `--manage`,** for a machine you keep as a box (a laptop, a spare PC), it's set up as one
-from a PC over SSH is, with one difference:
+from a PC over SSH is:
 ```sh
 curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/here.sh | bash -s -- --manage
 ```
 - **The same:** it never sleeps (the lid does nothing, and sleep is off), and it gets Tailscale,
   Cockpit and the firewall ([Managing it from a browser](#managing-it-from-a-browser)). Sign in to
   Tailscale at the link it prints.
-- **The difference:** its SSH settings stay as they are, because you set it up at the machine,
-  not over SSH. The firewall lets SSH in only from your own network and Tailscale. For keys only,
-  add your key (`ssh-copy-id`), then run `pnpm ship box add <it> --manage --yes` from a PC once.
+- **SSH:** keys only (no passwords, no root), once your account on it has a key in
+  `~/.ssh/authorized_keys`; without one, its SSH settings stay. Either way, the firewall lets SSH
+  in only through Tailscale. Cockpit and Tailscale's SSH don't use SSH's passwords, so they stay a
+  way in.
 - **Not on WSL** (Windows runs that machine), nor in Docker.
 
 The whole way for a laptop or a PC, with no other machine: [No PC?](#no-pc-the-machine-sets-itself-up)
@@ -296,8 +298,21 @@ its phone app with the same login.
   It's done only when every slot has the label and one is online; otherwise it says which.
 - **Time:** 10 to 15 minutes. Running it again updates the box in place (not while a task runs).
 - **With `--manage`:** sign in to Tailscale at the link it prints, within 15 minutes, and if asked,
-  turn on HTTPS certificates in Tailscale's admin page (DNS). If you miss it, the box works anyway:
-  run the same command again.
+  turn on HTTPS certificates in Tailscale's admin page (DNS). The firewall comes right after the
+  sign-in, before Cockpit. If this part stops (a missed sign-in, Cockpit not served, Ctrl-C), the
+  box takes tasks anyway, but it's never "done": the setup ends with "Done, except --manage" (exit
+  4), `box add` says so, and `ship doctor` names the box until a run finishes it. Run the same
+  command again; if SSH from your network no longer answers, the firewall came on before it
+  stopped: run it over Tailscale (below).
+- **Without `--manage`, over SSH:** no firewall. Its SSH (keys only) answers on its network, and on
+  the internet for a VPS. The plan says so. Use `--manage` for a box that only Tailscale reaches.
+- **Then, over Tailscale only:** with `--manage`, the firewall takes nothing from your home network
+  once Tailscale is up (setup 13), so the next connection must come through Tailscale. Put the
+  PC on your tailnet (Tailscale's app), and set the alias's `HostName` to the box's Tailscale name
+  (Cockpit's address without `https://`; `box add` prints it). The session that ran the setup
+  goes on to the end. Tailscale's SSH may ask you to confirm a connection in a browser (its
+  default rule), which `box add` doesn't show: run `ssh <alias> true` once first, or run
+  `here.sh --manage` from Cockpit's terminal instead.
 - **Reinstalling:** the name looks taken, so add `--replace` (`here.sh` takes it too), and delete
   the old machine in Tailscale ([A new disk, or a fresh OS](#a-new-disk-an-ssd-or-a-fresh-os)).
 
@@ -316,7 +331,10 @@ money every month.
 
 1. **Create it** with Ubuntu 26.04 LTS, your SSH key and a user who can use sudo; a core and 2 GB
    of memory per slot, plus 1 GB (4 GB for 1 slot, 8 GB and 3 cores for 3).
-2. **Firewall:** in the provider's firewall, allow only SSH in. The box only connects out.
+2. **Firewall:** in the provider's firewall, allow only SSH in. The box only connects out. With
+   `--manage`, the box's own firewall then takes SSH through Tailscale only: from then on, connect
+   as `ssh <user>@<hostname>` from a device on your tailnet; the provider's web console is the way
+   in when Tailscale is down.
 3. **Make it a box:** `pnpm ship box add <user>@<ip> --manage`, then again with `--yes`. It's
    named after the hostname; `--name <name>` picks another.
 4. **Check:** as for a machine of your own, step 5.
@@ -334,9 +352,9 @@ pnpm ship box add --yes  # does it: asks for sudo once
   same agent users and sandbox, the same system services, and the same `sandbox` label once its
   check passes. It takes task runs like any box.
 - **What stays as it is:** this PC's SSH settings, its power settings and its network. With
-  `--manage`, it's a box you keep instead: it never sleeps, and gets Tailscale, Cockpit and a
-  firewall; its SSH settings still stay ([one command](#what-it-leaves-out-and---manage)). Not on
-  WSL.
+  `--manage`, it's a box you keep instead: it never sleeps, gets Tailscale, Cockpit and a
+  firewall, and its SSH takes keys only once your account has one
+  ([one command](#what-it-leaves-out-and---manage)). Not on WSL.
 - **Ubuntu 24.04 LTS or newer,** natively or in WSL. The runner and the agents are their own
   users, who can't read your Linux home.
 - **On WSL, Windows is walled off too.** By default WSL lets every Linux user open your Windows
@@ -698,7 +716,7 @@ OS does the same; nothing is lost either way, since a box holds nothing that isn
    ```
 4. **What stays, as the machine's own:** security updates (with the restart at 04:30), Ubuntu's
    normal updates where setup added them (`/etc/apt/sources.list.d/shipify-updates.sources`), SSH
-   by key only, zram, and with `--manage` Tailscale, Cockpit and the firewall. A laptop you take
+   by key only, zram, and with `--manage` Tailscale, Cockpit, the firewall and avahi off. A laptop you take
    back sleeps again with `sudo rm /etc/systemd/logind.conf.d/50-shipify-box.conf` and `sudo
    systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target
    suspend-then-hibernate.target`, then a restart.
@@ -711,8 +729,20 @@ CPU and disk.
 - **Where:** `https://<hostname>.<your-tailnet>.ts.net` (`pnpm ship box list` shows it), from any
   device on your Tailscale. Sign in as your own user, not `shipify`.
 - **Who can reach it:** only your devices: Cockpit listens on 127.0.0.1, shared over HTTPS by
-  `tailscale serve`. The firewall lets in only Tailscale and SSH from the box's own network
-  (`sudo ufw disable` undoes it).
+  `tailscale serve`. The firewall lets in nothing but Tailscale, IPv4 and IPv6 alike (setup 13:
+  no SSH from the home network, and ufw opens no port for Tailscale, which connects from its own
+  outgoing traffic or else through its relays; where ufw's IPv6 was off, the setup turns it on).
+  Going out stays open, as the runners need. Your own ufw rules stay, and the setup lists each
+  one that lets something in (a VPS guide's `ufw allow OpenSSH`), with no "only" then: `sudo ufw
+  delete <rule>` takes one out. `sudo ufw disable` undoes it all. Avahi (mDNS, `<name>.local`),
+  which a Pi's image has, is off too, as ufw lets mDNS in by default, so the home network can't
+  find the box by name (`sudo systemctl unmask avahi-daemon.socket avahi-daemon.service`, then a
+  restart, undoes it).
+- **No IP blocking needed:** fail2ban, CrowdSec or blocklists guard a port that must stay open to
+  the internet. A box has none: nothing on the internet or your home network reaches any of its
+  ports, so there's nothing to block, and nothing more to install.
+- **When Tailscale is down:** a keyboard and screen on the box (a VPS: its web console), then
+  `sudo ufw disable`, or `sudo tailscale up` to sign in again.
 - **A terminal without Cockpit:** Tailscale's admin page → Machines → the box → **SSH to machine**.
 - **Keep it on your tailnet:** Tailscale's admin page → Machines → the box → **Disable key expiry**
   (otherwise it drops off after 180 days).
@@ -728,9 +758,8 @@ CPU and disk.
 - **Any network works:** the box only connects out (GitHub, the agent's API, npm). More Wi-Fi
   networks go under `access-points:` in `/etc/netplan/50-cloud-init.yaml` (then `sudo netplan
   apply`).
-- **SSH from anywhere:** with `--manage`, `ssh <user>@<hostname>` over Tailscale. An alias like
-  `mybox` points at the home address, and the firewall lets plain SSH in only from the network
-  the box was set up on.
+- **SSH from anywhere:** with `--manage`, `ssh <user>@<hostname>` over Tailscale, at home too:
+  its home address takes no SSH (setup 13). An alias like `mybox` points at its Tailscale name.
 
 ## About the OS
 
@@ -769,7 +798,8 @@ PC, `pnpm ship box add <user@host> --manage --yes`. Either works, while no task 
 | the sandbox check says an agent's commands can read its memory, or its login isn't on a pipe | both are Ubuntu's own settings, which `box add` leaves as they are: put `kernel.yama.ptrace_scope = 1` in `/etc/sysctl.d/10-ptrace.conf` and run `sudo sysctl --system`; `/bin/sh` must be dash (`ls -l /bin/sh`). Then `box add` again |
 | `box add` stops at "Checking the sandbox" | the line above names the wall. The box keeps working, without the `sandbox` label. Run it again; if it fails the same way, look at `/etc/sudoers.d/shipify-agents` and `ls -ld /home/shipify /srv/shipify-agent-*`. On WSL, "the agents can reach Windows": make the fix it prints in `/etc/wsl.conf` first ([This PC](#this-pc)) |
 | `box add` says the machine runs another OS | write Ubuntu Server 26.04 LTS (64-bit) on it, then run it again |
-| `box add` can't connect | it says why and prints the fix: `ssh-keygen -R <address>` after a reinstall, `ssh-copy-id` for a missing key; for a key with a passphrase, `eval "$(ssh-agent)" && ssh-add` first |
+| `box add` can't connect | it says why and prints the fix: `ssh-keygen -R <address>` after a reinstall, `ssh-copy-id` for a missing key; for a key with a passphrase, `eval "$(ssh-agent)" && ssh-add` first. A `--manage` box answers only over Tailscale (setup 13): the PC on your tailnet, and its alias's `HostName` the box's Tailscale name |
+| can't reach a `--manage` box at all (Tailscale down, or signed out) | a keyboard and screen on it (a VPS: its web console), then `sudo tailscale up`, or `sudo ufw disable` until it's back |
 | this PC's box goes offline when you close WSL | the `.wslconfig` idle timeouts ([This PC](#this-pc)) |
 | `ship doctor` says the kernel is 39-bit | write Ubuntu Server 26.04 LTS instead |
 | offline after a power cut | wait a minute; then Cockpit, or `ssh` in and `sudo systemctl status shipify-box-<name>` |

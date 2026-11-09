@@ -342,6 +342,19 @@ describe("the stay", () => {
     expect(POLL_MS).toBeLessThan(LOOK_MS);
   });
 
+  it("waits for reads that answer later, as the record's do; one that fails ends it, said in its log", async () => {
+    const later = fakeStay({
+      news: [true],
+      task: async () => "closed" as const,
+      waiting: async () => false,
+    });
+    expect((await stay(later.io, 5, UNTIL)).why).toBe("the task closed");
+    expect(later.calls).toEqual(["turn 120", "leave"]);
+    const failed = fakeStay({ task: () => Promise.reject(new Error("HTTP 502")) });
+    expect((await stay(failed.io, 5, UNTIL)).why).toBe("a read failed: HTTP 502");
+    expect(failed.calls).toEqual(["leave"]);
+  });
+
   it("answers words already waiting before it gives its slot away, then looks again at once", async () => {
     const f = fakeStay({ news: [true], waiting: () => true });
     const done = await stay(f.io, 5, UNTIL);

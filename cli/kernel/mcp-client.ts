@@ -1,8 +1,8 @@
 // Approved calls made by the box (ADR 0031): the same MCP server the agent looks with, started
 // here with the tool's act key, one call at a time. No agent and no guard: the calls are exactly the
-// ones you approved (or a tool's pre-approved forms), checked before they get here.
+// ones you approved (or a tool's pre-approved or guest forms), checked before they get here.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -10,17 +10,19 @@ import { readBlob } from "../commands/task/files.ts";
 import { maskSecrets, type ToolCall, type ToolResult } from "../contracts/index.ts";
 import type { TaskState } from "../lib/task.ts";
 import { command, loadTools } from "../lib/tools.ts";
-import { doorFile } from "./door.ts";
+import { doorFile, type GuestWho } from "./door.ts";
 
 const TIMEOUT_MS = 60_000;
 
 /**
  * Makes these calls on their tool, in order; each answers ✓ or ✗ with the tool's own words. Files a
  * call names (its tool's `args.<call>.files`) come from the task's `shared` files, read with the
- * run's read key, or are ones you sent through a chat on this task, named by their ref (its
+ * run's read key; or from this run's out folder (`local`, by name: a guest's, which are never on
+ * the branch, ADR 0073); or are ones sent through a chat on this task, named by their ref (its
  * from-lines' in `sent`, `<channel>:<id>`) and fetched from the door (ADR 0069): nothing goes to
  * the branch. Each lands in a folder of their own for the server (SHIPIFY_FILES), removed after; a
- * ref is named in the call by its file's name there.
+ * ref is named in the call by its file's name there. A guest's calls (`guest`, from the door) start
+ * the server with SHIPIFY_GUEST, so its guest mode acts for them alone.
  */
 export async function makeCalls(
   calls: ToolCall[],
@@ -29,6 +31,7 @@ export async function makeCalls(
   get: typeof fetch = fetch,
   sent: Record<string, string> = {},
   fromDoor: (ref: string) => Promise<Buffer | undefined> = doorFile,
+  more: { local?: Record<string, string>; guest?: GuestWho } = {},
 ): Promise<ToolResult[]> {
   const tool = calls[0]?.tool;
   if (!tool) return [];
@@ -41,17 +44,12 @@ export async function makeCalls(
       text: "not a list of this tool's act calls: nothing was made",
     }));
   const none = (text: string) => calls.map(() => ({ ok: false, text }));
-  const names = [
-    ...new Set(
-      calls.flatMap((c) => {
-        const arg = entry.args?.[c.name]?.files;
-        const v = arg ? c.args[arg] : undefined;
-        return Array.isArray(v) ? v.map((f) => basename(String(f))) : [];
-      }),
-    ),
-  ];
-  const isSent = (n: string) => !Object.hasOwn(shared, n) && Object.hasOwn(sent, n);
-  const unshared = names.filter((n) => !Object.hasOwn(shared, n) && !isSent(n));
+  const names = callFiles(calls, entry);
+  const local = more.local ?? {};
+  const isShared = (n: string) => Object.hasOwn(shared, n);
+  const isLocal = (n: string) => !isShared(n) && Object.hasOwn(local, n);
+  const isSent = (n: string) => !isShared(n) && !isLocal(n) && Object.hasOwn(sent, n);
+  const unshared = names.filter((n) => !isShared(n) && !isLocal(n) && !isSent(n));
   if (unshared.length)
     return none(`${unshared.join(", ")}: not among this task's shared files, so nothing was made`);
   let files: string | undefined;
@@ -60,11 +58,12 @@ export async function makeCalls(
   if (names.length) {
     files = mkdtempSync(join(tmpdir(), "shipify-call-files-"));
     try {
-      for (const n of names.filter((n) => !isSent(n)))
+      for (const n of names.filter(isShared))
         writeFileSync(
           join(files, n),
           await readBlob((shared[n] as { url: string }).url, env.GH_TOKEN ?? "", get),
         );
+      for (const n of names.filter(isLocal)) copyFileSync(local[n] as string, join(files, n));
       for (const n of names.filter(isSent)) {
         const body = await fromDoor(n);
         if (!body) throw new Error(`${sent[n]} couldn't be fetched from the door`);
@@ -80,10 +79,29 @@ export async function makeCalls(
     }
   }
   try {
-    return await callTool(named.size ? byName(calls, entry, named) : calls, entry, env, files);
+    return await callTool(
+      named.size ? byName(calls, entry, named) : calls,
+      entry,
+      env,
+      files,
+      more.guest,
+    );
   } finally {
     if (files) rmSync(files, { recursive: true, force: true });
   }
+}
+
+/** The files these calls name (their tool's `args.<call>.files`), each once, by name: one tool's. */
+export function callFiles(calls: ToolCall[], entry = loadTools()[calls[0]?.tool ?? ""]): string[] {
+  return [
+    ...new Set(
+      calls.flatMap((c) => {
+        const arg = entry?.args?.[c.name]?.files;
+        const v = arg ? c.args[arg] : undefined;
+        return Array.isArray(v) ? v.map((f) => basename(String(f))) : [];
+      }),
+    ),
+  ];
 }
 
 /** A file's name made safe, and free in this folder: a second `photo.jpg` is `2-photo.jpg`. */
@@ -113,6 +131,7 @@ async function callTool(
   entry: NonNullable<ReturnType<typeof loadTools>[string]>,
   env: NodeJS.ProcessEnv,
   files: string | undefined,
+  guest: GuestWho | undefined,
 ): Promise<ToolResult[]> {
   const tool = calls[0]?.tool as string;
   // Only this tool's act keys, by the variable names its server reads.
@@ -128,6 +147,7 @@ async function callTool(
       HOME: env.HOME ?? "",
       ...keys,
       ...(files ? { SHIPIFY_FILES: files } : {}),
+      ...(guest ? { SHIPIFY_GUEST: JSON.stringify(guest) } : {}),
     },
     stdio: ["pipe", "pipe", "inherit"],
   });

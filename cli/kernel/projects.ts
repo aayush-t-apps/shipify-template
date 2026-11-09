@@ -8,6 +8,7 @@ import {
   projectNameOf,
   readFrom,
   reposOf,
+  STATE_LABELS,
   SUB_TASK_LABEL,
   withoutLine,
 } from "../contracts/index.ts";
@@ -177,11 +178,10 @@ export function pageWordNotes(
   ];
 }
 
-const STATES = ["working", "needs you", "failed", "answered"];
 /** The states a run must never miss: a chat at work, waiting on the owner, or failed. */
-const LIVE = STATES.slice(0, 3);
+const LIVE: readonly string[] = STATE_LABELS.slice(0, 3);
 const stateOf = (c: Part) =>
-  c.state === "closed" ? "closed" : (STATES.find((l) => c.labels.includes(l)) ?? "open");
+  c.state === "closed" ? "closed" : (STATE_LABELS.find((l) => c.labels.includes(l)) ?? "open");
 /** The most of a project's newest chats its prompt names: the rest are counted, and live ones kept. */
 const MOST_CHATS = 30;
 

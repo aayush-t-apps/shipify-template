@@ -3,6 +3,7 @@
 // and tells the door of each new reply. It never runs code the agent wrote: a PR is pushed from the
 // agent's bundle, fetched into apply's own clone with git's hooks and monitors off.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -15,7 +16,9 @@ import { CLEAN_CLOSED, closeQuiet } from "../commands/task/sweep.ts";
 import {
   asProblem,
   errorLine,
+  FIRST_LABEL,
   fileRefOf,
+  inertImages,
   type Link,
   MAX_FILES_OUT,
   maskSecrets,
@@ -25,30 +28,40 @@ import {
   readReply,
   renderProblem,
   replyLine,
+  RUN_WRITER,
   STARTED_LABEL,
   type ToolResult,
 } from "../contracts/index.ts";
 import { accountOf } from "../lib/accounts.ts";
 import { modelLabel } from "../lib/agents.ts";
 import { cloneArgs, gitEnv, githubUrl } from "../lib/clones.ts";
-import { gh, ghRun, RECORD_WRITER } from "../lib/github.ts";
+import { gh, ghRun, previewLabel, withToken } from "../lib/github.ts";
 import { madeWith, taskLine } from "../lib/links.ts";
 import type { RecordComment, RecordWrite } from "../lib/plugins/record.ts";
 import { repoFor } from "../lib/projects-on-github.ts";
 import { type RunDetails, recordRun, renderRunDetails } from "../lib/runs.ts";
 import { secretFindings } from "../lib/secret-scan.ts";
 import { dropRepeat, tryStatusIssue, upsertRepeat } from "../lib/status-issue.ts";
-import { findStatus, inertImages, MAX_REPLY, safeMarkdown, type TaskState } from "../lib/task.ts";
+import { findStatus, MAX_REPLY, safeMarkdown, type TaskState } from "../lib/task.ts";
 import { cursorOf, guestOf, sentRefs, sharedNow } from "./decide.ts";
-import { typeOf } from "./door.ts";
+import { doorGuest, typeOf } from "./door.ts";
 import { replyKey } from "./keys.ts";
-import { makeCalls } from "./mcp-client.ts";
+import { callFiles, makeCalls } from "./mcp-client.ts";
 import { openedText, SUB_TASK } from "./parts.ts";
 import { saidAs } from "./result.ts";
 import { type Person, replyTo, scheduledReply } from "./route.ts";
 import { taskReadOf } from "./snapshot.ts";
-import type { Snapshot, Write } from "./types.ts";
-import { workflowsMismatch } from "./workflows.ts";
+import { committer } from "./think.ts";
+import type { Held, Snapshot, Write } from "./types.ts";
+import {
+  factsOf,
+  hold,
+  holdOf,
+  isWorkflowFile,
+  patchParts,
+  runsBeforeMerge,
+  workflowsMismatch,
+} from "./workflows.ts";
 
 /** A run's file as its reply's line names it: its ref in the web chat's store (ADR 0071). */
 type KeptFile = NonNullable<ReplyLine["files"]>[number];
@@ -70,6 +83,11 @@ export interface ApplyEnv {
    * replies on the task, so they hold every reply written, and apply reads them no more.
    */
   comments?: RecordComment[];
+  /**
+   * The comments written since the task step's read, as decide's step read them a moment ago: for
+   * the same reason, apply takes them with the task step's read and reads none.
+   */
+  since?: RecordComment[];
 }
 
 export interface Applied {
@@ -92,15 +110,19 @@ export async function apply(
   const task = taskReadOf(s.n);
   const own = task && task.run === thisRun() ? task : undefined;
   // A comment the read held and the new one edited since is there twice: the newer copy counts.
+  // Decide's step read the new ones already, from the same time on (ADR 0051 B2).
   const raw = env.comments ?? [
     ...new Map(
-      [...(own?.record.comments ?? []), ...rec().comments(s.n, own?.at)].map((c) => [c.id, c]),
+      [...(own?.record.comments ?? []), ...(env.since ?? rec().comments(s.n, own?.at))].map((c) => [
+        c.id,
+        c,
+      ]),
     ).values(),
   ];
   const issue: StatusIssue = { number: s.n, labels: s.issue.labels.map((name) => ({ name })) };
   const status = new Status(issue, findStatus(raw).comment?.id ?? s.statusId, st);
   const written = new Set(
-    raw.filter((c) => c.user.login === RECORD_WRITER).flatMap((c) => readReply(c.body)?.key ?? []),
+    raw.filter((c) => c.user.login === RUN_WRITER).flatMap((c) => readReply(c.body)?.key ?? []),
   );
   const outcomes: string[] = [];
   const problems: Problem[] = [];
@@ -202,6 +224,12 @@ export async function apply(
     shares.set(w, got);
     return got;
   };
+  /**
+   * The files a call that worked took, by name (a page given to Drop, ADR 0072): its answer stands
+   * for each in the reply, so the reply and the chat's store leave it out. It stays on
+   * shipify-files, where the call read it. A call that failed, or waits for a Yes, takes none.
+   */
+  const taken = new Set<string>();
 
   for (const w of writes) {
     // A reply's words, once it's about to be written: kept for the next reply if GitHub refuses it.
@@ -276,7 +304,34 @@ export async function apply(
             `the ${w.calls.length} approved call(s)`,
             async () => {
               for (const r of writes) if (r.w === "reply") share(r);
-              const done = await makeCalls(w.calls, process.env, st.shared, fetch, sentRefs(s));
+              // A guest's calls (ADR 0073): who they are from the door's list, and their files
+              // from this run's folder, as none are on the branch. One the door doesn't know (a
+              // guest you removed) makes none.
+              const who = guest ? await doorGuest(guest) : undefined;
+              if (guest && !who) {
+                outcomes.push(
+                  ...w.calls.map(
+                    (c) =>
+                      `✗ \`${c.tool}.${c.name}\`: nothing was made, as the door couldn't say you're a guest here now`,
+                  ),
+                );
+                return;
+              }
+              const local = Object.fromEntries(
+                [...shares.values()].flatMap((x) => x.out).map((f) => [basename(f), f]),
+              );
+              const done = await makeCalls(
+                w.calls,
+                process.env,
+                st.shared,
+                fetch,
+                sentRefs(s),
+                undefined,
+                guest ? { local, guest: who } : {},
+              );
+              const took = w.calls.filter((_, i) => done[i]?.ok);
+              // A guest's page stays in their chat too: their files have no other copy (ADR 0073).
+              if (took.length && !guest) for (const f of callFiles(took)) taken.add(f);
               outcomes.push(
                 ...done.map(
                   (r: ToolResult, i: number) =>
@@ -307,6 +362,31 @@ export async function apply(
             },
           );
           break;
+        case "workflow":
+          // The workflow change you approved (ADR 0075 §5.5): pushed once, by its patch's hash.
+          await journal(
+            `workflow:${w.change.sha256.slice(0, 16)}`,
+            "pushing the workflow change you approved",
+            () => {
+              outcomes.push(pushApproved(s, st, w, env));
+            },
+          );
+          break;
+        case "first":
+          // A task first, on your yes (ADR 0075 §6): opened under the parent, with the task that
+          // waits for it blocked by it, and started at once, as `go #n` starts a part.
+          await journal(`first:${s.state.seen}:${s.run.id}`, `opening ${w.part.title}`, () => {
+            const [n] = rec().openParts(w.parent, [w.part], SUB_TASK);
+            if (!n) throw new Error("GitHub didn't open the task first");
+            rec().addLabels(n, [FIRST_LABEL]);
+            const r = queue().dispatch("task.yml", { issue: String(n), job: "run" });
+            outcomes.push(
+              r.ok
+                ? `Opened #${n} and started it. When it merges, I'll say so here, and \`continue\` carries on.`
+                : `Opened #${n}, but it couldn't start: ${r.error}. Say \`continue\` on #${n} to start it.`,
+            );
+          });
+          break;
         case "start":
           // A part's run (ADR 0066): your `go` on its parent, or the part it waited for merged.
           await journal(`start:${w.n}:${s.run.id}`, `starting #${w.n}`, () => {
@@ -333,7 +413,7 @@ export async function apply(
                   v: 1,
                   kind: w.kind,
                   state: w.state,
-                  title: (s.family?.parent.title ?? `#${w.n}`).slice(0, 256),
+                  title: (w.title ?? s.family?.parent.title ?? `#${w.n}`).slice(0, 256),
                   links: [],
                   to,
                   key,
@@ -374,8 +454,9 @@ export async function apply(
           break;
         }
         case "push":
+          // By the words it answers too: a stay's push comes in the same job as its run's (ADR 0076).
           await journal(
-            `push:${w.repo}:${w.branch}:${s.run.id}`,
+            `push:${w.repo}:${w.branch}:${st.seen}:${s.run.id}`,
             `pushing ${w.branch}`,
             () => {
               const pushed = pushFromBundle(s, st, w, env);
@@ -433,12 +514,16 @@ export async function apply(
           if (written.has(key)) break;
           unsaid = body;
           const { out, made, kept } = share(w);
+          const shown = (f: string | undefined) => !taken.has(basename(f ?? ""));
+          const sent = out.filter(shown);
+          const named = kept.filter((_, i) => shown(out[i]));
+          const lines = sent.flatMap((f) => made?.lines.get(f) ?? []);
           // A guest's files have no backup: the reply names them, and the window opens them.
-          const filesBlock =
-            made?.text ??
-            (kept.length
-              ? `**Files:** ${kept.map((f) => f.name.replace(/[[\]]/g, "")).join(" · ")}`
-              : "");
+          const filesBlock = lines.length
+            ? ["**Files:**", ...lines].join("\n")
+            : named.length
+              ? `**Files:** ${named.map((f) => f.name.replace(/[[\]]/g, "")).join(" · ")}`
+              : "";
           const allLinks = [...(r.links ?? []), ...links];
           const to = replyTo({
             kind: r.kind,
@@ -461,7 +546,7 @@ export async function apply(
             ...(question && choices?.length ? { choices } : {}),
             ...(r.list ? { list: r.list } : {}),
             ...(r.keep ? { keep: true as const } : {}),
-            ...(kept.length ? { files: kept } : {}),
+            ...(named.length ? { files: named } : {}),
             to,
             key,
           });
@@ -489,7 +574,7 @@ export async function apply(
           // A reply says what's new: a button's Last action (ADR 0069) is behind it now.
           st.action = undefined;
           // Told at once (ADR 0057): the writes after it never hold your reply back.
-          await tellDoor(id, out);
+          await tellDoor(id, sent);
           // The list this reply asks a yes for: only a yes after it counts.
           if (st.pending.list && !st.pending.list.post) st.pending.list.post = id;
           break;
@@ -644,17 +729,6 @@ export function brief(d: RunDetails): string {
     .slice(0, 120);
 }
 
-const withToken = <T>(token: string, f: () => T): T => {
-  const was = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = token;
-  try {
-    return f();
-  } finally {
-    if (was === undefined) delete process.env.GH_TOKEN;
-    else process.env.GH_TOKEN = was;
-  }
-};
-
 /** git with the token in its environment (never on the command line) and nothing of the repo's run:
  * clones.ts's environment, built from nothing. */
 function git(dir: string, token: string, ...args: string[]) {
@@ -720,88 +794,14 @@ function pushFromBundle(
   const base = w.base ?? "main";
   const dir = mkdtempSync(join(tmpdir(), "shipify-apply-"));
   try {
-    // History without file contents, that branch only (ADR 0044): a new project's empty repo has
-    // none.
-    const [, ...clone] = cloneArgs("apply", githubUrl(repo), dir, {
-      empty: w.kind === "publish",
-      branch: base,
-    });
-    git(tmpdir(), token, ...clone);
-    if (w.kind === "publish" && git(dir, token, "ls-remote", "--heads", "origin").trim())
-      throw new Error(`${repo} already has commits: publishing pushes only into an empty repo`);
-    // The task's branch as an earlier run pushed it, by name: the bundle's base, and onBranch's.
-    if (w.kind !== "publish" && git(dir, token, "ls-remote", "--heads", "origin", w.branch).trim())
-      git(
-        dir,
-        token,
-        "fetch",
-        "--quiet",
-        "origin",
-        `+refs/heads/${w.branch}:refs/remotes/origin/${w.branch}`,
-      );
+    cloneTask(dir, token, repo, w.kind === "publish" ? undefined : w.branch, base);
     // Nothing new this run: an earlier run's commits on the task's branch (its push went through,
     // its PR didn't) still get their PR. A branch with nothing ahead of main has nothing to open.
     const sha = fresh
-      ? pushed(dir, token, bundle as string, w, base)
+      ? pushed(dir, token, bundle as string, w, base, repo)
       : onBranch(dir, token, w.branch, base);
     if (w.kind === "publish" || w.open === false) return { sha };
-    const existing = withToken(token, () =>
-      gh([
-        "pr",
-        "list",
-        "-R",
-        repo,
-        "--head",
-        w.branch,
-        "--state",
-        "open",
-        "--json",
-        "url",
-        "--jq",
-        ".[0].url",
-      ]).trim(),
-    );
-    const body = prBody(s, w, env.details, accountOf(repo) === undefined);
-    // Open already: its title and body as this run asked for them, so its task line (`Closes` or
-    // `Part of`) is the kind asked for now, never the first run's.
-    if (existing)
-      withToken(token, () =>
-        gh(["pr", "edit", existing, "-R", repo, "--title", maskSecrets(w.title), "--body", body]),
-      );
-    // Never with a label: a repo without it would refuse the whole PR.
-    const url =
-      existing ||
-      withToken(
-        token,
-        () =>
-          gh([
-            "pr",
-            "create",
-            "-R",
-            repo,
-            "--base",
-            base,
-            "--head",
-            w.branch,
-            "--title",
-            maskSecrets(w.title),
-            "--body",
-            body,
-          ])
-            .trim()
-            .split("\n")
-            .pop() ?? "",
-      );
-    if (url) {
-      st.prs = [...new Set([...(st.prs ?? []), url])];
-      st.prInfo = {
-        ...(st.prInfo ?? {}),
-        [url]: {
-          kind: w.kind === "part-of" ? (st.plan ? "plan" : "change") : "code",
-          state: "open",
-        },
-      };
-    }
+    const url = openPr(s, st, { ...w, repo }, env, token);
     return {
       ...(url ? { url } : {}),
       sha,
@@ -810,6 +810,117 @@ function pushFromBundle(
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Apply's clone of a repo (ADR 0044): history without file contents, its default branch only, and
+ * the task's branch as an earlier run pushed it, by name, in one fetch. No branch: a new project's
+ * empty repo, which has none. Whether the task's branch is on GitHub: one not there yet is none;
+ * any other failure stops the write.
+ */
+function cloneTask(
+  dir: string,
+  token: string,
+  repo: string,
+  branch: string | undefined,
+  base: string,
+): boolean {
+  const [, ...clone] = cloneArgs("apply", githubUrl(repo), dir, { empty: !branch, branch: base });
+  git(tmpdir(), token, ...clone);
+  if (!branch) {
+    if (git(dir, token, "ls-remote", "--heads", "origin").trim())
+      throw new Error(`${repo} already has commits: publishing pushes only into an empty repo`);
+    return false;
+  }
+  try {
+    git(
+      dir,
+      token,
+      "fetch",
+      "--quiet",
+      "origin",
+      `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+    );
+    return true;
+  } catch (e) {
+    if (/couldn't find remote ref/.test(String((e as { stderr?: unknown }).stderr ?? "")))
+      return false;
+    throw e;
+  }
+}
+
+/**
+ * The PR for the task's branch, opened, or updated with this run's title and body when it's open
+ * already, so its task line (`Closes` or `Part of`) is the kind asked for now. Its URL.
+ */
+function openPr(
+  s: Snapshot,
+  st: TaskState,
+  w: {
+    repo: string;
+    branch: string;
+    kind: "closes" | "part-of" | "publish";
+    title: string;
+    body: string;
+    base?: string;
+  },
+  env: ApplyEnv,
+  token: string,
+): string {
+  const { repo } = w;
+  const existing = withToken(token, () =>
+    gh([
+      "pr",
+      "list",
+      "-R",
+      repo,
+      "--head",
+      w.branch,
+      "--state",
+      "open",
+      "--json",
+      "url",
+      "--jq",
+      ".[0].url",
+    ]).trim(),
+  );
+  const body = prBody(s, w, env.details, accountOf(repo) === undefined);
+  if (existing)
+    withToken(token, () =>
+      gh(["pr", "edit", existing, "-R", repo, "--title", maskSecrets(w.title), "--body", body]),
+    );
+  // Never with a label: a repo without it would refuse the whole PR.
+  const url =
+    existing ||
+    withToken(
+      token,
+      () =>
+        gh([
+          "pr",
+          "create",
+          "-R",
+          repo,
+          "--base",
+          w.base ?? "main",
+          "--head",
+          w.branch,
+          "--title",
+          maskSecrets(w.title),
+          "--body",
+          body,
+        ])
+          .trim()
+          .split("\n")
+          .pop() ?? "",
+    );
+  if (url) {
+    st.prs = [...new Set([...(st.prs ?? []), url])];
+    st.prInfo = {
+      ...(st.prInfo ?? {}),
+      [url]: { kind: w.kind === "part-of" ? (st.plan ? "plan" : "change") : "code", state: "open" },
+    };
+  }
+  return url;
 }
 
 /**
@@ -832,7 +943,8 @@ function signedOnly(repo: string, branch: string, token: string): boolean {
 
 /**
  * This run's commits from the agent's bundle, onto the task's branch (or an empty repo's main):
- * workflow files only as the stack renders them, scanned for keys, pushed. Their sha.
+ * scanned for keys, its workflow change held (ADR 0075), workflow files then only as the branch on
+ * GitHub or the stack has them, pushed. Their sha.
  */
 function pushed(
   dir: string,
@@ -840,15 +952,16 @@ function pushed(
   bundle: string,
   w: Extract<Write, { w: "push" }>,
   trunk: string,
+  repo: string,
 ) {
   const target = w.kind === "publish" ? "main" : w.branch;
   fetchBundle(dir, token, bundle, target);
   // What the PR changes against its base (three dots: from where they meet), never the base's own
-  // changes the agent merged in; a new project's first push: every file.
+  // changes the agent merged in, a rename as both its paths; a new project's first push: every file.
   const base = w.kind === "publish" ? "" : `origin/${trunk}`;
   const changed = (
     base
-      ? git(dir, token, "diff", "--name-only", `${base}...${target}`)
+      ? git(dir, token, "diff", "--no-renames", "--name-only", `${base}...${target}`)
       : git(dir, token, "ls-tree", "-r", "--name-only", target)
   )
     .split("\n")
@@ -866,18 +979,247 @@ function pushed(
       "--stdin",
     );
   git(dir, token, "checkout", "--quiet", target);
-  const wrong = workflowsMismatch(dir, changed);
-  if (wrong) throw new Error(`the change edits a workflow file, so it wasn't pushed: ${wrong}`);
-  // The change's own files (a new project's first push: all of them): what this push adds.
+  // The change's own files (a new project's first push: all of them): what this push adds, its
+  // workflow lines too, before any is held.
   const found = secretFindings(dir, base ? changed : undefined);
   if (found) {
     const p = problem("secret-in-change", { file: found.join(", ") || "a file it didn't name" });
     throw Object.assign(new Error(p.what), { problem: p });
   }
+  // One the owner changed on the task's branch on GitHub, left as it is there, isn't the run's.
+  const onGitHub = base && git(dir, token, "for-each-ref", `refs/remotes/origin/${target}`).trim();
+  // The run's own workflow change (ADR 0075 §5.2): held, each file back as the branch on GitHub has
+  // it (else as main had it where the branch left it), in one commit of the bot's; decide lists it
+  // for your yes. The repos App can't push a workflow file even in a commit's history: never held
+  // there, it's refused.
+  const g = (...args: string[]) => git(dir, token, ...args);
+  const h = base ? holdOf(g, dir, onGitHub ? `origin/${target}` : base, target) : undefined;
+  if (h && accountOf(repo))
+    throw new Error(
+      `the change edits a workflow file (${h.files.join(", ")}), so it wasn't pushed: the repos App can't push one to ${repo}, even in a commit's history. Take it out of the branch, and make it there yourself if you want it`,
+    );
+  if (h) hold(g, h, committer({}));
+  // Then today's check, on what the push changes after the hold: nothing of the run's.
+  const left = base
+    ? git(
+        dir,
+        token,
+        "diff",
+        "--name-only",
+        ...(onGitHub ? [`origin/${target}`, target] : [`${base}...${target}`]),
+      )
+    : changed.join("\n");
+  const wrong = workflowsMismatch(dir, left.split("\n").filter(Boolean));
+  if (wrong) throw new Error(`the change edits a workflow file, so it wasn't pushed: ${wrong}`);
   git(dir, token, "push", "--quiet", "origin", `refs/heads/${target}:refs/heads/${target}`);
   if (w.kind === "publish" && stagingOf(dir))
     git(dir, token, "push", "--quiet", "origin", `refs/heads/${target}:refs/heads/production`);
   return git(dir, token, "rev-parse", target).trim();
+}
+
+/** The most a held change's patch may be for one yes (ADR 0075 §5.3). */
+export const HELD_MAX = 12_000;
+
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
+/** A file as a checkout has it, or nothing when it isn't there. */
+const fileIn = (dir: string, f: string) => {
+  const p = join(dir, f);
+  return existsSync(p) && statSync(p).isFile() ? readFileSync(p, "utf8") : undefined;
+};
+
+/** The patch of these files from `at` to `head`: plain text, no renames, no repo's diff tools. */
+const patchOf = (dir: string, token: string, at: string, head: string, files: string[]) =>
+  git(
+    dir,
+    token,
+    "diff",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-color",
+    "--no-renames",
+    at,
+    head,
+    "--",
+    ...files,
+  );
+
+/**
+ * The workflow change a run's commits hold (ADR 0075 §5.2), as decide reads it: the run's bundle
+ * in a clone of its own, as apply's (hooks off, only `.github/` and shipify.json checked out),
+ * against the task's branch on GitHub, else its base. Its patch, its facts, and why it can't be
+ * listed (§5.4, a key, too big); none when its commits change no workflow file.
+ */
+export function heldChange(
+  repo: string,
+  branch: string,
+  trunk: string,
+  bundle: string,
+  token: string,
+): Held | undefined {
+  const dir = mkdtempSync(join(tmpdir(), "shipify-held-"));
+  try {
+    const onGitHub = cloneTask(dir, token, repo, branch, trunk);
+    const target = "shipify-held";
+    fetchBundle(dir, token, bundle, target);
+    const base = onGitHub ? `origin/${branch}` : `origin/${trunk}`;
+    const all = git(dir, token, "diff", "--no-renames", "--name-only", `${base}...${target}`)
+      .split("\n")
+      .filter(Boolean);
+    const touched = all.filter(isWorkflowFile);
+    if (!touched.length) return undefined;
+    gitIn(
+      dir,
+      token,
+      sparse([...touched, ".github/workflows/", "shipify.json"]),
+      "sparse-checkout",
+      "set",
+      "--no-cone",
+      "--stdin",
+    );
+    git(dir, token, "checkout", "--quiet", target);
+    const h = holdOf((...a) => git(dir, token, ...a), dir, base, target);
+    if (!h) return undefined;
+    const patch = patchOf(dir, token, h.at, target, h.files);
+    const read = (f: string) => fileIn(dir, f);
+    const parts = patchParts(patch);
+    const workflows = git(
+      dir,
+      token,
+      "ls-tree",
+      "-r",
+      "--name-only",
+      target,
+      "--",
+      ".github/workflows/",
+    )
+      .split("\n")
+      .filter(Boolean);
+    const found = secretFindings(dir, h.files);
+    const why = found
+      ? `what looks like a key is in it (${found.join(", ") || "a file it didn't name"})`
+      : /^(Binary files |GIT binary patch)/m.test(patch)
+        ? "it has a binary file, which a list can't show"
+        : patch.length > HELD_MAX
+          ? "it's too big for one yes: ask for it in steps"
+          : runsBeforeMerge(h.files, read, workflows, trunk);
+    // The run merged main, which changed one of these files since the branch left it.
+    const left = onGitHub ? git(dir, token, "merge-base", base, `origin/${trunk}`).trim() : "";
+    const newer =
+      left &&
+      git(dir, token, "diff", "--name-only", left, `origin/${trunk}`, "--", ...h.files).trim();
+    return {
+      files: h.files,
+      at: h.at,
+      patch,
+      sha256: sha256(patch),
+      facts: h.files.map((f) => factsOf(f, read(f), parts.get(f) ?? "", trunk)),
+      only: all.every((f) => h.files.includes(f)),
+      ...(why ? { why } : {}),
+      ...(found ? { key: true as const } : {}),
+      ...(newer ? { mainNewer: true as const } : {}),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The workflow change you approved (ADR 0075 §5.5), in a fresh clone of the task's branch (or, not
+ * on GitHub yet, from where it left its base): the patch checked against the list, applied, checked
+ * again (the rule and the key scan), committed by the bot and pushed to that branch, once; the PR
+ * the run asked for opened when it has none. What the reply says.
+ */
+function pushApproved(
+  s: Snapshot,
+  st: TaskState,
+  w: Extract<Write, { w: "workflow" }>,
+  env: ApplyEnv,
+): string {
+  const c = w.change;
+  const token = env.tokens.repo;
+  if (!token) throw new Error("there was no key to push the workflow change with");
+  if (sha256(c.patch) !== c.sha256) throw new Error("the patch isn't the one on the list");
+  if (!/^(task|plan)\/\d+[\w./-]*$/.test(c.branch))
+    throw new Error(`apply pushes only to a task's own branch, not ${c.branch}`);
+  const repo = repoFor(c.repo, s.repos);
+  const trunk = c.base ?? "main";
+  const prs = JSON.parse(
+    withToken(token, () =>
+      gh(["pr", "list", "-R", repo, "--head", c.branch, "--state", "all", "--json", "url,state"]),
+    ) || "[]",
+  ) as { url: string; state: string }[];
+  const open = prs.find((p) => p.state === "OPEN");
+  const merged = prs.find((p) => p.state === "MERGED");
+  // A refusal you can act on is a ✗ with why; anything else, a problem as any write's.
+  const refused = (why: string) => `✗ The workflow change you approved wasn't pushed: ${why}.`;
+  if (!open && merged)
+    return refused(
+      `PR #${merged.url.split("/").pop()} merged without it. Say \`continue\`, and a run makes it again in a new PR`,
+    );
+  const dir = mkdtempSync(join(tmpdir(), "shipify-approved-"));
+  try {
+    const onGitHub = cloneTask(dir, token, repo, c.branch, trunk);
+    gitIn(
+      dir,
+      token,
+      sparse([".github/", "shipify.json"]),
+      "sparse-checkout",
+      "set",
+      "--no-cone",
+      "--stdin",
+    );
+    git(dir, token, "checkout", "--quiet", "-B", c.branch, onGitHub ? `origin/${c.branch}` : c.at);
+    // Only the listed files, each under .github/, then applied where the list left them.
+    const paths = gitIn(dir, token, c.patch, "apply", "--numstat", "-")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => l.split("\t")[2] ?? "");
+    if (!paths.length || paths.some((f) => !c.files.includes(f) || !isWorkflowFile(f)))
+      throw new Error("the patch changes a file the list doesn't name");
+    try {
+      gitIn(dir, token, c.patch, "apply", "--index", "--whitespace=nowarn", "-");
+    } catch {
+      return refused(
+        "the branch changed since the list, so it no longer fits. Say `continue`, and the run makes it again",
+      );
+    }
+    const workflows = git(dir, token, "ls-files", "--", ".github/workflows/")
+      .split("\n")
+      .filter(Boolean);
+    const why = runsBeforeMerge(paths, (f) => fileIn(dir, f), workflows, trunk);
+    if (why) return refused(`on the branch as it is now, it would run before your merge (${why})`);
+    const found = secretFindings(dir, paths);
+    if (found) {
+      const p = problem("secret-in-change", { file: found.join(", ") || "a file it didn't name" });
+      throw Object.assign(new Error(p.what), { problem: p });
+    }
+    const by = committer({});
+    git(
+      dir,
+      token,
+      "-c",
+      `user.name=${by.name}`,
+      "-c",
+      `user.email=${by.email}`,
+      "commit",
+      "-q",
+      "--no-verify",
+      "-m",
+      `ci: the workflow change you approved (list ${w.code})`,
+    );
+    git(dir, token, "push", "--quiet", "origin", `HEAD:refs/heads/${c.branch}`);
+    const sha = git(dir, token, "rev-parse", "--short", "HEAD").trim();
+    const files = c.files.map((f) => `\`${f}\``).join(", ");
+    const url =
+      open?.url ??
+      (c.pr ? openPr(s, st, { ...c.pr, repo, branch: c.branch, base: trunk }, env, token) : "");
+    return url
+      ? `✓ Pushed the workflow change you approved to PR #${url.split("/").pop()}: ${files} (commit \`${sha}\`).${open ? "" : ` It's open now: ${url}`}`
+      : `✓ Pushed the workflow change you approved to \`${c.branch}\`: ${files} (commit \`${sha}\`).`;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** Whether the project in this checkout has staging (its shipify.json): then it has production too. */
@@ -912,7 +1254,7 @@ export function onBranch(dir: string, token: string, branch: string, base = "mai
  */
 export function prBody(
   s: Snapshot,
-  w: Extract<Write, { w: "push"; open?: undefined }>,
+  w: { kind: "closes" | "part-of" | "publish"; body: string },
   details: RunDetails | undefined,
   ownAccount: boolean,
 ): string {
@@ -935,20 +1277,7 @@ const PREVIEW_UNSET =
 /** The `preview` label on a PR, made first when its repo has none: whether it's on. */
 export function labelled(repo: string, pr: string, token: string): boolean {
   return withToken(token, () => {
-    try {
-      gh([
-        "label",
-        "create",
-        "preview",
-        "-R",
-        repo,
-        "--color",
-        "1d76db",
-        "--description",
-        "Shipify: a preview of this PR",
-        "--force",
-      ]);
-    } catch {}
+    previewLabel(repo);
     try {
       gh(["pr", "edit", pr, "-R", repo, "--add-label", "preview"]);
       return true;

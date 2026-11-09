@@ -12,9 +12,11 @@ Worker ([watch.md](watch.md)).
 | `POST /door/<channel>` | your messages from a chat: `/door/telegram`, one route per channel adapter (`edge/src/channels/`). The web chat's adapter is called from inside the edge, so `POST /door/web` from outside gets 401 | the adapter's proof (Telegram's secret header), a private chat, a sender in `SHIPIFY_PEOPLE` on that channel |
 | `POST /door/replied` | a run's new reply, to copy to your chats | the run's GitHub OIDC token |
 | `GET /door/file/<ref>` | a file you sent, for a run | the run's GitHub OIDC token |
+| `GET /door/guest/<id>` | a guest's email and name, for the box's job that makes their calls (ADR 0073): 404 for one not on the list | task.yml's GitHub OIDC token only |
 | `GET /admin/status` | the status page, for you ([below](#the-status-page)) | Cloudflare Access's sign-in (one application, path `admin/*`), and its token checked by the edge |
 | `/admin/chat/`, `/admin/chat/api/*` | the web chat: its page, reads, files and sends ([below](#the-web-chat)) | the same as `/admin/status`. A `POST` also needs the edge's own `Origin` and `x-shipify-chat: 1` |
-| `GET /`, `/admin` | send you to `/admin/chat/` (a `GET` only) | none: a redirect, nothing shown |
+| `GET /admin` | sends you to `/admin/chat/` (a `GET` only) | none: a redirect, nothing shown |
+| `GET /` | the bare address, for everyone: you to `/admin/chat/`, a guest to `/guest/`, else a page with both ways in (`edge/src/web/home.ts`) | Access's sign-in cookie, checked as its token is; none for the page, which shows nothing |
 | `GET /draw/` | the web chat's diagram frame: a static page with no data ([below](#the-web-chat)) | none: outside the sign-in |
 | `GET /note/icon.png`, `/note/badge.png` | a notification's icon and badge, which the phone fetches by itself (ADR 0050) | none: outside the sign-in, so they show after its session ends |
 | `GET /health` | `ci.yml` and `ship door check` | none. It shows the version, the commit, and the door App's reach and permissions, nothing secret |
@@ -137,8 +139,9 @@ linked from the reply, on the `shipify-files` branch).
    boxes and the door.
 2. **The comment:** the door reads it from GitHub itself. It must be on that task, written by a run
    (`github-actions[bot]`), carry a hidden `reply` line, and never have been edited by anyone but a
-   run. Otherwise: 409, nothing sent. The door reads the comment, its own 🚀 on it and its
-   settings at the same time, so a reply waits for one round trip to GitHub, not three.
+   run. Otherwise: 409, nothing sent. The door reads the comment, its own 🚀 on it (its bot user
+   by its name, `SHIPIFY_DOOR_SLUG`) and its settings at the same time, so a reply waits for one
+   round trip to GitHub, not three.
 3. **Where:** each chat in the reply's `to` (`<channel>:<id>`) that belongs to a person in
    `SHIPIFY_PEOPLE`, on a channel whose keys are set. Any other id is dropped.
 4. **The words, the mark, then the files:** each chat's adapter renders the reply its own way.
@@ -169,6 +172,11 @@ reference, with the run's OIDC token (checked as above). The door gets it from T
 bot's token and hands back the bytes, 10 MB at most, keeping nothing. The bot's token never leaves
 the edge. A file from the web chat (`web:<ref>`) comes from the chat's own store
 ([below](#the-web-chat)).
+
+`GET /door/guest/<id>` (ADR 0073): the box's job that makes a guest's calls asks for their email
+and name, with task.yml's OIDC token (watch.yml's and any other workflow's are refused). The door
+answers from the guest list in R2 (read at most every 10 s), or 404 for one not on it, so a
+removed guest's run makes no call. The guest's own run has no OIDC token, so it can't ask.
 
 ## The status page
 
@@ -247,7 +255,7 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
   are the door's. The web adapter (`edge/src/channels/web.ts`) proves those calls with an HMAC of
   the door App's key, which only the Worker has, so `POST /door/web` from outside gets 401.
 - **Guests** (ADR 0071) come in at `<the edge>/guest/`: the same page and routes, behind a second
-  Access application (path `guest/*`, One-time PIN), whose audience (AUD) is `SHIPIFY_ACCESS`'s
+  Access application (path `guest/*`, Google sign-in, ADR 0073), whose audience (AUD) is `SHIPIFY_ACCESS`'s
   `guests` key, set once on GitHub beside yours (no page can set it). The guest list is one
   object in R2 (`_guests`), read at most every 10 s, so a removed guest is refused within 10 s. A guest is let in only when the token is the
   guests' application's and its `email` is on the list (`guestAt`, `edge/src/guests.ts`); your

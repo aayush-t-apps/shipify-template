@@ -35,6 +35,13 @@ describe("tools.json", () => {
           expect(tools[a]?.look.length ?? 0, `${name}.${p.call}: after ${a}`).toBeGreaterThan(0);
   });
 
+  it("gives guests Drop's two forms: a drop only theirs, and a change of its title and files (ADR 0073)", () => {
+    expect(tools.drop?.guest?.map((g) => [g.call, g.fixed, g.any])).toEqual([
+      ["publish", { share: "me" }, ["files", "expiry"]],
+      ["update", {}, ["drop", "files", "delete_files"]],
+    ]);
+  });
+
   it("names what each of Notion's act calls changes, which a form must fix", () => {
     expect(tools.notion?.args).toMatchObject({
       create_page: { target: "parent" },
@@ -102,6 +109,20 @@ describe("a tool's entry", () => {
     // A call that only makes something new (a drop) has no target to fix.
     const made = { ...tool, args: { create: { new: true } } };
     expect(why({ ...made, pre: [{ ...form, any: ["files"] }] })).toEqual([]);
+  });
+
+  it("takes a guest form with no fixed target, for one of its act calls (ADR 0073)", () => {
+    const tool = {
+      ...server,
+      look: ["search"],
+      act: ["update"],
+      args: { update: { target: "page" } },
+    };
+    const form = { call: "update", caps: { title: 120 }, any: ["page"], max: 5 };
+    expect(why({ ...tool, guest: [form] })).toEqual([]);
+    expect(why({ ...tool, guest: [{ ...form, call: "delete" }] })).toContain(
+      "a guest's \"delete\" isn't one of its act calls",
+    );
   });
 });
 

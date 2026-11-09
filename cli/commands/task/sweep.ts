@@ -10,6 +10,7 @@ import {
   PROJECT_LABEL,
   projectLabel,
   projectNameOf,
+  STATUS_LABEL,
   STAYING_LABEL,
   SUB_TASK_LABEL,
 } from "../../contracts/index.ts";
@@ -18,7 +19,7 @@ import { NOTEBOOK_LABEL } from "../../lib/notebook.ts";
 import type { ProjectItems, SweepRead, SweptIssue, TaskRecord } from "../../lib/plugins/record.ts";
 import { RECIPE_LABEL } from "../../lib/recipes.ts";
 import { REPEATS_LABEL, WAITING_LABEL } from "../../lib/repeat.ts";
-import { STATUS_LABEL, type StatusIssueState, type Swept } from "../../lib/status-issue.ts";
+import type { StatusIssueState, Swept } from "../../lib/status-issue.ts";
 import { findStatus, TASK_LABELS } from "../../lib/task.ts";
 import { rec } from "./context.ts";
 import { Status } from "./issue.ts";
@@ -59,7 +60,7 @@ const KEPT = new Set([
   SUB_TASK_LABEL,
   REPEATS_LABEL.name,
   WAITING_LABEL.name,
-  STATUS_LABEL.name,
+  STATUS_LABEL,
   RECIPE_LABEL.name,
   DEPLOYING_LABEL,
   STAYING_LABEL,

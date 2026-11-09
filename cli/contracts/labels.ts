@@ -1,5 +1,6 @@
-// Names the core and the edge share (ADR 0031): labels the watch and runs set, reply kinds, and the
-// event names logs use. One list each, so the box and the edge can't drift.
+// Names the core and the edge share (ADR 0031): labels the watch and runs set, the boxes' runner
+// labels, reply kinds, and the event names logs use. One list each, so the box and the edge can't
+// drift.
 
 /**
  * Stopped: a task whose run ended before it finished, or whose words waited with no run. The watch
@@ -17,6 +18,11 @@ export const STAYING_LABEL = "staying";
  * goal, and its close tells its parent. Its body's first line is `Part of #<parent>`.
  */
 export const SUB_TASK_LABEL = "sub-task";
+/**
+ * On a task first (ADR 0075), with `sub-task`: a fix on main another task waits for, started on your
+ * yes. It never makes that task's PR `part-of`; its merge tells that task, and `continue` goes on.
+ */
+export const FIRST_LABEL = "first";
 /** On a split task after your `go` (ADR 0066): a part's merge starts the next. `stop` takes it off. */
 export const STARTED_LABEL = "started";
 /** On a task while its merged PR's deploy is followed by the due run. */
@@ -25,6 +31,21 @@ export const DEPLOYING_LABEL = "deploying";
 export const NEEDS_YOU_LABEL = "needs you";
 /** A task's state as its runs label it; a closed task drops them (its run, or the door as it closes it). */
 export const STATE_LABELS = ["working", NEEDS_YOU_LABEL, "failed", "answered"] as const;
+/** On the status task (ADR 0017): Shipify's own status, never a task. */
+export const STATUS_LABEL = "shipify-status";
+
+/** Runners with this label are boxes (ADR 0020): one runner per slot, grouped by `box-<name>`. */
+export const BOX_LABEL = "shipify-box";
+/** The box a runner belongs to: its `box-<name>` label, which every slot has, or else its name. */
+export const boxOf = (r: { name: string; labels: { name: string }[] }) =>
+  r.labels.map((l) => /^box-(.+)$/.exec(l.name)?.[1]).find(Boolean) ?? r.name;
+
+/**
+ * Who a run's own steps write the record as: the workflow's token (SHIPIFY_ISSUES_TOKEN). The agent
+ * never holds it (it has the bot's token, for PRs), so replies and status comments count only from
+ * this login, and only its words can carry the door's mark (ADR 0027).
+ */
+export const RUN_WRITER = "github-actions[bot]";
 
 /** Doorbells the watch rings on the status task; each watch.yml run removes its own. */
 export const WATCH_LABELS = {

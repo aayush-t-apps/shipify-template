@@ -5,6 +5,7 @@
 import {
   type AgentSeen,
   agentsSeen,
+  boxOf,
   CHATS,
   INSTANT,
   zoneName,
@@ -24,7 +25,7 @@ import { github } from "../github.ts";
 import { guestsOf } from "../guests.ts";
 import { listed } from "../store.ts";
 import { publicKey, serviceOf } from "../push.ts";
-import { boxOf, runners, type Settings, statusTask, toBoxes } from "../settings.ts";
+import { runners, type Settings, statusTask, toBoxes } from "../settings.ts";
 import { MOST_BYTES, MOST_FILES } from "./files.ts";
 import { REPEAT_KINDS, REPEAT_WHEN, repeatModels } from "./forms.ts";
 import { read, reader } from "./gh.ts";
@@ -60,10 +61,12 @@ const menuOf = ([id, e]: readonly [string, AgentSeen]) => ({
 
 /**
  * The agents a `use` line may name, each with its models and Auto, the default one first (the page
- * names any other in a pick: "pi z-ai/glm-5.3"); the default one's models and Auto as before.
+ * names any other in a pick: "pi z-ai/glm-5.3"); the default one's models and Auto as before. A
+ * guest's (ADR 0074) leave out an agent whose login is a file its commands can read: their runs
+ * never start it, as it would think with your own sign-in.
  */
-export function models() {
-  const list = agentsSeen();
+export function models(guest = false) {
+  const list = agentsSeen().filter(([, e]) => !guest || !e.login?.file);
   const d = menuOf(list[0] ?? ["", {}]);
   return { agents: list.map(menuOf), models: d.models, auto: d.auto };
 }
@@ -140,7 +143,7 @@ export async function menu(
   ];
   return {
     v: 1,
-    ...models(),
+    ...models(Boolean(guest)),
     // "Change a repo" (ADR 0047): Shipify's own account's repos, as the record keeps them.
     repos: (record?.repos.names ?? []).slice(0, MOST_STARTERS),
     // A project's page (ADR 0065): which are Shipify's projects, and their apps, from the same read.

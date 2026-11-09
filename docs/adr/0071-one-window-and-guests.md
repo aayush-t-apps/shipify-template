@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #663, task #662, 2026-11-04, every question settled by the owner's words) and built in one PR after the owner's `go` of 2026-11-04; see [As built](#as-built-2026-11-04-six-parts-in-one-pr-on-task-662)
+status: accepted (merged #663, task #662, 2026-11-04, every question settled by the owner's words) and built in one PR after the owner's `go` of 2026-11-04; see [As built](#as-built-2026-11-04-six-parts-in-one-pr-on-task-662). Amended by 0073 (a guest's run may ask for a tool's guest forms, which the box makes at once for that guest, as their words still approve nothing; guests sign in with Google, not the One-time PIN)
 date: 2026-11-04
 amends: 0036 and 0039 (the web chat: every chat, doc and file opens in it; a second door, `/guest/`), 0069 (a reply's files open from R2; every run file gets an R2 copy; Files by project; docs read and edited in the web chat; the Library holds what is no project's), 0070 (a project's screen: Overview, Chats, Docs, Files; one new doc a run), 0031 (a fourth run profile, `guest`), 0049 (a guest's words approve nothing), 0057 (a guest's run stays too, and its stay hands the agent no token), and the design's rule 7 (`docs/design.md`: the guests you add start work on their own chats)
 ---

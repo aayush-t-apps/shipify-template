@@ -1,11 +1,12 @@
 // A guest's run (ADR 0071): its prompt holds nothing of the owner's (no notebook, tool, clone, key,
-// Shipify CLI or earlier shared files), its own playbook, and asks only for words, files and its own
-// project's pages.
+// Shipify CLI or earlier shared files), its own playbook, and asks only for words, files, its own
+// project's pages and its tools' guest calls (ADR 0073).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { readLibrary, readProjectPages } from "../cli/commands/task/notebook.ts";
 import { fromLine } from "../cli/contracts/index.ts";
+import { guestCalls } from "../cli/kernel/agent.ts";
 import { buildPrompt, type PromptInput } from "../cli/kernel/prompt.ts";
 import { newState, parseTitle, type TaskState } from "../cli/lib/task.ts";
 import { fakeGh } from "./fixtures/fakes.ts";
@@ -72,6 +73,35 @@ describe("a guest's prompt (ADR 0071)", () => {
       expect(p, field).not.toContain(`- ${field}:`);
     // Without its own project, no pages either.
     expect(buildPrompt(input())).not.toContain("- `pages`:");
+  });
+
+  it("asks for a connected tool's guest forms alone, as the box takes them (ADR 0073)", () => {
+    const saved = { ...process.env };
+    try {
+      for (const k of ["SHIPIFY_DROP_URL", "SHIPIFY_DROP_READ_ID", "SHIPIFY_DROP_READ_SECRET"])
+        delete process.env[k];
+      // Drop not connected: no calls to ask for.
+      expect(guestCalls()).toBeUndefined();
+      Object.assign(process.env, {
+        SHIPIFY_DROP_URL: "https://drop.example.com",
+        SHIPIFY_DROP_READ_ID: "id",
+        SHIPIFY_DROP_READ_SECRET: "secret",
+      });
+      const calls = guestCalls() ?? "";
+      expect(calls.split("\n")).toEqual([
+        '- `drop.publish`: `share` always "me", `title` (120 characters at most), `files`, `expiry` and nothing else; 5 a run at most.',
+        "- `drop.update`: `title` (120 characters at most), `drop`, `files`, `delete_files` and nothing else; 5 a run at most.",
+      ]);
+      const p = buildPrompt(input({ guestCalls: calls }));
+      expect(p).toContain("and the few calls below that the box makes for the guest.");
+      expect(p).toContain("- `calls`: ");
+      expect(p).toContain("\n  - `drop.update`: ");
+      // Still none of your tools, nor the owner's list of calls.
+      expect(p).not.toContain("## Tools");
+      expect(p).not.toContain("the owner says yes");
+    } finally {
+      process.env = saved;
+    }
   });
 
   it("your runs never read a guest's pages; their run reads only its own project's", () => {

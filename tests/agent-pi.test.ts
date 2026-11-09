@@ -3,12 +3,14 @@
 // installs an agent and keeps its tools tidy.
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -541,7 +543,14 @@ describe("an agent on a box", () => {
     expect(flock?.[0]).toBe("flock");
     // Its own words, the prefix filled in, passed as arguments.
     expect(flock).toEqual(expect.arrayContaining([join(at, "pi", "1.0.2"), "--ignore-scripts"]));
-    expect(calls.at(-1)).toEqual([join(at, "pi", "1.0.2", "bin", "pi"), "--version"]);
+    // Its program is started inside the lock, before the mark: nothing runs after it.
+    expect(calls).toHaveLength(1);
+    // Marked: a run after it starts nothing, not even the lock.
+    const where = installedAt("pi", pi, at) as NonNullable<ReturnType<typeof installedAt>>;
+    mkdirSync(where.prefix, { recursive: true });
+    writeFileSync(where.done, "");
+    expect(installAgent("pi", pi, at, run)).toBe(bin);
+    expect(calls).toHaveLength(1);
     // Claude Code keeps the folder it has today.
     const claude = h.executors.claude as NonNullable<typeof h.executors.claude>;
     expect(installedAt("claude", claude, at)?.prefix).toBe(join(at, "claude-code", "2.1.284"));
@@ -576,10 +585,18 @@ describe("an agent on a box", () => {
     writeFileSync(join(where.prefix, "kept"), "");
     installAgent("pi", entry, at, run);
     expect(existsSync(join(where.prefix, "kept"))).toBe(true);
-    // One made before the mark that starts is kept and marked, never pulled from a running slot.
+    // One made before the mark that starts is kept and marked, never pulled from a running slot,
+    // and opened to the agents' users first (one made under the runner's umask is only its own).
     rmSync(where.done);
+    chmodSync(join(where.prefix, "kept"), 0o600);
+    chmodSync(where.prefix, 0o700);
+    chmodSync(where.dir, 0o700);
     installAgent("pi", entry, at, run);
     expect([existsSync(join(where.prefix, "kept")), existsSync(where.done)]).toEqual([true, true]);
+    const mode = (p: string) => statSync(p).mode & 0o777;
+    expect([mode(where.dir), mode(where.prefix), mode(join(where.prefix, "kept"))]).toEqual([
+      0o755, 0o755, 0o644,
+    ]);
   });
 
   it("says why when it doesn't install, or doesn't start", () => {

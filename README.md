@@ -128,7 +128,8 @@ which machine to pick: [docs/box-setup.md](docs/box-setup.md).
   run changes, after a secret scan.
 - **A box keeps no secret between runs,** and secrets are never printed.
 
-Every key, its scope and how to replace it: [docs/security.md](docs/security.md).
+Every key and how to replace it: [docs/setup.md](docs/setup.md#tokens-and-secrets). What each may
+do, and the whole security model: [docs/security.md](docs/security.md).
 
 ## Read next
 

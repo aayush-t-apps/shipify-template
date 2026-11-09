@@ -54,7 +54,7 @@
     "act": ["publish", "update", "revoke"],
     "args": {
       "publish": {
-        "required": ["title", "share"],
+        "required": ["title"],
         "properties": {
           "title": {},
           "files": {},
@@ -104,6 +104,21 @@
         "call": "publish",
         "caps": { "title": 120 },
         "any": ["files", "share", "people", "expiry", "pin"]
+      }
+    ],
+    "guest": [
+      {
+        "call": "publish",
+        "fixed": { "share": "me" },
+        "caps": { "title": 120 },
+        "any": ["files", "expiry"],
+        "max": 5
+      },
+      {
+        "call": "update",
+        "caps": { "title": 120 },
+        "any": ["drop", "files", "delete_files"],
+        "max": 5
       }
     ],
     "check": ["node_modules/.bin/tsx", "tools/drop/server.ts", "--check"],

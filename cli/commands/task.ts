@@ -15,12 +15,6 @@
 
 export { runUrl, whereThisRuns } from "./task/context.ts";
 export { type Due, taskDue } from "./task/due.ts";
-export {
-  freeFile,
-  type Given,
-  madeFiles,
-  saveAttachments,
-  saveLinkedFiles,
-} from "./task/files.ts";
+export { freeFile, type Given, saveAttachments, saveLinkedFiles } from "./task/files.ts";
 export { cleanUpTasks, slotWorkspaces } from "./task/lifecycle.ts";
 export { taskPlans } from "./task/plans.ts";

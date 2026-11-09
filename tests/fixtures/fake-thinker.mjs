@@ -144,8 +144,18 @@ if (process.env.FAKE_WORK === "slow" && !catchUp) {
     execFileSync("git", ["commit", "-q", "-m", "What you added"]);
   } else if (!resumed || process.env.FAKE_WORK === "fix") {
     // Appended, so a run that starts from earlier commits still has a change of its own.
-    // FAKE_CHANGE: the line its change adds (x when unset).
-    appendFileSync(resumed ? "fixed" : "change.txt", `${process.env.FAKE_CHANGE ?? "x"}\n`);
+    // FAKE_CHANGE: the line its change adds (x when unset). FAKE_ONLY_WORKFLOW: none but the
+    // workflow file's.
+    if (!process.env.FAKE_ONLY_WORKFLOW || resumed)
+      appendFileSync(resumed ? "fixed" : "change.txt", `${process.env.FAKE_CHANGE ?? "x"}\n`);
+    // FAKE_FIX_CHANGE: what its fix round writes over change.txt (a line the secret scan refused).
+    if (resumed && process.env.FAKE_FIX_CHANGE)
+      writeFileSync("change.txt", `${process.env.FAKE_FIX_CHANGE}\n`);
+    // FAKE_WORKFLOW: a line its change adds to a workflow file too (the box holds it, ADR 0075).
+    if (process.env.FAKE_WORKFLOW && !resumed) {
+      mkdirSync(".github/workflows", { recursive: true });
+      appendFileSync(".github/workflows/x.yml", `${process.env.FAKE_WORKFLOW}\n`);
+    }
     execFileSync("git", ["add", "-A"]);
     execFileSync("git", [
       "commit",

@@ -16,8 +16,6 @@ import { forget } from "./store.ts";
 /** The most chats one forget names. */
 const MOST_FORGOTTEN = 500;
 
-export { capped, MAX_FILE_BYTES } from "./channels/channel.ts";
-
 export async function fileOut(req: Request, ref: string, env: Env, deps: Deps): Promise<Response> {
   const log = logOf(deps, "door.file");
   const hit = /^([a-z][a-z0-9-]{0,30}):(.+)$/.exec(ref);

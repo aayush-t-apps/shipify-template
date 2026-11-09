@@ -7,6 +7,8 @@
 //   its status task  the record the due run writes (cli/contracts/watch.ts: RecordSeen)
 // Every value is checked before it's used; a list that doesn't read is nobody, never everybody.
 import {
+  BOX_LABEL,
+  boxOf,
   holdsRecord,
   inboxTopic,
   GUEST_LABEL,
@@ -17,6 +19,7 @@ import {
   pickStatusIssue,
   type RecordSeen,
   readRecordSeen,
+  STATUS_LABEL,
   useDefaultAgent,
   useTimeZone,
   waitingItems,
@@ -215,10 +218,10 @@ export const lastPeople = (gh: GitHub): Person[] | undefined =>
 const MAX_PAGES = 30;
 
 /** The notebook's pages (open issues labelled `notebook`): topic, first line, size and link. */
-export async function notebookPages(gh: GitHub): Promise<PageSeen[]> {
-  const list = await gh.json<
+export async function notebookPages(gh: GitHub, get: Get = plain(gh)): Promise<PageSeen[]> {
+  const list = await get<
     { title?: string; body?: string | null; html_url?: string; pull_request?: unknown }[]
-  >("GET", `repos/${gh.repo}/issues?labels=${NOTEBOOK_LABEL}&state=open&per_page=${MAX_PAGES}`);
+  >(`repos/${gh.repo}/issues?labels=${NOTEBOOK_LABEL}&state=open&per_page=${MAX_PAGES}`);
   return list
     .filter((i) => !i.pull_request && /^Notebook: /.test(i.title ?? ""))
     .map((i) => {
@@ -273,8 +276,8 @@ const block = (lines: string[], name: string) => {
  * Notebook view and a project's page list them. 100 at most, one call: an Inbox's items are its
  * comments, counted in the same answer, less the ones its last collate counted.
  */
-export async function libraryPages(gh: GitHub): Promise<LibrarySeen[]> {
-  const list = await gh.json<
+export async function libraryPages(gh: GitHub, get: Get = plain(gh)): Promise<LibrarySeen[]> {
+  const list = await get<
     {
       number: number;
       title?: string;
@@ -286,7 +289,6 @@ export async function libraryPages(gh: GitHub): Promise<LibrarySeen[]> {
       updated_at?: string;
     }[]
   >(
-    "GET",
     `repos/${gh.repo}/issues?labels=${LIBRARY_LABEL}&state=open&sort=updated&direction=desc&per_page=100`,
   );
   return list
@@ -326,8 +328,8 @@ export async function libraryPages(gh: GitHub): Promise<LibrarySeen[]> {
 
 // ---------------------------------------------------------------- boxes
 
-/** Runners with this label are boxes (ADR 0020): one runner per slot, grouped by `box-<name>`. */
-export const BOX_LABEL = "shipify-box";
+/** Shared names (cli/contracts/labels.ts): the watch and the chat's reads take them from here. */
+export { BOX_LABEL, boxOf, STATUS_LABEL };
 
 export interface RawRunner {
   name: string;
@@ -342,10 +344,6 @@ export interface Box {
   slots: number;
   busy: number;
 }
-
-/** The box a runner belongs to: its `box-<name>` label, else its own name. */
-export const boxOf = (r: RawRunner) =>
-  r.labels.map((l) => /^box-(.+)$/.exec(l.name)?.[1]).find(Boolean) ?? r.name;
 
 /** Each box, from shipify's runners: online when any of its slots is. */
 export function toBoxes(runners: RawRunner[]): Box[] {
@@ -387,7 +385,6 @@ export const runners = (gh: GitHub, now: number, ms = 0, get: Get = plain(gh)) =
 
 // ---------------------------------------------------------------- the status task
 
-export const STATUS_LABEL = "shipify-status";
 export const NOTEBOOK_LABEL = "notebook";
 
 export interface StatusTask {

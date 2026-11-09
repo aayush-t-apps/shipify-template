@@ -33,8 +33,17 @@ import { repoFor } from "../lib/projects-on-github.ts";
 import type { RunDetails } from "../lib/runs.ts";
 import { onBox } from "../lib/sandbox.ts";
 import { loadTools } from "../lib/tools.ts";
-import { choiceFor, defaultAgent, executors, promptTools, Stopwatch, taskChoice } from "./agent.ts";
-import { guestOf, guestsProject, laterWords } from "./decide.ts";
+import {
+  agentForRun,
+  choiceFor,
+  defaultAgent,
+  executors,
+  guestCalls,
+  promptTools,
+  Stopwatch,
+  taskChoice,
+} from "./agent.ts";
+import { guestOf, guestsProject, laterWords, openPr } from "./decide.ts";
 import { hash8 } from "./keys.ts";
 import { familyLines } from "./parts.ts";
 import { closedPagesNote, collateNotes, pageWordNotes, projectLines } from "./projects.ts";
@@ -44,6 +53,7 @@ import { asksOf, buildPrompt, coverEach } from "./prompt.ts";
 import { type ReadIo, readRepos } from "./reads.ts";
 import { RESULT_VERSION, Result, readResult, saidAs, stopWords } from "./result.ts";
 import type { Said, Snapshot, Stop, Think, ThinkMeta } from "./types.ts";
+import { isWorkflowFile } from "./workflows.ts";
 
 // Each of think's steps stops at its own clock. Together they're the most a think can take, which
 // task.yml's job limit covers (tests/workflows.test.ts): a run never outgrows its own job.
@@ -59,9 +69,14 @@ const VERIFY_MINUTES = 25;
 const GIT_MINUTES = 2;
 /** What you wrote while it worked is taken in only with this much of the agent's clock left. */
 const CATCH_UP_MINUTES = 5;
-/** A stay's turn on a project: it answers, and a change goes to a work run (ADR 0060). */
+/** A stay's turn on a project: it makes a change it's asked for itself, as any work run does, and
+ * its job pushes it (ADR 0076). */
 export const STAY_WORK_NOTE = (project: string) =>
-  `This turn comes from a stay, which pushes nothing. Answer as before; if they ask for a change, change no files: say in \`text\` what you'll change, and set \`work\` to {"project": "${project}", "brief": "…"}. A work run on this task's branch does it, with the whole thread.`;
+  `This turn comes from a stay, in your clone of \`${project}\` as your last turn left it. If they ask for a change, make it here as before: commit, run its tests, and ask for the PR (the box checks and pushes it after this turn, with no new run). Never set \`work\` for \`${project}\`: that would start a new run for what this one does.`;
+/** What went wrong after a stay's last answer, which its session never saw (a push the secret scan
+ * refused, a call that failed): said, so its turn can put it right. */
+export const STAY_FAILED_NOTE = (what: string, project?: string) =>
+  `After your last answer, the box said: "${what}"${project ? " What you committed is still in your clone: a commit on top that fixes it is sent with it." : ""}`;
 /** How often a run reads its task for your `stop` while the agent works: one small read. */
 const STOP_EVERY_MS = 60_000;
 /** `ship refresh` on a box: the CLI's start, a merge, and `make version` twice. */
@@ -157,13 +172,21 @@ export function agentSecrets(
 export function handOver(
   secrets: Record<string, string>,
   login: string | undefined,
-  adapter: Pick<Adapter, "loginFromPipe"> | undefined,
-): { secrets: Record<string, string>; login?: string; env: Record<string, string> } {
+  adapter: Pick<Adapter, "loginFromPipe" | "loginFile"> | undefined,
+): {
+  secrets: Record<string, string>;
+  login?: string;
+  /** A login its agent reads only from a file (ADR 0074): the run writes it there, not on fd 3. */
+  file?: string;
+  env: Record<string, string>;
+} {
   const value = login ? secrets[login] : undefined;
-  const env = login && value ? adapter?.loginFromPipe?.(login) : undefined;
-  if (!login || !value || !env) return { secrets, env: {} };
+  if (!login || !value) return { secrets, env: {} };
   const keys = { ...secrets };
   delete keys[login];
+  if (adapter?.loginFile) return { secrets: keys, file: value, env: {} };
+  const env = adapter?.loginFromPipe?.(login);
+  if (!env) return { secrets, env: {} };
   return { secrets: keys, login: value, env };
 }
 
@@ -174,6 +197,10 @@ export function handOver(
 export const runKey = (t: Pick<Think, "account">) =>
   (t.account ? process.env.SHIPIFY_ACCOUNT_READ_TOKEN : process.env.SHIPIFY_AGENT_READ_TOKEN) ||
   undefined;
+
+/** A later round's answer: its final answer in the result's schema, when it gave one, else `file`. */
+const finalOr = (r: Pick<AgentReport, "result">, file: string | undefined) =>
+  r.result !== undefined ? JSON.stringify(r.result) : file;
 
 /**
  * The name a run's commits carry (ADR 0045): the App that pushes them, as GitHub shows its bot
@@ -204,8 +231,9 @@ export interface ThinkIn {
   local: string;
   /** What the run found about the owner's files, for the agent. */
   notes?: string[];
-  /** The task's words written since the run read it (on a box: one read of GitHub); none off it. */
-  later?: () => Said[];
+  /** The task's words written since the run read it (on a box: one read of GitHub, an ETag read
+   * that's free when nothing changed); none off it. */
+  later?: () => Said[] | Promise<Said[]>;
   /** The files on words it takes in before it answers, fetched into `files`: notes for the agent.
    * Without it, words with a file wait for the next run. */
   fetch?: (said: Said[]) => Promise<string[]>;
@@ -226,17 +254,15 @@ export interface ThinkIn {
   look?: (url: string) => Promise<string | null>;
 }
 
+/** The run's folder's name, which every step of its job opens again by: a stay, the renew. */
+export const placeId = (s: Pick<Snapshot, "run">) => s.run.id.replace(/[^A-Za-z0-9._-]/g, "-");
+
 export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOut> {
   const timing = new Stopwatch(io.resume ? io.used : undefined);
   // A guest's run (ADR 0071): no GitHub key, notebook, Library, tool or repo of yours, and caches
   // of its own, so nothing it leaves reaches a run of yours.
   const guest = t.profile === "guest";
-  const place = placeFor(
-    s.run.id.replace(/[^A-Za-z0-9._-]/g, "-"),
-    io.local,
-    Boolean(io.resume),
-    guest,
-  );
+  const place = placeFor(placeId(s), io.local, Boolean(io.resume), guest);
   rmSync(io.keep, { recursive: true, force: true });
   mkdirSync(io.keep, { recursive: true });
   const env = runEnv(s, guest);
@@ -276,7 +302,15 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     // as the agent's user, with its read-only key; a talk run clones nothing up front.
     // The agent this task runs (executors.json), and what every agent shares: the commands it must
     // never run and its gateway.
-    const executor = taskChoice(s.state).agent ?? defaultAgent();
+    // A read run's or a guest's never starts an agent whose login is a file its commands can read
+    // (ADR 0074): the default one thinks, on its Auto, and the run's details say why.
+    const picked = taskChoice(s.state).agent ?? defaultAgent();
+    const routed = agentForRun(picked, t.profile);
+    if (!routed)
+      throw new Error(
+        `"${picked}" reads its login from a file its commands can read, so it never thinks for ${t.profile === "guest" ? "a guest's run" : "a run that reads a repo outside your account"}, and the default agent in executors.json does the same (ADR 0074)`,
+      );
+    const executor = routed;
     const harness = readExecutors();
     const ex = executors()[executor];
     const adapter = ex ? adapterOf(ex) : undefined;
@@ -354,7 +388,11 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     if (!ex || !base?.length || !adapter)
       throw new Error(`the agent "${executor}" can't run unattended here (executors.json)`);
     // The model and effort, held to what the model takes as its gateway's catalog says, read now.
-    const chosen = choiceFor(executor, taskChoice(s.state));
+    const chosen = choiceFor(executor, executor === picked ? taskChoice(s.state) : {});
+    if (executor !== picked)
+      chosen.notes.push(
+        `${executors()[picked]?.name ?? picked} reads its login from a file its commands can read, so it never thinks for ${guest ? "a guest's run" : "a run that reads a repo outside your account"}: ${adapter?.name ?? executor} did, on its Auto (ADR 0074).`,
+      );
     const lookup = ex.gateway && chosen.model ? modelLookup(ex.gateway, chosen.model) : undefined;
     const facts =
       lookup && chosen.effort && io.look && ex.gateway && chosen.model
@@ -384,10 +422,11 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     };
     // A stay's turn starts a moment after its plan read the task, with no clone or setup between:
     // what came since is taken in before it answers.
-    const early =
-      later && !io.resume
-        ? tryOr(() => laterWords(later(), after, Boolean(io.fetch)).plain, [])
-        : [];
+    let early: Said[] = [];
+    if (later && !io.resume)
+      try {
+        early = laterWords(await later(), after, Boolean(io.fetch)).plain;
+      } catch {}
     if (early.length) {
       notes.push(...(await filesOf(early)));
       takeIn(early);
@@ -524,6 +563,8 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       ...(library?.project ? { projectPages: library.project } : {}),
       // A read run has no tool's calls (ADR 0044), nor a run on another account or a guest's.
       ...(reading || away || guest ? {} : { tools: promptTools(executor) }),
+      // A guest's run asks the box for its tools' guest forms alone (ADR 0073): no key, no tool.
+      ...(guest ? { guestCalls: guestCalls() } : {}),
       ...(t.account ? { account: t.account } : {}),
       ...(t.base ? { base: t.base } : {}),
       // A guest's run (ADR 0071) has its own few rules: no GitHub, no PR, nothing of yours.
@@ -607,6 +648,13 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
         ...(skills && link ? { [relative(place.dir, link)]: { link: skills } } : {}),
       });
     };
+    // A login its agent reads only from a file (ADR 0074): written in its folders, as the agent,
+    // once, before its first ask. A stay's turn carries on with the one the agent renewed there.
+    const loginAt = held.file && !io.resume ? adapter.loginFile?.(own) : undefined;
+    if (loginAt) {
+      if (!inRun(loginAt)) throw new Error("the agent's login file isn't in the run's folders");
+      place.give({ [relative(place.dir, loginAt)]: held.file as string });
+    }
     let stopBy: Said | undefined;
     // What the run's details say besides the agent's own; a read of your words that failed while
     // it worked is one, told once, never dropped (ADR 0059).
@@ -617,25 +665,32 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     const agentMinutes = Math.min(io.minutes ?? AGENT_MINUTES, AGENT_MINUTES);
     const ask = async (args: string[], stdin: string, minutes = agentMinutes) => {
       await giveSettings();
-      const reader = adapter.reader();
+      const reader = adapter.reader(choice.model ? { model: choice.model } : undefined);
       const started = performance.now();
       const bin = binDir(args[0] ?? "");
       const halt = new AbortController();
+      // One read at a time; one under way as the agent ends is waited for below, so its `stop`
+      // counts and no read is left over to cross the one before it answers.
+      let looking: Promise<void> | undefined;
       const watch =
         later &&
         setInterval(() => {
           // Once stopped, it's read no more: the agent is ending, however long that takes.
-          if (stopBy) return;
-          let stop: Said | undefined;
-          try {
-            stop = laterWords(later(), after).stop;
-          } catch (e) {
-            tell(`Your \`stop\` couldn't be read while it worked: ${maskSecrets(errorLine(e))}.`);
-          }
-          if (stop) {
-            stopBy = stop;
-            halt.abort();
-          }
+          if (stopBy || looking) return;
+          looking = (async () => {
+            let stop: Said | undefined;
+            try {
+              stop = laterWords(await later(), after).stop;
+            } catch (e) {
+              tell(`Your \`stop\` couldn't be read while it worked: ${maskSecrets(errorLine(e))}.`);
+            }
+            if (stop) {
+              stopBy = stop;
+              halt.abort();
+            }
+          })().finally(() => {
+            looking = undefined;
+          });
         }, io.everyMs ?? STOP_EVERY_MS);
       const outcome = await place
         .run(args, {
@@ -660,6 +715,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
           },
         })
         .finally(() => watch && clearInterval(watch));
+      await looking;
       const report = tryOr(() => reader.report(), {});
       // An agent that doesn't say its version runs the one executors.json pins.
       report.version ??= ex.install?.version;
@@ -676,10 +732,13 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       return file && file.toString("utf8") !== before ? file : undefined;
     };
     const began = performance.now();
-    // A stay on a project pushes nothing (ADR 0060): a change it's asked for goes to a work run.
-    // What it commits anyway is measured from where its turn began: the run before it already
-    // pushed what came earlier, which its clone's origin/<branch> doesn't know (ADR 0063).
+    // A stay on a project makes a change it's asked for itself (ADR 0076), and its job pushes it.
+    // Whether it committed anything is measured from where its turn began: the run before it sent
+    // what came earlier (ADR 0063), so a turn with nothing new needs no key.
     let from: string | undefined;
+    const failedAfter = io.resume ? s.state.failed?.problem.what : undefined;
+    if (failedAfter)
+      notes.push(STAY_FAILED_NOTE(failedAfter, t.profile === "work" ? t.project : undefined));
     if (io.resume && t.profile === "work" && t.project) {
       notes.push(STAY_WORK_NOTE(t.project));
       await place.run(["git", "rev-parse", "--verify", "--quiet", "HEAD"], {
@@ -729,6 +788,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     let result = readResult(raw?.toString("utf8"));
     if (raw) keep("result.json", raw);
     let touchesWorkflows = false;
+    let holds = false;
     let plan: string | undefined;
     // A question answered in words, not in the result's shape (a smaller model): its words are the
     // reply. A change still needs the result, with what it asks for, so it fails as before.
@@ -750,7 +810,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       if (!later || stopBy || !session || "error" in result) break;
       let late: ReturnType<typeof laterWords> | undefined;
       try {
-        late = laterWords(later(), after, Boolean(io.fetch));
+        late = laterWords(await later(), after, Boolean(io.fetch));
       } catch (e) {
         tell(
           `What you wrote while it worked couldn't be read before it answered: ${maskSecrets(errorLine(e))}. The next run reads it.`,
@@ -769,13 +829,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       );
       // Its new answer, not the file it left before.
       const file = place.take("result.json")?.toString("utf8");
-      const next = readResult(
-        more.report.result !== undefined
-          ? JSON.stringify(more.report.result)
-          : file !== last
-            ? file
-            : undefined,
-      );
+      const next = readResult(finalOr(more.report, file !== last ? file : undefined));
       if (stopBy || "error" in next) break;
       // The PR it asked for first stands, unless it asks again.
       result = { ...next, pr: next.pr ?? result.pr };
@@ -806,6 +860,21 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     };
     halted();
 
+    // A stay's turn that committed nothing, with the task's PR open, leaves that PR as it is (ADR
+    // 0076): nothing to check or send, so its answer needs no key and the stay goes on.
+    if (from && !("error" in result) && result.pr && openPr(s.state)) {
+      const same = await place.run(["git", "diff", "--quiet", from, "HEAD"], {
+        cwd: place.work,
+        minutes: GIT_MINUTES,
+        env,
+      });
+      if (same.code === 0) {
+        const { pr: _, ...answer } = result;
+        result = answer;
+        keep("result.json", canonicalJson(result));
+      }
+    }
+
     // A repo that keeps its own rules has no project checks (ADR 0044): its own CI checks the PR.
     if (t.profile === "work" && !t.ownRules && !("error" in result) && result.pr) {
       // The box's checks before its commits go anywhere, the same `ship pr` makes (ADR 0018). When
@@ -814,12 +883,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       if (!g.ok && !g.timedOut && session && !stopBy) {
         const fixed = await ask(argvFor(session), fixPrompt(g.tail), FIX_MINUTES);
         // Its new answer, when it gave one; the PR it asked for stands either way.
-        const next = readResult(
-          (fixed.report.result !== undefined
-            ? Buffer.from(JSON.stringify(fixed.report.result))
-            : place.take("result.json")
-          )?.toString("utf8"),
-        );
+        const next = readResult(finalOr(fixed.report, place.take("result.json")?.toString("utf8")));
         if (!("error" in next)) result = { ...next, pr: next.pr ?? result.pr };
         g = await gate(place, copy.cli, env);
         checkNotes.push(
@@ -878,6 +942,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       if (b) keep("work.bundle", b);
       commits = Boolean(b) && changed.length > 0;
       touchesWorkflows = changed.some((f) => f.startsWith(".github/workflows/"));
+      holds = changed.some(isWorkflowFile);
       plan = changed.map(planOfFile).find(Boolean);
     }
     // Its files for you, and each page's new text (ADR 0069), which the box writes after it.
@@ -910,6 +975,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       ...(looked.length ? { looked } : {}),
       ...(elsewhere ? { elsewhere } : {}),
       touchesWorkflows,
+      ...(commits && holds ? { holds: true as const } : {}),
       pagesAt,
       ...(checked?.checkHash
         ? { checkOutput: checked.checkOutput, checkHash: checked.checkHash }
@@ -1214,8 +1280,9 @@ async function clone(
     `${cloneArgs("change", '"$1"', "work").join(" ")}`,
     "cd work",
     // The task's branch (whether its repo's default branch has moved past it is said); else that
-    // branch; else, in a new project's empty repo, a first branch of its own.
-    'if [ -n "$2" ] && git ls-remote --exit-code --heads origin "$2" >/dev/null 2>&1; then git fetch --quiet origin "$2"; git checkout --quiet -B work "origin/$2"; if git rev-parse --quiet --verify "origin/$3" >/dev/null; then git merge-base --is-ancestor "origin/$3" work || echo "BEHIND $(git rev-parse HEAD)"; fi; elif git rev-parse --quiet --verify "origin/$3" >/dev/null; then git checkout --quiet -B work "origin/$3"; else git checkout --quiet --orphan work; fi',
+    // branch; else, in a new project's empty repo, a first branch of its own. The whole clone has
+    // every branch already: no second look at GitHub.
+    'if [ -n "$2" ] && git rev-parse --quiet --verify "origin/$2" >/dev/null; then git checkout --quiet -B work "origin/$2"; if git rev-parse --quiet --verify "origin/$3" >/dev/null; then git merge-base --is-ancestor "origin/$3" work || echo "BEHIND $(git rev-parse HEAD)"; fi; elif git rev-parse --quiet --verify "origin/$3" >/dev/null; then git checkout --quiet -B work "origin/$3"; else git checkout --quiet --orphan work; fi',
     'git config user.name "$4" && git config user.email "$5"',
   ].join("\n");
   let said = "";
@@ -1323,17 +1390,23 @@ export const catchUpPrompt = (said: Said[], files: string[] = [], before: string
     "Change the work if they ask for it (commit as before), then give your whole result again as before: one reply that covers what they asked before and now.",
   ].join("\n");
 
-/** The agent's commits as a bundle in out/, made by the agent; the files they change. `from`: a
- * stay's turn's start, so only that turn's commits go. */
+/**
+ * The agent's commits as a bundle in out/, made by the agent; the files they change. `from`: a
+ * stay's turn's start, so the files are only that turn's (ADR 0063), and a turn that changed nothing
+ * leaves no bundle. One that did sends every commit since the branch as its clone found it, so the
+ * bundle starts at a commit GitHub has, even when an earlier push was refused (a key in it).
+ */
 async function bundle(place: Place, s: Snapshot, from?: string): Promise<string[]> {
-  const base = from ?? (s.state.branch ? `origin/${s.state.branch}` : "origin/main");
+  const base = s.state.branch ? `origin/${s.state.branch}` : "origin/main";
+  const out = `${place.out}/work.bundle`;
   let changed = "";
   await place.run(
     [
       "sh",
       "-c",
-      // Against the task's branch, else main; a new project's first commits go whole.
-      `b=${base}; git rev-parse --verify --quiet "$b" >/dev/null || b=origin/main; if git rev-parse --verify --quiet "$b" >/dev/null; then git diff --name-only "$b"..work; git bundle create --quiet ${place.out}/work.bundle work --not "$b"; else git ls-files; git bundle create --quiet ${place.out}/work.bundle work; fi`,
+      // An earlier turn's bundle is never taken for this one's. Against the task's branch, else
+      // main; a new project's first commits go whole.
+      `rm -f ${out}; b=${base}; git rev-parse --verify --quiet "$b" >/dev/null || b=origin/main; ${from ? `git diff --name-only ${from}..work; git diff --quiet ${from} work && exit 0; ` : ""}if git rev-parse --verify --quiet "$b" >/dev/null; then ${from ? "" : `git diff --name-only "$b"..work; `}git bundle create --quiet ${out} work --not "$b"; else ${from ? "" : "git ls-files; "}git bundle create --quiet ${out} work; fi`,
     ],
     {
       cwd: place.work,

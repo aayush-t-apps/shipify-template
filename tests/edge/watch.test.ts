@@ -273,6 +273,35 @@ describe("stopped", () => {
     expect(f.w.events[t.number]).toHaveLength(1);
   });
 
+  it("finds a task's run in the task runs' list, and reads it alone only when it's older than the list", async () => {
+    const f = world(k);
+    status(f);
+    const ended = (id: number, n: number) => ({
+      id,
+      status: "completed",
+      conclusion: "failure",
+      display_title: `task #${n}`,
+      created_at: new Date(f.w.at - 3 * HOUR).toISOString(),
+      updated_at: new Date(f.w.at - 2 * HOUR).toISOString(),
+    });
+    const old = f.issue();
+    const recent = f.issue();
+    // The list has the newest 30: the old task's run is past them.
+    f.w.runs["task.yml"] = [
+      ended(5, old.number),
+      ...Array.from({ length: 30 }, (_, i) => ended(100 + i, 900 + i)),
+      ended(200, recent.number),
+    ];
+    f.comment(old.number, `${statusLine({ working: 5 })}\nworking · 5`, RUN);
+    f.comment(recent.number, `${statusLine({ working: 200 })}\nworking · 200`, RUN);
+    await run(f);
+    expect(old.labels).toContain("stuck");
+    expect(recent.labels).toContain("stuck");
+    expect(f.gh().filter((c) => c.startsWith("GET repos/o/shipify/actions/runs/"))).toEqual([
+      "GET repos/o/shipify/actions/runs/5",
+    ]);
+  });
+
   it("leaves a long run alone while it's still going", async () => {
     const f = world(k);
     status(f);
@@ -603,6 +632,33 @@ describe("notice", () => {
     expect(theirs.reactions.map((r) => r.content)).toEqual(["rocket", "confused"]);
   });
 
+  it("reads every reply's marks in one call a tick, and knows the door by its name (SHIPIFY_DOOR_SLUG)", async () => {
+    const f = world(k);
+    status(f);
+    const t = f.issue();
+    const sent = Array.from({ length: 4 }, () => f.reply(t.number, line()));
+    for (const c of sent)
+      c.reactions.push({ content: "rocket", user: { login: DOOR, type: "Bot" } });
+    // Another App's 🚀 isn't the door's.
+    const other = f.reply(t.number, line());
+    other.reactions.push({ content: "rocket", user: { login: "other-app[bot]", type: "Bot" } });
+    f.later(3 * MIN);
+    await run(f);
+    expect(f.w.markReads).toBe(1);
+    expect(f.gh().filter((c) => c.includes("/reactions") && c.startsWith("GET"))).toEqual([]);
+    expect(f.gh()).not.toContain("GET app");
+    expect(sendMessages(f)).toHaveLength(1);
+    expect(other.reactions.map((r) => r.content)).toEqual(["rocket", "confused"]);
+    // None with a mark of anyone's: nothing to ask.
+    const g = world(k);
+    status(g);
+    g.reply(g.issue().number, line());
+    g.later(3 * MIN);
+    await run(g);
+    expect(g.w.markReads).toBe(0);
+    expect(sendMessages(g)).toHaveLength(1);
+  });
+
   it("leaves a reply older than 70 minutes alone", async () => {
     const f = world(k);
     status(f);
@@ -772,6 +828,31 @@ describe("guard", () => {
     expect(sets()).toHaveLength(3);
   });
 
+  it("reads Telegram every 30 minutes and the runners' newest every 6 hours, by the tick's number: never again on a new instance", async () => {
+    const f = world(k); // 12:00: both are due
+    status(f, { boxes: { pi: { runner: "2.330.0" } } });
+    const asked = (method: string) => f.w.sent.filter((s) => s.method === method).length;
+    const reads = () => [
+      asked("getWebhookInfo"),
+      asked("getMyCommands"),
+      f.gh().filter((c) => c.includes("runner/releases")).length,
+    ];
+    await run(f);
+    expect(reads()).toEqual([1, 1, 1]);
+    // Five ticks, each on a new instance, which remembers nothing: none of them is due.
+    for (let i = 0; i < 5; i++) {
+      clearCaches();
+      f.later(5 * MIN);
+      await run(f);
+    }
+    expect(reads()).toEqual([1, 1, 1]);
+    // 12:30: Telegram's turn (its menu once an instance), not the runners'.
+    clearCaches();
+    f.later(5 * MIN);
+    await run(f);
+    expect(reads()).toEqual([2, 2, 1]);
+  });
+
   it("leaves the menu alone while the webhook is failing", async () => {
     clearCaches();
     const f = world(k);
@@ -828,7 +909,7 @@ describe("the budget", () => {
     const f = world(k);
     const s = status(f, { boxes: { pi: {} } });
     f.w.runners[0] = { ...f.w.runners[0], status: "offline" } as never;
-    // Many tasks whose runs died: each costs a run's look, its events and a ring.
+    // Many tasks whose runs died (each in the task runs' list), and many replies to notice.
     for (let i = 0; i < 30; i++) {
       const t = f.issue({ created_at: new Date(f.w.at - 2 * HOUR).toISOString() });
       f.comment(t.number, statusLine({ working: 500 + i }), RUN);
@@ -856,7 +937,8 @@ describe("the budget", () => {
   it("keeps a few calls for the alert when the duties spend the rest", async () => {
     const f = world(k);
     const s = status(f);
-    // Forty long runs still going: each costs a look, and none is started again.
+    // Forty long runs still going, older than the newest 30 the task runs' list has: each costs a
+    // look of its own, and none is started again.
     for (let i = 0; i < 40; i++) {
       const t = f.issue();
       f.comment(t.number, statusLine({ working: 700 + i }), RUN);
@@ -869,6 +951,14 @@ describe("the budget", () => {
         created_at: new Date(f.w.at - HOUR).toISOString(),
       });
     }
+    for (let i = 0; i < 30; i++)
+      f.w.runs["task.yml"]?.push({
+        id: 800 + i,
+        status: "completed",
+        conclusion: "success",
+        display_title: `task #${9000 + i}`,
+        created_at: new Date(f.w.at - 30 * MIN).toISOString(),
+      });
     // And one whose words wait with no run, looked at first: Stopped, said before the budget runs out.
     const stuck = f.issue({ created_at: new Date(f.w.at - 3 * HOUR).toISOString() });
     f.comment(

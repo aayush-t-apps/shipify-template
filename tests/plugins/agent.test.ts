@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+// @ts-expect-error: plain JavaScript, as Codex runs it
+import { decide as codexDecides } from "../../cli/lib/agents/codex-gate.mjs";
 // @ts-expect-error: plain JavaScript, as OpenCode loads it
 import { ShipifyGate } from "../../cli/lib/agents/opencode-gate.mjs";
 // @ts-expect-error: plain JavaScript, as pi loads it
@@ -34,7 +36,28 @@ const RECORDED: Record<string, string> = {
   claude: "tests/fixtures/claude-stream.jsonl",
   pi: "tests/fixtures/pi-stream.jsonl",
   opencode: "tests/fixtures/opencode-stream.jsonl",
+  codex: "tests/fixtures/codex-stream.jsonl",
 };
+
+/**
+ * Codex's gate as its adapter wrote it into a run's tools folder (this file, and pi's gate beside
+ * it), with its rules: its own answer to one of Codex's calls, as its PreToolUse hook gets it.
+ */
+function codexGate(tools: string) {
+  for (const [to, from] of [
+    ["gate.mjs", "codex-gate.mjs"],
+    ["pi-gate.mjs", "pi-gate.mjs"],
+  ] as const)
+    expect(readFileSync(join(tools, to), "utf8")).toBe(
+      readFileSync(join(ROOT, "cli/lib/agents", from), "utf8"),
+    );
+  const rules = JSON.parse(readFileSync(join(tools, "gate.json"), "utf8"));
+  return (
+    tool_name: string,
+    tool_input: Record<string, unknown>,
+    cwd: string,
+  ): string | undefined => codexDecides(rules, { tool_name, tool_input, cwd }, tools);
+}
 
 /**
  * OpenCode's gate as its adapter wrote it into a run's tools folder (this file, and pi's gate beside
@@ -92,6 +115,16 @@ const ERRORED: Record<string, { lines: unknown[]; error: string }> = {
     ],
     error: "z-ai/glm-9 is not a valid model ID",
   },
+  codex: {
+    lines: [
+      { type: "error", message: "You've hit your usage limit. Try again at 3:05 PM." },
+      {
+        type: "turn.failed",
+        error: { message: "You've hit your usage limit. Try again at 3:05 PM." },
+      },
+    ],
+    error: "You've hit your usage limit. Try again at 3:05 PM.",
+  },
 };
 
 /**
@@ -129,6 +162,16 @@ const SKILL_LOADS: Record<string, unknown[]> = {
     { type: "shipify", call: "read", path: "/work/src/skills.ts" },
     { type: "shipify", call: "skill", skill: "test-driven-development" },
   ],
+  // Codex reads a skill with a command, as it reads any file.
+  codex: [
+    `cat ${SKILL}/notion/SKILL.md`,
+    "sed -n 1,40p /work/src/skills.ts",
+    `sed -n 1,80p ${SKILL}/test-driven-development/SKILL.md`,
+    `cat '${SKILL}/test-driven-development/SKILL.md'`,
+  ].map((command, i) => ({
+    type: "item.completed",
+    item: { id: `item_${i}`, type: "command_execution", command, status: "completed" },
+  })),
 };
 
 /**
@@ -221,7 +264,23 @@ const DECIDES: Record<string, (argv: string[], tools: string) => (command: strin
     const refuses = openCodeGate(tools);
     return (command) => Boolean(refuses("bash", { command }, tools));
   },
+  // Codex: its gate's own answer, as its PreToolUse hook for every call (checked live on 0.167.0:
+  // Codex names its exec_command `Bash`, and a refusal stops the command), with its own rules
+  // files not read at all.
+  codex(argv, tools) {
+    expect(argv).toEqual(expect.arrayContaining(["--ignore-rules", "--ignore-user-config"]));
+    expect(argv.join("\n")).toContain(`command="node ${join(tools, "gate.mjs")}"`);
+    const refuses = codexGate(tools);
+    return (command) => Boolean(refuses("Bash", { command }, tools));
+  },
 };
+
+/**
+ * The agents that take no read run (ADR 0074): their commands can read their login (its entry's
+ * `login.file`), and a read run runs no command, so the core never gives them one and their adapter
+ * refuses it.
+ */
+const NO_READS = (name: string) => Boolean(ADAPTERS[name]?.loginFile);
 
 /**
  * How each adapter's agent decides in the read profile (ADR 0044), from what its adapter wrote:
@@ -422,6 +481,13 @@ const SKILLS_HANDED: Record<string, Handed> = {
       "1.18.34",
     );
   },
+  // Codex: a link where it reads a user's ($HOME/.agents/skills, still read with its own config
+  // ignored), and its own bundled ones off.
+  codex(argv, link) {
+    expect(link?.endsWith("/home/.agents/skills")).toBe(true);
+    expect(argv).toContain("skills.bundled.enabled=false");
+    expect(pinned("codex"), "check live that Codex lists the linked skills").toBe("0.167.0");
+  },
 };
 
 describe("executors.json", () => {
@@ -563,7 +629,8 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
   });
 
   it("reads its agent's real output into a report, and never throws on a line", () => {
-    const reader = adapter.reader();
+    // The run's model, as the core hands it over: for an agent whose output doesn't name it.
+    const reader = adapter.reader({ model: "the-runs-model" });
     for (const line of readFileSync(join(ROOT, RECORDED[name] as string), "utf8").split("\n"))
       if (line) reader.line(line);
     for (const junk of ["", "not json", "{}", "null", '{"type":"assistant"}'])
@@ -623,11 +690,16 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
       const gate = JSON.parse(readFileSync(join(dir, "tools", "gate.json"), "utf8"));
       expect(gate).toMatchObject({ deny: commands.deny, write: [join(dir, "out")] });
       expect(gate.allow).toBeUndefined();
-      // Its gate loads: pi's with -e, OpenCode's as the plugin its config names, beside it.
+      // Its gate loads: pi's with -e, OpenCode's as the plugin its config names, beside it, and
+      // Codex's as its PreToolUse hook.
       if (name === "opencode")
         expect(
           JSON.parse(readFileSync(join(dir, "tools", "opencode.json"), "utf8")).plugin,
         ).toEqual(["./gate.mjs"]);
+      else if (name === "codex")
+        expect(all).toContain(
+          `hooks.PreToolUse=[{matcher="*",hooks=[{type="command",command="node ${join(dir, "tools", "gate.mjs")}"}]}]`,
+        );
       else expect(argv).toContain(join(dir, "tools", "gate.mjs"));
     }
   });
@@ -648,19 +720,29 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
   });
 
   it("starts its agent in the read profile with reading tools only, inside its folders (ADR 0044)", () => {
-    const decide = READS[name];
-    expect(decide, `add how ${name}'s agent decides in the read profile to READS`).toBeTruthy();
     const dir = mkdtempSync(join(tmpdir(), "read-"));
     const folders = { read: [join(dir, "shipify"), join(dir, "in", "files")] };
     for (const d of [...folders.read, join(dir, "read", "acme", "tool")])
       mkdirSync(d, { recursive: true });
-    const argv = adapter.argv({
+    const run = {
       command: ["agent-program"],
       commands: { deny: ["git push", "git stash"], web: false, run: false },
-      tools: { mode: "look", dir: join(dir, "tools"), root: ROOT },
+      tools: { mode: "look" as const, dir: join(dir, "tools"), root: ROOT },
       config: join(dir, "config"),
       folders,
-    });
+    };
+    // One whose login is a file takes none (ADR 0074): its entry says so, and it's never started.
+    if (NO_READS(name)) {
+      const entry = Object.values(readExecutors(join(ROOT, "executors.json")).executors).find(
+        (e) => e.adapter === name,
+      );
+      expect(entry?.login?.file).toBe(true);
+      expect(() => adapter.argv(run)).toThrow(/takes no read run/);
+      return;
+    }
+    const decide = READS[name];
+    expect(decide, `add how ${name}'s agent decides in the read profile to READS`).toBeTruthy();
+    const argv = adapter.argv(run);
     // No tool's calls: a read run holds none of their keys.
     expect(argv).not.toContain("--mcp-config");
     if (name === "pi")
@@ -678,9 +760,25 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
       expect(may.read(outside), `${name} refuses ${outside}`).toBe(false);
   });
 
-  it("takes its login on a pipe (fd 3), never in its environment", async () => {
+  it("takes its login on a pipe (fd 3), or as a file of its run's own, never in its environment", async () => {
     const login = loginName(name);
     expect(login, `${name}'s agent has a login in executors.json`).toBeTruthy();
+    // A login its agent reads only from a file (ADR 0074): in the run's own folders, as its entry
+    // says (so it never thinks for a read run or a guest's), and nothing on the pipe or in its
+    // environment (think's handOver: tests/agent-codex.test.ts).
+    if (adapter.loginFile) {
+      const dir = mkdtempSync(join(tmpdir(), "login-"));
+      const paths = { home: join(dir, "home"), config: join(dir, "config"), tools: join(dir, "t") };
+      expect(adapter.loginFile(paths).startsWith(`${dir}/`)).toBe(true);
+      for (const c of adapter.cleared?.(paths) ?? []) expect(c).not.toBe(adapter.loginFile(paths));
+      expect(adapter.loginFromPipe).toBeUndefined();
+      const entry = Object.values(readExecutors(join(ROOT, "executors.json")).executors).find(
+        (e) => e.adapter === name,
+      );
+      expect(entry?.login?.file).toBe(true);
+      expect(Object.values(adapter.env?.(paths) ?? {}).join(" ")).not.toContain(login);
+      return;
+    }
     const vars = adapter.loginFromPipe?.(login as string);
     expect(vars, `say how ${name}'s agent reads its login from fd 3 (loginFromPipe)`).toBeTruthy();
     // Only where to read it, never a key: the login's own name isn't among them.
@@ -715,6 +813,7 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
     if (name === "claude")
       expect(adapter.env?.(paths).CLAUDE_CODE_DISABLE_BUNDLED_SKILLS).toBe("1");
     // The read profile reads nothing of Shipify's: the core gives no skills, and none are added.
+    if (NO_READS(name)) return;
     const reading = adapter.argv({ ...run, commands: { ...run.commands, run: false } });
     if (!link) expect(reading.join(" ")).not.toContain(join(ROOT, "skills"));
   });

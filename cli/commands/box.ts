@@ -8,6 +8,7 @@
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { BOX_LABEL, boxOf } from "../contracts/index.ts";
 import { yourAccounts } from "../lib/accounts.ts";
 import { defaultAgent, loadExecutors, loginOf } from "../lib/agents.ts";
 import { boxFacts, factLines } from "../lib/box-facts.ts";
@@ -19,7 +20,6 @@ import { type Check, fail, ok, type Result, ShipError } from "../lib/output.ts";
 import { sourceControl } from "../lib/providers.ts";
 import { SANDBOX_LABEL, slotOf as slotOfRunner } from "../lib/sandbox.ts";
 
-export const BOX_LABEL = "shipify-box";
 /**
  * Each box's own label too, on every slot: a run can go to that box (its weekly clean-up, ADR
  * 0019), and the label is how GitHub's runners group into boxes (ADR 0020).
@@ -58,9 +58,6 @@ export function isBoxOs(os: string): boolean {
 }
 export const slotName = (box: string, k: number) => (k === 1 ? box : `${box}-${k}`);
 const slotNumbers = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
-/** The box a runner belongs to: its `box-<name>` label, which every slot has, or else its name. */
-export const boxOf = (r: { name: string; labels: { name: string }[] }) =>
-  r.labels.map((l) => /^box-(.+)$/.exec(l.name)?.[1]).find(Boolean) ?? r.name;
 /** Which slot of `box` a runner is: 1 for the box's own name, k for `<box>-<k>`, else 0. */
 export const slotOf = (box: string, runner: string): number => slotOfRunner(runner, box);
 
@@ -332,8 +329,11 @@ interface Machine {
   here: boolean;
   /** A command there, as you; `input` goes to its stdin. */
   sh(cmd: string, input?: string): RunResult;
-  /** A command there as root, in this terminal, where sudo asks for your password. */
-  asRoot(args: string[]): RunResult;
+  /**
+   * A command there as root, in this terminal, where sudo asks for your password; `after`, as you
+   * once sudo is done, however it ended (a wrong password too), in the same session.
+   */
+  asRoot(args: string[], after?: string): RunResult;
 }
 
 /** A machine never seen before is trusted on first contact; one whose identity changed isn't. */
@@ -350,21 +350,36 @@ const overSsh = (target: string): Machine => ({
   label: target,
   here: false,
   sh: (cmd, input) => run("ssh", [...SSH, target, cmd], input === undefined ? {} : { input }),
-  asRoot: (args) => run("ssh", ["-t", target, `sudo ${args.join(" ")}`], { inherit: true }),
+  asRoot: (args, after) => {
+    const sudo = `sudo ${args.map(shellWord).join(" ")}`;
+    // In sh, whatever the login shell: `$?` is sh's.
+    const cmd = after ? `sh -c ${shellWord(`${sudo}; r=$?; ${after}; exit $r`)}` : sudo;
+    return run("ssh", ["-t", target, cmd], { inherit: true });
+  },
 });
+
+/** A word as the remote shell reads it: as it is when plain, else in single quotes. */
+const shellWord = (word: string) =>
+  /^[\w./=@:-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
 
 const thisPc = (): Machine => ({
   label: "this PC",
   here: true,
   sh: (cmd, input) => run("bash", ["-c", cmd], input === undefined ? {} : { input }),
-  asRoot: (args) => run("sudo", args, { inherit: true }),
+  asRoot: (args, after) => {
+    const r = run("sudo", args, { inherit: true });
+    if (after) run("bash", ["-c", after]);
+    return r;
+  },
 });
 
 /**
  * A script of box/ run as root on the machine: it and its files go in a folder of its own there
  * (mktemp -d: 0700, a name nobody could have made first), each on stdin, so nothing is on a command
  * line and no other user, an agent's included, can read or swap them. `bash <script> <files…>`, in
- * this terminal (sudo asks for your password); the folder goes after.
+ * this terminal (sudo asks for your password); the folder goes after, as you, in the same session:
+ * a --manage box's firewall may have just shut a new SSH connection from the home network out, and
+ * a sudo that never ran the script (a wrong password) leaves no registration token behind.
  */
 function rootScript(m: Machine, script: string, files: [name: string, body: string][]): RunResult {
   const made = m.sh("mktemp -d");
@@ -383,9 +398,18 @@ function rootScript(m: Machine, script: string, files: [name: string, body: stri
     m.sh(`rm -rf ${tmp}`);
     throw new ShipError(`Couldn't send the setup files to ${m.label}.`);
   }
-  const r = m.asRoot(["bash", ...all.map(([name]) => `${tmp}/${name}`)]);
-  m.sh(`rm -rf ${tmp}`);
-  return r;
+  return m.asRoot(["bash", ...all.map(([name]) => `${tmp}/${name}`)], `rm -rf ${tmp}`);
+}
+
+/** Cockpit's address on a machine, from its Tailscale name; none before it's signed in. */
+function consoleOf(m: Machine): string | undefined {
+  try {
+    const ts = m.sh("tailscale status --json");
+    const dns = (JSON.parse(ts.stdout) as { Self?: { DNSName?: string } }).Self?.DNSName;
+    return dns ? `https://${dns.replace(/\.$/, "")}` : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------- add: a Pi, a VPS, or this PC
@@ -423,7 +447,7 @@ export function sshAdvice(
   if (/Connection refused/i.test(stderr))
     return `${host} is on the network, but SSH isn't on. Turn it on in Raspberry Pi Imager's settings (Services) and write the OS again, or on the machine itself.`;
   if (/timed out|No route to host|Could not resolve|not known|unreachable/i.test(stderr))
-    return `Can't reach ${host}: is it on, and on this network? Your router lists its address.`;
+    return `Can't reach ${host}: is it on, and on this network? Your router lists its address. A box set up with --manage takes SSH only through Tailscale (setup 13): put this PC on your tailnet, and use the box's Tailscale name.`;
   return `Can't reach ${target} over SSH: ${stderr.trim()}`;
 }
 
@@ -569,17 +593,19 @@ export function boxAdd(
       .filter((r) => slotOf(name, r.name) > slots)
       .map((r) => `it removes the slot "${r.name}": its service, its folder and its registration`),
     `the one-hour registration tokens go${m.here ? "" : " over SSH"} into a file only the setup reads, never printed, and are deleted after use`,
-    m.here
-      ? opts.manage
-        ? "this machine's SSH settings stay as they are: you set it up on the machine, not over SSH"
-        : "this PC's SSH settings and network stay as they are"
+    m.here && !opts.manage
+      ? "this PC's SSH settings and network stay as they are"
       : "SSH takes keys only (no passwords, no root), once your account there has a key: the change is checked first, and left out if sshd doesn't accept it",
     ...(opts.manage
       ? [
-          "--manage, last, once the sandbox checks out: Tailscale (installed, and signed in at a link it prints within 15 minutes, if it isn't yet), and Cockpit, which listens on the machine itself only and is shared with your own devices by tailscale serve (without NetworkManager, which would take a laptop's Wi-Fi)",
-          "--manage: a firewall, once Tailscale is up: in through Tailscale, and SSH from the machine's own network; out as before. Rules are added, never reset (undo: sudo ufw disable)",
+          "--manage, last, once the sandbox checks out: Tailscale (installed, and signed in at a link it prints within 15 minutes, if it isn't yet), then the firewall, then Cockpit, which listens on the machine itself only and is shared with your own devices by tailscale serve (without NetworkManager, which would take a laptop's Wi-Fi)",
+          "--manage: the firewall, once Tailscale is up: in through Tailscale only (setup 13: no SSH from the home network, avahi's mDNS off), out as before. From then on, reach it over Tailscale. Rules are added, never reset: each of yours that lets something in is listed (undo: sudo ufw disable); ufw's IPv6 goes on where it's off. If this part stops (a missed sign-in), the box still takes tasks, the result says so, and ship doctor names the box until a run again finishes it",
         ]
-      : []),
+      : m.here
+        ? []
+        : [
+            "no --manage, so no firewall: its SSH (keys only) answers on its network, and on the internet for a VPS. Add --manage to let in only Tailscale",
+          ]),
   ];
   if (!opts.yes)
     return {
@@ -618,15 +644,20 @@ export function boxAdd(
   ].join("\n");
   // One definition for every slot: setup.sh fills in each slot's name and folder.
   const unit = boxUnit({ name: "@SLOT_NAME@", dir: "@SLOT_DIR@" });
+  // Its console (Cockpit, through Tailscale), for `box list`: asked before the setup when it's on
+  // Tailscale already, as after it the firewall shuts out a new connection from the home network.
+  let web = opts.manage ? consoleOf(m) : undefined;
   const r = rootScript(m, "setup.sh", [
     ["box.env", env],
     ["prep.tsv", stackPrep()],
     ["box.service", unit],
   ]);
   // Exit 3 (setup 10): the box works and its sandbox checked out, but its agents' containers don't.
-  // Its slots get their label all the same, and the result says so: never "done".
+  // Exit 4 (setup 13): the same, but --manage stopped, so its firewall may not be on. Its slots get
+  // their label all the same, and the result says so: never "done".
   const noContainers = r.code === 3;
-  if (r.code !== 0 && !noContainers)
+  const unmanaged = r.code === 4;
+  if (r.code !== 0 && !noContainers && !unmanaged)
     throw new ShipError(
       `The setup on ${m.label} failed (see above), so its slots have no sandbox label and take no task runs. It's safe to run again.`,
     );
@@ -661,26 +692,41 @@ export function boxAdd(
     throw new ShipError(
       `${m.label} is set up as the box "${name}", but none of its ${slots} slot(s) is online on GitHub after a minute, so it takes no task. On it, \`sudo systemctl status ${unitName(name)}\` says why; then run the same command again.`,
     );
-  // Its console (Cockpit, through Tailscale), for `box list`. Not signed in to
-  // Tailscale yet: the next `box add --manage` records it.
-  let web: string | undefined;
-  if (opts.manage) {
-    const ts = m.sh("tailscale status --json");
-    try {
-      const dns = (JSON.parse(ts.stdout) as { Self?: { DNSName?: string } }).Self?.DNSName;
-      if (dns) {
-        web = `https://${dns.replace(/\.$/, "")}`;
-        setConsole(repo, name, web);
-      }
-    } catch {
-      web = undefined;
-    }
-  }
+  // Signed in to Tailscale only now: asked again, which works over Tailscale or on the machine
+  // itself. Over SSH from the home network it can't: the next `box add --manage` records it.
+  if (opts.manage && !web) web = consoleOf(m);
+  if (web) setConsole(repo, name, web);
+  // From the home network, a --manage box takes SSH no more (setup 13): said, with the way in.
+  const overTailscale =
+    opts.manage && !m.here && !unmanaged
+      ? [
+          `from now on, reach it over Tailscale only: in ~/.ssh/config, its HostName is ${web ? web.replace("https://", "") : "its Tailscale name (Cockpit's address above, without https://)"}`,
+        ]
+      : [];
+  if (unmanaged)
+    return fail(
+      "box add",
+      `${m.label} is the box "${name}" and takes tasks, but its --manage part stopped (above: a missed Tailscale sign-in, or Cockpit), so its firewall may not be on and it may take connections from outside Tailscale. Run the same command again; until it finishes, ship doctor names this box.`,
+      {
+        data: web ? `  Console (Cockpit): ${web}` : undefined,
+        checks: readiness(repo),
+        // Cockpit's part comes after the firewall's: SSH from the home network may be shut already.
+        nextSteps: m.here
+          ? []
+          : [
+              "if SSH from your network no longer answers, its firewall came on before it stopped: run it again over Tailscale (in ~/.ssh/config, its HostName is its Tailscale name)",
+            ],
+      },
+    );
   if (noContainers)
     return fail(
       "box add",
       `${m.label} is the box "${name}" and takes tasks, but its agents' containers failed the setup's check (above), so a task that needs one may fail. Run the same command again; if it says the same, docs/troubleshooting.md, "Containers don't start", has the fix.`,
-      { data: web ? `  Console (Cockpit): ${web}` : undefined, checks: readiness(repo) },
+      {
+        data: web ? `  Console (Cockpit): ${web}` : undefined,
+        checks: readiness(repo),
+        nextSteps: overTailscale,
+      },
     );
   return ok(
     "box add",
@@ -694,6 +740,7 @@ export function boxAdd(
         'ask "how is this box doing?" (a task, or the bot) to check it',
         "pnpm ship box list",
         ...(opts.manage ? ["open the Cockpit address it printed, on your phone or PC"] : []),
+        ...overTailscale,
       ],
     },
   );

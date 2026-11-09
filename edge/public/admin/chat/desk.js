@@ -63,7 +63,7 @@ export function redraw() {
   ];
   const project = (p) => {
     const open = tasks.filter((t) => t.parent === p.n);
-    const c = p.project.chats;
+    const c = open.length;
     return [
       icon("app"),
       A.what(A.to(p.n, p.project.name), A.meta(`${c} chat${c === 1 ? "" : "s"}`, `#${p.n}`)),

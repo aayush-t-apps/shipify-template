@@ -22,6 +22,7 @@ Every doc, by what you want to do. New here? Read the [tour](tour.md), then
 | [channels.md](channels.md) | How do I use Shipify from Telegram or the web chat, and add another channel? |
 | [tools.md](tools.md) | How do runs read and change my apps (Notion, Drop), and how is a tool added? |
 | [notebook.md](notebook.md) | What does Shipify remember about me, and how do I add, forget or see a note? |
+| [knowledge.md](knowledge.md) | How do I keep a project's finds and facts: its pages, Inbox and Journal (the Library)? |
 | [recipes.md](recipes.md) | How do I keep an automation as a reviewed file, and turn on an example? |
 | [operations.md](operations.md) | Which command for status, release, roll back, down, up? |
 | [process.md](process.md) | How is a project made, changed and shipped, and what do I approve? |
@@ -35,8 +36,7 @@ Every doc, by what you want to do. New here? Read the [tour](tour.md), then
 | [door.md](door.md) | The edge's door: my words onto tasks, replies back to my chat; the status page |
 | [watch.md](watch.md) | The edge's watch: what's due, stuck tasks, resends, alerts |
 | [plug-ins.md](plug-ins.md) | Every kind of block (agent, tool, channel, stack, check, recipe): its contract, test and registry, and adding one |
-| [glossary.md](glossary.md) | Every word, with one meaning, next to the OS idea it matches |
-| [security.md](security.md) | Who can do what, every key, the agent's sandbox, a leaked key |
+| [security.md](security.md) | Who can do what, what each key may do, the agent's sandbox, a leaked key |
 | [adr/](adr/README.md) | Why is it this way? One page per decision |
 
 ## Reference
@@ -48,7 +48,7 @@ Every doc, by what you want to do. New here? Read the [tour](tour.md), then
 | [releases.md](releases.md) | How is Shipify released, and how does each copy take a new version? |
 | [settings.md](settings.md) | Every setting your copy has: where it lives, what sets and reads it (made from the one list) |
 | [troubleshooting.md](troubleshooting.md) | Something's off: what's the fix? |
-| [glossary.md](glossary.md) | What does each word mean? |
+| [glossary.md](glossary.md) | What does each word mean? One meaning each, next to the OS idea it matches |
 | [roadmap.md](roadmap.md) | What's next, and what's not planned? |
 | [CHANGELOG.md](../CHANGELOG.md) | What changed in each release? |
 
@@ -71,10 +71,12 @@ One home per fact; the other docs link to it.
 
 | Fact | Its home |
 |---|---|
-| what you can ask, and the chat commands | `intents.json` ([tasks.md](tasks.md)) |
+| what you can ask | `intents.json` ([tasks.md](tasks.md)) |
+| the commands answered at once (`/tasks`, `/ping`, …) | `INSTANT` in `cli/contracts/answers.ts` ([door.md](door.md#in-your-messages)) |
 | the fixed words | `cli/kernel/words.ts` ([tasks.md](tasks.md)) |
 | a tool's calls, keys and pre-approved forms | `tools.json` ([tools.md](tools.md)) |
 | an error's words and its fix | `cli/contracts/problems.ts` |
-| a key's scope and expiry | [setup.md](setup.md) |
+| every key: where it lives, when it expires, how to replace it | [setup.md](setup.md#tokens-and-secrets) |
+| what each key may do, and which steps hold it | [security.md](security.md#who-holds-which-key) |
 | a setting, a command's flags | [settings.md](settings.md), [configuration.md](configuration.md), [cli.md](cli.md) |
 | what it costs | [the README](../README.md#costs) |

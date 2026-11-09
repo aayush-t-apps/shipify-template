@@ -73,23 +73,24 @@ git clone https://github.com/<you>/shipify && cd shipify && pnpm install
 pnpm ship setup
 ```
 
-This is how it looks after step 2 of [the road](#the-road). Today the copy is a clone of the repo
-you got Shipify from, and setup has eight steps ([getting-started.md](getting-started.md)).
+Step by step: [getting-started.md](getting-started.md).
 
 What setup walks you through, one step at a time:
 
 1. **GitHub:** your login, and your Shipify repo's settings.
 2. **The bot:** two clicks to create it, then **Install**.
-3. **A box:** the machine that runs the work. A Raspberry Pi, a small VPS, or your PC, on Ubuntu
+3. **The agent's login:** your Claude subscription, or a gateway's key for other models
+   (OpenRouter, some of them free, or Vercel's AI Gateway).
+4. **A box:** the machine that runs the work. A Raspberry Pi, a small VPS, or your PC, on Ubuntu
    LTS. `pnpm ship box add <user@host>` sets it up.
-4. **The agent's login:** your Claude subscription, or a gateway key for other models (OpenRouter,
-   NVIDIA and others, some free).
 
 That's the core. Each of these is a choice you can add later:
+- **Codex:** on your ChatGPT plan (Plus or Pro), one sign-in.
 - **Chat:** Telegram or the web chat, through the door, on Cloudflare's free plan.
 - **Tools:** Notion and Drop today; the next one is a plug-in.
 - **Other accounts:** the repos App (below).
-- **Projects:** apps Shipify builds and deploys, which needs a Cloudflare account and a domain.
+- **Apps:** the ones Shipify builds and deploys, which need a Cloudflare account (a domain is
+  optional).
 
 **The check:** `pnpm ship doctor` and `pnpm ship selftest`. Each says ✓, or names the fix.
 
@@ -225,8 +226,9 @@ touches the core:
    and commit style.
 3. **Then Shipify's rules:**
    - its own branch;
-   - a secret scan before every push;
-   - no workflow files;
+   - a secret scan before every push, and every reply and log masked for keys;
+   - no workflow change without your `yes`, and only one that runs after your merge (none on
+     another account);
    - nothing of Shipify's added, unless you ask.
 4. **The least key, for the least time:**
    - one repo, for one hour, minted right before the step that needs it;
@@ -240,18 +242,8 @@ touches the core:
 
 ## Who holds what
 
-| Who | Holds | Never |
-|---|---|---|
-| **You** | merges, approvals (`yes`), operations | |
-| **Your Shipify repo** (GitHub's secrets) | the Apps' keys, the agent's login, your tools' keys | |
-| **A box** | nothing at rest: each run's tokens, minted by GitHub's own action, last an hour | a key that outlives the run |
-| **The agent** (its own Linux user) | its login, a read key for its repo, your tools' read keys (your own account only) | a write key, a push, the box's files |
-| **Apply** (after the agent has finished) | a write key, for one repo | a merge, a push to a default branch |
-| **A run on another account** | that repo's keys, Shipify's rules | your notebook, your tools, your other repos |
-| **A read of someone else's repo** | the repo's files | any command, the web, any key |
-
-Every reply, log and push is masked and scanned for keys. That includes GitHub's newest token
-shape (ADR 0045).
+Every key: [setup.md](setup.md#tokens-and-secrets). Who holds which, and what each may do:
+[security.md](security.md#who-holds-which-key).
 
 ## What it costs
 
@@ -260,7 +252,7 @@ shape (ADR 0045).
 | GitHub: your repos, issues, Actions | free. Tasks run on your box. Only projects' pipelines, the watch and a few small jobs use GitHub's free minutes |
 | Cloudflare, for chat, the status page and apps | free plan |
 | A box | a machine you have: a Pi or an old PC. A VPS works too |
-| The agent | your Claude subscription, or a gateway's models, some of them free |
+| The agent | your Claude subscription, your ChatGPT plan (Codex), or a gateway's models, some of them free |
 
 ## What it achieves
 
@@ -284,15 +276,16 @@ shape (ADR 0045).
 
 | Step | What | Where it stands |
 |---|---|---|
-| **Built** | tasks, boxes and runs; Claude Code, pi and OpenCode; GitHub, Telegram and the web chat; Notion; the notebook; repeats and recipes; projects (plan, build, deploy, release); any repo on your account, its own way, and a read-only look at anyone's (ADR 0044) | live |
+| **Built** | tasks, boxes and runs, with runs that stay (ADR 0057) and sub-tasks (ADR 0066); a box from one command, or in Docker (ADR 0055, ADR 0056); Claude Code, pi, OpenCode and Codex (on your ChatGPT plan, ADR 0074); GitHub, Telegram and the web chat, with guests (ADR 0071); Notion, and Drop with pages as drops (ADR 0072, ADR 0073); the notebook; projects with their pages and Inbox, and the Journal (ADR 0069, ADR 0070); repeats, errands (ADR 0054) and recipes; apps (plan, build, deploy, release); any repo on your account, its own way, and a read-only look at anyone's (ADR 0044) | live |
 | **1. Any account** | the repos App, your accounts as the trust, one PR format, a repo's default branch, masking for today's tokens ([ADR 0045](adr/0045-any-account.md)) | live (2026-10-09) |
-| **2. Your own Shipify, for anyone** | a copy anyone can make (a template), a core setup in four steps on a user account or an org, your files kept apart from Shipify's, and Shipify's updates arriving as a PR you merge | designed: [ADR 0047](adr/0047-your-own-shipify.md), proposed |
-| **3. Polish** | verified (signed) commits, a PR from a fork for anyone's public repo, a ready image for boxes | later |
+| **2. Your own Shipify, for anyone** | a copy anyone can make (a template), a core setup in four steps on a user account or an org, your files kept apart from Shipify's, and Shipify's updates arriving as a PR you merge ([ADR 0047](adr/0047-your-own-shipify.md)) | live (2026-10-09) |
+| **3. Polish** | verified (signed) commits, a PR from a fork for anyone's public repo | later |
 
 ## If you go further: open source, a team, or hosted
 
-Three ways Shipify could grow past one person's own copy. None of them is built, and each is your
-decision. All three keep the same core and rules.
+Three ways Shipify could grow past one person's own copy. Open source is built in part: the
+template is public, under the MIT licence. Each step past that is your decision. All three keep
+the same core and rules.
 
 | | Your own copy (today) | Open source | A team on one Shipify | Hosted |
 |---|---|---|---|---|
@@ -300,15 +293,14 @@ decision. All three keep the same core and rules.
 | **Who runs it** | you | each person | the company | the host |
 | **Whose keys** | yours | each person's own | the company's | the host holds everyone's |
 | **Cost** | free | free | free, plus the company's agent accounts | paid |
-| **Needs first** | | step 2 of the road, a fresh public repo, a licence | a design for people and approvals | a business |
-| **Status** | live | your call, after step 2 | a design of its own | not planned |
+| **Needs first** | | for contributions: a security policy, and CI on contributors' PRs | a design for people and approvals | a business |
+| **Status** | live | in part: the public template; contributions are your call | a design of its own | not planned |
 
 **Open source.**
-- **What it needs first:**
-  - step 2: your own files kept apart from Shipify's, and updates arriving as a PR;
-  - a public repo started fresh, whose history holds nothing of yours;
-  - a licence, a security policy, and CI on contributors' PRs (today CI runs after the merge,
-    ADR 0018).
+- **Built:** step 2 of the road; the template, public with a fresh history and your private words
+  replaced (ADR 0055, [releases.md](releases.md)); the MIT licence.
+- **What contributions need first:** a security policy, and CI on contributors' PRs (today CI runs
+  after the merge, ADR 0018). Until then the template takes no issues or PRs from others.
 - **What you get:** others run it and add agents, tools, channels and stacks as plug-ins. You keep
   yours private, and take updates by merging a PR.
 - **Never public:**

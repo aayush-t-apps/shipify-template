@@ -16,10 +16,11 @@ import {
   projectNameOf,
   projectOfLabels,
   readFrom,
+  RUN_WRITER,
   withoutLine,
 } from "../../contracts/index.ts";
 import { doorLogin } from "../../kernel/snapshot.ts";
-import { platformRepo, RECORD_WRITER } from "../../lib/github.ts";
+import { platformRepo } from "../../lib/github.ts";
 import type { RecordPage } from "../../lib/plugins/record.ts";
 import {
   dated,
@@ -86,7 +87,7 @@ export interface Notebook {
  */
 function trusted(login: string | undefined, body = "", guest?: string): boolean {
   if (!login) return false;
-  if (login === RECORD_WRITER) return true;
+  if (login === RUN_WRITER) return true;
   // The door's line names whose it is (ADR 0071): yours names no guest; a guest's run trusts only
   // its guest's.
   if (login === doorLogin()) {

@@ -1,7 +1,7 @@
 // The github job (ADR 0030 §0, ADR 0031): what needs keys a box must never hold, on GitHub's
 // machines, with no agent. It runs only what the task's status already has pending, once: a merged
-// plan's repo and keys, an operation, or closing the PRs of a task closed as not planned. A replay
-// finds nothing pending and does nothing.
+// plan's repo and keys, an operation, closing the PRs of a task closed as not planned, or an agent's
+// sign-in with a code (ADR 0074). A replay finds nothing pending and does nothing.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,16 +12,28 @@ import { prepareRepo, repoSpecFromPlan } from "../commands/project.ts";
 import { templateRelease } from "../commands/template.ts";
 import { timeZone } from "../commands/task/context.ts";
 import { publishNeeds, wouldStop } from "../commands/task/plans.ts";
-import { type Problem, problem, renderProblem } from "../contracts/index.ts";
+import {
+  DEPLOYING_LABEL,
+  errorLine,
+  maskSecrets,
+  type Problem,
+  problem,
+  renderProblem,
+} from "../contracts/index.ts";
+import { adapterOf, loginOf } from "../lib/agents.ts";
 import { run } from "../lib/exec.ts";
 import { gh, platformRepo, repoOfPr, withToken } from "../lib/github.ts";
 import { ok, type Result, ShipError } from "../lib/output.ts";
 import { gitConfig, keyFor } from "../lib/clones.ts";
 import { repoFor } from "../lib/projects-on-github.ts";
+import { sourceControl } from "../lib/providers.ts";
 import { tryStatusIssue } from "../lib/status-issue.ts";
+import type { TaskState } from "../lib/task.ts";
+import { executors } from "./agent.ts";
 import { apply } from "./apply.ts";
 import { buildBrief } from "./decide.ts";
 import { outward } from "./door.ts";
+import { snapshot } from "./snapshot.ts";
 import type { Plan, Snapshot, Write } from "./types.ts";
 
 export async function githubJob(s: Snapshot, p: Extract<Plan, { do: "github" }>): Promise<Result> {
@@ -97,7 +109,7 @@ export async function githubJob(s: Snapshot, p: Extract<Plan, { do: "github" }>)
           const repo = repoOfPr(url);
           if (repo) {
             st.pending.release = { repo, pr: url, at: s.now };
-            writes.push({ w: "labels", add: ["deploying"] });
+            writes.push({ w: "labels", add: [DEPLOYING_LABEL] });
           }
           writes.push({
             w: "reply",
@@ -199,10 +211,110 @@ export async function githubJob(s: Snapshot, p: Extract<Plan, { do: "github" }>)
         `These PRs couldn't be closed, so close them on GitHub:\n${unclosed.map((u) => `- ${u}`).join("\n")}${s.account ? `\n\nOn \`${s.account.login}\`, the repos App needs to be installed there with that repo chosen.` : ""}`,
         "close-prs",
       );
+  } else if (p.job === "sign-in" && st.pending.signIn) {
+    const asked = st.pending.signIn;
+    st.pending.signIn = undefined;
+    return signIn(s, st, asked);
   } else return ok("run github", `task #${s.n}: nothing pending`);
 
   await apply(s, st, writes, { ...outward(), tokens: {} });
   return ok("run github", `task #${s.n}: ${p.job}`);
+}
+
+/**
+ * An agent's sign-in with a one-time code (`codex sign in`, ADR 0074), with no agent and no box: its
+ * adapter's own sign-in at the version executors.json pins, here on GitHub's machine, whose bot key
+ * sets secrets. The link and the code are a reply at once (applied now, the door told, so your chat
+ * shows them while the job waits for you); the login it gives back goes straight to the agent's
+ * secret, never printed. Its answer is written on the task as it is then, as you may have said more
+ * on it meanwhile.
+ */
+async function signIn(
+  s: Snapshot,
+  st: TaskState,
+  asked: { agent: string; at: string },
+): Promise<Result> {
+  const { agent } = asked;
+  const entry = executors()[agent];
+  const login = loginOf(entry);
+  const adapter = adapterOf(entry);
+  const name = entry?.name ?? agent;
+  const again = `To try again: \`${agent} sign in\`, for a new code.`;
+  // A new chat's sign-in (decide set it to work): it waits on you while the code is out.
+  const ours = st.phase === "working" && !st.working;
+  let said: { ok: boolean; text: string };
+  try {
+    if (!login || !adapter?.signIn) throw new Error(`${name} has no sign-in with a code`);
+    const r = await adapter.signIn({
+      version: entry?.install?.version ?? "",
+      code: async (c) => {
+        if (ours) st.phase = "needs-you";
+        const text = [
+          `**Sign in to ${name}:** open the link on your phone (or any device), sign in, and type the code. It lasts ${c.minutes} minutes and works once.`,
+          "",
+          `1. ${c.link}`,
+          `2. The code: \`${c.code}\``,
+          "",
+          "You asked for this code, so go on. A code you didn't ask for: cancel it.",
+        ].join("\n");
+        const { replies } = await apply(
+          s,
+          st,
+          [
+            {
+              w: "reply",
+              kind: "needs-you",
+              state: "Needs you",
+              text,
+              step: "sign-in-code",
+              occasion: s.run.id,
+            },
+          ],
+          { ...outward(), tokens: {} },
+        );
+        if (!replies.length) throw new Error("GitHub didn't take the reply with the code");
+      },
+    });
+    if (r.login) {
+      sourceControl().setSecret(platformRepo(), login.secret, r.login);
+      said = {
+        ok: true,
+        text: [
+          `✓ ${name} is signed in, and its session is kept as the secret ${login.secret}.`,
+          ...r.said,
+          `Pick it with \`use ${agent}\`.`,
+        ].join(" "),
+      };
+    } else said = { ok: false, text: [...r.said, again].join(" ") };
+  } catch (e) {
+    said = {
+      ok: false,
+      text: `${name}'s sign-in stopped, so nothing was set: ${maskSecrets(errorLine(e))}. ${again}`,
+    };
+  }
+  // The task as it is now (as `run failed` reads it): never this job's first read, from minutes ago.
+  const { s: now } = await snapshot(s.n, { kind: "dispatch", job: "github" });
+  const st2: TaskState = { ...now.state, pending: { ...now.state.pending } };
+  if (st2.pending.signIn?.at === asked.at) st2.pending.signIn = undefined;
+  // A new chat's sign-in: answered, or still waiting on you. A task's own state stays as it is.
+  if (ours && (st2.phase === "working" || st2.phase === "needs-you") && !st2.working)
+    st2.phase = said.ok ? "answered" : "needs-you";
+  await apply(
+    now,
+    st2,
+    [
+      {
+        w: "reply",
+        kind: said.ok ? "answer" : "needs-you",
+        state: said.ok ? "Done" : "Needs you",
+        text: said.text,
+        step: "sign-in",
+        occasion: s.run.id,
+      },
+    ],
+    { ...outward(), tokens: {} },
+  );
+  return ok("run github", `task #${s.n}: ${agent} ${said.ok ? "signed in" : "not signed in"}`);
 }
 
 /**

@@ -144,7 +144,7 @@ const guests = (G) => {
       ? h("p", "Send each guest the link: ", cmd(G.link))
       : h(
           "p",
-          "Guests are off. Make the guests' Access application once (path guest/*, One-time PIN), then add its AUD tag to shipify's SHIPIFY_ACCESS variable as \"guests\" (GitHub → Settings → Secrets and variables → Actions → Variables). It's on within a minute.",
+          "Guests are off. Make the guests' Access application once (path guest/*, Google sign-in), then add its AUD tag to shipify's SHIPIFY_ACCESS variable as \"guests\" (GitHub → Settings → Secrets and variables → Actions → Variables). It's on within a minute.",
         ),
     A.list(G.list, row, "No guests yet."),
     h(

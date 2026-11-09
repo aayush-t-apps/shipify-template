@@ -4,7 +4,9 @@
 // sees is the record: the replies with their hidden lines, the status, the labels.
 
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -16,7 +18,7 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { workspace } from "../cli/commands/task/context.ts";
 import { ensureLabels, forgetLabels, LABELS_KEPT_MS } from "../cli/commands/task/issue.ts";
 import { keepRecipes, taskDue } from "../cli/commands/task/due.ts";
@@ -38,9 +40,11 @@ import {
   runThinkStep,
 } from "../cli/kernel/run.ts";
 import type { Result } from "../cli/lib/output.ts";
+import { mockCallsLogged } from "../cli/lib/providers.ts";
 import { StatusIssueState, setUpcoming } from "../cli/lib/status-issue.ts";
 import { findStatus, newState, renderStatus, type TaskState } from "../cli/lib/task.ts";
 import { BUILT } from "./built.ts";
+import { fakeApi } from "./fake-api.ts";
 import { ROOT, sandbox } from "./helpers.ts";
 
 interface Fake {
@@ -176,6 +180,13 @@ async function job(event: string, action = "", meanwhile?: () => void) {
   return { plan, think, finish, decide, apply, do: out("do") };
 }
 
+/** GitHub's API for the reads made with fetch (a stay's, think's): the fake gh's, from its state. */
+let api: Awaited<ReturnType<typeof fakeApi>> | undefined;
+beforeAll(async () => {
+  api = await fakeApi();
+});
+afterAll(() => api?.stop());
+
 beforeEach(() => {
   const sb = sandbox();
   const dir = mkdtempSync(join(tmpdir(), "flow-"));
@@ -215,6 +226,8 @@ beforeEach(() => {
         keys: { JOT_LOG: { look: "SHIPIFY_JOT_READ", act: "SHIPIFY_JOT_WRITE" } },
         look: ["list"],
         act: ["add"],
+        // `add` can take files the task shared, as Drop's `publish` does.
+        args: { add: { files: "files" } },
       },
     }),
   );
@@ -224,6 +237,7 @@ beforeEach(() => {
     ...sb.env,
     PATH: `${dir}:${saved.PATH}`,
     FAKE_GH_STATE: file,
+    GITHUB_API_URL: api?.url(file),
     GITHUB_REPOSITORY: "o/shipify",
     GITHUB_OUTPUT: outputs,
     SHIPIFY_OWNER: "owner",
@@ -636,6 +650,141 @@ describe("apply when GitHub refuses a write", () => {
       [],
     );
   });
+
+  it("leaves out a file a call took when the call worked: its answer is the reply; a failed or waiting call's file shows (ADR 0072)", async () => {
+    Object.assign(process.env, { EVENT: "issues", ACTION: "opened", GITHUB_RUN_ID: "45" });
+    writeFileSync(outputs, "");
+    await runPlan(12);
+    const { s, p } = JSON.parse(
+      readFileSync(join(workspace(), ".tasks", "12", "plan.json"), "utf8"),
+    );
+    const out = mkdtempSync(join(tmpdir(), "out-"));
+    writeFileSync(join(out, "trip.html"), "<!doctype html><title>Trip</title>");
+    process.env.SHIPIFY_JOT_WRITE = jots;
+    const sent: string[][] = [];
+    const env = {
+      defaults: [],
+      tokens: { files: "files-token" },
+      out,
+      tellDoor: async (_: number, __: number, made: string[]) => void sent.push(made),
+    };
+    // A page in the reply's files, and, unless it waits for a Yes, the call that takes it.
+    const writes = (text: string, call?: string): Parameters<typeof apply>[2] => [
+      ...(call
+        ? [
+            {
+              w: "calls" as const,
+              calls: [{ tool: "jot", name: "add", args: { text: call, files: ["trip.html"] } }],
+              fingerprint: call,
+            },
+          ]
+        : []),
+      { w: "reply", kind: "answer", state: "Done", text, files: ["trip.html"], step: "think-new" },
+    ];
+    // The call reads the page back from shipify-files: GitHub sends it, or refuses.
+    let readable = true;
+    vi.stubGlobal("fetch", async () =>
+      readable ? new Response("<!doctype html>") : new Response("", { status: 404 }),
+    );
+    try {
+      // It worked: only its answer. No file on the line or in the words, and none to the door.
+      await apply(s, structuredClone(p.state), writes("Here's your trip page.", "trip"), env);
+      const worked = lastReply()?.c.body ?? "";
+      expect(worked).toContain("✓ `jot.add`: added trip");
+      expect(readReply(worked)?.files).toBeUndefined();
+      expect(worked).not.toContain("trip.html");
+      expect(sent.at(-1)).toEqual([]);
+      expect(made().map((l) => JSON.parse(l).arguments)).toEqual([
+        { text: "trip", files: ["trip.html"] },
+      ]);
+      // It failed: the page shows as today, so nothing is lost.
+      readable = false;
+      await apply(s, structuredClone(p.state), writes("I couldn't share it.", "again"), env);
+      const failed = lastReply()?.c.body ?? "";
+      expect(failed).toContain("✗ `jot.add`");
+      expect(readReply(failed)?.files?.map((f) => f.name)).toEqual(["trip.html"]);
+      expect(failed).toContain("trip.html");
+      expect(sent.at(-1)).toEqual([join(out, "trip.html")]);
+      // It waits for your Yes (listed, so no call in this apply): the page shows too.
+      await apply(s, structuredClone(p.state), writes("I'd share it, after your Yes."), env);
+      expect(readReply(lastReply()?.c.body)?.files?.map((f) => f.name)).toEqual(["trip.html"]);
+      expect(sent.at(-1)).toEqual([join(out, "trip.html")]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("makes a guest's call for them, from the door's list, with their file from the run's folder; their page stays (ADR 0073)", async () => {
+    Object.assign(process.env, {
+      EVENT: "issues",
+      ACTION: "opened",
+      GITHUB_RUN_ID: "46",
+      SHIPIFY_DOOR_URL: "https://door.example.com",
+      ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.example.com/token?x=1",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc",
+      SHIPIFY_JOT_WRITE: jots,
+    });
+    writeFileSync(outputs, "");
+    await runPlan(12);
+    const { s, p } = JSON.parse(
+      readFileSync(join(workspace(), ".tasks", "12", "plan.json"), "utf8"),
+    );
+    const GUEST = "guest-ana-3f9a2c";
+    s.issue.from = { v: 1, person: "Ana", channel: "web", chat: GUEST, id: "1", guest: GUEST };
+    const out = mkdtempSync(join(tmpdir(), "out-"));
+    writeFileSync(join(out, "trip.html"), "<!doctype html><title>Goa</title>");
+    const env = { defaults: [], tokens: {}, out, tellDoor: async () => {} };
+    const writes = (fingerprint: string): Parameters<typeof apply>[2] => [
+      {
+        w: "calls",
+        calls: [{ tool: "jot", name: "add", args: { text: "trip", files: ["trip.html"] } }],
+        fingerprint,
+      },
+      {
+        w: "reply",
+        kind: "answer",
+        state: "Done",
+        text: "Your page.",
+        files: ["trip.html"],
+        step: "think-new",
+      },
+    ];
+    // The door knows Ana while she's on the guest list; GitHub's OIDC gives the run its token.
+    let listed = true;
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      asked.push(String(url).split("?")[0] ?? "");
+      if (String(url).startsWith("https://oidc.example.com"))
+        return Response.json({ value: "a.b.c" });
+      return listed
+        ? Response.json({ email: "ana@example.com", name: "Ana" })
+        : Response.json({ error: "not a guest" }, { status: 404 });
+    });
+    try {
+      await apply(s, structuredClone(p.state), writes("one"), env);
+      expect(asked).toContain(`https://door.example.com/door/guest/${GUEST}`);
+      expect(JSON.parse(made().at(-1) ?? "{}")).toMatchObject({
+        arguments: { text: "trip", files: ["trip.html"] },
+        guest: { email: "ana@example.com", name: "Ana" },
+        got: ["trip.html"],
+      });
+      const body = lastReply()?.c.body ?? "";
+      expect(body).toContain("✓ `jot.add`: added trip");
+      // Their page has no other copy: it stays in their chat.
+      expect(readReply(body)?.files?.map((f) => f.name)).toEqual(["trip.html"]);
+      expect(body).not.toContain("ana@example.com");
+      // A guest you removed: the door says so, and nothing is made.
+      listed = false;
+      const before = made().length;
+      await apply(s, structuredClone(p.state), writes("two"), env);
+      expect(made()).toHaveLength(before);
+      expect(lastReply()?.c.body).toContain(
+        "✗ `jot.add`: nothing was made, as the door couldn't say you're a guest here now",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 // Two whole runs, kept as functions: each runs here and again from the built CLI (ADR 0051 B1).
@@ -706,35 +855,39 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     // A job and a refresh that stops, as above.
   }, 180_000);
 
-  it("stays after its PR opens; a change asked of the stay goes to a work run (ADR 0060)", async () => {
-    await onProject();
+  it("stays after its PR opens; a change asked of the stay is made in it, and its job pushes it: no new run (ADR 0076)", async () => {
+    const origin = await onProject();
     process.env.FAKE_WORK = "ok";
     await job("issues", "opened");
     expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
     expect(out("stay")).toBe("yes");
     expect(read().issue.labels.map((l) => l.name)).toContain("staying");
-    // The stay's turn, in the same session and clone: it changes nothing, and hands the change on.
-    delete process.env.FAKE_WORK;
-    process.env.FAKE_FINAL = JSON.stringify({
-      v: 2,
-      state: "done",
-      text: "I'll make it green.",
-      work: { project: "demo", brief: "Make it green" },
-    });
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    // The stay's turn, in the same session and clone: it commits the change and asks for the PR.
+    process.env.FAKE_WORK = "fix";
     try {
       say("make it green");
+      writeFileSync(outputs, "");
       const done = await runStay(12);
-      expect(done.summary).toContain("1 answer; left: its answer started more work");
+      expect(done.summary).toContain("1 answer; left: its answer needs a token");
       const prompt = readFileSync(
-        join(workspace(), ".tasks", "12", "agent", "out", "next-prompt.md"),
+        join(workspace(), ".tasks", "12", "agent", "out", "fix-prompt.md"),
         "utf8",
       );
-      expect(prompt).toContain("This turn comes from a stay, which pushes nothing");
-      expect(lastReply()?.c.body).toContain("A work run on demo starts now");
-      expect(read().calls).toContain("workflow run task.yml -R o/shipify -f issue=12 -f job=run");
-      expect(read().issue.labels.map((l) => l.name)).not.toContain("staying");
+      expect(prompt).toContain("make it here as before: commit, run its tests, and ask for the PR");
+      expect(prompt).toContain("Never set `work` for `demo`");
+      // The job's own steps mint the repo's key and push what the stay decided.
+      expect(out("apply")).toBe("yes");
+      // Never taken for the run's own push before it, in the same job.
+      await runApply(12);
+      expect(git(origin, "log", "--format=%s", branch).split("\n")[0]).toBe(
+        "Fix what the checks found",
+      );
+      expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
+      expect(lastReply()?.c.body).not.toContain("A work run on demo starts now");
+      expect(read().calls.filter((c) => c.startsWith("workflow run task.yml"))).toHaveLength(0);
     } finally {
-      delete process.env.FAKE_FINAL;
+      delete process.env.FAKE_WORK;
     }
   }, 120_000);
 
@@ -767,6 +920,90 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
       delete process.env.FAKE_FINAL;
     }
   }, 120_000);
+
+  it("a stay's turn that asks for its open PR again with nothing new needs no key: it stays, its old commits never sent again (ADR 0076)", async () => {
+    const origin = await onProject();
+    process.env.FAKE_WORK = "ok";
+    await job("issues", "opened");
+    expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
+    expect(out("stay")).toBe("yes");
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    const head = git(origin, "rev-parse", branch);
+    delete process.env.FAKE_WORK;
+    // An answer only, with the PR it asked for before named again, as a later run's would be.
+    process.env.FAKE_FINAL = JSON.stringify({
+      v: 2,
+      state: "needs-you",
+      text: "It's ready to merge.",
+      pr: { kind: "closes", title: "Make it pass", body: "Why" },
+    });
+    try {
+      say("is it ready?");
+      writeFileSync(outputs, "");
+      const staying = runStay(12);
+      await until(() => lastReply()?.c.body.includes("It's ready to merge.") ?? false);
+      expect(read().issue.labels.map((l) => l.name)).toContain("staying");
+      await sayNow("start over");
+      const done = await staying;
+      expect(done.summary).toContain("1 answer; left: words for a normal run");
+      expect(out("apply")).toBeUndefined();
+      expect(git(origin, "rev-parse", branch)).toBe(head);
+    } finally {
+      delete process.env.FAKE_FINAL;
+    }
+  }, 120_000);
+
+  it("a push the secret scan refused: the stay's fix goes with the run's commits, and the PR opens (ADR 0076)", async () => {
+    const origin = await onProject();
+    // The stand-in gitleaks (tests/env.ts) flags a line with the word LEAK, as the real one a key.
+    Object.assign(process.env, { FAKE_WORK: "ok", FAKE_CHANGE: "const TOKEN = 'LEAK';" });
+    await job("issues", "opened");
+    expect(lastReply()?.c.body).toContain("so it wasn't pushed");
+    expect(branches(origin).some((b) => b.startsWith("task/12-"))).toBe(false);
+    expect(out("stay")).toBe("yes");
+    // The fix, in the stay: the line rewritten in a commit of its own, on top of the refused one.
+    delete process.env.FAKE_CHANGE;
+    Object.assign(process.env, { FAKE_WORK: "fix", FAKE_FIX_CHANGE: "const TOKEN = env.TOKEN;" });
+    say("read it from the environment");
+    writeFileSync(outputs, "");
+    const done = await runStay(12);
+    expect(done.summary).toContain("1 answer; left: its answer needs a token");
+    // Its session never saw the refusal, which came after its answer: the box tells its turn.
+    const prompt = readFileSync(
+      join(workspace(), ".tasks", "12", "agent", "out", "fix-prompt.md"),
+      "utf8",
+    );
+    expect(prompt).toContain(
+      'After your last answer, the box said: "The change has something that looks like a key (change.txt:1',
+    );
+    expect(prompt).toContain("a commit on top that fixes it is sent with it");
+    expect(out("apply")).toBe("yes");
+    await runApply(12);
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    expect(git(origin, "log", "--format=%s", branch).split("\n").slice(0, 2)).toEqual([
+      "Fix what the checks found",
+      "The change",
+    ]);
+    expect(git(origin, "show", `${branch}:change.txt`)).toBe("const TOKEN = env.TOKEN;\n");
+    expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
+  }, 120_000);
+
+  it("a run your words reopened stays after its answer, as on an open task", async () => {
+    Object.assign(process.env, {
+      FAKE_RESULT: JSON.stringify({ v: 2, state: "done", text: "About 12 GB free." }),
+      FAKE_SESSION: "s-1",
+    });
+    await job("issues", "opened");
+    expect(out("stay")).toBe("yes");
+    set((f) => {
+      f.issue.state = "closed";
+      Object.assign(f.issue, { closed_at: new Date(Date.now() - 300_000).toISOString() });
+    });
+    say("and the Pi?");
+    await job("issue_comment", "created");
+    expect(read().issue.state).toBe("open");
+    expect(out("stay")).toBe("yes");
+  });
 
   it("main didn't move: the finish fetches and changes nothing (ADR 0059)", async () => {
     await onProject();
@@ -843,7 +1080,8 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
 
   it("a question whose kept work can't be pushed is still the question: the push is in the run's log only (ADR 0041)", async () => {
     const origin = await onProject();
-    process.env.FAKE_WORK = "question-workflow";
+    // A key in its kept work: nothing is pushed.
+    Object.assign(process.env, { FAKE_WORK: "question", FAKE_CHANGE: "const TOKEN = 'LEAK';" });
     const first = await job("issues", "opened");
     expect(first.apply.status).toBe("succeeded");
     expect(replies()).toHaveLength(1);
@@ -853,6 +1091,153 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     expect(status()?.phase).toBe("needs-you");
     expect(branches(origin).some((b) => b.startsWith("task/12-"))).toBe(false);
   }, 90_000);
+
+  it("a question with a workflow change that would run on the branch: its work is kept, the change held and said, not listed (ADR 0075)", async () => {
+    const origin = await onProject();
+    process.env.FAKE_WORK = "question-workflow";
+    await job("issues", "opened");
+    expect(lastReply()?.line).toMatchObject({ kind: "needs-you" });
+    expect(lastReply()?.line?.list).toBeUndefined();
+    expect(lastReply()?.c.body).toContain("Blue or green?");
+    expect(lastReply()?.c.body).toContain(
+      "The workflow change (`.github/workflows/x.yml`) is held out of the push, and not listed for your yes: `.github/workflows/x.yml`: it runs on a push to any branch",
+    );
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    expect(git(origin, "log", "--format=%s", branch).split("\n").slice(0, 2)).toEqual([
+      "Hold the workflow change for your yes",
+      "Work in progress: waiting on your answer",
+    ]);
+    expect(git(origin, "ls-tree", "-r", "--name-only", branch)).not.toContain("x.yml");
+  }, 90_000);
+
+  it("a workflow file you changed on the task's branch on GitHub isn't the run's: it pushes; one the run changes doesn't", async () => {
+    const origin = await onProject();
+    process.env.FAKE_WORK = "question";
+    await job("issues", "opened");
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    // Your step, added on the task's branch on GitHub.
+    const yours = join(dirname(file), "yours");
+    git(dirname(file), "clone", "-q", "-b", branch, origin, yours);
+    mkdirSync(join(yours, ".github", "workflows"), { recursive: true });
+    writeFileSync(join(yours, ".github", "workflows", "x.yml"), "on: push\n");
+    git(yours, "add", "-A");
+    git(yours, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "Your step");
+    git(yours, "push", "-q", "origin", branch);
+    // The next run starts from it, and pushes and opens its PR.
+    process.env.FAKE_WORK = "ok";
+    say("blue");
+    await job("issue_comment", "created");
+    expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
+    expect(git(origin, "log", "--format=%s", branch)).toContain("Your step");
+    // A run that changes it too, so that it would run before your merge (its `on:` no longer
+    // reads): the box's checks tell the agent in its own session (ADR 0075), and nothing is pushed.
+    const before = git(origin, "rev-parse", branch);
+    process.env.FAKE_WORKFLOW = "on: workflow_dispatch";
+    say("one more thing");
+    await job("issue_comment", "created");
+    expect(git(origin, "rev-parse", branch)).toBe(before);
+    expect(lastReply()?.c.body).toContain(
+      "This workflow change would run before the owner's merge, so the box can't list it for their yes: `.github/workflows/x.yml`: can't read its `on:`",
+    );
+  }, 300_000);
+
+  it("a workflow change that runs only from main: held, listed with its lines and facts, pushed on your yes (ADR 0075)", async () => {
+    const origin = await onProject();
+    Object.assign(process.env, { FAKE_WORK: "ok", FAKE_WORKFLOW: "on: workflow_dispatch" });
+    const first = await job("issues", "opened");
+    expect(first.apply.status).toBe("succeeded");
+    // The rest of the work is pushed, and its PR opened, without the workflow file.
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
+    expect(git(origin, "ls-tree", "-r", "--name-only", branch)).toContain("change.txt");
+    expect(git(origin, "ls-tree", "-r", "--name-only", branch)).not.toContain("x.yml");
+    // Its write token asked for workflows write: the run's commits touch a workflow file.
+    expect(out("workflows")).toBe("write");
+    // The list: the file, where, the box's facts, and the exact lines, with one code.
+    const listed = lastReply();
+    const code = listed?.line?.list as string;
+    expect(code).toMatch(/^[0-9a-f]{8}$/);
+    expect(listed?.c.body).toContain(
+      "1. Change `.github/workflows/x.yml` on `task/12-a-bigger-font` (+1 −0). It runs only from `main`, after your merge: on a start.",
+    );
+    expect(listed?.c.body).toContain("+on: workflow_dispatch");
+    expect(status()?.pending.workflow?.files).toEqual([".github/workflows/x.yml"]);
+    // Your yes: exactly those lines on the PR's branch, by the bot, with workflows write.
+    delete process.env.FAKE_WORKFLOW;
+    say(`yes ${code}`);
+    const yes = await job("issue_comment", "created");
+    expect(yes.do).toBe("box");
+    expect(out("workflows")).toBe("write");
+    expect(git(origin, "show", `${branch}:.github/workflows/x.yml`)).toBe(
+      "on: workflow_dispatch\n",
+    );
+    expect(git(origin, "log", "-1", "--format=%s", branch).trim()).toBe(
+      `ci: the workflow change you approved (list ${code})`,
+    );
+    expect(lastReply()?.c.body).toContain(
+      "✓ Pushed the workflow change you approved to PR #1: `.github/workflows/x.yml`",
+    );
+    expect(status()?.pending.workflow).toBeUndefined();
+    // A later run that leaves it as it is goes through: it's on the branch on GitHub.
+    say("one more thing");
+    await job("issue_comment", "created");
+    expect(git(origin, "log", "-1", "--format=%s", branch).trim()).toBe("The change");
+    expect(git(origin, "show", `${branch}:.github/workflows/x.yml`)).toBe(
+      "on: workflow_dispatch\n",
+    );
+    expect(status()?.pending.workflow).toBeUndefined();
+  }, 300_000);
+
+  it("a yes after its PR merged pushes nothing, and says why (ADR 0075)", async () => {
+    const origin = await onProject();
+    Object.assign(process.env, { FAKE_WORK: "ok", FAKE_WORKFLOW: "on: workflow_dispatch" });
+    await job("issues", "opened");
+    const code = lastReply()?.line?.list as string;
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    const before = git(origin, "rev-parse", branch);
+    set((f) => {
+      f.prs = { "https://github.com/o/demo/pull/1": "MERGED" };
+    });
+    say(`yes ${code}`);
+    await job("issue_comment", "created");
+    expect(git(origin, "rev-parse", branch)).toBe(before);
+    expect(lastReply()?.c.body).toContain(
+      "✗ The workflow change you approved wasn't pushed: PR #1 merged without it. Say `continue`",
+    );
+  }, 300_000);
+
+  it("a workflow change alone waits for your yes, which pushes it and opens its PR; `no` drops it (ADR 0075)", async () => {
+    const origin = await onProject();
+    Object.assign(process.env, {
+      FAKE_WORK: "ok",
+      FAKE_WORKFLOW: "on: workflow_dispatch",
+      FAKE_ONLY_WORKFLOW: "1",
+    });
+    await job("issues", "opened");
+    // Nothing pushed yet: the workflow change is all the run changed.
+    expect(branches(origin).some((b) => b.startsWith("task/12-"))).toBe(false);
+    expect(read().prs ?? {}).toEqual({});
+    const code = lastReply()?.line?.list as string;
+    expect(lastReply()?.c.body).toMatch(/1\. Change `\.github\/workflows\/x\.yml` on `task\/12-/);
+    // No: dropped, nothing pushed.
+    say("no");
+    await job("issue_comment", "created");
+    expect(lastReply()?.c.body).toContain("Dropped: nothing was changed.");
+    expect(branches(origin).some((b) => b.startsWith("task/12-"))).toBe(false);
+    // Asked again, and a yes: the branch made from where it left main, and the PR opened.
+    say("make it again");
+    await job("issue_comment", "created");
+    const again = lastReply()?.line?.list as string;
+    expect(again).toBe(code);
+    say(`yes ${again}`);
+    await job("issue_comment", "created");
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    expect(git(origin, "show", `${branch}:.github/workflows/x.yml`)).toBe(
+      "on: workflow_dispatch\n",
+    );
+    expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
+    expect(lastReply()?.c.body).toContain("It's open now: https://github.com/o/demo/pull/1");
+  }, 300_000);
 
   it("a change with what looks like a key is never pushed, and the reply names its file and line", async () => {
     const origin = await onProject();
@@ -865,6 +1250,18 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     expect(lastReply()?.c.body).toContain(
       "looks like a key (change.txt:1 (generic-api-key)), so it wasn't pushed",
     );
+  }, 90_000);
+
+  it("a key in a workflow change: never listed, and the whole push refused (ADR 0075)", async () => {
+    const origin = await onProject();
+    Object.assign(process.env, { FAKE_WORK: "ok", FAKE_WORKFLOW: "on: workflow_dispatch # LEAK" });
+    await job("issues", "opened");
+    expect(branches(origin).some((b) => b.startsWith("task/12-"))).toBe(false);
+    expect(lastReply()?.line?.list).toBeUndefined();
+    expect(lastReply()?.c.body).toContain(
+      "not listed for your yes: what looks like a key is in it (.github/workflows/x.yml:1 (generic-api-key)). A workflow reads a key only as a secret",
+    );
+    expect(lastReply()?.c.body).toContain("so it wasn't pushed");
   }, 90_000);
 
   it("a job re-run after it died inside a question's kept push: the question, nothing about the push (ADR 0041)", async () => {
@@ -883,7 +1280,7 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     expect(out("keep")).toBe("quiet");
     d.state.journal = [
       {
-        key: `push:${push.repo}:${push.branch}:500`,
+        key: `push:${push.repo}:${push.branch}:${d.state.seen}:500`,
         what: `pushing ${push.branch}`,
         at: "2026-10-07T00:00:00.000Z",
       },
@@ -1022,32 +1419,40 @@ describe("a run end to end", () => {
       expect(used[step]?.calls, `${step}: ${JSON.stringify(used)}`).toBeLessThanOrEqual(
         budget[step],
       );
-    // The task step reads the issue once; plan writes its status from that read, and apply reads
-    // only the comments since.
+    // The task step reads the issue once; plan writes its status from that read, decide reads only
+    // the comments since, and apply takes those.
     expect(used.task?.issueReads).toBe(1);
     expect(used.plan?.issueReads).toBe(0);
     expect(used.think?.issueReads).toBe(0);
     expect(used.apply?.issueReads).toBe(0);
   });
 
-  it("apply counts a comment written after the task step's read: it reads from the saved time on (ADR 0051 B2)", async () => {
+  it("decide counts a comment written after the task step's read, from the saved time on, and apply takes its read (ADR 0051 B2)", async () => {
     process.env.FAKE_RESULT = JSON.stringify({ v: 2, state: "done", text: "About 12 GB free." });
     Object.assign(process.env, { EVENT: "issues", ACTION: "opened", GITHUB_RUN_ID: "78" });
     writeFileSync(outputs, "");
     await runTask(12);
     await runPlan(12);
     await runThinkStep(12);
-    await runDecide(12);
-    // Written while the agent thought: apply's read is `since` the task step's, so it sees it.
+    // Written while its checks ran: decide's read is `since` the task step's, so it sees it.
     say("one more thing");
-    const before = read().calls.length;
-    await runApply(12);
-    const asked = read()
-      .calls.slice(before)
-      .filter((c) => /issues\/12\/comments\?/.test(c));
-    expect(asked.length).toBeGreaterThan(0);
+    const comments = (from: number) =>
+      read()
+        .calls.slice(from)
+        .filter((c) => /issues\/12\/comments\?/.test(c));
+    let before = read().calls.length;
+    await runDecide(12);
+    const asked = comments(before);
+    expect(asked).toHaveLength(1);
     expect(asked.every((c) => c.includes("since="))).toBe(true);
+    // Apply takes decide's read with the task step's: it reads the comments no more.
+    before = read().calls.length;
+    await runApply(12);
+    expect(comments(before)).toEqual([]);
     expect(replies()).toHaveLength(1);
+    expect(lastReply()?.c.body).toContain(
+      "A message you sent after this run last read the task is next",
+    );
   });
 
   it("does nothing for the same event twice, and never says the same reply twice", neverTwice);
@@ -1288,6 +1693,36 @@ describe("a run end to end", () => {
     ]);
     expect(read().issue.labels.map((l) => l.name)).toContain("started");
     expect(replies().at(-1)?.c.body).toContain("Started #200. #201 waits for #200.");
+  });
+
+  it("opens and starts a task first on your Yes, this task blocked by it (ADR 0075)", async () => {
+    process.env.FAKE_RESULT = JSON.stringify({
+      v: 2,
+      state: "needs-you",
+      text: "Main's code blocks this: one fix first.",
+      first: { title: "shipify: let the check through", brief: "Fix the check on main." },
+    });
+    await job("issues", "opened");
+    const list = replies().at(-1);
+    expect(list?.c.body).toContain(
+      "1. Open and start `shipify: let the check through` first; this task waits for it: Fix the check on main.",
+    );
+    say(`yes ${list?.line?.list}`);
+    const yes = await job("issue_comment", "created");
+    expect(yes.do).toBe("box");
+    expect(replies().at(-1)?.c.body).toContain(
+      "Opened #200 and started it. When it merges, I'll say so here, and `continue` carries on.",
+    );
+    const made = (read().others["200"] as { issue: Record<string, unknown> }).issue;
+    expect([
+      made.title,
+      made.parent,
+      (made.labels as { name: string }[]).map((l) => l.name),
+    ]).toEqual(["shipify: let the check through", 12, ["sub-task", "first"]]);
+    expect(made.body).toContain("First for #12:");
+    expect((read().issue as unknown as { blockedBy?: number[] }).blockedBy).toEqual([200]);
+    expect(read().calls).toContain("workflow run task.yml -R o/shipify -f issue=200 -f job=run");
+    expect(status().phase).toBe("needs-you");
   });
 
   it("says the agent couldn't start (the box's setup), never that it stopped early", async () => {
@@ -2088,6 +2523,88 @@ describe("a run end to end", () => {
   });
 });
 
+describe("an agent's sign-in from a chat, end to end (ADR 0074)", () => {
+  it("signs Codex in: the code on the task first, then the session to its secret alone", async () => {
+    // Codex's own code sign-in, as npx starts it on GitHub's machine: its prompt, then it waits for
+    // you, here until the reply with its code is on the task, then writes the session.
+    const jwt = (claims: object) =>
+      `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
+    const session = JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        id_token: jwt({ "https://api.openai.com/auth": { chatgpt_plan_type: "plus" } }),
+        access_token: jwt({ exp: 1_800_000_000 }),
+        refresh_token: "rt-secret-1",
+        account_id: "acc-1",
+      },
+      last_refresh: "2026-11-06T10:00:00.000Z",
+    });
+    const dir = dirname(file);
+    writeFileSync(join(dir, "session.json"), session);
+    writeFileSync(
+      join(dir, "npx"),
+      [
+        "#!/bin/sh",
+        `echo "$@" > "${dir}/npx-args"`,
+        "printf '1. Open this link in your browser and sign in to your account\\n   \\033[94mhttps://auth.openai.com/codex/device\\033[0m\\n\\n2. Enter this one-time code \\033[90m(expires in 15 minutes)\\033[0m\\n   \\033[94mWXYZ-12345\\033[0m\\n\\n'",
+        "i=0",
+        `while ! grep -q 'WXYZ-12345' "${file}" && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done`,
+        `cp "${dir}/session.json" "$CODEX_HOME/auth.json"`,
+        "",
+      ].join("\n"),
+    );
+    chmodSync(join(dir, "npx"), 0o755);
+    say("codex sign in");
+    const asked = await job("issue_comment", "created");
+    // The box's run: no agent; the github job dispatched, and said so.
+    expect(asked.do).toBe("box");
+    expect(read().calls).toContain("workflow run task.yml -R o/shipify -f issue=12 -f job=github");
+    expect(status()?.pending.signIn?.agent).toBe("codex");
+    expect(replies().at(-1)?.c.body).toContain("a link and a one-time code come here");
+    // The github job, as task.yml runs it; its secret set is the mock's, kept in a file.
+    Object.assign(process.env, {
+      EVENT: "workflow_dispatch",
+      JOB: "github",
+      GITHUB_RUN_ID: "903",
+      SHIPIFY_MOCK_CALLS: join(dir, "calls.jsonl"),
+    });
+    writeFileSync(outputs, "");
+    await runTask(12);
+    await runGithub(12);
+    const version = JSON.parse(readFileSync(join(ROOT, "executors.json"), "utf8")).codex.install
+      .version;
+    expect(readFileSync(join(dir, "npx-args"), "utf8")).toContain(
+      `@openai/codex@${version} login --device-auth`,
+    );
+    const [code, done] = replies().slice(-2);
+    expect(code?.line).toMatchObject({ kind: "needs-you" });
+    expect(code?.c.body).toContain("https://auth.openai.com/codex/device");
+    expect(code?.c.body).toContain("`WXYZ-12345`");
+    expect(done?.line).toMatchObject({ kind: "answer" });
+    expect(done?.c.body).toContain(
+      "✓ Codex is signed in, and its session is kept as the secret CODEX_AUTH.",
+    );
+    expect(done?.c.body).toContain("on the plus plan");
+    // The session went to its secret alone: never on the task.
+    expect(mockCallsLogged().filter((c) => c.call === "setSecret")).toEqual([
+      {
+        call: "setSecret",
+        repo: "o/shipify",
+        name: "CODEX_AUTH",
+        sha: createHash("sha256").update(session).digest("hex").slice(0, 12),
+      },
+    ]);
+    expect(JSON.stringify(read().comments)).not.toContain("rt-secret-1");
+    expect(status()?.pending.signIn).toBeUndefined();
+    // A new task's sign-in: at work, then waiting on you for the code, then answered.
+    expect(status()?.phase).toBe("answered");
+    // The job again (a replay), its task step first: nothing pending, nothing done.
+    writeFileSync(outputs, "");
+    await runTask(12);
+    expect((await runGithub(12)).summary).toContain("nothing pending");
+  }, 90_000);
+});
+
 describe("a task on another of your accounts, end to end (ADR 0045)", () => {
   /**
    * `acme/api` on "GitHub": a repo of acme's, another of your accounts, whose default branch is
@@ -2251,6 +2768,18 @@ describe("a task on another of your accounts, end to end (ADR 0045)", () => {
     expect((await job("issue_comment", "created")).think).toBeUndefined();
     expect(replies().at(-1)?.c.body).toContain(
       "acme: name a repo as acme/<repo>. The first task checks Shipify can reach it.",
+    );
+  }, 90_000);
+
+  it("refuses a run's workflow change whole: the repos App can't push one, even held (ADR 0075)", async () => {
+    const origin = await onAccount();
+    Object.assign(process.env, { FAKE_WORK: "ok", FAKE_WORKFLOW: "on: workflow_dispatch" });
+    await job("issues", "opened");
+    expect(branches(origin).some((b) => b.startsWith("task/12-"))).toBe(false);
+    expect(read().prs ?? {}).toEqual({});
+    expect(lastReply()?.line?.list).toBeUndefined();
+    expect(lastReply()?.c.body).toContain(
+      "the repos App can't push one to acme/api, even in a commit's history",
     );
   }, 90_000);
 

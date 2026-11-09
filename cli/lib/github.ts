@@ -1,11 +1,12 @@
 // GitHub, the record plug-in (ADR 0027, docs/plug-ins.md): every call Shipify makes to GitHub goes
-// through this file's gh helpers, each with a timeout. githubRecord and githubQueue are the record's
-// contract (plugins/record.ts) on GitHub: tasks, comments and labels, and starting runs. Without
-// `token`, gh uses GH_TOKEN (the bot's token in a task job) or its own login; with it, that one call
-// runs as another identity, such as the workflow's token for the task's issue.
+// through this file's gh helpers, each with a timeout; only the ETag reads a run repeats every few
+// seconds go through fetch (ghIfChanged). githubRecord and githubQueue are the record's contract
+// (plugins/record.ts) on GitHub: tasks, comments and labels, and starting runs. Without `token`, gh
+// uses GH_TOKEN (the bot's token in a task job) or its own login; with it, that one call runs as
+// another identity, such as the workflow's token for the task's issue.
 
 import { PLATFORM_ROOT } from "./config.ts";
-import { type RunResult, run, runAsync } from "./exec.ts";
+import { countedRead, type RunResult, run, runAsync } from "./exec.ts";
 import { ShipError } from "./output.ts";
 import type {
   IssuePatch,
@@ -56,32 +57,65 @@ export const readsSeen = () =>
     ? `${seen.reads} reads, ${seen.changed} changed${seen.first ? `; rate ${seen.first} → ${seen.last} of ${seen.limit}` : ""}`
     : undefined;
 
+/** GitHub's API: GitHub Actions' own address for it (GITHUB_API_URL, on every runner's steps), or
+ * github.com's. */
+const apiUrl = () => (process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/+$/, "");
+
+let ghLogin: string | undefined;
+/** gh's own token (GH_TOKEN, or its login), read once a process: for a read given no token. */
+const ghToken = () => {
+  ghLogin ??= ghRun(["auth", "token"], { timeoutMs: 20_000 }).stdout.trim();
+  return ghLogin;
+};
+
 /**
  * A GET only when its answer changed since `tag` (GitHub's ETag): unchanged is `{ tag }`, a 304,
- * which costs the rate limit nothing (GitHub's REST guide; checked live for ADR 0057).
+ * which costs the rate limit nothing (GitHub's REST guide; checked live for ADR 0057). Through
+ * Node's fetch, which keeps its connection open between reads: a stay reads every 2 s, and a gh
+ * process a read cost the box's other slots about 0.3 s of CPU each.
  */
-export function ghIfChanged<T>(
+export async function ghIfChanged<T>(
   path: string,
   tag: string | undefined,
   opts: GhOpts = {},
-): { tag?: string; body?: T } {
-  const r = ghRun(["api", "-i", ...(tag ? ["-H", `If-None-Match: ${tag}`] : []), path], opts);
-  const cut = r.stdout.search(/\r?\n\r?\n/);
-  const head = cut < 0 ? r.stdout : r.stdout.slice(0, cut);
-  const status = /^HTTP\/[\d.]+ (\d{3})/.exec(head)?.[1];
-  const used = /^x-ratelimit-used:\s*(\d+)/im.exec(head)?.[1];
+): Promise<{ tag?: string; body?: T }> {
+  const token = opts.token || ghToken();
+  const started = Date.now();
+  const r = await fetch(`${apiUrl()}/${path}`, {
+    headers: {
+      accept: "application/vnd.github+json",
+      "user-agent": "shipify",
+      "x-github-api-version": "2022-11-28",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(tag ? { "if-none-match": tag } : {}),
+    },
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 180_000),
+  })
+    .catch((e: Error) => {
+      throw new ShipError(
+        `GET ${path} failed: ${(e.cause as Error | undefined)?.message ?? e.message}`,
+      );
+    })
+    // In the step's timing line as the gh call it replaced (ADR 0051 B0).
+    .finally(() => countedRead(path, started));
+  const used = r.headers.get("x-ratelimit-used");
   seen.reads++;
-  if (status === "200") seen.changed++;
+  if (r.status === 200) seen.changed++;
   if (used) {
     seen.first ??= used;
     seen.last = used;
-    seen.limit = /^x-ratelimit-limit:\s*(\d+)/im.exec(head)?.[1];
+    seen.limit = r.headers.get("x-ratelimit-limit") ?? undefined;
   }
-  if (status === "304") return { ...(tag ? { tag } : {}) };
-  if (r.code !== 0 || status !== "200")
-    throw new ShipError(`gh api ${path} failed: ${(r.stderr || head).trim().split("\n")[0]}`);
-  const etag = /^etag:\s*(.+?)\s*$/im.exec(head)?.[1];
-  return { ...(etag ? { tag: etag } : {}), body: JSON.parse(r.stdout.slice(cut).trim()) as T };
+  if (r.status === 304) return { ...(tag ? { tag } : {}) };
+  if (r.status !== 200) {
+    const said = await r.json().then(
+      (b: { message?: string }) => b.message,
+      () => undefined,
+    );
+    throw new ShipError(`GET ${path} failed: HTTP ${r.status}${said ? ` (${said})` : ""}`);
+  }
+  const etag = r.headers.get("etag");
+  return { ...(etag ? { tag: etag } : {}), body: (await r.json()) as T };
 }
 
 export function ghJson<T>(args: string[], opts: GhOpts = {}): T {
@@ -208,13 +242,6 @@ export interface RecordOpts {
 
 const issuesToken = () => process.env.SHIPIFY_ISSUES_TOKEN || undefined;
 
-/**
- * Who a run's own steps write the record as: the workflow's token (SHIPIFY_ISSUES_TOKEN). The agent
- * never holds it (it has the bot's token, for PRs), so only words this login wrote can carry the
- * door's mark (ADR 0027).
- */
-export const RECORD_WRITER = "github-actions[bot]";
-
 /** Who wrote something, as GraphQL names them. */
 type GqlActor = { login: string; __typename?: string } | null;
 type GqlIssue = {
@@ -320,16 +347,16 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
     updateIssue(n, patch: IssuePatch) {
       api("PATCH", `${issues}/${n}`, patch);
     },
-    commentsIfChanged(n, since, tag) {
-      const r = ghIfChanged<RecordComment[]>(
+    async commentsIfChanged(n, since, tag) {
+      const r = await ghIfChanged<RecordComment[]>(
         `${issues}/${n}/comments?per_page=100&since=${encodeURIComponent(since)}`,
         tag,
         call(),
       );
       return { ...(r.tag ? { tag: r.tag } : {}), ...(r.body ? { comments: r.body } : {}) };
     },
-    issueIfChanged(n, tag) {
-      const r = ghIfChanged<RecordIssue>(`${issues}/${n}`, tag, call());
+    async issueIfChanged(n, tag) {
+      const r = await ghIfChanged<RecordIssue>(`${issues}/${n}`, tag, call());
       return { ...(r.tag ? { tag: r.tag } : {}), ...(r.body ? { issue: r.body } : {}) };
     },
     issueState(n) {
@@ -624,12 +651,18 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
       // One call links them: only the parts made now, so a second try adds no link twice.
       const links = fresh.flatMap((i) => {
         const p = parts[i] as NewPart;
+        // The task that waits for it (a task first): blocked by it.
+        const blocked =
+          p.blocks === parent ? r.issue?.id : there.find((x) => x.number === p.blocks)?.id;
         return [
-          ...p.after.map((a) => all[a]?.id),
-          ...p.waits.map((w) => there.find((x) => x.number === w)?.id),
-        ]
-          .filter((b): b is string => Boolean(b))
-          .map((b) => [all[i]?.id as string, b] as const);
+          ...[
+            ...p.after.map((a) => all[a]?.id),
+            ...p.waits.map((w) => there.find((x) => x.number === w)?.id),
+          ]
+            .filter((b): b is string => Boolean(b))
+            .map((b) => [all[i]?.id as string, b] as const),
+          ...(blocked ? [[blocked, all[i]?.id as string] as const] : []),
+        ];
       });
       if (links.length) {
         const vars = Object.fromEntries(
@@ -897,8 +930,8 @@ export function githubQueue(opts: RecordOpts = {}): Queue {
         ["api", `repos/${repo}/actions/workflows/${workflow}/runs?per_page=${count}`],
         call(),
       ).workflow_runs,
-    waitingFor(labels, tag) {
-      const r = ghIfChanged<{ workflow_runs: { id: number }[] }>(
+    async waitingFor(labels, tag) {
+      const r = await ghIfChanged<{ workflow_runs: { id: number }[] }>(
         `repos/${repo}/actions/runs?status=queued&per_page=20`,
         tag,
         call(),

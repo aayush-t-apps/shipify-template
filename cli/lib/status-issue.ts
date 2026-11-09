@@ -10,18 +10,25 @@
 // and `ship task` skip its label, and the workflow's own token opens it, which starts no workflow.
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { STATUS_LABEL } from "../contracts/labels.ts";
 import { Problem } from "../contracts/problems.ts";
-import { holdsRecord, MOST_REPOS, pickStatusIssue, REPO_NAME } from "../contracts/watch.ts";
+import {
+  holdsRecord,
+  MOST_REPOS,
+  pickStatusIssue,
+  REPO_NAME,
+  STATUS_MARK,
+} from "../contracts/watch.ts";
 import { githubRecord, postComment } from "./github.ts";
 import type { RecordIssue, TaskRecord } from "./plugins/record.ts";
 import { formatWhen } from "./repeat.ts";
 
-export const STATUS_LABEL = {
-  name: "shipify-status",
+/** The status task's label, made with the task. */
+const STATUS = {
+  name: STATUS_LABEL,
   color: "6e7781",
   description: "Shipify's own status: the watch, boxes, apps and clean-ups (not a task)",
 } as const;
-const MARK = "<!-- shipify-status ";
 const TITLE = "Shipify status";
 const KEEP_EVENTS = 30;
 
@@ -157,13 +164,13 @@ export type Cleanup = StatusIssueState["cleanups"][string];
 const fresh = (): StatusIssueState => StatusIssueState.parse({ v: 2 });
 
 export const isStatusIssue = (issue: { labels: { name: string }[] }) =>
-  issue.labels.some((l) => l.name === STATUS_LABEL.name);
+  issue.labels.some((l) => l.name === STATUS_LABEL);
 
 export function parseStatusIssue(body: string | null): StatusIssueState {
   const b = body ?? "";
-  if (!b.startsWith(MARK)) return fresh();
+  if (!b.startsWith(STATUS_MARK)) return fresh();
   try {
-    const raw = JSON.parse(b.slice(MARK.length, b.indexOf(" -->"))) as Record<string, unknown>;
+    const raw: unknown = JSON.parse(b.slice(STATUS_MARK.length, b.indexOf(" -->")));
     // A record of another version starts fresh.
     const parsed = StatusIssueState.safeParse(raw);
     return parsed.success ? parsed.data : fresh();
@@ -534,7 +541,7 @@ export function renderStatusIssue(s: StatusIssueState, timeZone: string): string
         .join("\n\n")
     : "None yet: the due run starts each box's once a week.";
   return [
-    `${MARK}${JSON.stringify(s).replaceAll("-->", "--\\u003e")} -->`,
+    `${STATUS_MARK}${JSON.stringify(s).replaceAll("-->", "--\\u003e")} -->`,
     watch,
     "### Guards",
     [
@@ -566,7 +573,7 @@ function findStatusIssue(record: TaskRecord): {
   from?: RecordIssue;
   others: RecordIssue[];
 } {
-  const labels = [STATUS_LABEL.name];
+  const labels = [STATUS_LABEL];
   const open = record.issues({ labels, state: "open" });
   const pick = pickStatusIssue(open);
   const all = holdsRecord(pick) ? [] : record.issues({ labels, state: "all" });
@@ -628,8 +635,8 @@ export function updateStatusIssue(
   let number = found?.number;
   if (found) record.updateIssue(found.number, { body });
   else {
-    record.makeLabel(STATUS_LABEL);
-    const made = record.createIssue({ title: TITLE, body, labels: [STATUS_LABEL.name] });
+    record.makeLabel(STATUS);
+    const made = record.createIssue({ title: TITLE, body, labels: [STATUS_LABEL] });
     number = made.number;
     // Pinned on top of the issues, when the token may; otherwise the owner pins it once.
     record.pin(made);

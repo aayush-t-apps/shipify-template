@@ -855,6 +855,16 @@ describe("boxes: the setup version (ADR 0017)", () => {
       ok: false,
       detail: "version 1; the repo's is 2",
     });
+    // The repo's version, but --manage stopped before its end (setup 13): named until it finishes.
+    writeFileSync(join(tmp, ".shipify-setup"), "2\nmanage: not finished\n");
+    const stopped = setupCheck("shipify", tmp, join(tmp, "setup.sh"));
+    expect(stopped?.ok).toBe(false);
+    expect(stopped?.detail).toContain("version 2, but its --manage part didn't finish");
+    writeFileSync(join(tmp, ".shipify-setup"), "2\n");
+    expect(setupCheck("shipify", tmp, join(tmp, "setup.sh"))).toMatchObject({
+      ok: true,
+      detail: "version 2",
+    });
   });
 });
 

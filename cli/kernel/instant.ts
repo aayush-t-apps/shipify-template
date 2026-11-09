@@ -17,6 +17,7 @@ import {
   problem,
   recipesText,
   reposText,
+  STATUS_LABEL,
   taskRows,
   tasksText,
   withUpcoming,
@@ -24,7 +25,7 @@ import {
 import { platformAccount, yourAccounts } from "../lib/accounts.ts";
 import { githubRecord } from "../lib/github.ts";
 import { firstLine, NOTEBOOK_LABEL } from "../lib/notebook.ts";
-import { readStatusIssue, STATUS_LABEL } from "../lib/status-issue.ts";
+import { readStatusIssue } from "../lib/status-issue.ts";
 
 const unread = problem("github-unread");
 const UNREAD = `${unread.what} ${unread.fix}`;
@@ -82,7 +83,7 @@ export function instantAnswer(name: Instant, now: number, rest = ""): string {
 const openTasks = (upcoming: { n: number; next: string }[]) =>
   taskRows(
     githubRecord({ timeoutMs: 10_000 }).issues({ state: "open" }),
-    [STATUS_LABEL.name, NOTEBOOK_LABEL.name],
+    [STATUS_LABEL, NOTEBOOK_LABEL.name],
     upcoming,
   );
 

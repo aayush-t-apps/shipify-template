@@ -60,6 +60,8 @@ const HELP = `ship: plan, build, ship and maintain Shipify projects (apps and pa
   setup                                     Shipify set up from nothing, a step at a time
   setup <step> [--new]                      one step's part here, an add-on's too (apps, updates):
                                             the keys you paste, hidden, and its values (--new: a key again)
+  setup agent <agent> [--new] [--device]    another agent's login: Codex signs in with ChatGPT, in your browser
+                                            (--device: with a one-time code, on any device)
   doctor [--yes]                            check tools, the GitHub login, the credentials stacks need, the
                                             watch and the box setup (--yes: tell the watch when this PC's token expires)
   stacks | presets                          what you can build with
@@ -201,6 +203,7 @@ async function main(argv: string[]): Promise<Result> {
       slots: { type: "string" },
       code: { type: "string" },
       new: { type: "boolean", default: false },
+      device: { type: "boolean", default: false },
       remove: { type: "boolean", default: false },
       key: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
@@ -360,6 +363,7 @@ async function main(argv: string[]): Promise<Result> {
         interactive: values.json ? false : undefined,
         step: a1,
         renew: values.new,
+        ...(a1 === "agent" && a2 ? { agent: a2, device: values.device } : {}),
       });
     case "add":
       return add(need(a1, "<name>"), values.yes, {

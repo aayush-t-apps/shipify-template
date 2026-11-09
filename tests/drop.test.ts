@@ -3,7 +3,10 @@
 // files. The fake answers as docs/tools.md says Drop's /api does (Drop 0.3.0, as its admin page
 // calls it), and as Access does for a token it doesn't know (its sign-in page).
 import { spawn } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { makeCalls } from "../cli/kernel/mcp-client.ts";
 import { command, loadTools } from "../cli/lib/tools.ts";
@@ -27,6 +30,8 @@ interface FakeDrop {
   requests: string[];
   files: Record<string, string>;
   limits: { mb: number; files: number };
+  /** The guest it's for (Drop 0.6.0): set only when it's made. */
+  by?: { email: string; name: string };
 }
 let drops: Record<string, FakeDrop> = {};
 let seen: string[] = [];
@@ -84,6 +89,7 @@ beforeAll(async () => {
             ...(x.link.secret ? { path: `/d/${x.address}.${x.link.secret}` } : {}),
           }
         : null,
+      ...(x.by ? { by: x.by } : {}),
     });
     const detail = (x: FakeDrop) => ({
       ...summary(x),
@@ -123,6 +129,9 @@ beforeAll(async () => {
       const b = json();
       if (!["me", "view", "add", "people", "collect"].includes(b.gate))
         return send(400, { error: "bad_request", message: "Pick who can open it." });
+      // A guest's drop starts as only theirs, for 30 days at most, with no PIN.
+      if (b.by && (b.gate !== "me" || b.expiry === "keep" || b.pin))
+        return send(400, { error: "bad_request", message: "A guest's drop starts as Only me." });
       const x: FakeDrop = {
         address: `w${String(++next).padStart(12, "0")}`,
         title: b.title,
@@ -134,6 +143,7 @@ beforeAll(async () => {
         requests: [],
         files: {},
         limits: { mb: 2000, files: 500 },
+        ...(b.by ? { by: b.by } : {}),
       };
       drops[x.address] = x;
       const made = ROLE[x.gate] ? link(x, ROLE[x.gate] as string) : undefined;
@@ -153,6 +163,8 @@ beforeAll(async () => {
     if (req.method === "GET") return send(200, { drop: detail(d) });
     if (req.method === "PATCH") {
       const b = json();
+      if ("by" in b || (d.by && b.limits))
+        return send(400, { error: "bad_request", message: "Not on a guest's drop." });
       let made: string | undefined;
       if (b.gate) {
         // A drop keeps its link through every gate; one with a link role and no link gets one.
@@ -660,6 +672,144 @@ describe("tools: our Drop server, against a fake Drop", () => {
     expect(seen.some((s) => s.startsWith("PATCH"))).toBe(false);
     expect(Object.keys(drops)).toEqual(["w000000000001"]);
   }, 60_000);
+
+  // ADR 0073: every new drop is only its owner's, unless the words say who.
+  it("makes a drop with no `share` only yours, and says how to share it", async () => {
+    const [made] = await act([{ name: "publish", args: { title: "Report", files: ["notes.md"] } }]);
+    const d = Object.values(drops)[0] as FakeDrop;
+    expect(d).toMatchObject({ gate: "me", link: null });
+    expect(d.by).toBeUndefined();
+    expect(made?.text).toBe(
+      [
+        `Made "Report" (drop ${d.address}), until 2026-11-04, with 1 file: notes.md.`,
+        "Only you can open it. To share it: its page in Drop, or ask for anyone with the link, or names.",
+        `Manage it in Drop: ${base}/admin/d/${d.address}`,
+      ].join("\n"),
+    );
+  }, 60_000);
+
+  // ADR 0073: a guest's calls, with SHIPIFY_GUEST from the door and their files from the run's folder.
+  describe("for a guest", () => {
+    const ANA = { email: "ana@example.com", name: "Ana" };
+    const dir = mkdtempSync(join(tmpdir(), "drop-guest-"));
+    writeFileSync(join(dir, "trip.html"), "<h1>Goa</h1>");
+    const local = { "trip.html": join(dir, "trip.html") };
+    const asGuest = (calls: { name: string; args: Record<string, unknown> }[]) =>
+      makeCalls(
+        calls.map((c) => ({ tool: "drop", ...c })),
+        {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          SHIPIFY_DROP_URL: base,
+          SHIPIFY_DROP_WRITE_ID: WRITE.id,
+          SHIPIFY_DROP_WRITE_SECRET: WRITE.secret,
+        },
+        {},
+        github,
+        {},
+        undefined,
+        { local, guest: ANA },
+      );
+
+    it("makes a drop only they can open, `by` them, for 30 days, and names no email", async () => {
+      fetched.length = 0;
+      const [made] = await asGuest([
+        { name: "publish", args: { title: "Goa trip", files: ["trip.html"], share: "me" } },
+      ]);
+      expect(made?.ok).toBe(true);
+      const d = Object.values(drops)[0] as FakeDrop;
+      expect(d).toMatchObject({ gate: "me", by: ANA, files: { "trip.html": "<h1>Goa</h1>" } });
+      expect(seen).toContain("POST /api/drops");
+      expect(made?.text).toBe(
+        [
+          `Made "Goa trip" (drop ${d.address}), until 2026-11-04, with 1 file: trip.html.`,
+          `Only you can open it, signed in: ${base}/d/${d.address}`,
+          `Manage it in Drop: ${base}/mine/d/${d.address}`,
+        ].join("\n"),
+      );
+      expect(made?.text).not.toContain("ana@");
+      // Their file came from the run's folder: nothing read from the branch.
+      expect(fetched).toEqual([]);
+    }, 60_000);
+
+    it("changes only the title and files of a drop made for them", async () => {
+      fake({
+        address: "g000000000001",
+        title: "Goa",
+        gate: "me",
+        by: ANA,
+        files: { "trip.html": "old" },
+      });
+      fake({
+        address: "g000000000002",
+        title: "Ben's",
+        gate: "me",
+        by: { email: "ben@example.com", name: "Ben" },
+      });
+      fake({ address: "y000000000003", title: "Yours", gate: "view" });
+      const [changed, bens, yours] = await asGuest([
+        {
+          name: "update",
+          args: {
+            drop: `${base}/d/g000000000001`,
+            title: "Goa, 12-14 Dec",
+            delete_files: ["trip.html"],
+            files: ["trip.html"],
+          },
+        },
+        { name: "update", args: { drop: "g000000000002", files: ["trip.html"] } },
+        { name: "update", args: { drop: "y000000000003", title: "Mine now" } },
+      ]);
+      expect(changed?.text).toBe(
+        [
+          'Updated "Goa" (drop g000000000001):',
+          '- title: "Goa, 12-14 Dec"',
+          "- deleted trip.html",
+          "- added trip.html",
+          `- its link stays the same: ${base}/d/g000000000001`,
+          `Manage it in Drop: ${base}/mine/d/g000000000001`,
+        ].join("\n"),
+      );
+      expect(drops.g000000000001).toMatchObject({
+        title: "Goa, 12-14 Dec",
+        files: { "trip.html": "<h1>Goa</h1>" },
+      });
+      for (const r of [bens, yours]) {
+        expect(r?.ok).toBe(false);
+        expect(r?.text).toBe("That drop isn't one made for you, so nothing was changed.");
+        expect(r?.text).not.toContain("ben@");
+      }
+      expect(drops.g000000000002?.files).toEqual({});
+      expect(drops.y000000000003?.title).toBe("Yours");
+    }, 60_000);
+
+    it("shares nothing and revokes nothing", async () => {
+      fake({ address: "g000000000001", title: "Goa", gate: "me", by: ANA });
+      const shares =
+        "Only you can open a drop made for you: share it in Drop's My drops (a link, or people by email).";
+      const out = await asGuest([
+        { name: "publish", args: { title: "x", files: ["trip.html"], share: "view" } },
+        {
+          name: "publish",
+          args: { title: "x", files: ["trip.html"], people: { "sam@example.com": "view" } },
+        },
+        { name: "publish", args: { title: "x", files: ["trip.html"], expiry: "keep" } },
+        { name: "update", args: { drop: "g000000000001", share: "view" } },
+        { name: "update", args: { drop: "g000000000001", expiry: "keep" } },
+        { name: "revoke", args: { drop: "g000000000001" } },
+      ]);
+      expect(out.map((r) => r.text)).toEqual([
+        shares,
+        shares,
+        '"expiry" is one of: 1d, 7d, 30d.',
+        `A guest's run changes only a drop's title and files. ${shares}`,
+        `A guest's run changes only a drop's title and files. ${shares}`,
+        "A guest's run makes and changes only their own drops.",
+      ]);
+      expect(Object.keys(drops)).toEqual(["g000000000001"]);
+      expect(drops.g000000000001?.gate).toBe("me");
+    }, 60_000);
+  });
 
   it("reads a drop's id from its link, and sends its key only over https", () => {
     expect(idOf("w3k9xq2m7p4a1")).toBe("w3k9xq2m7p4a1");

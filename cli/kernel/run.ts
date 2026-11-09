@@ -25,6 +25,7 @@ import {
   errorLine,
   logger,
   MAX_FILES_IN,
+  maskSecrets,
   type Problem,
   problem,
   renderProblem,
@@ -33,19 +34,21 @@ import {
 } from "../contracts/index.ts";
 import { accountOf } from "../lib/accounts.ts";
 import { installAgent } from "../lib/agent-install.ts";
-import { loginOf } from "../lib/agents.ts";
+import { adapterOf, loginOf } from "../lib/agents.ts";
 import { callsSoFar } from "../lib/exec.ts";
 import { ghRun, platformRepo, readsSeen, repoOfPr } from "../lib/github.ts";
+import { sourceControl } from "../lib/providers.ts";
 import { onBox } from "../lib/sandbox.ts";
 import { type Result, ShipError } from "../lib/output.ts";
-import type { RecordWrite } from "../lib/plugins/record.ts";
+import type { RecordComment, RecordWrite } from "../lib/plugins/record.ts";
 import { repoFor } from "../lib/projects-on-github.ts";
 import type { RunDetails } from "../lib/runs.ts";
 import { PLATFORM, type TaskState } from "../lib/task.ts";
-import { executors, taskAgent } from "./agent.ts";
-import { apply } from "./apply.ts";
+import { agentForRun, executors, taskAgent } from "./agent.ts";
+import { apply, heldChange } from "./apply.ts";
 import {
   afterThink,
+  branchName,
   cursorOf,
   guestOf,
   plan as decidePlan,
@@ -58,13 +61,13 @@ import { githubJob } from "./github-job.ts";
 import { listOf } from "./instant.ts";
 import { readResult } from "./result.ts";
 import {
-  context,
+  localContext,
   readRecord,
   recordAccount,
   saidOf,
-  saidSince,
   snapshot,
   type TaskRecord,
+  taskReadOf,
   textHash,
 } from "./snapshot.ts";
 import {
@@ -79,8 +82,10 @@ import {
   type Turn,
   takes,
 } from "./stay.ts";
-import { finish, think as runThink, type ThinkOut } from "./think.ts";
+import { placeFor } from "./place.ts";
+import { finish, placeId, think as runThink, type ThinkOut } from "./think.ts";
 import type { Decided, Plan, Said, Snapshot, ThinkMeta, Trigger, Write } from "./types.ts";
+import { isWorkflowFile } from "./workflows.ts";
 
 const dir = (n: number) => join(workspace(), ".tasks", String(n));
 const file = (n: number, name: string) => join(dir(n), `${name}.json`);
@@ -93,7 +98,8 @@ const load = <T>(n: number, name: string): T | undefined =>
 
 /**
  * One step's timing line, for the job's summary (ADR 0051 B0): its time, and every `gh` call it
- * made with each one's. Counted by `run`/`runAsync` in `cli/lib/exec.ts`, and nowhere else.
+ * made with each one's. Counted by `run`/`runAsync` in `cli/lib/exec.ts`, and the ETag reads made
+ * with fetch (`ghIfChanged`) as the calls they stand for.
  */
 export function stepLine(step: string, ms: number): string {
   const calls = callsSoFar();
@@ -243,10 +249,16 @@ export async function runTask(n: number): Promise<Result> {
  * task.yml: the box installs that agent, and the think step gets that one secret. Empty with no
  * agent to run.
  */
-export function agentOf(p: Plan): { agent: string; login: string } {
+export function agentOf(p: Plan): { agent: string; login: string; renews?: boolean } {
   if (p.do !== "think" || profileOf(p) === "check") return { agent: "", login: "" };
-  const agent = taskAgent(p.state);
-  return { agent, login: loginOf(executors()[agent])?.secret ?? "" };
+  // A read run's or a guest's never starts an agent whose login is a file (ADR 0074).
+  const agent = agentForRun(taskAgent(p.state), p.think.profile) ?? "";
+  const entry = executors()[agent];
+  return {
+    agent,
+    login: loginOf(entry)?.secret ?? "",
+    ...(entry?.login?.renews ? { renews: true } : {}),
+  };
 }
 
 /** The run's profile for task.yml: a check alone needs no agent on the box; one the agent follows
@@ -275,9 +287,11 @@ export async function runPlan(n: number): Promise<Result> {
   const { s, p } = await planned(n, triggerFromEnv(), recordOf(n));
   // Your words on a closed task carry it on: it opens now, not after the agent, so every chat
   // lists it as open and working while the run goes. If this fails, apply opens it as before.
+  // The read says so too: the steps after plan (a stay after its answer) see an open task.
   if (p.do === "think" && p.writes?.some((w) => w.w === "reopen")) {
     try {
       rec().updateIssue(n, { state: "open" });
+      s.issue.state = "open";
       p.writes = p.writes.filter((w) => w.w !== "reopen");
     } catch (e) {
       log.warn("run.plan.reopen", { what: String(e) });
@@ -289,9 +303,11 @@ export async function runPlan(n: number): Promise<Result> {
   output("repos", agentRepos(s, p), REPO);
   output("account", p.do === "think" ? (p.think.account ?? "") : "", ACCOUNT);
   output("account_repos", accountRepos(s, p), REPO);
-  const { agent, login } = agentOf(p);
+  const { agent, login, renews } = agentOf(p);
   output("agent", agent);
   output("login", login, SECRET);
+  // Its agent renews its login in the run (ADR 0074): the job writes it back after (`run renew`).
+  output("renews", renews ? "yes" : "");
   if (p.do === "nothing") {
     log.info("run.plan.nothing", { why: p.why });
     return { command: "run plan", status: "skipped", summary: `task #${n}: ${p.why}` };
@@ -459,16 +475,23 @@ export async function runThinkStep(
       : []),
   ];
   // What you write while it works: comments since the plan read the task (a minute's margin; think
-  // keeps those after the newest it had), read for your `stop` and before it answers.
+  // keeps those after the newest it had), read for your `stop` and before it answers. Each read asks
+  // only for what changed since the last (an ETag read: free when nothing did).
   const since = new Date(Date.parse(s.now) - 60_000).toISOString();
+  let tag: string | undefined;
+  let said: Said[] = [];
   // The state as the plan left it: `start over` gave the task a new branch, cloned from main.
   const out = await runThink({ ...s, state: saved.p.state }, saved.p.think, {
     files: filesDir(n),
     keep: join(dir(n), "out"),
     local: join(dir(n), "agent"),
     notes,
-    later: () => {
-      const said = saidSince(n, since);
+    later: async () => {
+      const r = await rec({ timeoutMs: 20_000 }).commentsIfChanged(n, since, tag);
+      if (r.comments) {
+        tag = r.tag;
+        said = saidOf(n, r.comments);
+      }
       heard?.(said);
       return said;
     },
@@ -513,8 +536,11 @@ export async function runFinishStep(n: number): Promise<Result> {
     local: join(dir(n), "agent"),
   });
   if (done.note && t.details) t.details.notes = [...(t.details.notes ?? []), done.note];
-  if (done.changed)
+  if (done.changed) {
     t.meta.touchesWorkflows = done.changed.some((f) => f.startsWith(".github/workflows/"));
+    if (done.changed.some(isWorkflowFile)) t.meta.holds = true;
+    else delete t.meta.holds;
+  }
   save(n, "think", t);
   return {
     command: "run finish",
@@ -524,18 +550,56 @@ export async function runFinishStep(n: number): Promise<Result> {
 }
 
 /**
+ * Decide's result as its file keeps it: with the comments written since the task step's read, when
+ * decide read them (ADR 0051 B2). Apply takes those: only this run replies on the task, so it reads
+ * none.
+ */
+type Kept = Decided & { comments?: RecordComment[] };
+
+/**
+ * The think's meta, with the workflow change its commits hold (ADR 0075) read from its bundle, by
+ * the box, with decide's read key: on your account only (the repos App pushes none, so another's is
+ * refused whole, ADR 0045). One that can't be read stays held, and the reply says why.
+ */
+function withHeld(s: Snapshot, p: Plan, t: ThinkOut | undefined): ThinkMeta {
+  const meta = t?.meta ?? { readOutside: true, touchesWorkflows: false };
+  // A new project's first push holds its stack's own pipeline, as rendered: nothing is held.
+  if (p.do !== "think" || !t || !meta.holds || !meta.commits || meta.firstPush) return meta;
+  const k = p.think;
+  const bundle = join(t.out, "work.bundle");
+  if (k.profile !== "work" || !k.project || k.account || !existsSync(bundle)) return meta;
+  const branch = p.state.branch ?? branchName(s.n, s.issue.title);
+  try {
+    const held = heldChange(
+      repoFor(k.project, s.repos),
+      branch,
+      k.base ?? "main",
+      bundle,
+      process.env.SHIPIFY_READ_TOKEN ?? "",
+    );
+    return held ? { ...meta, held } : meta;
+  } catch (e) {
+    const why = `it couldn't be read (${maskSecrets(errorLine(e))})`;
+    return {
+      ...meta,
+      held: { files: [], at: "", patch: "", sha256: "", facts: [], only: false, why },
+    };
+  }
+}
+
+/**
  * Decide's core (decide's step, and each turn of a stay): the writes, saved for apply. A stay's turn
  * hands in think's newest read of your words (`heard`), made as its agent answered: no read again.
  */
 function decided(
   n: number,
   heard?: Said[],
-): { s: Snapshot; p: Plan; d: Decided; meta?: ThinkMeta } | undefined {
+): { s: Snapshot; p: Plan; d: Kept; meta?: ThinkMeta } | undefined {
   const saved = load<{ s: Snapshot; p: Plan }>(n, "plan");
   if (!saved || saved.p.do === "nothing" || saved.p.do === "github") return undefined;
   const { s, p } = saved;
   const meta = load<ThinkOut>(n, "think")?.meta;
-  let d: Decided;
+  let d: Kept;
   if (p.do === "box") d = { writes: p.writes, state: p.state, needs: needsOf(p.writes, p.state) };
   else {
     const t = load<ThinkOut>(n, "think");
@@ -548,8 +612,10 @@ function decided(
       p.state,
       p.think,
       result,
-      t?.meta ?? { readOutside: true, touchesWorkflows: false },
-      context(s),
+      withHeld(s, p, t),
+      // After the agent, decide reads nothing of GitHub for its context: the merge, release, errand
+      // and deploy were plan's.
+      localContext(s),
     );
     // What the box makes anyway (a note, a command's answer, a `use` reply) goes first.
     if (p.writes?.length) d.writes = [...p.writes, ...d.writes];
@@ -564,8 +630,19 @@ function decided(
     // A stay's turn: a `stop` alone that came as it answered is read with this answer.
     if (heard) lateStop(d, heard);
     // Your words since its last read (its checks ran meanwhile): one more read, said in the reply.
+    // From the task step's read on, when it was this run's: kept for apply, which reads none.
     try {
-      stillWaiting(d, heard ?? saidSince(n, new Date(Date.parse(s.now) - 60_000).toISOString()));
+      if (heard) stillWaiting(d, heard);
+      else {
+        const task = taskReadOf(n);
+        const at = task && task.run === thisRun() ? task.at : undefined;
+        const comments = rec({ timeoutMs: 20_000 }).comments(
+          n,
+          at ?? new Date(Date.parse(s.now) - 60_000).toISOString(),
+        );
+        stillWaiting(d, saidOf(n, comments));
+        if (at) d.comments = comments;
+      }
     } catch {}
   }
   save(n, "decided", d);
@@ -616,13 +693,13 @@ export async function runDecide(n: number): Promise<Result> {
 /** Apply's step; a stay's turn hands in the read its plan made (`record`): no read again. */
 export async function runApply(n: number, record?: TaskRecord): Promise<Result> {
   const saved = load<{ s: Snapshot; p: Plan }>(n, "plan");
-  const d = load<Decided>(n, "decided");
+  const d = load<Kept>(n, "decided");
   if (!saved || !d)
     return { command: "run apply", status: "skipped", summary: `task #${n}: nothing to apply` };
   const t = load<ThinkOut>(n, "think");
   const done = await apply(saved.s, d.state, d.writes, {
     ...outward(),
-    ...(record ? { comments: record.comments } : {}),
+    ...(record ? { comments: record.comments } : d.comments ? { since: d.comments } : {}),
     ...(t?.details ? { details: t.details as RunDetails } : {}),
     ...(t?.out ? { out: t.out } : {}),
     tokens: {
@@ -701,22 +778,22 @@ export async function runStay(n: number): Promise<Result> {
   const io = {
     now: () => Date.now(),
     sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
-    news() {
-      const r = rec().commentsIfChanged(n, since, tags.comments);
+    async news() {
+      const r = await rec().commentsIfChanged(n, since, tags.comments);
       tags.comments = r.tag;
       if (r.comments) waits = newWords(saidOf(n, r.comments, saved.s.statusId), after).length > 0;
       return waits;
     },
-    task(): "open" | "closed" | "edited" | "unlabelled" {
-      const r = rec().issueIfChanged(n, tags.issue);
+    async task(): Promise<"open" | "closed" | "edited" | "unlabelled"> {
+      const r = await rec().issueIfChanged(n, tags.issue);
       tags.issue = r.tag;
       if (!r.issue) return "open";
       if (r.issue.state === "closed") return "closed";
       if (textHash(r.issue) !== text) return "edited";
       return r.issue.labels.some((l) => l.name === STAYING_LABEL) ? "open" : "unlabelled";
     },
-    waiting() {
-      const r = queue().waitingFor(mayTake, tags.queue);
+    async waiting() {
+      const r = await queue().waitingFor(mayTake, tags.queue);
       // Unchanged since the last look (no answer): the job seen waiting then still waits.
       if (r.tag !== tags.queue || r.waiting || !queued)
         queued = r.waiting ? { since: r.since, run: r.run } : undefined;
@@ -837,6 +914,50 @@ function turnClock() {
   };
 }
 
+/**
+ * The agent's renewed login, back to its secret (ADR 0074), once the agent and its stay are done:
+ * for an agent that renews its own in a run (its entry's `login.renews`: Codex's ChatGPT session).
+ * Read as the agent from the run's folder, kept only when its adapter says it's the given login's
+ * newer self (the same account), and set with a key minted for that alone (GH_TOKEN). Never printed,
+ * and never a failed run: the answer is already posted, so what went wrong is a warning on the job.
+ */
+export async function runRenew(n: number): Promise<Result> {
+  const done = (status: Result["status"], why: string): Result => ({
+    command: "run renew",
+    status,
+    summary: `task #${n}: ${why}`,
+  });
+  const saved = load<{ s: Snapshot; p: Plan }>(n, "plan");
+  const { agent, login, renews } = saved ? agentOf(saved.p) : { agent: "", login: "" };
+  const adapter = adapterOf(executors()[agent]);
+  const given = process.env.SHIPIFY_AGENT_LOGIN;
+  if (!saved || !renews || !login || !adapter?.loginFile || !adapter.renewed)
+    return done("skipped", "its agent renews no login");
+  if (!given) return done("skipped", "no login was given to it");
+  try {
+    const place = placeFor(placeId(saved.s), join(dir(n), "agent"), true);
+    const own = { home: place.home, config: place.config, tools: join(place.in, "tools") };
+    let found = "";
+    const read = await place.run(["cat", adapter.loginFile(own)], {
+      cwd: place.dir,
+      minutes: 1,
+      onLine: (l) => {
+        found += `${l}\n`;
+      },
+    });
+    place.stop();
+    if (read.code !== 0 || !adapter.renewed(given, found))
+      return done("skipped", `${login} wasn't renewed in this run`);
+    sourceControl().setSecret(platformRepo(), login, found.trim());
+    return done("succeeded", `${login} renewed, and written back`);
+  } catch (e) {
+    process.stderr.write(
+      `::warning::${login} was renewed in this run and couldn't be written back: ${maskSecrets(errorLine(e))}\n`,
+    );
+    return done("skipped", `${login} couldn't be written back`);
+  }
+}
+
 const STEPS = {
   task: runTask,
   plan: runPlan,
@@ -846,6 +967,7 @@ const STEPS = {
   decide: runDecide,
   apply: runApply,
   stay: runStay,
+  renew: runRenew,
   github: runGithub,
 } as const;
 export type Step = keyof typeof STEPS;
@@ -951,6 +1073,11 @@ export function needsOf(writes: Write[], st: TaskState): Decided["needs"] {
   for (const w of writes) {
     if (w.w === "push" || w.w === "preview") needs.repo = w.repo;
     if (w.w === "calls") needs.act = w.calls[0]?.tool;
+    // The workflow change you approved (ADR 0075): its push needs workflows write.
+    if (w.w === "workflow") {
+      needs.repo = w.change.repo;
+      needs.workflows = true;
+    }
   }
   if (!needs.repo && st.project && writes.some((w) => w.w === "preview")) needs.repo = st.project;
   return needs;

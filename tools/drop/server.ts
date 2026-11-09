@@ -2,7 +2,11 @@
 // Access. Looking runs get the read token; drops are made, changed and revoked only by the box, for
 // calls you approved, with the write token. A drop's files are ones the task shared, or ones you sent
 // in its chat (by their refs, ADR 0069): the box fetches them for the call into a folder of their
-// own (SHIPIFY_FILES), and this reads them there.
+// own (SHIPIFY_FILES), and this reads them there. A drop with no `share` is only yours (ADR 0073).
+// A guest's calls (ADR 0073): the box starts this with SHIPIFY_GUEST (`{"email", "name"}`, from the
+// door's list), and this acts for that guest alone: `publish` makes a drop only they can open, `by`
+// them, for 30 days at most; `update` changes only the title and files of a drop `by` them. Its
+// answers say "you", never their email, and point to Drop's My drops, where they share it.
 //   tsx tools/drop/server.ts           serve the tools
 //   tsx tools/drop/server.ts --check   check the token once (ship doctor), then exit
 import { randomInt } from "node:crypto";
@@ -26,6 +30,12 @@ type Gate = keyof typeof GATES;
 /** A drop has one link at most, and its gate gives its role. People open /d/<address> instead. */
 const LINK_ROLE: Partial<Record<Gate, string>> = { view: "view", add: "add", collect: "send" };
 const EXPIRY = ["1d", "7d", "30d", "keep"];
+/** A guest's drop lasts 30 days at most, so a removed guest's links end by themselves. */
+const GUEST_EXPIRY = ["1d", "7d", "30d"];
+/** What a guest's `update` may change: who opens it is theirs to choose in My drops. */
+const GUEST_UPDATE = ["drop", "title", "files", "delete_files"];
+const GUEST_SHARES =
+  "Only you can open a drop made for you: share it in Drop's My drops (a link, or people by email).";
 const ROLES = ["view", "add"];
 /** The most files one drop takes in a call: as many as a task keeps shared. */
 const MAX_FILES = 20;
@@ -51,6 +61,23 @@ interface DropInfo {
   /** Who asked to open it (its people's page's Ask for access), as its admin page answers them. */
   requests?: { id: string; email: string }[];
   limits?: { mb: number; files: number };
+  /** The guest it's for (Drop 0.6.0, ADR 0073): set only when it's made, by the box. */
+  by?: { email?: string; name?: string } | null;
+}
+
+/** A guest, as the box gives them in SHIPIFY_GUEST (ADR 0073). */
+export interface Guest {
+  email: string;
+  name: string;
+}
+
+/** SHIPIFY_GUEST read: a guest, or none when it isn't set. Anything else stops the server. */
+export function guestFrom(raw: string | undefined): Guest | undefined {
+  if (!raw) return undefined;
+  const g = JSON.parse(raw) as Partial<Guest>;
+  if (typeof g.email !== "string" || !isEmail(g.email) || typeof g.name !== "string")
+    throw new Error("SHIPIFY_GUEST isn't a guest's email and name.");
+  return { email: g.email.toLowerCase(), name: g.name };
 }
 interface Person {
   id: string;
@@ -192,8 +219,14 @@ const size = (n: number) => {
 };
 const capital = (s: string) => `${s[0]?.toUpperCase()}${s.slice(1)}`;
 
-export function dropTools(api: Drop): Tool[] {
+export function dropTools(api: Drop, guest?: Guest): Tool[] {
   const at = (address: string) => `/api/drops/${encodeURIComponent(address)}`;
+  /** Where its owner manages a drop: your admin page, or the guest's My drops. */
+  const manage = (address: string) =>
+    `Manage it in Drop: ${api.url(`${guest ? "/mine" : "/admin"}/d/${address}`)}`;
+  const notForGuests = () => {
+    if (guest) throw new Error("A guest's run makes and changes only their own drops.");
+  };
   /** How people open a drop: its people's page, or its link (kept from Drop 0.3.0). */
   const opens = (d: DropInfo) =>
     d.gate === "people"
@@ -217,6 +250,7 @@ export function dropTools(api: Drop): Tool[] {
         },
       },
       async run(input) {
+        notForGuests();
         const words = typeof input.query === "string" ? input.query.trim().toLowerCase() : "";
         const { drops: all = [], usage } = await api.call<{
           drops?: DropInfo[];
@@ -250,21 +284,23 @@ export function dropTools(api: Drop): Tool[] {
                 : []),
             ]
           : [];
-        const lines = drops
-          .slice(0, MAX_LISTED)
-          .map((d) =>
-            [
-              `- "${d.title}"`,
-              `id ${d.address}`,
-              `${GATES[d.gate as Gate] ?? d.gate}${d.pin ? ", with a PIN" : ""}`,
-              ...(d.peopleCount ? [plural(d.peopleCount, "person", "people")] : []),
-              until(d.expires, d.expired),
-              ...(d.requestCount ? [`${plural(d.requestCount, "request")} to answer`] : []),
-              opens(d),
-            ]
-              .filter(Boolean)
-              .join(" · "),
-          );
+        const lines = drops.slice(0, MAX_LISTED).map((d) =>
+          [
+            `- "${d.title}"`,
+            `id ${d.address}`,
+            // A guest's drop (ADR 0073): theirs to share, in Drop's My drops.
+            d.by?.name && d.gate === "me"
+              ? `only ${d.by.name}`
+              : `${GATES[d.gate as Gate] ?? d.gate}${d.pin ? ", with a PIN" : ""}`,
+            ...(d.by?.name && d.gate !== "me" ? [`for ${d.by.name}`] : []),
+            ...(d.peopleCount ? [plural(d.peopleCount, "person", "people")] : []),
+            until(d.expires, d.expired),
+            ...(d.requestCount ? [`${plural(d.requestCount, "request")} to answer`] : []),
+            opens(d),
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        );
         return [
           drops.length
             ? `${plural(drops.length, "drop")}${words ? ` with "${words}"` : ""}:`
@@ -284,7 +320,7 @@ export function dropTools(api: Drop): Tool[] {
     {
       name: "publish",
       description:
-        "Act: make a drop from files this task shared (in a reply's files) or ones you sent in its chat (by their refs), and get its link. share: me (only you), view or add (anyone with the link), collect (a link that only takes files), people (those named in people). expiry: 1d, 7d (the default), 30d or keep. pin: true adds a 6-digit PIN.",
+        "Act: make a drop from files this task shared (in a reply's files) or ones you sent in its chat (by their refs), and get its link. share: me (only you: the default), view or add (anyone with the link), collect (a link that only takes files), people (those named in people). expiry: 1d, 7d (the default), 30d or keep. pin: true adds a 6-digit PIN.",
       inputSchema: {
         type: "object",
         properties: {
@@ -304,13 +340,16 @@ export function dropTools(api: Drop): Tool[] {
           expiry: { type: "string", enum: EXPIRY },
           pin: { type: "boolean", description: "Ask for a 6-digit PIN before anything shows" },
         },
-        required: ["title", "share"],
+        required: ["title"],
       },
       async run(input) {
         const title = titleOf(input);
-        const share = oneOf<Gate>(input, "share", Object.keys(GATES));
-        if (!share) throw new Error('"share" is needed.');
-        const expiry = oneOf<string>(input, "expiry", EXPIRY) ?? "7d";
+        // No who said: only you (ADR 0073). A guest's drop is only theirs, always.
+        const share = oneOf<Gate>(input, "share", Object.keys(GATES)) ?? "me";
+        if (guest && (share !== "me" || input.people !== undefined || input.pin !== undefined))
+          throw new Error(GUEST_SHARES);
+        const expiry =
+          oneOf<string>(input, "expiry", guest ? GUEST_EXPIRY : EXPIRY) ?? (guest ? "30d" : "7d");
         const people = peopleOf(input);
         if ((share === "people") !== Boolean(people))
           throw new Error(
@@ -331,6 +370,7 @@ export function dropTools(api: Drop): Tool[] {
           gate: share,
           expiry,
           ...(pin ? { pin } : {}),
+          ...(guest ? { by: guest } : {}),
         });
         const address = made.drop?.address;
         if (typeof address !== "string" || !address)
@@ -384,10 +424,16 @@ export function dropTools(api: Drop): Tool[] {
                 ", ",
               )}: it's on their home pages, and its people link is ${api.url(`/d/${address}`)}`,
           );
-        if (share === "me") lines.push("Only you can open it.");
+        // A guest opens theirs by its people link, signed in (Drop 0.6.0); you, from your admin page.
+        if (share === "me")
+          lines.push(
+            guest
+              ? `Only you can open it, signed in: ${api.url(`/d/${address}`)}`
+              : "Only you can open it. To share it: its page in Drop, or ask for anyone with the link, or names.",
+          );
         if (pin)
           lines.push(`PIN: ${pin} (asked before anything shows: send it apart from the link).`);
-        lines.push(`Manage it in Drop: ${api.url(`/admin/d/${address}`)}`);
+        lines.push(manage(address));
         return lines.join("\n");
       },
     },
@@ -442,6 +488,8 @@ export function dropTools(api: Drop): Tool[] {
       },
       async run(input) {
         const id = idOf(str(input, "drop"));
+        if (guest && Object.keys(input).some((k) => !GUEST_UPDATE.includes(k)))
+          throw new Error(`A guest's run changes only a drop's title and files. ${GUEST_SHARES}`);
         const title = input.title === undefined ? undefined : titleOf(input);
         const expiry = oneOf<string>(input, "expiry", EXPIRY);
         const limits = limitsOf(input);
@@ -469,6 +517,10 @@ export function dropTools(api: Drop): Tool[] {
         const was = (await api.call<{ drop?: DropInfo }>("GET", at(id))).drop;
         if (!was)
           throw new Error("Drop's answer has no drop: is SHIPIFY_DROP_URL Drop's own address?");
+        // A guest changes only a drop made for them: Drop's `by`, which only the box sets. A Drop
+        // from before `by` has none, so nothing changes.
+        if (guest && was.by?.email?.toLowerCase() !== guest.email)
+          throw new Error("That drop isn't one made for you, so nothing was changed.");
         const gate = (share ?? was.gate) as Gate;
         const role = LINK_ROLE[gate];
         if (pin && gate === "me") throw new Error('A PIN guards a link: share "me" has none.');
@@ -510,7 +562,10 @@ export function dropTools(api: Drop): Tool[] {
           await step(async () => {
             const r = await api.call<{ drop?: DropInfo }>("PATCH", at(id), {
               title: title ?? was.title,
-              ...(limits || was.limits ? { limits: { ...was.limits, ...limits } } : {}),
+              // A guest's drop holds no limits of its own (Drop 0.6.0): none sent back.
+              ...(limits || (was.limits && !was.by)
+                ? { limits: { ...was.limits, ...limits } }
+                : {}),
               ...(expiry ? { expiry } : {}),
             });
             const most = (r.drop?.limits ?? { ...was.limits, ...limits }) as typeof LIMITS;
@@ -608,7 +663,12 @@ export function dropTools(api: Drop): Tool[] {
               ? `${capital(GATES[gate])}: ${api.url(now.link.path)} (the same link)`
               : "its link stays the same: new_link makes one to copy, and the old one stops",
           );
-        return `Updated "${was.title}" (drop ${id}):\n${done.map((d) => `- ${d}`).join("\n")}`;
+        if (guest) done.push(`its link stays the same: ${api.url(`/d/${id}`)}`);
+        return [
+          `Updated "${was.title}" (drop ${id}):`,
+          ...done.map((d) => `- ${d}`),
+          ...(guest ? [manage(id)] : []),
+        ].join("\n");
       },
     },
     {
@@ -622,6 +682,7 @@ export function dropTools(api: Drop): Tool[] {
         required: ["drop"],
       },
       async run(input) {
+        notForGuests();
         const id = idOf(str(input, "drop"));
         await api.call("DELETE", at(id));
         return `Revoked drop ${id}: its links stop now, and its files are deleted.`;
@@ -646,5 +707,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
         process.exit(1);
       },
     );
-  else void serve({ name: "drop", version: "1.0.0" }, dropTools(api));
+  else
+    void serve(
+      { name: "drop", version: "1.0.0" },
+      dropTools(api, guestFrom(process.env.SHIPIFY_GUEST)),
+    );
 }

@@ -69,3 +69,12 @@ Use active voice as default. A CTA says exactly what happens when it is used: "S
 Treat failure and emptiness as moments for direction, not mood. Explain what went wrong and how to fix it, in the interface's voice rather than a person's. Errors don't apologize, and they are never vague about what happened. An empty screen is an invitation to act.
 
 Keep the tone conversational: plain verbs, sentence case, no filler, with tone matched to the brand and the audience. Let each written element do exactly one job.
+
+## A one-file page (in Shipify)
+
+When the owner asks for a page ("make a page of my trip plan", a calculator, a checklist; ADR 0072), make one `.html` file that holds all of it. Drop shows it in a sandbox that lets its script run but gives it no storage, no network and nothing from outside, so a page that leans on any of these breaks there. The `drop` skill's "A page" says how to share it.
+
+- **Everything inside the file:** CSS in `<style>`, script in `<script>`, the data in the page, small pictures as `data:` URLs, charts as inline SVG (or a canvas). Nothing from the internet: no web font, CDN script or remote picture. Use a system font stack, and give the type its character through scale, weight and spacing.
+- **What works:** buttons, tabs, filters, search, sort; calculators, checklists, quizzes, timers; tables and charts; **Print** (a button that calls `print()`); **Save** (a button that downloads what the page holds, as CSV or JSON) and **Open** (a file picker that reads a saved file back). A link opens only in a new tab: give each one `target="_blank" rel="noopener"`.
+- **What doesn't, on purpose:** keeping anything between visits (`localStorage`, `sessionStorage`, cookies and IndexedDB throw there, and the page's script stops at that line), sending anything out (`fetch`, a form, analytics), and a store shared between visitors (votes, sign-ups). What a visitor ticks lasts until they close the page: when they'd want it kept, offer Save and Open. What the page holds changes when the owner asks in the chat, and the run makes the page again.
+- **Small screens first:** it reads well from 360 px wide up, in light and dark (`prefers-color-scheme`), and stays under 1 MB.

@@ -6,6 +6,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { playbookFor } from "../cli/kernel/prompt.ts";
 import { shipifyCopy } from "../cli/kernel/think.ts";
 import { readExecutors } from "../cli/lib/agents.ts";
 import { ROOT } from "./helpers.ts";
@@ -71,12 +72,15 @@ describe("what the agent is told to run, it may run", () => {
     });
   }
 
-  it("says never to each refused command in the task playbook", () => {
-    const never = commands(read("playbooks/task.md")).filter((c) => c.never);
-    for (const d of denied)
-      expect(
-        never.some((c) => c.cmd === d),
-        d,
-      ).toBe(true);
+  it("says never to each refused command in the task playbook, as a work run and a talk run get it", () => {
+    for (const work of [true, false]) {
+      const given = playbookFor(read("playbooks/task.md"), { work, later: false });
+      const never = commands(given).filter((c) => c.never);
+      for (const d of denied)
+        expect(
+          never.some((c) => c.cmd === d),
+          `${d} (${work ? "a work run" : "a talk run"})`,
+        ).toBe(true);
+    }
   });
 });

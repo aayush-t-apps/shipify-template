@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
 import { lookedUp } from "../cli/kernel/snapshot.ts";
 import { repoOf } from "../cli/lib/github.ts";
 import { type RepoRef, repoFor } from "../cli/lib/projects-on-github.ts";
-import { inertImages, looksAt } from "../cli/lib/task.ts";
+import { inertImages } from "../cli/contracts/index.ts";
+import { looksAt } from "../cli/lib/task.ts";
 
 describe("repoOf: owner/name from a GitHub URL", () => {
   it("keeps a name with dots, and drops .git and anything after the name", () => {

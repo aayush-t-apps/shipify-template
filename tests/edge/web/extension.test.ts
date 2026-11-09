@@ -822,7 +822,10 @@ describe("the page", () => {
       expect(js).toMatch(
         /if \(P && R\.shut && !shut && !R\.pj\[P\.n\] && g\.length < c\) \{\s*R\.pj\[P\.n\] = \[\];\s*get\(`task\/\$\{P\.n\}`, undefined, 1, ""\)/,
       );
-      expect(js).toContain('P && h("span", `${c} chat${c === 1 ? "" : "s"}`)');
+      // Its count is the chats it shows (under Open, its open ones), not GitHub's total (`c`),
+      // which has its closed ones too: "3 chats" over 2 was wrong.
+      expect(js).toContain("const k = g.length + rest.length;");
+      expect(js).toContain('P && h("span", `${k} chat${k === 1 ? "" : "s"}`)');
       expect(js).toContain("href: P ? `#/t/${P.n}`");
       expect(js).toMatch(/const hush = \(t\) =>[^;]*!t\.project &&/);
       // New chat here: the new chat's box sends `under`; a project's own box replies to none.
@@ -942,6 +945,10 @@ describe("the page", () => {
     const listed = /async function tick\(\) \{[\s\S]*?const listed =([^;]*);/.exec(js)?.[1] ?? "";
     expect(listed).toContain("WIDE.matches");
     expect(listed).toMatch(/\bR\.home\b/);
+    // While a run works, the thread every 5 s and the list every 30 s: at once only with none yet,
+    // your words waiting, or you back.
+    expect(listed).toMatch(/^\s*wait \|\|\s*R\.woke \|\|/);
+    expect(listed).toContain("(!S.list || Date.now() - R.at > 25e3)");
     expect(js).toMatch(/function route\(\) \{[\s\S]*?R\.home = [\s\S]*?tick\(\);/);
     await inFakeDom(async (make) => {
       const { h } = await import(join(ROOT, dir, "compose.js"));
@@ -1015,7 +1022,8 @@ describe("the page", () => {
         .filter((x) => x.className === "chip")
         .map((x) => x.textContent);
       expect(chips).toEqual(["which engine?"]);
-      expect(e.textContent).toContain("games3 chats · #1");
+      // Its count is the open chats it shows, not GitHub's total of 3 with the closed ones.
+      expect(e.textContent).toContain("games1 chat · #1");
       expect(e.all().find((x) => x.attrs.href === "#/t/5")?.textContent).toBe("games");
       // Jot: `jot: …`, with no run; the door's answer said under it.
       const jot = e.all().find((x) => x.className === "jot") as El & Record<string, unknown>;

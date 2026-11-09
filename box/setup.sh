@@ -34,14 +34,17 @@
 # Setup 12: Ubuntu 26.04 LTS as well as 24.04: the agents' containers reach the network the same
 # way on both (slirp4netns), where 26.04's Podman 5 would take pasta, which isn't installed. A
 # stack's tool that doesn't install is said, and the setup goes on without it.
+# Setup 13: with --manage, nothing comes in but through Tailscale: the SSH from the machine's own
+# network and Tailscale's open port that older setups let in are taken out, and avahi (mDNS) is off.
+# The firewall comes right after Tailscale's sign-in, before Cockpit; the setup is recorded as done
+# only once --manage finishes, else it ends with exit 4, and ship doctor names the box.
 # Running it again updates Node to the newest 22.x, and adds or removes slots to match
 # RUNNER_SLOTS.
 # SSH takes keys only, never passwords, once the account running this has a key; with
-# SHIPIFY_HERE=1 (`box add` with no target: the PC you run it from) SSH stays as it is, and so do
-# its power settings unless SHIPIFY_MANAGE=1. With SHIPIFY_MANAGE=1 in the settings file
+# SHIPIFY_HERE=1 (`box add` with no target: the PC you run it from) SSH and its power settings stay
+# as they are, unless SHIPIFY_MANAGE=1. With SHIPIFY_MANAGE=1 in the settings file
 # (`box add --manage`, over SSH or on the machine itself): it never sleeps, Tailscale, Cockpit
-# reachable only through it, and a firewall that lets in only Tailscale and SSH from this
-# machine's own network.
+# reachable only through it, and a firewall that lets in only Tailscale.
 # In Docker (ADR 0056): SHIPIFY_IMAGE=1 builds the image (box/Dockerfile): the installs alone, with
 # no settings file, then stops. SHIPIFY_CONTAINER=1 (`box add --container`, at `register`) skips
 # the installs the image has, SSH, the OS's updates (a new image is the update) and the services
@@ -52,7 +55,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=12
+SETUP_VERSION=13
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -272,14 +275,15 @@ fi
 
 # SSH by key only: no passwords, no root. Only when the account running this (`box add` connects
 # with a key) has one, so nobody is locked out, and checked before it's used; if the check fails,
-# the change goes and SSH stays as it was.
+# the change goes and SSH stays as it was. On the machine itself, only with --manage (a box you
+# keep): Cockpit and Tailscale's SSH don't use sshd's passwords, so they stay a way in.
 say "SSH: keys only"
 SSHD_DROPIN=/etc/ssh/sshd_config.d/10-shipify.conf
 SSHD=$(command -v sshd || echo /usr/sbin/sshd)
 keys="/home/${SUDO_USER:-}/.ssh/authorized_keys"
 if [ -n "$IMAGE$CONTAINER" ]; then
   echo "  skipped: a container has no SSH of its own"
-elif [ "${SHIPIFY_HERE:-}" = 1 ]; then
+elif [ "${SHIPIFY_HERE:-}" = 1 ] && [ "${SHIPIFY_MANAGE:-}" != 1 ]; then
   echo "  skipped: this is the PC you set it up from, so its SSH stays as it is"
 elif [ -z "${SUDO_USER:-}" ] || [ ! -s "$keys" ]; then
   echo "  skipped: no SSH key for ${SUDO_USER:-this account} yet (ship box add sets one up first)"
@@ -688,14 +692,24 @@ put_file() {
   install -D -m 644 "$1" "$2"
 }
 
-# Tailscale, then Cockpit on 127.0.0.1 only, shared with your own devices by `tailscale serve`.
-# The box already works and its sandbox checked out at this point; a problem here stops only this
-# part.
+# Tailscale, then the firewall, then Cockpit on 127.0.0.1 only, shared with your own devices by
+# `tailscale serve`. The firewall comes before Cockpit, so a Cockpit that doesn't install or serve
+# (HTTPS certificates off in Tailscale's admin page) never leaves the machine open. The box already
+# works and its sandbox checked out at this point; a problem here stops only this part, and the
+# setup ends saying so (exit 4).
 manage() {
   set -e
   local cockpit=""
   say "Tailscale (only your own devices can reach this machine)"
   command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh
+  if ! tailscale status >/dev/null 2>&1; then
+    echo "  Sign in at the link below, with the account your phone's Tailscale app uses (within 15 minutes):"
+    tailscale up --ssh --timeout 15m
+  else
+    tailscale set --ssh
+  fi
+  address=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+  firewall
   say "Cockpit (a web page for the terminal, services, logs and updates)"
   # Where it listens, in place before it's installed: it never listens on the network, even for a
   # moment.
@@ -710,13 +724,6 @@ manage() {
   local from=()
   [ -z "$(ubuntu_suite "${VERSION_CODENAME}-backports")" ] || from=(-t "${VERSION_CODENAME}-backports")
   apt_get install -y -q --no-install-recommends "${from[@]}" cockpit cockpit-packagekit
-  if ! tailscale status >/dev/null 2>&1; then
-    echo "  Sign in at the link below, with the account your phone's Tailscale app uses (within 15 minutes):"
-    tailscale up --ssh --timeout 15m
-  else
-    tailscale set --ssh
-  fi
-  address=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
   printf '[WebService]\nOrigins = https://%s\n' "$address" > "$WORK/cockpit.conf"
   put_file "$WORK/cockpit.conf" /etc/cockpit/cockpit.conf && cockpit=changed
   # Restarted only when its settings changed: a restart ends every Cockpit session, this setup's
@@ -728,33 +735,77 @@ manage() {
   echo "  If it asks, turn on HTTPS certificates in Tailscale's admin page (DNS), then come back."
   tailscale serve --bg https+insecure://localhost:9090
   echo "  Cockpit: https://$address (sign in as your own user on this machine)"
-  firewall
 }
 
-# The firewall (with --manage): nothing comes in but Tailscale and SSH from this machine's own
-# network, kept as a way in if Tailscale is ever down. Going out is open, as the runners need.
-# Only once Tailscale is up, and the allows go in before it turns on, so the session running this
-# stays. Rules are only added, never reset: your own rules stay. To undo: sudo ufw disable.
+# The firewall (with --manage, setup 13): nothing comes in but through Tailscale (Cockpit, SSH),
+# IPv4 and IPv6 alike. Going out is open, as the runners need; Tailscale makes its direct
+# connections from its own outgoing packets, so it needs no open port (else it relays them). With
+# Tailscale down, the way in is a keyboard on the machine (a VPS's web console). Only once Tailscale
+# is up, and its allow goes in before the firewall turns on, so a session over Tailscale stays; else
+# it fails, and so does --manage. Rules are added, and older setups' own taken out by their comment,
+# never reset: your own rules stay, and each that lets more in is listed, never "only". To undo:
+# sudo ufw disable.
 firewall() {
-  say "Firewall: Tailscale, and SSH from this machine's own network"
+  say "Firewall: in through Tailscale only"
+  # Its address comes a moment after the sign-in.
+  for _ in $(seq 1 15); do
+    ip -4 addr show tailscale0 2>/dev/null | grep -q inet && break
+    sleep 2
+  done
   if ! ip -4 addr show tailscale0 2>/dev/null | grep -q inet; then
-    echo "  skipped: Tailscale isn't up yet, so nothing changes (run the same command again, with --manage)"
-    return 0
+    echo "  ✗ not on: Tailscale isn't up (tailscale0 has no address), so nothing changed"
+    return 1
   fi
   command -v ufw >/dev/null || apt_get install -y -q ufw
-  # The allows first, then the defaults, then on: no moment shuts out a new SSH connection.
+  # IPv6 too: ufw filters it only with IPV6=yes (Ubuntu's default), else a public IPv6 address
+  # takes anything. A firewall that's on already takes the change with a reload.
+  local v6=""
+  if ! grep -qx 'IPV6=yes' /etc/default/ufw 2>/dev/null; then
+    sed -i '/^IPV6=/d' /etc/default/ufw 2>/dev/null || true
+    echo IPV6=yes >>/etc/default/ufw
+    v6=1
+  fi
+  # The allow first, then the defaults, then on: no moment shuts out a connection over Tailscale.
   ufw allow in on tailscale0 comment "Tailscale: Cockpit, SSH" >/dev/null
-  ufw allow 41641/udp comment "Tailscale direct connections" >/dev/null
-  local nets
-  nets=$(ip -4 route show scope link | awk '$3 != "tailscale0" && $1 ~ /\// {print $1}' | sort -u)
-  for net in $nets; do
-    ufw allow from "$net" to any port 22 proto tcp comment "SSH from this network" >/dev/null
-    echo "  SSH allowed from $net"
-  done
+  # Setups before 13 let in SSH from the machine's own network, and Tailscale's port.
+  local old rule
+  old=$(ufw show added | sed -n "s/^ufw \(.*\) comment '\(SSH from this network\|Tailscale direct connections\)'$/\1/p")
+  while read -r rule; do
+    [ -n "$rule" ] || continue
+    # shellcheck disable=SC2086 # the rule's own words, as ufw shows them
+    ufw delete $rule >/dev/null
+    echo "  taken out: $rule"
+  done <<<"$old"
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
   ufw --force enable >/dev/null
-  echo "  on: in through Tailscale$([ -n "$nets" ] && echo ", and SSH from this network"); out as before"
+  [ -z "$v6" ] || { ufw reload >/dev/null && echo "  IPv6 filtered too now (IPV6=yes in /etc/default/ufw)"; }
+  # Your own rules that let something in (the OpenSSH allow of a VPS guide): kept, and said.
+  local own
+  own=$(ufw show added | grep -E '^ufw (route )?(allow|limit) ' | grep -Ev '^ufw (route )?(allow|limit) out ' |
+    grep -v "comment 'Tailscale: Cockpit, SSH'$" | sed 's/^ufw //' || true)
+  if [ -z "$own" ]; then
+    echo "  on: in through Tailscale only; out as before"
+  else
+    echo "  on: in through Tailscale, and through rules of your own that are still there:"
+    while read -r rule; do echo "    $rule"; done <<<"$own"
+    echo "  For Tailscale only, take each out: sudo ufw delete <the rule above>"
+  fi
+  # Nothing on the home network finds it by name either: avahi (mDNS, <name>.local), where an image
+  # has it (a Pi's), is off, since ufw lets mDNS in by default. Tailscale's names take its place.
+  # To undo: sudo systemctl unmask avahi-daemon.socket avahi-daemon.service, then a restart.
+  if systemctl cat avahi-daemon.service >/dev/null 2>&1 &&
+    [ "$(systemctl is-enabled avahi-daemon.service 2>/dev/null)" != masked ]; then
+    systemctl mask --now avahi-daemon.socket avahi-daemon.service >/dev/null 2>&1 || true
+    echo "  avahi (mDNS) off: the home network can't find this machine by name"
+  fi
+  # An SSH session from outside Tailscale (100.64.0.0/10, fd7a:115c:a1e0::/48), as this one may be:
+  # ufw lets it go on, but the next one can't come that way. Said, so it's no surprise.
+  local outside
+  outside=$(ss -Htn state established '( sport = :22 )' | awk '{print $4}' | sed 's/:[0-9]*$//; s/^\[//; s/\]$//; s/^::ffff://' |
+    grep -Ev '^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|^fd7a:115c:a1e0:' | sort -u | tr '\n' ' ' || true)
+  [ -z "$outside" ] ||
+    echo "  SSH from ${outside% } goes on for now; from now on, connect through Tailscale: ssh ${SUDO_USER:-<you>}@$address"
 }
 
 # The agents' network (setup 9): out to the internet, as the work needs (GitHub, npm, the agent's
@@ -1093,23 +1144,36 @@ fi
 [ -n "$walls" ] || { echo "The sandbox isn't right (above); it's safe to run this again."; exit 1; }
 echo "  done: $RUNNER_SLOTS agent(s), each walled off"
 
-# Which setup this box has, for ship doctor.
-echo "$SETUP_VERSION" > /home/shipify/.shipify-setup
-chown shipify:shipify /home/shipify/.shipify-setup
+# Which setup this box has, for ship doctor. With --manage, noted as not finished until that part
+# ends (Tailscale's sign-in missed, Cockpit not served, a Ctrl-C), so doctor names the box until its
+# firewall is on.
+record() {
+  # As its user, not root: a link put in its place can't send root's write elsewhere.
+  printf '%s\n' "$@" | sudo -u shipify tee /home/shipify/.shipify-setup >/dev/null
+}
+if [ "${SHIPIFY_MANAGE:-}" = 1 ]; then record "$SETUP_VERSION" "manage: not finished"; else record "$SETUP_VERSION"; fi
 
 # --manage last, once the sandbox checked out: Tailscale's sign-in waits for you (15 minutes at
 # most), and when this part stops, the box still works and gets its sandbox label.
+managed=0
 if [ "${SHIPIFY_MANAGE:-}" = 1 ]; then
   # Not `(manage) || …`: bash ignores set -e inside a function run that way.
   set +e
   (manage)
   managed=$?
   set -e
-  [ "$managed" = 0 ] || echo "  The management part stopped (see above). The box works; run the same command again, with --manage."
+  [ "$managed" != 0 ] || record "$SETUP_VERSION"
 fi
-# Never "done" when containers don't work: exit 3, which box add reads (the box works, and its slots
-# get their label, but a task that needs a container can't run). A box in Docker makes none.
+# Never "done" when something's left. The box works, and its slots get their label, either way:
+# exit 4 when --manage stopped (the firewall may not be on), else exit 3 when containers don't work
+# (a task that needs one can't run). box add reads both. A box in Docker makes no containers.
+[ "$managed" = 0 ] || {
+  say "Done, except --manage: it stopped (above), so this machine may still take connections from outside Tailscale"
+  echo "The box takes tasks. Run the same command again, with --manage; until it finishes, ship doctor names this box."
+}
+no_lab=""
 if [ -z "$CONTAINER" ] && [ "$lab_ok" != ok ] && [ "$lab_ok" != unproven ]; then
+  no_lab=1
   if [ "$lab_ok" = none ]; then
     say "Done, except containers: they didn't install (above)"
   else
@@ -1117,6 +1181,7 @@ if [ -z "$CONTAINER" ] && [ "$lab_ok" != ok ] && [ "$lab_ok" != unproven ]; then
   fi
   echo "The box takes tasks; one that needs a container may fail. Run the same command again; if it says the"
   echo "same, docs/troubleshooting.md (\"Containers don't start\") has the fix."
-  exit 3
 fi
+[ "$managed" = 0 ] || exit 4
+[ -z "$no_lab" ] || exit 3
 say "Done: ask \"how is this box doing?\" (a task, or the bot) to check it"

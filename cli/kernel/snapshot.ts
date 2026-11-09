@@ -26,13 +26,14 @@ import {
   pickerAsked,
   readFrom,
   readReply,
+  RUN_WRITER,
   withoutLine,
   wordOf,
 } from "../contracts/index.ts";
-import { parseUse, useChoices, useCommand } from "../lib/agents.ts";
+import { adapterOf, parseUse, useChoices, useCommand } from "../lib/agents.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
 import type { Form } from "../lib/form-reader.ts";
-import { ghRun, platformRepo, RECORD_WRITER, repoOfPr } from "../lib/github.ts";
+import { ghRun, platformRepo, repoOfPr } from "../lib/github.ts";
 import { accountList, platformAccount, taskAccount, yourAccounts } from "../lib/accounts.ts";
 import { planFor } from "../lib/plan.ts";
 import { maskSecrets } from "../contracts/index.ts";
@@ -55,7 +56,7 @@ import {
 } from "../lib/task.ts";
 import { loadTools } from "../lib/tools.ts";
 import { defaultAgent, executors, taskChoice } from "./agent.ts";
-import { type Context, type ToolAct, yourWords } from "./decide.ts";
+import { type Context, guestOf, type ToolAct, yourWords } from "./decide.ts";
 import { instantAnswer } from "./instant.ts";
 import { hash8 } from "./keys.ts";
 import { placed, readsFamily } from "./projects.ts";
@@ -85,7 +86,7 @@ function authorOf(
 ): { author: Author; from?: ReturnType<typeof readFrom> } {
   const owner = ownerLogin();
   if (owner && login === owner) return { author: "owner" };
-  if (login === RECORD_WRITER) return { author: "run" };
+  if (login === RUN_WRITER) return { author: "run" };
   const door = doorLogin();
   if (door && login === door && never) {
     const from = readFrom(body);
@@ -114,7 +115,7 @@ export function readRecord(n: number): TaskRecord {
   if (found.comment) {
     const id = found.comment.id;
     const editor = read.comments.find((c) => c.id === id)?.editor;
-    if (editor && editor !== RECORD_WRITER) {
+    if (editor && editor !== RUN_WRITER) {
       process.stderr.write(
         `  … the status comment was edited by ${editor}: starting from the task\n`,
       );
@@ -469,11 +470,6 @@ export function saidOf(n: number, comments: RecordComment[], statusId?: number):
     });
 }
 
-/** Your words written on a task since a time: one read, of only those (a run's `stop`, its
- * catch-up), given up after 20 seconds, since it's made while the agent works. */
-export const saidSince = (n: number, since: string): Said[] =>
-  saidOf(n, rec({ timeoutMs: 20_000 }).comments(n, since));
-
 /** The words a task starts with for its model: its form's Model field (Auto is none), else a line of
  * its text that is a `use` command. */
 function firstUseOf(read: ReturnType<typeof taskForm>, body: string): string | undefined {
@@ -491,8 +487,20 @@ function firstUseOf(read: ReturnType<typeof taskForm>, body: string): string | u
   return pickedLine(body, executors(), choice, defaultAgent());
 }
 
-/** What decide needs beside the snapshot, read once. */
-export function context(s: Snapshot): Context {
+/** The agents that sign in with a code (ADR 0074): a login their adapter signs in to, by id. */
+export const signsIn = (all = executors()): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(all)
+      .filter(([, e]) => e.login && adapterOf(e)?.signIn)
+      .map(([id, e]) => [id, e.name ?? id]),
+  );
+
+/**
+ * What decide needs beside the snapshot with no read of GitHub: the tools, `use`, the plans and the
+ * recipe in this checkout, your time zone and the links. All that decide's step needs after the
+ * agent (`afterThink`).
+ */
+export function localContext(s: Snapshot): Context {
   const repo = platformRepo();
   const ctx: Context = {
     tools: toolActs(),
@@ -508,6 +516,12 @@ export function context(s: Snapshot): Context {
         };
       if (words === undefined) return undefined;
       const next = parseUse(words, all, now, defaultAgent());
+      // A guest's chats never use an agent whose login is a file its commands can read (ADR 0074):
+      // it would think with your own sign-in.
+      if (next && guestOf(s) && all[next.agent]?.login?.file)
+        return {
+          reply: `${all[next.agent]?.name ?? next.agent} isn't for this chat: it thinks with the owner's own sign-in. The choice stays ${current?.label ?? "Auto"}.`,
+        };
       return next
         ? { use: next, reply: `From the next run: ${next.label}.` }
         : {
@@ -521,10 +535,18 @@ export function context(s: Snapshot): Context {
     taskUrl: `https://github.com/${repo}/issues/${s.n}`,
     operateForm: `https://github.com/${repo}/issues/new?template=7-operate.yml`,
     instant: (name, rest) => instantAnswer(name, Date.parse(s.now), rest),
+    signsIn: signsIn(),
   };
   // A recipe's task: its file as merged on main, in this run's checkout (ADR 0032).
   const recipe = s.issue.labels.includes(RECIPE_LABEL.name) ? recipeOf(s.issue.title) : undefined;
   if (recipe) ctx.recipe = { name: recipe, read: recipeFile(PLATFORM_ROOT, recipe) };
+  return ctx;
+}
+
+/** What decide needs beside the snapshot, read once: the local part, and what GitHub says of the
+ * task's merge, release, errand and deploy. */
+export function context(s: Snapshot): Context {
+  const ctx = localContext(s);
   const token = process.env.SHIPIFY_READ_TOKEN || undefined;
   // Closed by its merge: the deploy to follow, or "Merged". Not a close the task made itself (done).
   // Read by whichever run comes first after it (ADR 0040: the close's own run may be replaced).
@@ -585,7 +607,7 @@ export function context(s: Snapshot): Context {
   return ctx;
 }
 
-/** Each tool's act calls and pre-approved forms (tools.json), as decide checks them. */
+/** Each tool's act calls, pre-approved forms and guest forms (tools.json), as decide checks them. */
 export function toolActs(): Record<string, ToolAct> {
   const out: Record<string, ToolAct> = {};
   for (const [name, t] of Object.entries(loadTools())) {
@@ -605,6 +627,7 @@ export function toolActs(): Record<string, ToolAct> {
         }
       ).args ?? {};
     const pre = (t as { pre?: ToolAct["pre"] }).pre ?? [];
+    const guest = (t as { guest?: ToolAct["guest"] }).guest;
     const warn = Object.fromEntries(
       Object.entries(schemas).flatMap(([c, sc]) => (sc.warn ? [[c, sc.warn]] : [])),
     );
@@ -626,6 +649,7 @@ export function toolActs(): Record<string, ToolAct> {
         ]),
       ),
       pre,
+      ...(guest?.length ? { guest } : {}),
     };
   }
   return out;

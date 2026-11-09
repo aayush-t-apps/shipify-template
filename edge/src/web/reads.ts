@@ -13,6 +13,7 @@ import {
   GUEST_LABEL,
   guestLabel,
   IN_PROJECT_LABEL,
+  inertImages,
   LIBRARY_LABEL,
   NEEDS_YOU_LABEL,
   PROJECT_LABEL,
@@ -648,22 +649,17 @@ const PR_MS = 60_000;
 
 /** How long a Progress, once rendered, is kept: by its words, so a changed one renders again. */
 const PROGRESS_MS = 86_400_000;
-/** HTML tags that fetch something when shown (as cli/lib/task.ts `FETCHES`). */
-const FETCHES =
-  /<(?=\/?\s*(?:img|picture|source|video|audio|svg|image|iframe|object|embed|input|link)\b)/gi;
 
 /**
  * A task's Progress (ADR 0069): its run's handoff, rendered by GitHub as the doc pane's Markdown is
  * and cleaned. A run that read the web may write anything, and a Progress needs no pictures: every
- * `![` is escaped and every tag that fetches is text before GitHub sees it (as `inertImages`).
+ * `![` is escaped and every tag that fetches is text before GitHub sees it (`inertImages`).
  * GitHub can't render it just now: its words as text, not kept, so a later read renders it.
  */
 async function progressOf(env: Env, deps: Deps, notes: string) {
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(notes));
   const key = `web:progress:${[...new Uint8Array(hash).slice(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-  const inert = notes
-    .replace(/(\\*)!\[/g, (_, bs: string) => `${bs}${bs.length % 2 ? "" : "\\"}![`)
-    .replace(FETCHES, "&lt;");
+  const inert = inertImages(notes);
   return cached(
     key,
     PROGRESS_MS,
@@ -838,11 +834,7 @@ export async function thread(
     (projectName || partsOf(issue)) && !issue.pull_request
       ? planOf(gh, deps, n).catch(() => undefined)
       : undefined,
-    projectName
-      ? cached(`web:library:${gh.repo}`, PLAN_MS, () => libraryPages(gh), deps.now()).catch(
-          () => [],
-        )
-      : undefined,
+    projectName ? keptLibrary(env, deps).catch(() => []) : undefined,
   ]);
   // Its main page's Now, and its one next step from counts (ADR 0070).
   const theirs = (pages ?? []).filter((p) => p.project === projectName);
@@ -1104,14 +1096,29 @@ export function projectIndex(env: Env, deps: Deps): Promise<Indexed[]> {
 }
 
 /**
+ * The Library's pages (ADR 0069), with their ETag, kept a minute: a project's thread and Notebook
+ * read the same. A doc saved here drops them (routes.ts: edit).
+ */
+const keptLibrary = (env: Env, deps: Deps) => {
+  const gh = github(env, deps);
+  return cached(
+    `web:library:${gh.repo}`,
+    PLAN_MS,
+    () => libraryPages(gh, reader(env, deps)),
+    deps.now(),
+  );
+};
+
+/**
  * Notebook (the page): its pages, and the Library's (ADR 0069), each by its number, to open in the
  * pane, and a Library page by its short name too (ADR 0071); and your projects, open and closed.
+ * Each read with its ETag.
  */
 export async function notebook(env: Env, deps: Deps): Promise<Notebook> {
   const gh = github(env, deps);
   const [pages, library, projects] = await Promise.all([
-    notebookPages(gh),
-    libraryPages(gh),
+    notebookPages(gh, reader(env, deps)),
+    keptLibrary(env, deps),
     projectIndex(env, deps).catch(() => [] as Indexed[]),
   ]);
   const n = (url: string) => Number(/\/issues\/(\d+)$/.exec(url)?.[1]) || undefined;

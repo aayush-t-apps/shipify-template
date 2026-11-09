@@ -122,7 +122,7 @@ In `stacks/<id>/`, beside `files/`, an optional `review.md` (its rows in plan PR
 most:
 - `id`, `version` (bumped with every change), `kind`, `layers` (`_base`, `_ts`, `_cloudflare`);
 - `owned`: the files the stack owns in projects. `ship upgrade` replaces them, and a task may change
-  a workflow file only to exactly what the stack renders;
+  a workflow file only to exactly what the stack renders, or as you approved (ADR 0075);
 - `requires` and `doctor`: what it needs, checked by `ship doctor` (and fixed on a box by `box add`);
 - `presetRequired`: its files need a preset's (ts-worker's main screen), so a plan or `ship new`
   with none is refused, naming the presets it takes;
@@ -180,9 +180,10 @@ each slot's `.env` the box's own (`SHIPIFY_BOX`, `SHIPIFY_BOX_DIR`, `RUNNER_TOOL
 adapter's own variables (Claude Code: `CLAUDE_CONFIG_DIR`, `DISABLE_AUTOUPDATER=1`,
 `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`; pi: `PI_CODING_AGENT_DIR`, `PI_OFFLINE=1`,
 `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, `SHIPIFY_LOGIN_FD=3`; OpenCode: `OPENCODE_CONFIG`,
-its `XDG_*` folders, the `OPENCODE_DISABLE_*` switches, `SHIPIFY_LOGIN_FD=3`); on stdin, a read-only
+its `XDG_*` folders, the `OPENCODE_DISABLE_*` switches, `SHIPIFY_LOGIN_FD=3`; Codex: `CODEX_HOME`); on stdin, a read-only
 `GH_TOKEN` and the tools' look keys; on fd 3, a pipe it reads once, its login (its own, or its
-gateway's key), never in its environment ([agents.md](agents.md)).
+gateway's key), never in its environment ([agents.md](agents.md)). Codex's login, your ChatGPT
+session, is a file in its run's `CODEX_HOME` instead (ADR 0074).
 
 **For a project's `make` targets:** the pipeline's `SHIPIFY_ENV`, `SHIPIFY_SHA`, `SHIPIFY_VERSION`,
 `SHIPIFY_PR`, `SHIPIFY_BASE_URL`, `SHIPIFY_TO`, `SHIPIFY_SECRETS_FILE`, and for a preview

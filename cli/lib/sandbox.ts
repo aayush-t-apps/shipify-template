@@ -136,7 +136,7 @@ export function onBox(
   const slot = slotOf(env.RUNNER_NAME, box);
   if (slot > 0 && existsSync(slotRoot(slot, root))) return { slot };
   throw new ShipError(
-    `This box has no sandbox for its runner "${env.RUNNER_NAME ?? "?"}" (box setup 5), so no agent runs here. When no task runs: on the box, its here.sh command again; or from a PC, pnpm ship box add <its SSH address> --manage (it asks for sudo once).`,
+    `This box has no sandbox for its runner "${env.RUNNER_NAME ?? "?"}" (box setup 5), so no agent runs here. When no task runs: on the box, its here.sh command again; or from a PC, the pnpm ship box add command it was set up with, --manage too if it had it (it asks for sudo once).`,
     "blocked",
   );
 }

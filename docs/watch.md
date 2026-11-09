@@ -13,7 +13,7 @@ Five duties, in order, each from what GitHub says now:
 |---|---|---|
 | **due** | a repeat's time (the record's `watch.next`), a day since the last due run, or a task labelled `deploying`: a deploy or a staging app's release PR to follow (its merge, then its production deploy, marked `shipify/production`), on an open or closed task (a merge closes its task) | rings `watch:due` on the status task; while it follows one, every 10 minutes at most. Not while a due run is under way, nor within an hour of a failed one |
 | **stopped** | an open task whose run ended before it finished (its status comment still says `working`: the box restarted, the run broke off), or whose words have waited 10 minutes with no run at all (GitHub never started one) | never starts a run (ADR 0040, ADR 0042): labels it `stuck`, shown as **Stopped** in every list, and alerts once ("reply `continue`"). A stay's `staying` label (ADR 0057) comes off then, so your `continue` starts a run, and on any tick once no run goes for its task (its box died), so your next words start one. Your `continue` carries it on from where it got to. A few a tick; never the status task, notebook pages or PRs |
-| **notice** | a run's reply 2 to 70 minutes old with no 🚀 or 😕 of the door App's (its words never reached a chat it was for) | sends each of those chats one short notice: "#n has a reply you didn't get here", with its link. Then 😕 on the reply, so it's never noticed twice. If the notice can't be sent either, a note on the status task. A reply is never sent twice |
+| **notice** | a run's reply 2 to 70 minutes old with no 🚀 or 😕 of the door App's (its words never reached a chat it was for): one GraphQL read a tick for the marks of all of them | sends each of those chats one short notice: "#n has a reply you didn't get here", with its link. Then 😕 on the reply, so it's never noticed twice. If the notice can't be sent either, a note on the status task. A reply is never sent twice |
 | **guard** | boxes, apps, Telegram, key dates, runners | notes what changed (below) |
 | **pin** | the status pinned in your Telegram chat (`/ping pin`): each box's busy slots and the tasks working, from the runners and open tasks this tick read already | edits it in place, with no sound, only when what it says changed; Telegram is asked only then (or half an hour on). Unpinned, or another message pinned since, it's left alone |
 
@@ -23,9 +23,9 @@ Five duties, in order, each from what GitHub says now:
 |---|---|
 | **boxes** (runners labelled `shipify-box`, by `box-<name>`) | every slot offline now and 4 minutes later; back; gone |
 | **apps** (each app's public `/health`, 8 a tick in turn, so every app within ⌈apps ÷ 8⌉ ticks) | failing now and a minute later; fine again. A taken-down app never alerts |
-| **Telegram** (its webhook, every 30 minutes) | its token refused, or a recent error with messages waiting; fine again. While it's fine, its menu is set again where it differs from `intents.json` (checked once an edge instance) |
+| **Telegram** (its webhook, every 30 minutes: on the hour and the half hour, UTC) | its token refused, or a recent error with messages waiting; fine again. While it's fine, its menu is set again where it differs from `intents.json` (checked with the webhook, once an edge instance) |
 | **key dates** (the variable `SHIPIFY_KEY_DATES`) | 30 days before a date, and 7 |
-| **runners** (each box's, from its health) | a newer one has been out 25 days: GitHub stops sending jobs to the old one at 30 |
+| **runners** (each box's, from its health, against GitHub's newest, read every 6 hours) | a newer one has been out 25 days: GitHub stops sending jobs to the old one at 30 |
 | **the door App's key** | GitHub refuses it: said straight to your chat once, until GitHub takes the key again (GitHub can't be written to meanwhile, so the edge remembers it told you) |
 
 **Then it says what it found:** a comment on the status task, as the door App: a hidden
@@ -34,7 +34,10 @@ Five duties, in order, each from what GitHub says now:
 
 **Its budget:** Cloudflare allows 50 outside calls a tick. The watch stops at 44, keeps 4 for its
 alert, and leaves the rest for the next tick. On a new Shipify, its first tick opens the status
-task.
+task. A check done every 30 minutes or 6 hours goes by the tick's number (its time over 5
+minutes), as the apps' turn does: a tick on a new edge instance, which remembers nothing, doesn't
+do it again. A working task's run is looked up in the one read of the task runs a tick, and read
+alone only when it's older than the newest 30.
 
 ## The runs it rings
 

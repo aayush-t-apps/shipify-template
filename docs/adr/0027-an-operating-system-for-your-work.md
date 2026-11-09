@@ -1,5 +1,5 @@
 ---
-status: proposed (the owner's asks of 2026-10-03, revised the same day: the plug-in layers and their tests first, new providers after; merging its PR accepts it, and each step below is built and merged on its own)
+status: accepted (merged #76) and built, each step in its own PR (#77 to #83); amended by 0031 (recipes, the console and the door's filing removed). Proposed from the owner's asks of 2026-10-03, revised the same day: the plug-in layers and their tests first, new providers after
 date: 2026-10-03
 ---
 

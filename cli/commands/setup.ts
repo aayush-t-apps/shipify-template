@@ -9,7 +9,7 @@
 import { createInterface } from "node:readline";
 import { edgeSecretNames, foundWithKeys } from "../../edge/setup/worker.ts";
 import { yourAccounts } from "../lib/accounts.ts";
-import { defaultAgent, loadExecutors, loginOf } from "../lib/agents.ts";
+import { adapterOf, defaultAgent, loadExecutors, loginOf } from "../lib/agents.ts";
 import { VERSION_FILE } from "../lib/config.ts";
 import {
   credential,
@@ -19,6 +19,7 @@ import {
   setCredential,
 } from "../lib/credentials.ts";
 import { ghRun, platformRepo } from "../lib/github.ts";
+import { sourceControl } from "../lib/providers.ts";
 import { type Check, type Result, ShipError } from "../lib/output.ts";
 import { readPeople } from "../lib/people.ts";
 import { absent, allSettings } from "../lib/settings.ts";
@@ -104,8 +105,12 @@ function notSetting(name: string, value: string): string | undefined {
 
 // ---------------------------------------------------------------- the steps
 
-/** Every step, in the order that works (docs/getting-started.md). */
-export function steps(): Step[] {
+/**
+ * Every step, in the order that works (docs/getting-started.md). `agentId`: the agent whose login
+ * the agent step sets (`ship setup agent codex`), when not the default one; `device`: its sign-in
+ * with a one-time code you type on any device, not this computer's browser (`--device`).
+ */
+export function steps(agentId?: string, device?: boolean): Step[] {
   // Your copy (ADR 0047): this checkout's GitHub remote names it; none before it's pushed.
   let repo = "";
   try {
@@ -122,9 +127,24 @@ export function steps(): Step[] {
   const agents = loadExecutors();
   // The agent a task runs, as task.yml picks it: your copy's SHIPIFY_AGENT, else executors.json's.
   // Its login: its own, or its gateway's key (then `ship add <gateway>` sets and checks it).
+  // One you name instead (`ship setup agent codex`), and its sign-in when its login is one
+  // (ADR 0074: Codex's ChatGPT session), from its adapter.
   const agent = () => {
-    const e = agents[defaultAgent(agents, repoSet().vars.SHIPIFY_AGENT)];
-    return { login: loginOf(e), gateway: e?.gateway && !e.login ? e.gateway : undefined };
+    const id = agentId ?? defaultAgent(agents, repoSet().vars.SHIPIFY_AGENT);
+    const e = agents[id];
+    if (agentId && !e)
+      throw new ShipError(
+        `No agent "${agentId}" in executors.json. Agents: ${Object.keys(agents).join(", ")}.`,
+        "blocked",
+      );
+    return {
+      id,
+      name: e?.name ?? id,
+      login: loginOf(e),
+      gateway: e?.gateway && !e.login ? e.gateway : undefined,
+      signIn: adapterOf(e)?.signIn,
+      version: e?.install?.version ?? "",
+    };
   };
   /** What setting keys said, a line each. */
   const lines = (checks: Check[] = []) =>
@@ -285,9 +305,15 @@ export function steps(): Step[] {
           : { ok: false, detail: `${repo} has no secret ${login.secret}` };
       },
       how: () => {
-        const { login, gateway } = agent();
+        const { id, name, login, gateway, signIn } = agent();
         if (!login) return [];
         const where = `the secret ${login.secret} on ${repo || "your copy"}`;
+        if (signIn)
+          return [
+            `Run: pnpm ship setup agent ${id}. Your browser opens ${name}'s own sign-in: sign in, and it's set as ${where}, a session for Shipify alone (never printed).`,
+            `With no PC: say \`${id} sign in\` in a chat, and use the link and the code its reply shows, on your phone. On a computer with no browser: add --device.`,
+            `To sign in again (signed out, or refused): \`${id} sign in\`, or pnpm ship setup agent ${id} --new.`,
+          ];
         return [
           gateway
             ? `Make a key for ${gateway} (${login.how}), then paste it here when asked: hidden as you type, checked with ${gateway}, and set as ${where}.`
@@ -296,8 +322,31 @@ export function steps(): Step[] {
         ];
       },
       act: async (p, renew) => {
-        const { login, gateway } = agent();
+        const { id, login, gateway, signIn, version } = agent();
         if (!login) return [];
+        if (signIn) {
+          if (!renew && repoSet().secrets.includes(login.secret))
+            return [
+              `✓ ${login.secret} is set (to sign in again: pnpm ship setup agent ${id} --new)`,
+            ];
+          const r = await signIn({
+            version,
+            ask: (q) => p.line(q),
+            ...(device
+              ? {
+                  code: async (c: { link: string; code: string; minutes: number }) => {
+                    process.stdout.write(
+                      `Open ${c.link} on any device, sign in, and type this code (it lasts ${c.minutes} minutes): ${c.code}\n`,
+                    );
+                  },
+                }
+              : {}),
+          });
+          if (!r.login) return r.said;
+          sourceControl().setSecret(repo, login.secret, r.login);
+          settings = undefined;
+          return [...r.said, `✓ ${login.secret} is set on ${repo}`];
+        }
         const ask = (q: string) => p.hidden(q);
         if (gateway)
           return lines((await add(gateway, true, { interactive: true, ask, renew })).checks);
@@ -601,11 +650,21 @@ const line = (question: string) =>
  * `ship setup <step> [--new]`: that step alone, an add-on's too: what it does here, then its check.
  */
 export async function setup(
-  opts: { interactive?: boolean; step?: string; renew?: boolean; prompt?: Prompt } = {},
+  opts: {
+    interactive?: boolean;
+    step?: string;
+    renew?: boolean;
+    prompt?: Prompt;
+    /** The agent whose login `setup agent <agent>` sets, when not the default one. */
+    agent?: string;
+    /** Its sign-in with a one-time code, on any device (`--device`). */
+    device?: boolean;
+  } = {},
 ): Promise<Result> {
   const interactive = opts.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const prompt: Prompt = opts.prompt ?? { line, hidden: (q) => hidden(q) };
-  if (opts.step || opts.renew) return oneStep(opts.step ?? "", interactive, prompt, opts.renew);
+  if (opts.step || opts.renew)
+    return oneStep(opts.step ?? "", interactive, prompt, opts.renew, opts.agent, opts.device);
   if (!interactive) return report(steps());
   for (;;) {
     // Read again each time: a step may have changed what the others read (your settings).
@@ -637,9 +696,11 @@ async function oneStep(
   interactive: boolean,
   prompt: Prompt,
   renew?: boolean,
+  agentId?: string,
+  device?: boolean,
 ): Promise<Result> {
   const named = (all: Step[]) => all.find((s) => s.id === id);
-  const s = named(steps());
+  const s = named(steps(agentId, device));
   if (!s)
     throw new ShipError(
       id
@@ -658,7 +719,7 @@ async function oneStep(
     for (const said of await s.act(prompt, renew)) process.stdout.write(`${said}\n`);
   }
   // Checked again: what it did changed what's there.
-  const { checks } = setupChecks([named(steps()) ?? s]);
+  const { checks } = setupChecks([named(steps(agentId)) ?? s]);
   const done = checks.every((c) => c.ok);
   return {
     command: "setup",

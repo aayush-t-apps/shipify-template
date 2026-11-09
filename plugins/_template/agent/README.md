@@ -23,7 +23,14 @@ and writes `result.json`; the box makes every change. Its contract:
    `READS`). Its `env` gets the run's
    folders, for its settings and sessions. Its `loginFromPipe` names the variables that tell its
    agent to read its login from fd 3, a pipe, so the login is never in its environment, where every
-   command it runs could read it (add how it reads there to `PIPED`). It hands its agent Shipify's
+   command it runs could read it (add how it reads there to `PIPED`). An agent that takes its login
+   only from a file (Codex's ChatGPT session) names it in `loginFile` instead, with `login.file` in
+   its entry: the run writes it in the run's own folders, and the agent never thinks for a read run
+   or a guest's, where its commands could read it (ADR 0074). A login it renews in a run adds
+   `renewed` (whether the file holds the given one's newer self, which the box then writes back,
+   with `login.renews`), and one that's a sign-in, `signIn`: in your browser (`ship setup agent
+   <id>`), and with a one-time code when it's given `code` (`<id> sign in` from a chat, on
+   GitHub's machine, or `--device`). It hands its agent Shipify's
    skills (`run.skills`, a folder): its flag for a folder of skills, or, when it reads them only
    from its own settings, `skillsLink`, where the run links them (add how to `SKILLS_HANDED`). A
    folder its agent would write in when it can (OpenCode installs a package from npm into its own
@@ -36,7 +43,7 @@ and writes `result.json`; the box makes every change. Its contract:
    them, and a question takes them as its reply. A run on a box needs one.
 3. **A recorded run** of the agent (its real output, with its version) in
    `tests/fixtures/<name>-stream.jsonl`, named in `RECORDED` in `tests/plugins/agent.test.ts`. It
-   can be made against a stand-in model, as pi's and OpenCode's were. Then check it live the way a
+   can be made against a stand-in model, as pi's, OpenCode's and Codex's were. Then check it live the way a
    box runs it: the prompt on stdin, the login on fd 3 and its output read through a pipe (sending
    its output to a file can hide a break).
 4. **Its install and login on a box** come from its entry: a box installs it the first time a run

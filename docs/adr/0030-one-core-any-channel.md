@@ -1,5 +1,5 @@
 ---
-status: proposed (the owner's requests of 2026-10-04; reviewed four ways against the code, then simplified on the owner's word; merging its PR accepts it, and each step below is built and merged on its own)
+status: accepted (merged #103 and #104) and built (#109, steps 0 to 4); amended by 0031 (one way out: a reply the door copies; no send key) and 0049 (a `yes` from a chat approves a list). Proposed from the owner's requests of 2026-10-04; reviewed four ways against the code, then simplified on the owner's word
 date: 2026-10-04
 ---
 

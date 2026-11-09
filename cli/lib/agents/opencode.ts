@@ -27,12 +27,15 @@ import {
   type AgentReport,
   type AgentRun,
   agentFile,
+  asResult,
   command,
   fetchesOutside,
+  gatewayModelName,
   LOGIN_FD,
   loadTools,
   type OutputReader,
   offered,
+  oneLine,
   runTools,
   secretFor,
   skillRead,
@@ -188,11 +191,6 @@ function argv(run: AgentRun): string[] {
 const toolName = (name: string) =>
   name === "apply_patch" ? name : name.replace(/^([a-z0-9-]+)_(.+)$/, "$1.$2");
 
-const oneLine = (v: unknown, max = 140) => {
-  const s = String(v).replace(/\s+/g, " ").trim();
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
-};
-
 /** What a tool call was about, in a few words, for the live log. */
 function brief(input: Record<string, unknown> | undefined): string {
   if (!input) return "";
@@ -200,18 +198,6 @@ function brief(input: Record<string, unknown> | undefined): string {
     .map((k) => input[k])
     .find((v) => typeof v === "string" && v);
   return oneLine(pick ?? JSON.stringify(input));
-}
-
-/** Its final message as the result, when that's the result's JSON (in a fence or bare). */
-function asResult(text: string): unknown {
-  const body = /```(?:json)?\s*\n([\s\S]*?)\n```/.exec(text)?.[1] ?? text.trim();
-  if (!body.startsWith("{")) return undefined;
-  try {
-    const r = JSON.parse(body) as { v?: unknown };
-    return r && r.v === 2 ? r : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -359,14 +345,11 @@ function reader(): OutputReader {
 /** Where it finds its own config folder (`opencode` in it), in the run's folders. */
 const xdgConfig = (p: { config: string }) => join(p.config, "opencode", "config");
 
-/** A gateway's model for people: its name without its maker ("laguna-s-2.1:free"), as pi's. */
-const modelName = (id: string) => /^[a-z0-9-]+\/([^/\s]+)$/.exec(id)?.[1];
-
 export const opencode: Adapter = {
   name: "OpenCode",
   tools: true,
   callName,
-  modelName,
+  modelName: gatewayModelName,
   // Its config, its sessions and its own files in the run's folders; nothing else's, nothing in
   // the background. Its own XDG folders are for it alone: the gate gives a command it runs the
   // run's own back. No skills of a repo's or of its home's (.agents, .claude): Shipify's are its

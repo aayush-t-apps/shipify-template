@@ -5,8 +5,8 @@ description: "Setting when a Shipify task runs again: a repeat, a check back onc
 
 # Repeats, check backs and errands
 
-Each is a `repeat` in your result; the box runs it at its time. The playbook
-(`playbooks/task.md`) still holds every rule; this is the how.
+Each is a `repeat` in your result; the box runs it at its time. This skill holds their rules and
+the how; the playbook (`playbooks/task.md`) points here, and still holds every other rule.
 
 | The owner says | It is |
 |---|---|

@@ -1,6 +1,6 @@
 ---
 name: drop
-description: "Using Shipify's Drop tool well (tools/drop, docs/tools.md). Use when a task shares files it made as a link, or lists, changes or revokes the owner's drops."
+description: "Using Shipify's Drop tool well (tools/drop, docs/tools.md). Use when a task shares files it made as a link, makes a page the owner or a guest asked for, or lists, changes or revokes the owner's drops."
 ---
 
 # Drop
@@ -37,8 +37,10 @@ and the box makes it in a later run. You never make a change yourself.
   from the owner's words; a name Drop doesn't have is refused when the box makes the call.
 - **Map the owner's words to `share`:** "anyone can view" is `view`; "they can add theirs" is
   `add`; "collect photos from everyone" is `collect` (it needs no files); "only Mom and Dad" is
-  `people` with `{"Mom": "view", "Dad": "view"}`; "just keep it for me" is `me`. No expiry said
-  means `7d`; "keep it" is `keep`.
+  `people` with `{"Mom": "view", "Dad": "view"}`; "just keep it for me" is `me`. **No who said is
+  `me`,** for any drop, a page or a file (ADR 0073): every new drop is only its owner's until they
+  share it. Then say so, and how to share it: on its page in Drop, or ask for anyone with the link
+  or names. No expiry said means `7d`; "keep it" is `keep`.
 - **People by name:** `drop.list` ends with the people in Drop. Use a name from there, or an
   email. A name Drop doesn't have is refused when the call is made.
 - **The link is in `list`.** Drop keeps each drop's link, so "send me the link again" is a look:
@@ -54,3 +56,43 @@ and the box makes it in a later run. You never make a change yourself.
   any PIN to the reply once it makes the call (at once for a `publish`, else after the Yes).
 - **Not connected** or **refused the key** in an answer: tell the owner the setup step it names
   (docs/tools.md, Drop).
+
+## A page
+
+A page (ADR 0072) is one `.html` file you make when the owner asks for one ("make a page of my
+trip plan"): the `frontend-design` skill's "A one-file page" says how. Drop shows it, sandboxed,
+with **Share** at the top for the owner.
+
+- **Asking for a page asks for its drop,** even when the owner doesn't say "share". Put the page
+  in your out folder, name it in `files`, and propose one `publish` in the same answer, naming it
+  the same way, with no look first: the box makes it at once. `share: "me"` unless the owner said
+  who; no expiry said is `7d`.
+- **One page alone in its drop:** then its link opens the page itself. With other files beside it,
+  the link opens the drop's list.
+- **The reply is its link.** When the call works, the box leaves the page out of the reply's files
+  and puts the call's answer, with Drop's link, in the reply. So say what the page holds, and that
+  its link opens it in Drop. Don't paste the HTML, write a link, or say "see the file". When the
+  call fails or waits for a Yes, the page shows as a file, and the reply says why.
+- **A change keeps the link.** "Add Tuesday's dinner": the page isn't in the chat's files, but it
+  is under "Files earlier runs made" in your prompt, so read it from there. Change it, save it
+  under the same name, `list` for the drop's id, and propose one `update` with
+  `delete_files: ["trip.html"]` and `files: ["trip.html"]` (it deletes first, then adds). It waits
+  for the owner's Yes, as every change does.
+- **A page from the web** (the run read a site or searched): its `publish` waits for a Yes too.
+  Say so.
+
+## A guest's page
+
+A guest's run (`playbooks/guest.md`) has no tool and no look. When its prompt's `calls` line
+names Drop's guest forms (ADR 0073), the box makes them at once, for that guest alone:
+
+- **A page:** one `publish` in the same answer, with `share: "me"` always, `title`, `files`, and
+  `expiry` `1d`, `7d` or `30d` (`30d` when none was said). Nothing else fits: no `people`, `pin` or
+  other `share`. The drop opens only to the guest, and the box adds its link and "Manage it in
+  Drop" (their **My drops**).
+- **"Change it":** one `update` by the link or id in the chat, with `delete_files` and `files`
+  (the page saved under the same name), or `title`. Nothing else fits. Only a drop made for the
+  guest changes.
+- **Sharing is in Drop, never a call:** "share it with Sam" or "anyone can view" get the steps:
+  Manage it in Drop → **Share** (a link, or people by email, who sign in with Google).
+- **The page stays in their chat** as well: say what it holds, and that its link opens it in Drop.

@@ -6,7 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { ghRun } from "./github.ts";
+import { gh, ghRun } from "./github.ts";
 import { ShipError } from "./output.ts";
 
 /** Repo state ship needs before the first push. Read with read-only permissions. */
@@ -60,13 +60,6 @@ export interface SourceControlProvider {
 }
 
 // ---------------------------------------------------------------- GitHub via the gh CLI
-
-function gh(args: string[], cwd?: string): string {
-  const r = ghRun(args, { cwd });
-  if (r.code !== 0)
-    throw new ShipError(`gh ${args.slice(0, 3).join(" ")} failed: ${r.stderr.trim()}`);
-  return r.stdout;
-}
 
 export const githubProvider: SourceControlProvider = {
   id: "github",
@@ -195,7 +188,7 @@ export const githubProvider: SourceControlProvider = {
         body,
         ...labels.flatMap((l) => ["--label", l]),
       ],
-      cwd,
+      { cwd },
     ).trim();
   },
   pullRequestFor(fullName, head) {

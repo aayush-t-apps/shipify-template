@@ -343,7 +343,8 @@ export async function doctor(opts: { yes?: boolean } = {}): Promise<Result> {
 /**
  * On a box that box/setup.sh set up (it runs as the user "shipify"): whether its setup is the
  * repo's, so a change to that script never goes unnoticed on boxes set up before it (ADR 0017).
- * A box from before setup versions has version 1.
+ * A box from before setup versions has version 1. A `--manage` setup that stopped before its end
+ * (box setup 13: no firewall, maybe) is named until it finishes.
  */
 export function setupCheck(
   user = userInfo().username,
@@ -353,13 +354,20 @@ export function setupCheck(
   if (user !== "shipify" || !existsSync(script)) return undefined;
   const want = Number(/^SETUP_VERSION=(\d+)$/m.exec(readFileSync(script, "utf8"))?.[1] ?? 1);
   const file = join(home, ".shipify-setup");
-  const have = (existsSync(file) && Number(readFileSync(file, "utf8").trim())) || 1;
+  const text = existsSync(file) ? readFileSync(file, "utf8") : "";
+  const have = Number(/^\d+/.exec(text)?.[0] ?? 0) || 1;
+  const unmanaged = /^manage: not finished$/m.test(text);
   return {
     name: "box setup is the repo's",
-    ok: have >= want,
-    detail: have >= want ? `version ${have}` : `version ${have}; the repo's is ${want}`,
+    ok: have >= want && !unmanaged,
+    detail:
+      have < want
+        ? `version ${have}; the repo's is ${want}`
+        : unmanaged
+          ? `version ${have}, but its --manage part didn't finish (Tailscale, the firewall or Cockpit), so it may take connections from outside Tailscale`
+          : `version ${have}`,
     blocking: false,
-    fix: "when no task is running: on the box, its here.sh command again; or from a PC, pnpm ship box add <its SSH address> --manage (it asks for sudo once)",
+    fix: "when no task is running: on the box, its here.sh command again; or from a PC, the pnpm ship box add command it was set up with, --manage too if it had it (it asks for sudo once)",
   };
 }
 
@@ -431,7 +439,7 @@ export function sandboxCheck(
     detail: problems.length
       ? problems.join("; ")
       : `${agents}: can't read the runner's folders, its environment or another slot's runs, nor write a root container socket, and get their login on a pipe only`,
-    fix: "when no task runs: on the box, its here.sh command again; or from a PC, pnpm ship box add <its SSH address> --manage (it asks for sudo once)",
+    fix: "when no task runs: on the box, its here.sh command again; or from a PC, the pnpm ship box add command it was set up with, --manage too if it had it (it asks for sudo once)",
   };
 }
 

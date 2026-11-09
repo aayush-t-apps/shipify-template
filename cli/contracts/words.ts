@@ -65,12 +65,23 @@ export const WORDS = {
     re: /^\s*clean\s+start[.!]?\s*$/i,
     does: "list the open chats outside your projects that nothing keeps open, to close as done after your `yes` (ADR 0070); their files go 30 days later",
   },
+  "sign in": {
+    re: /^\s*(?:([a-z][\w-]*)\s+sign\s*in|sign\s*in(?:\s+to\s+([a-z][\w-]*))?)(?:\s+again)?[.!]?\s*$/i,
+    does: "sign an agent in to your own account with a one-time code (`<agent> sign in`, ADR 0074): the reply shows a link and a code for any device, and the box keeps the session",
+  },
 } as const satisfies Record<string, FixedWord>;
 
 /** The sub-task a `go #n` names (ADR 0066), or none for a plain `go`. */
 export const goPartOf = (text: string) => {
   const n = /^\s*go\s+#(\d+)[.!]?\s*$/i.exec(text)?.[1];
   return n ? Number(n) : undefined;
+};
+
+/** The agent a `sign in` names (`codex sign in`, `sign in to codex`): "" for none; undefined when
+ * the words aren't one. */
+export const signInOf = (text: string) => {
+  const m = WORDS["sign in"].re.exec(text);
+  return m ? (m[1] ?? m[2] ?? "").toLowerCase() : undefined;
 };
 
 export type Word = keyof typeof WORDS;
@@ -94,6 +105,7 @@ export const NOT_A_GUESTS: ReadonlySet<Word> = new Set<Word>([
   "preview",
   "start over",
   "clean start",
+  "sign in",
 ]);
 
 /** A list's own words: its Yes and No send them, and nothing else is a button for them. */
@@ -109,14 +121,16 @@ export const CHAT_WORDS: string[] = entries.flatMap(([w, d]) => [w, ...(d.also ?
 
 /**
  * The fixed words a reply's markdown names in backticks, in the order of the list, then each
- * sub-task's `go #n` it names (ADR 0066): never a list's `yes` or `no`, which only its own buttons
- * send.
+ * sub-task's `go #n` and each agent's `<agent> sign in` it names (ADR 0066, ADR 0074): never a
+ * list's `yes` or `no`, which only its own buttons send.
  */
 export function asked(md: string): string[] {
   const named = new Set(
-    [...md.matchAll(/`([a-z ]{2,20}|go #\d+)`/gi)].map((m) => m[1]?.toLowerCase() ?? ""),
+    [...md.matchAll(/`([a-z ]{2,20}|go #\d+|[a-z][\w-]{0,30} sign in)`/gi)].map(
+      (m) => m[1]?.toLowerCase() ?? "",
+    ),
   );
-  const parts = [...named].filter((w) => goPartOf(w) !== undefined);
+  const parts = [...named].filter((w) => goPartOf(w) !== undefined || signInOf(w));
   return [...CHAT_WORDS.filter((w) => named.has(w) && !LIST_WORDS.includes(w as Word)), ...parts];
 }
 

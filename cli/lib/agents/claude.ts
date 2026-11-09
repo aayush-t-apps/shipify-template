@@ -16,6 +16,7 @@ import {
   type Mode,
   type OutputReader,
   offered,
+  oneLine,
   runTools,
   secretFor,
   skillRead,
@@ -143,11 +144,6 @@ function withTools(cmd: string[], tools: NonNullable<AgentRun["tools"]>): string
 const toolName = (name: string) => {
   const m = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(name);
   return m ? `${m[1]}.${m[2]}` : name;
-};
-
-const oneLine = (v: unknown, max = 140) => {
-  const s = String(v).replace(/\s+/g, " ").trim();
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 };
 
 /** What a tool call was about, in a few words, for the live log. */

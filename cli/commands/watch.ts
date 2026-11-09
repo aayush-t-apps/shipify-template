@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { GUEST_LABEL, NEEDS_YOU_LABEL, replyLine } from "../contracts/index.ts";
+import { GUEST_LABEL, NEEDS_YOU_LABEL, replyLine, STATUS_LABEL } from "../contracts/index.ts";
 import { tellDoor } from "../kernel/door.ts";
 import { hash8 } from "../kernel/keys.ts";
 import { replyTo } from "../kernel/route.ts";
@@ -411,7 +411,7 @@ export async function watchAlert(json: string | undefined): Promise<Result> {
 /** The newest findings the door App left on the status task with its doorbell: a hidden JSON line. */
 function latestFindings(): string | undefined {
   const door = doorLogin();
-  const s = tryOr(() => rec().issues({ labels: ["shipify-status"] })[0], undefined);
+  const s = tryOr(() => rec().issues({ labels: [STATUS_LABEL] })[0], undefined);
   if (!s || !door) return undefined;
   const found = [...rec().comments(s.number)]
     .reverse()

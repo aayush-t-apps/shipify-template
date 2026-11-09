@@ -1,9 +1,8 @@
 // Open a docs PR (a plan, or a change doc and its ADRs) without touching the checkout's branch, so
 // several agents can share a checkout or work in worktrees. The commit is made in a temporary
 // worktree from origin/main; afterwards the files live on their branch and the checkout keeps
-// main's version (`git pull` brings them back once the PR is merged). Files given as `contents` are
-// written straight into the PR's branch, so the checkout isn't touched at all (`ship connect`).
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+// main's version (`git pull` brings them back once the PR is merged).
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { run } from "./exec.ts";
@@ -21,8 +20,6 @@ export function submitFiles(opts: {
   dir: string;
   /** The files, relative to dir. */
   files: string[];
-  /** More files, relative to dir, written on the branch as given: the checkout keeps its own. */
-  contents?: Record<string, string>;
   branch: string;
   message: string;
   title: string;
@@ -38,11 +35,7 @@ export function submitFiles(opts: {
       mkdirSync(dirname(join(wt, file)), { recursive: true });
       copyFileSync(join(dir, file), join(wt, file));
     }
-    for (const [file, text] of Object.entries(opts.contents ?? {})) {
-      mkdirSync(dirname(join(wt, file)), { recursive: true });
-      writeFileSync(join(wt, file), text);
-    }
-    git(wt, "add", ...files, ...Object.keys(opts.contents ?? {}));
+    git(wt, "add", ...files);
     git(wt, "commit", "-q", "-m", opts.message);
     git(wt, "push", "-q", "-u", "origin", branch);
     const url = sourceControl().openPullRequest({

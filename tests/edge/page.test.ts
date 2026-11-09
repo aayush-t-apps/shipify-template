@@ -184,9 +184,12 @@ describe("the status page", () => {
     expect(res.headers.get("allow")).toBe("GET, HEAD");
   });
 
-  it("opens from the bare address, and leaves the door's routes as they were", async () => {
+  it("opens from /admin and from the bare address, and leaves the door's routes as they were", async () => {
     const f = setUp();
-    const root = await get(f, "/");
+    const admin = await get(f, "/admin");
+    expect(admin.status).toBe(302);
+    expect(admin.headers.get("location")).toBe("/admin/chat/");
+    const root = await get(f, "/", { cookie: `CF_Authorization=${await token(f.w.at)}` });
     expect(root.status).toBe(302);
     expect(root.headers.get("location")).toBe("/admin/chat/");
     const door = await get(f, "/door/telegram", {}, "POST");

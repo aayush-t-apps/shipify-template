@@ -85,6 +85,9 @@ Three to five asks a list and a few cases are enough; each lesson adds a case.
 
 - **Shipify's own skill:** its `SKILL.md` and `scenarios.md`. A new one adds its row to
   `skills/README.md`'s table and `AGENTS.md`'s Skills table.
+- **A lesson** (a reply's line "Lesson for `<skill>`: …"): in that `SKILL.md` where it fits, in a
+  line or two, and as a case in its `scenarios.md`. Its PR is `kind: closes`, or `part-of` from a
+  task that repeats (the weekly-lessons recipe's).
 - **A vendored skill** (someone else's): a reputable source and a permissive license (MIT,
   Apache-2.0, CC-BY-4.0) kept in its folder, pinned to a commit in the README's table, and each
   change from the original listed there.

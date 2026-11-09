@@ -23,17 +23,6 @@ export function taskLine(given: number | undefined, partOf: boolean): string | u
 }
 
 /**
- * "Fixes acme/api#42" for a case's task (ADR 0029 §3): its PR closes the issue its case
- * came from when it merges, so nothing is left open. Only on the issue's own repo, where GitHub
- * closes it; the box names it for the run (SHIPIFY_TASK_FIXES), never the agent.
- */
-export function fixesLine(prRepo: string): string | undefined {
-  const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(process.env.SHIPIFY_TASK_FIXES ?? "");
-  if (!m || m[1]?.toLowerCase() !== prRepo.toLowerCase()) return undefined;
-  return `Fixes ${m[1]}#${m[2]}`;
-}
-
-/**
  * A PR's last line (ADR 0045): "Made by Claude Code (Opus 5.5) with Shipify in [this run](…).", the
  * run's link only where the PR's readers can open it (Shipify's own account).
  */

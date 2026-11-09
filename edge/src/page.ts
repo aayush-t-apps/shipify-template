@@ -9,6 +9,7 @@ import {
   plural,
   problem,
   timeAgo,
+  timeUntil,
   withUpcoming,
 } from "../../cli/contracts/index.ts";
 import pkg from "../../package.json" with { type: "json" };
@@ -151,15 +152,6 @@ async function gather(gh: GitHub, s: Settings, env: Env, deps: Deps): Promise<Vi
 // ---------------------------------------------------------------- how it looks
 
 const DAY = 86_400_000;
-
-function timeUntil(iso: string, now: number): string {
-  const ms = Date.parse(iso) - now;
-  if (Number.isNaN(ms)) return "unknown";
-  if (ms <= 60_000) return "now";
-  if (ms < 3_600_000) return `in ${Math.ceil(ms / 60_000)}m`;
-  if (ms < DAY) return `in ${Math.round(ms / 3_600_000)}h`;
-  return `in ${Math.round(ms / DAY)}d`;
-}
 
 const when = (iso: string, text: string) => `<time datetime="${esc(iso)}">${esc(text)}</time>`;
 

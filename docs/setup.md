@@ -98,6 +98,20 @@ Once, on this PC, about 10 minutes. `ship setup` walks the same.
    hidden prompt: it's set as the secret `CLAUDE_CODE_OAUTH_TOKEN`. A new one, a year on:
    `pnpm ship setup agent --new`. When `SHIPIFY_AGENT` names an agent through a gateway, this step
    is that gateway's key instead, checked with it.
+   **Codex on your ChatGPT plan** (optional, Plus or Pro; ADR 0074), one of two ways:
+   - **From a chat, no PC:** say `codex sign in`. In a minute or two the reply shows a link and a
+     one-time code (15 minutes, once): open the link on your phone, sign in to ChatGPT, and type
+     the code. The next reply says ✓ and your plan. It runs on GitHub's machine (the github job,
+     no box), and nothing shows the session. If ChatGPT says sign-in with a code is off, turn it on
+     in its security settings first.
+   - **On your PC:** `pnpm ship setup agent codex`. Your browser opens ChatGPT's own sign-in (add
+     `--device` on a computer with no browser: the link and the code, as above).
+
+   Both run Codex's own `codex login` through `npx` at the pinned version, so you install nothing,
+   and set the secret `CODEX_AUTH`, a session for Shipify alone (Codex on your PC keeps its own).
+   After that the box keeps it current. Sign in again only when a run says to (`codex sign in`, or
+   `pnpm ship setup agent codex --new`). On Go or Free it warns: OpenAI lists Codex's CLI from
+   Plus (your PC asks first). Then `use codex` on a task.
 3. **Publishing new projects from a task:** a merged plan's repo and keys are made on GitHub's
    machines, with shipify's secret `CF_DEPLOY_TOKEN` and your settings (`CLOUDFLARE_ACCOUNT_ID`,
    `CF_WORKERS_SUBDOMAIN`, variables on shipify). `pnpm ship setup apps` sets each. Without them (or the bot's Variables permission), the
@@ -146,7 +160,8 @@ each account.
 | metadata: read | GitHub's own, with any App |
 
 It has no administration, secrets, workflows, organization permission or webhook. GitHub refuses
-its push of a workflow file, and the box refuses one first.
+its push of a workflow file, even in a commit's history, and the box refuses one first: the reply
+says to take it out of the branch, or to make it there yourself (ADR 0075).
 
 **Taking an account off:** `pnpm ship bot repos acme --remove --yes`. Then uninstall the App on
 GitHub (the account's Settings → GitHub Apps). From then on, its repos are only read, as anyone's.
@@ -232,6 +247,9 @@ pnpm ship remove <name> --yes  # undoes it
 
 ## Tokens and secrets
 
+This is the one list of keys. What each may do, and which steps hold it:
+[security.md](security.md#who-holds-which-key).
+
 `gh secret list -R <you>/shipify` shows the names set on shipify; values never show anywhere.
 Replace a GitHub secret with `gh secret set <NAME> -R <you>/<repo>`, pasting at the hidden prompt.
 
@@ -239,6 +257,7 @@ Replace a GitHub secret with `gh secret set <NAME> -R <you>/<repo>`, pasting at 
 |---|---|---|---|---|
 | `shipify-pc` (GitHub, fine-grained) | `gh` and `ship` on this PC | this PC's `gh` login | the date you give it (`ship doctor` reads it and warns 30 days before) | a new one with the same access (below), `gh auth login`, then `pnpm ship doctor --yes` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | the agent's login | shipify secret | a year after you make it | `claude setup-token`, then `pnpm ship setup agent --new` |
+| `CODEX_AUTH` | Codex's login: your ChatGPT session (Codex's own `auth.json`) | shipify secret, kept current by the box after each run that renews it | when OpenAI ends the session (signed out, a new password) | `codex sign in` in a chat, or `pnpm ship setup agent codex --new` |
 | `SHIPIFY_BOT_KEY` | the bot's one-hour tokens | shipify secret | doesn't | the bot's page → Private keys → Generate; `gh secret set SHIPIFY_BOT_KEY -R <you>/shipify`; delete the old key |
 | `SHIPIFY_REPOS_KEY` | the repos App's one-hour tokens, on your other accounts | shipify secret | doesn't | the repos App's page → Private keys → Generate; `gh secret set SHIPIFY_REPOS_KEY -R <you>/shipify`; delete the old key |
 | `SHIPIFY_DOOR_APP_KEY` | the door App | the edge's Worker | doesn't | the App's page → Private keys → Generate, then `pnpm ship door setup --new --yes`; delete the old key |
@@ -252,6 +271,10 @@ Replace a GitHub secret with `gh secret set <NAME> -R <you>/<repo>`, pasting at 
 | `AI_GATEWAY_API_KEY` | pi's and OpenCode's models, through Vercel's AI Gateway | shipify secret; the credentials file | until you delete it in Vercel | a new key in Vercel's AI Gateway, then `pnpm ship add vercel-ai-gateway --new --yes` |
 | `SHIPIFY_TEMPLATE_TOKEN` | a private template on another account, read by the weekly update check | shipify secret; the credentials file | the date you give it (`ship setup` checks it reads the template) | a new fine-grained token (that repo only, Contents read-only), then `pnpm ship setup updates --new` |
 | runner registration tokens | adding a box | nowhere: used at once | an hour | nothing to do |
+| each run's tokens: `GITHUB_TOKEN`, the Apps' one-hour tokens, the run's OIDC token | a run's steps | nowhere: its job's processes, while they run | the job's end, or within the hour | nothing to do |
+
+A project's own keys (its deploy key, and the runtime keys its `shipify.json` names) are that
+project's secrets: [configuration.md](configuration.md#an-apps-repo).
 
 **Access:**
 - **`shipify-pc`:** your account (or org), all repositories. Read and write: Actions, Administration, Contents,

@@ -186,5 +186,52 @@
       "newest": "https://registry.npmjs.org/opencode-ai/latest",
       "advisories": "https://api.github.com/advisories?ecosystem=npm&affects=opencode-ai%40{version}&per_page=100"
     }
+  },
+  "codex": {
+    "description": "Codex, headless (ADR 0074): OpenAI's agent, on your ChatGPT plan, held to the same rules as every agent by Shipify's gate, its PreToolUse hook. Its login is your ChatGPT session (Codex's own auth.json), set once with `codex sign in` in a chat (or on your PC); Codex refreshes it in a run and the box writes it back. Its commands can read that file, so it never thinks for a read run or a guest's: the default agent does.",
+    "name": "Codex",
+    "adapter": "codex",
+    "login": {
+      "secret": "CODEX_AUTH",
+      "how": "pnpm ship setup agent codex (signs in with ChatGPT)",
+      "file": true,
+      "renews": true
+    },
+    "auto": {
+      "model": "gpt-6.1-sol",
+      "effort": "medium"
+    },
+    "models": ["gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-luna"],
+    "about": {
+      "gpt-6.1-sol": "Codex's default: coding and everyday work",
+      "gpt-6-astra": "Frontier: the hardest work, the heaviest on your plan",
+      "gpt-6.1-terra": "GPT-6.1 Terra, a Codex model",
+      "gpt-6-luna": "Fast and light, for easier tasks"
+    },
+    "modelPattern": "^gpt-[0-9][a-z0-9.-]*$",
+    "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "modelEfforts": {
+      "gpt-6-luna": ["low", "medium", "high", "xhigh", "max"]
+    },
+    "task": ["codex", "exec"],
+    "install": {
+      "version": "0.167.0",
+      "bin": "bin/codex",
+      "run": [
+        "npm",
+        "install",
+        "-g",
+        "--silent",
+        "--no-audit",
+        "--no-fund",
+        "--ignore-scripts",
+        "--before=2026-11-07",
+        "--prefix",
+        "{prefix}",
+        "@openai/codex@0.167.0"
+      ],
+      "newest": "https://registry.npmjs.org/@openai%2Fcodex/latest",
+      "advisories": "https://api.github.com/advisories?ecosystem=npm&affects=%40openai%2Fcodex%40{version}&per_page=100"
+    }
   }
 }

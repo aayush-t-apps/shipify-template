@@ -1,4 +1,4 @@
-// The fakes a ship process talks to, from its tests: the fixtures' servers (fake-door.mjs,
+// The fakes a ship process talks to, from its tests: the fixtures' servers (fake-edge.mjs,
 // fake-telegram.mjs), each in a process of its own (a setup step or a send runs synchronously, so it
 // can't share the test's), and the fake gh (fake-gh.mjs) on a PATH of its own.
 import { type ChildProcess, spawn } from "node:child_process";
@@ -12,7 +12,7 @@ export const SERVE_TIMEOUT = 30_000;
 
 export interface Served {
   url: string;
-  /** Its folder: what it was handed (calls.jsonl, sent.jsonl), and the flag files that steer it. */
+  /** Its folder: what it was handed (calls.jsonl), and the flag files that steer it. */
   dir: string;
   stop: () => void;
 }
@@ -39,17 +39,6 @@ export async function serve(fixture: string, env: Record<string, string> = {}): 
     await new Promise((r) => setTimeout(r, 25));
   }
   return { url: `http://127.0.0.1:${port()}`, dir, stop: () => p.kill() };
-}
-
-/** A run of a workflow, as the fake gh keeps it (state.runs, by workflow file). */
-export interface FakeRun {
-  id: number;
-  html_url: string;
-  status: string;
-  conclusion: string | null;
-  display_title?: string;
-  head_sha?: string;
-  created_at: string;
 }
 
 /**
@@ -79,13 +68,3 @@ export function fakeGh(state: Record<string, unknown> = {}) {
     calls: (): string[] => JSON.parse(readFileSync(file, "utf8")).calls,
   };
 }
-
-/** A good deploy of a project's main, `daysAgo` days ago, of the commit `sha`. */
-export const deployRun = (id: number, sha: string, daysAgo = 0): FakeRun => ({
-  id,
-  html_url: `https://github.com/o/runs/${id}`,
-  status: "completed",
-  conclusion: "success",
-  head_sha: sha,
-  created_at: new Date(Date.now() - daysAgo * 86_400_000).toISOString(),
-});

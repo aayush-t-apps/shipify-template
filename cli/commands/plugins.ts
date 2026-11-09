@@ -5,6 +5,7 @@
 
 import { agentLive, chat, notebookLive } from "../../edge/setup/chat.ts";
 import { doorCheck } from "../../edge/setup/door.ts";
+import { boxOf } from "../contracts/index.ts";
 import { defaultAgent, loadExecutors, readExecutors } from "../lib/agents.ts";
 import { listStacks } from "../lib/catalog.ts";
 import { credential, loadCredentials } from "../lib/credentials.ts";
@@ -29,7 +30,7 @@ import {
 } from "../lib/tools.ts";
 import { WATCH_WORKFLOW, watchState } from "../lib/watch.ts";
 import { gatewayTakes } from "./add.ts";
-import { boxOf, isBoxRunner, runners } from "./box.ts";
+import { isBoxRunner, runners } from "./box.ts";
 import { pluginFilesCheck, sandboxCheck } from "./doctor.ts";
 
 /** What's there now, for each kind. */

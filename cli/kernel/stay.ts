@@ -91,7 +91,9 @@ export function staysAfter(
   // Your words, however its job started: a stay's handover is a dispatch too. A repeat's isn't,
   // nor a part's start (ADR 0066): it frees its slot for the next part.
   if (p.think.why === "scheduled" || p.think.why === "sub-task") return false;
-  if (s.issue.state !== "open" || !meta?.session) return false;
+  // A task your words reopened is open: plan opened it, or apply does before the stay.
+  const reopens = p.writes?.some((w) => w.w === "reopen");
+  if ((s.issue.state !== "open" && !reopens) || !meta?.session) return false;
   // Your `stop` ends the agent's work, not its session: your next words carry on in it. An agent
   // that stopped by itself (a crash, its clock, your plan's limit) leaves no session to trust.
   if (meta.stopped && meta.stopped.why !== "asked") return false;
@@ -155,18 +157,21 @@ export type Turn =
   /** Answered, with a write a stay never follows (a run started, a close): it leaves. */
   | "left";
 
+/** A read of the stay's: its answer, or a promise of it (the record's reads don't wait). */
+type Read<T> = T | Promise<T>;
+
 export interface StayIo {
   now(): number;
   sleep(ms: number): Promise<void>;
   /** Whether your words wait: a read that finds nothing new costs nothing. */
-  news(): boolean;
+  news(): Read<boolean>;
   /**
    * The task's state: open, closed, its text edited since the run read it, or its `staying` label
    * taken off (a merged plan's build waits for this job, or the watch found no run going).
    */
-  task(): "open" | "closed" | "edited" | "unlabelled";
+  task(): Read<"open" | "closed" | "edited" | "unlabelled">;
   /** Whether another run waits for this slot: long enough that no other stay's slot took it. */
-  waiting(): boolean;
+  waiting(): Read<boolean>;
   /** One turn: plan, think, decide and apply, as a run does, in this process. */
   turn(minutes: number): Promise<Turn>;
   /** `staying` off. */
@@ -175,10 +180,10 @@ export interface StayIo {
   handover(): void;
 }
 
-/** Whether words wait, or an error when the read failed. */
-function safeNews(io: StayIo): boolean | Error {
+/** A read's answer, or an error when it failed. */
+async function safe<T>(read: () => Read<T>): Promise<T | Error> {
   try {
-    return io.news();
+    return await read();
   } catch (e) {
     return e instanceof Error ? e : new Error(String(e));
   }
@@ -200,20 +205,12 @@ export async function stay(io: StayIo, idle: number, until: number): Promise<Sta
   let last = io.now();
   let looked = Number.NEGATIVE_INFINITY;
   let answered = 0;
-  const end = (why: string): Stayed => {
+  const end = async (why: string): Promise<Stayed> => {
     io.leave();
     // Unreadable as it leaves: a run of their own takes any words, as the label is off.
-    if (safeNews(io) !== true) return { answered, why };
+    if ((await safe(io.news)) !== true) return { answered, why };
     io.handover();
     return { answered, why: `${why}; words that came as it left went to a run` };
-  };
-  // A read that fails ends the stay (said in its log): your next words start a run of their own.
-  const safe = <T>(read: () => T): T | Error => {
-    try {
-      return read();
-    } catch (e) {
-      return e instanceof Error ? e : new Error(String(e));
-    }
   };
   for (;;) {
     const t = io.now();
@@ -221,12 +218,13 @@ export async function stay(io: StayIo, idle: number, until: number): Promise<Sta
     const left = Math.floor((until - t) / 60_000);
     if (left < TURN_MINUTES) return end("its job's time");
     if (t - last >= idle * 60_000) return end(`${idle} quiet minutes`);
-    // Your words first: a turn waiting is answered before the stay gives its slot away.
-    const news = safe(io.news);
+    // Your words first: a turn waiting is answered before the stay gives its slot away. A read that
+    // fails ends the stay (said in its log): your next words start a run of their own.
+    const news = await safe(io.news);
     if (news instanceof Error) return end(`a read failed: ${news.message}`);
     if (!news && t - looked >= LOOK_MS) {
       looked = t;
-      const task = safe(io.task);
+      const task = await safe(io.task);
       if (task instanceof Error) return end(`a read failed: ${task.message}`);
       if (task === "closed") return end("the task closed");
       if (task === "unlabelled") return end("its label was taken off");
@@ -234,7 +232,7 @@ export async function stay(io: StayIo, idle: number, until: number): Promise<Sta
         io.handover();
         return { answered, why: "its text was edited" };
       }
-      const busy = safe(io.waiting);
+      const busy = await safe(io.waiting);
       if (busy === true) return end("another run waits for a slot");
     }
     if (!news) {

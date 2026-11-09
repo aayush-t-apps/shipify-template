@@ -62,6 +62,8 @@ export interface PromptInput {
   /** A project's pages (ADR 0069), for a run in it: data, in a section of their own. */
   projectPages?: string;
   tools?: string;
+  /** A guest's run (ADR 0073): the calls it may ask for, one line each (agent.ts guestCalls). */
+  guestCalls?: string;
   playbook: string;
   /** A recipe's run (ADR 0032): its body, as merged on main, is the job. */
   recipe?: { name: string; body: string };
@@ -172,6 +174,29 @@ function earlierFiles(repo: string, shared: TaskState["shared"]): string {
   ].join("\n");
 }
 
+/** A task's first run: its own, or a split's part as it starts (decide's `unstarted`). */
+const FIRST: ThinkWhy[] = ["new", "sub-task"];
+
+/**
+ * The task playbook as a run gets it: a talk run (no clone) without its `<!-- work -->` blocks
+ * (lanes, checks, PRs), and a task's first run without its `<!-- later -->` block. No comment line
+ * reaches a run, so neither does a marker. The file stays whole, for people to read.
+ */
+export function playbookFor(text: string, run: { work: boolean; later: boolean }): string {
+  const without = (t: string, tag: string) =>
+    t.replace(
+      new RegExp(
+        `^[ \\t]*<!-- ${tag} -->\\n[\\s\\S]*?^[ \\t]*<!-- /${tag} -->[ \\t]*(?:\\n|$)`,
+        "gm",
+      ),
+      "",
+    );
+  const later = run.later ? text : without(text, "later");
+  return (run.work ? later : without(later, "work"))
+    .replace(/^[ \t]*<!--[\s\S]*?-->[ \t]*(?:\n|$)/gm, "")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
 export function buildPrompt(p: PromptInput): string {
   const asks = asksOf(p);
   // A guest's run (ADR 0071): it helps a guest, holds nothing of the owner's, and asks the box for
@@ -203,7 +228,7 @@ export function buildPrompt(p: PromptInput): string {
           "their assistant here: you answer, research and make files for them. This run holds nothing of",
           "the owner's: no GitHub key, notebook, tool or repo, and no other chat. Be brief and direct, say",
           "what you're unsure of, and state a limit plainly. The playbook below is a guest's, and the",
-          "answer you can ask for is words, a question, files and the guest's own project's pages.",
+          `answer you can ask for is words, a question, files and the guest's own project's pages${p.guestCalls ? ", and the few calls below that the box makes for the guest" : ""}.`,
         ]
       : [
           "You are Shipify, the owner's personal assistant, not only a coder: you answer, research, plan,",
@@ -222,7 +247,7 @@ export function buildPrompt(p: PromptInput): string {
       : "",
     p.state.lane ? `- **Lane so far:** ${p.state.lane}` : "",
     p.state.repeat
-      ? `- **Repeats:** ${repeatSaid(p.state.repeat)}.${p.profile === "read" ? "" : " To change it, send the whole `repeat` back with the change (its when, kind and text, as below); the owner ends it with `stop repeating`."}`
+      ? `- **Repeats:** ${repeatSaid(p.state.repeat)}.${p.profile === "read" ? "" : " To change it, send the whole `repeat` back with the change (its when, kind and text, as below); the owner ends it with `stop repeating`."}${p.profile === "work" ? " Your PR here is `part-of`: a `closes` PR's merge closes the task, and that pauses its repeat." : ""}`
       : "",
     p.state.plan ? `- **Plan:** \`${p.state.plan}\`` : "",
     "",
@@ -283,10 +308,10 @@ export function buildPrompt(p: PromptInput): string {
           "",
           "## Its own rules first",
           "",
-          `\`${p.project}\` isn't a Shipify project, so work on it its own way, as the playbook's "A repo that`,
-          "keeps its own rules\" and its `own-rules-repo` skill say: its own rules first, then Shipify's. Add nothing of Shipify's to it",
-          "unless the owner asks. The box runs no project checks on it, and refuses a change to its workflow",
-          "files: its own CI checks the PR.",
+          `\`${p.project}\` isn't a Shipify project, so work on it its own way, as the \`own-rules-repo\` skill`,
+          "says: its own rules first, then Shipify's. Add nothing of Shipify's to it unless the owner asks.",
+          "The box runs no project checks on it: its own CI checks the PR. A change to its workflow files",
+          "is held for the owner's Yes, and listed only when it runs after their merge.",
           ...(p.base
             ? [
                 `Its default branch is \`${p.base}\`, not \`main\`: your clone starts from it, and its PR goes`,
@@ -303,6 +328,7 @@ export function buildPrompt(p: PromptInput): string {
           `This run works on \`${p.account}\`, another of the owner's accounts, whose repos other people`,
           "write too. You hold its repo's key and Shipify's rules, and nothing else of the owner's: no",
           "notebook, no tools, no other repo. Work only in it, and say anything you couldn't reach.",
+          ...(p.profile === "work" ? ["Its people may read every word of the PR."] : []),
         ].join("\n")
       : "",
     "",
@@ -317,7 +343,10 @@ export function buildPrompt(p: PromptInput): string {
           "  what you couldn't read, and anything the notes say wasn't read.",
           "- You have reading tools only: no command, no web, and no file to write.",
         ].join("\n")
-      : p.playbook.trim(),
+      : playbookFor(p.playbook, {
+          work: p.profile === "work",
+          later: !FIRST.includes(p.why),
+        }).trim(),
     "",
     "## Finish",
     "",
@@ -330,8 +359,8 @@ export function buildPrompt(p: PromptInput): string {
           `Bring \`${p.paths.out}/handoff.md\` up to date first, with what this run did and what's next: it's`,
           "the chat's Progress, shown at its top.",
           `Write \`${p.paths.result}\` as JSON, then stop; your final answer in the same shape counts too, if`,
-          "that file isn't yours to write. The box makes every change you ask for; you never push, open or",
-          "merge a PR, or call a tool that changes something.",
+          "that file isn't yours to write. The box makes every change you ask for; you never push, open,",
+          "merge or close a PR, or call a tool that changes something.",
         ]),
     "",
     "```json",
@@ -364,17 +393,34 @@ export function buildPrompt(p: PromptInput): string {
                 ]
               : []),
             "- `files`: names of files you put in your out folder for the guest (at most 10).",
+            // Its tools' guest forms (ADR 0073): made at once, for the guest alone.
+            ...(p.guestCalls
+              ? [
+                  '- `calls`: `[{"tool": "<tool>", "name": "<call>", "args": {…}}]`: only these, which the box',
+                  "  makes at once for the guest (the playbook says when); any other is left out:",
+                  p.guestCalls.replace(/^/gm, "  "),
+                ]
+              : []),
             "- `read_outside`: true when you read a web page.",
           ]
         : [
             '- `work`: `{"project": "<id>", "brief": "…"}` only when the owner\'s words ask for a change to a',
-            '  project ("fix it", "make…", "go ahead"): a run on its checkout follows. A question or a check',
-            "  gets your answer: say what you would change, and stop; their go starts it.",
+            '  project ("fix it", "make…", "go ahead"): a run on its checkout follows. A question or a check,',
+            "  even one that finds something to fix, gets your answer: say what you would change, and stop;",
+            "  their go starts it.",
+            ...(p.profile === "work" && p.project
+              ? [
+                  `  A change to \`${p.project}\` is yours: make it in your clone and ask for its PR, never \`work\`.`,
+                ]
+              : []),
             '- `calls`: `[{"tool": "<tool>", "name": "<call>", "args": {…}}]`: changes through a tool,',
             "  shown to the owner exactly and made by the box after their `yes`.",
             '- `split`: `[{"title": "<repo>: …", "brief": "…", "after": [1]}]`, 2 to 8 parts, only when the',
             "  job is more than one PR (the playbook's \"When to split\"): listed for the owner's `yes`, then each",
             "  opens as a sub-task, and nothing starts. It comes alone: no `pr`, `work` or `calls` with it.",
+            '- `first`: `{"title": "<repo>: …", "brief": "…"}`: one task, a fix on `main` this task needs',
+            "  before it can go on (the playbook's \"A task first\"): listed for the owner's `yes`, then opened",
+            "  and started, and this task waits. It comes alone: no `pr`, `work`, `calls` or `split` with it.",
             '- `notes`: `[{"topic": "Preferences", "line": "…"}]`: the owner\'s own words to keep.',
             ...(p.projectPages
               ? [

@@ -259,6 +259,8 @@ export interface AgentSeen {
   efforts?: string[];
   modelEfforts?: Record<string, string[]>;
   auto?: { model?: string; effort?: string };
+  /** `file`: its login is a file its commands can read, so it never thinks for a guest (ADR 0074). */
+  login?: { file?: boolean };
 }
 /** Where a gateway's list has each fact of a model: a path ("pricing.prompt"), or one that holds a word. */
 export interface ListMap {
@@ -857,7 +859,8 @@ export function recipesText(recipes: RecipeSeen[], now: number): string {
     .join("\n");
 }
 
-function timeUntil(iso: string, now: number): string {
+/** How soon a time comes ("in 5m", "now"): the chat's lists and the status page say it the same. */
+export function timeUntil(iso: string, now: number): string {
   const s = Math.round((Date.parse(iso) - now) / 1000);
   if (Number.isNaN(s)) return "unknown";
   if (s <= 60) return "now";

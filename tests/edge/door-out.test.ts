@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { readFindings, replyLine } from "../../cli/contracts/index.ts";
 import { handle } from "../../edge/src/app.ts";
 import { devicesOf, type Env, keepDevices } from "../../edge/src/env.ts";
+import { GUESTS_KEY } from "../../edge/src/guests.ts";
 import { type Device, deviceOf } from "../../edge/src/push.ts";
 import { browser, pushKey } from "./browser.ts";
 import { CHAT, DOOR, envFor, type Keys, keys, runToken, world } from "./fake.ts";
@@ -124,9 +125,12 @@ describe("POST /door/replied", () => {
     const task = f.issue();
     const c = f.reply(task.number, line());
     c.reactions.push({ content: "rocket", user: { login: "owner", type: "User" } });
+    c.reactions.push({ content: "rocket", user: { login: "other-app[bot]", type: "Bot" } });
     expect(await (await call(f, { task: task.number, comment: c.id })).json()).toMatchObject({
       sent: 1,
     });
+    // The door's own name is SHIPIFY_DOOR_SLUG's: GitHub isn't asked for it.
+    expect(f.gh()).not.toContain("GET app");
   });
 
   it("refuses what isn't a run's reply on that task: another author, another task, no line, edited", async () => {
@@ -518,6 +522,43 @@ describe("GET /door/file/<ref>", () => {
       body: { ok: true, result: { file_path: "documents/big.pdf", file_size: 101 * 1024 * 1024 } },
     };
     expect((await get(f, "telegram:BQAC")).status).toBe(413);
+  });
+});
+
+// ADR 0073: the box's job asks for a guest's email and name, to make their drop theirs.
+describe("GET /door/guest/<id>", () => {
+  const ANA = { id: "guest-ana-3f9a2c", email: "ana@example.com", name: "Ana", added: 1 };
+  const get = async (f: ReturnType<typeof world>, id: string, token?: string | null) => {
+    const r2 = memoryR2();
+    await r2.bucket.put(GUESTS_KEY, JSON.stringify({ v: 1, guests: [ANA] }));
+    return handle(
+      new Request(`https://shipify.example.com/door/guest/${id}`, {
+        headers:
+          token === null ? {} : { authorization: `Bearer ${token ?? (await runToken(k, f.w.at))}` },
+      }),
+      envFor(k, { BUCKET: r2.bucket } as unknown as Partial<Env>),
+      f.deps,
+    );
+  };
+
+  it("gives task.yml's run a guest's email and name, and 404 for one not on the list", async () => {
+    const f = world(k);
+    const res = await get(f, ANA.id);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ email: "ana@example.com", name: "Ana" });
+    expect((await get(f, "guest-ben-0a0b0c")).status).toBe(404);
+    expect((await get(f, "not-a-guest")).status).toBe(404);
+  });
+
+  it("refuses without a token, or with any workflow's but task.yml's", async () => {
+    const f = world(k);
+    expect((await get(f, ANA.id, null)).status).toBe(401);
+    for (const file of ["watch.yml", "ci.yml"]) {
+      const other = await runToken(k, f.w.at, {
+        workflow_ref: `o/shipify/.github/workflows/${file}@refs/heads/main`,
+      });
+      expect((await get(f, ANA.id, other)).status, file).toBe(401);
+    }
   });
 });
 

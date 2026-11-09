@@ -2,12 +2,13 @@
 // clean machine. Plus their inline scripts: a single quote inside `node -e '…'` ends the shell's
 // string (shellcheck SC1011), so `pnpm verify` catches it before the PR.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { REPOS_PERMISSIONS } from "../cli/commands/bot.ts";
+import { prRules } from "../cli/commands/workspace.ts";
 import { NEEDS_YOU_LABEL } from "../cli/contracts/labels.ts";
 import { GIVE_UP_MS } from "../cli/kernel/decide.ts";
 import { agentOf, agentRepos } from "../cli/kernel/run.ts";
@@ -15,7 +16,15 @@ import { JOB_MINUTES } from "../cli/kernel/stay.ts";
 import { THINK_MINUTES } from "../cli/kernel/think.ts";
 import { STALE_RUN_MS } from "../cli/lib/sandbox.ts";
 import type { Plan, Snapshot } from "../cli/kernel/types.ts";
-import { workflowsMismatch } from "../cli/kernel/workflows.ts";
+import {
+  factsOf,
+  hold,
+  holdOf,
+  patchParts,
+  runsBeforeMerge,
+  whenItRuns,
+  workflowsMismatch,
+} from "../cli/kernel/workflows.ts";
 import { loginOf, readExecutors } from "../cli/lib/agents.ts";
 import { WAITING_LABEL } from "../cli/lib/repeat.ts";
 import { newState, TASK_LABELS, type TaskState } from "../cli/lib/task.ts";
@@ -589,13 +598,26 @@ describe("task.yml (ADR 0031)", () => {
             expect(s.run, s.name).toContain(`"${key}"`);
       }
     // One secret by name, the agent's login, which plan takes from executors.json alone: to think,
-    // and to a stay's turns, which think again in the same session (ADR 0057).
+    // to a stay's turns, which think again in the same session (ADR 0057), and to the renew, which
+    // writes back only that login's newer self (ADR 0074).
     expect(new Set(text.match(/secrets\[[^\]]+\]/g))).toEqual(
       new Set(["secrets[steps.plan.outputs.login]"]),
     );
     expect(
       run.steps.filter((s) => JSON.stringify(s.env ?? {}).includes("secrets[")).map((s) => s.id),
-    ).toEqual(["think", "stay"]);
+    ).toEqual(["think", "stay", "renew"]);
+    // Its token writes this repo's secrets alone, minted after the agent and its stay, only when
+    // the run's agent renews its login (ADR 0074).
+    const renewing = step("renew_token");
+    expect(renewing.with?.repositories).toBe("${{ github.event.repository.name }}");
+    expect(
+      Object.entries(renewing.with ?? {}).filter(([k]) => k.startsWith("permission-")),
+    ).toEqual([
+      ["permission-secrets", "write"],
+      ["permission-metadata", "read"],
+    ]);
+    expect(renewing.if).toContain("steps.plan.outputs.renews == 'yes'");
+    expect(run.steps.indexOf(renewing)).toBeGreaterThan(at("stay"));
     const h = readExecutors(join(ROOT, "executors.json"));
     const logins = new Set(Object.values(h.executors).map((e) => loginOf(e, h.gateways)?.secret));
     for (const [id, e] of Object.entries(h.executors))
@@ -604,6 +626,7 @@ describe("task.yml (ADR 0031)", () => {
     expect([...logins].filter(Boolean).sort()).toEqual([
       "AI_GATEWAY_API_KEY",
       "CLAUDE_CODE_OAUTH_TOKEN",
+      "CODEX_AUTH",
       "OPENROUTER_API_KEY",
     ]);
     // A mistyped SHIPIFY_AGENT ("Claude Code"): plan still installs the default (think says why).
@@ -677,16 +700,176 @@ describe("watch.yml (ADR 0031)", () => {
   });
 });
 
-describe("the workflow rule: a run pushes no workflow or action of its own", () => {
-  it("checks a project's actions as its workflows (ADR 0048), and refuses both in a repo that isn't one", () => {
+describe("the workflow rule: a run's workflow change is held, and listed only when it runs after your merge (ADR 0075)", () => {
+  it("apply's last check: a project's actions as its workflows (ADR 0048), both in a repo that isn't one", () => {
     const repo = mkdtempSync(join(tmpdir(), "not-a-project-"));
+    mkdirSync(join(repo, ".github/actions/setup"), { recursive: true });
+    mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+    writeFileSync(join(repo, ".github/actions/setup/action.yml"), "runs: {}\n");
+    writeFileSync(join(repo, ".github/workflows/ci.yml"), "on: push\n");
     expect(workflowsMismatch(repo, [".github/actions/setup/action.yml"])).toContain(
-      "isn't a Shipify project",
+      ".github/actions/setup/action.yml would be pushed",
     );
     expect(workflowsMismatch(repo, [".github/workflows/ci.yml"])).toContain(
-      "isn't a Shipify project",
+      ".github/workflows/ci.yml would be pushed",
     );
+    // A file the hold removed is gone from the checkout: nothing of the run's is pushed.
+    expect(workflowsMismatch(repo, [".github/workflows/gone.yml"])).toBeUndefined();
     expect(workflowsMismatch(repo, [".github/dependabot.yml", "src/index.ts"])).toBeUndefined();
+  });
+
+  it("Shipify's own four workflows run only from main, after a merge", () => {
+    const files = readdirSync(dir).map((f) => `.github/workflows/${f}`);
+    const read = (f: string) => readFileSync(join(ROOT, f), "utf8");
+    expect(files).toHaveLength(4);
+    expect(runsBeforeMerge(files, read, files)).toBeUndefined();
+    expect(whenItRuns(read(".github/workflows/task.yml"))).toEqual({
+      words: ["an issue", "a comment", "a push to `main`", "a start"],
+    });
+  });
+
+  it("finds each event that runs before the merge, and a file whose `on:` doesn't read", () => {
+    const why = (text: string) => {
+      const r = whenItRuns(text);
+      return "why" in r ? r.why : "";
+    };
+    expect(why("on: pull_request\n")).toContain("`pull_request`, before the merge");
+    expect(why("on:\n  pull_request_target:\n")).toContain("`pull_request_target`");
+    expect(why("on: push\n")).toContain("any branch");
+    expect(why("on: [push, workflow_dispatch]\n")).toContain("any branch");
+    expect(why("on:\n  push:\n    branches: ['main', 'release/*']\n")).toContain("more than");
+    expect(why("on:\n  push:\n    branches: ['ma*']\n")).toContain("more than");
+    expect(why("on:\n  push:\n    branches: [main]\n    tags: ['v*']\n")).toContain("`tags`");
+    expect(why("on:\n  push:\n    branches-ignore: [x]\n")).toContain("`branches-ignore`");
+    expect(why("on: workflow_call\n")).toContain("whichever workflow calls it");
+    expect(why("on: merge_group\n")).toContain("may run from this branch");
+    expect(why("# notes\nNot a workflow at all.\n")).toBe("can't read its `on:`");
+    expect(why("on: [\n")).toBe("can't read its `on:`");
+    // Only from the default branch: its own name, when it isn't main.
+    expect(whenItRuns("on:\n  push:\n    branches: [trunk]\n", "trunk")).toEqual({
+      words: ["a push to `trunk`"],
+    });
+  });
+
+  it("an action passes only when every workflow on the branch does; a removed file runs nothing", () => {
+    const files: Record<string, string> = {
+      ".github/workflows/deploy.yml": "on:\n  push:\n    branches: [main]\n",
+      ".github/workflows/pr.yml": "on: pull_request\n",
+      ".github/actions/setup/action.yml": "runs: {}\n",
+    };
+    const read = (f: string) => files[f];
+    const all = [".github/workflows/deploy.yml", ".github/workflows/pr.yml"];
+    expect(runsBeforeMerge([".github/actions/setup/action.yml"], read, all)).toContain(
+      "is an action, and `.github/workflows/pr.yml`, which may use it, runs on `pull_request`",
+    );
+    expect(
+      runsBeforeMerge([".github/actions/setup/action.yml"], read, [".github/workflows/deploy.yml"]),
+    ).toBeUndefined();
+    expect(runsBeforeMerge([".github/workflows/old.yml"], read, all)).toBeUndefined();
+    expect(runsBeforeMerge([".github/workflows/pr.yml"], read, all)).toContain("`pull_request`");
+  });
+
+  it("says the facts of a change: its lines, when it runs, the secrets and actions its new lines name", () => {
+    const text = "on:\n  issue_comment:\n  workflow_dispatch:\njobs: {}\n";
+    const diff = [
+      "diff --git a/.github/workflows/task.yml b/.github/workflows/task.yml",
+      "--- a/.github/workflows/task.yml",
+      "+++ b/.github/workflows/task.yml",
+      "@@ -1 +1,3 @@",
+      "-  old: line",
+      "+      - uses: actions/create-github-app-token@abc123 # v3",
+      "+        with: { key: ${{ secrets.CODEX_AUTH }} }",
+    ].join("\n");
+    expect(factsOf(".github/workflows/task.yml", text, diff)).toBe(
+      "(+2 −1). It runs only from `main`, after your merge: on a comment or a start. Its new lines use the secret `CODEX_AUTH` and the action `actions/create-github-app-token@abc123`.",
+    );
+    expect(factsOf(".github/workflows/gone.yml", undefined, "")).toBe("(+0 −0). It's removed.");
+    expect([...patchParts(`${diff}\n${diff.replaceAll("task.yml", "ci.yml")}\n`).keys()]).toEqual([
+      ".github/workflows/task.yml",
+      ".github/workflows/ci.yml",
+    ]);
+  });
+
+  it("holds a renamed workflow as both its files: the old one put back, the new one removed", () => {
+    const repo = mkdtempSync(join(tmpdir(), "workflow-rename-"));
+    const git = (...a: string[]) =>
+      execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...a], {
+        encoding: "utf8",
+        stdio: "pipe",
+      });
+    mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+    writeFileSync(join(repo, ".github/workflows/a.yml"), "on: workflow_dispatch\njobs: {}\n");
+    git("init", "-q", "-b", "main");
+    git("add", "-A");
+    git("commit", "-qm", "main");
+    git("checkout", "-qb", "task/1-x");
+    git("mv", ".github/workflows/a.yml", ".github/workflows/b.yml");
+    git("commit", "-qm", "The run's rename");
+    const h = holdOf(git, repo, "main", "HEAD");
+    expect(h?.files.sort()).toEqual([".github/workflows/a.yml", ".github/workflows/b.yml"]);
+    if (h) hold(git, h, { name: "bot", email: "bot@x" });
+    expect(git("diff", "--name-only", "main", "HEAD")).toBe("");
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("lets through, in ship pr --check, a workflow file you changed on the task's branch on GitHub, left as it is there", () => {
+    const root = mkdtempSync(join(tmpdir(), "workflow-yours-"));
+    const clone = join(root, "clone");
+    const git = (...a: string[]) =>
+      execFileSync("git", ["-C", clone, "-c", "user.name=t", "-c", "user.email=t@t", ...a], {
+        encoding: "utf8",
+        stdio: "pipe",
+      }).trim();
+    const put = (f: string, text: string) => {
+      mkdirSync(dirname(join(clone, f)), { recursive: true });
+      writeFileSync(join(clone, f), text);
+    };
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", join(root, "origin.git")]);
+    execFileSync("git", ["clone", "-q", join(root, "origin.git"), clone], { stdio: "pipe" });
+    // Shipify's own checkout on main, then the task's branch on GitHub with your step in task.yml.
+    const files = ["cli/cli.ts", "intents.json", "executors.json", "stacks/.keep", "CHANGELOG.md"];
+    for (const f of files) put(f, "x\n");
+    put(".github/workflows/task.yml", "on: push\n");
+    git("add", "-A");
+    git("commit", "-qm", "main");
+    git("push", "-q", "origin", "HEAD:main");
+    git("checkout", "-qb", "task/1-x");
+    put(".github/workflows/task.yml", "on: push\n# your step\n");
+    git("commit", "-qam", "Your step, on GitHub");
+    git("push", "-qu", "origin", "task/1-x");
+    // The run's own change, on top of it.
+    put("CHANGELOG.md", "x\n- A change\n");
+    git("commit", "-qam", "The change");
+    const task = process.env.SHIPIFY_TASK;
+    process.env.SHIPIFY_TASK = "1";
+    try {
+      expect(prRules(clone)).toBeUndefined();
+      // Refused, as each runs before a merge: the run's own edit to it (committed or not), a new
+      // workflow file, an action, and your step on a branch with no copy on GitHub.
+      const refused = (f: string) =>
+        `This workflow change would run before the owner's merge, so the box can't list it for their yes: \`.github/${f}\``;
+      put(".github/workflows/task.yml", "on: push\n# your step\n# the run's\n");
+      expect(prRules(clone)).toContain(refused("workflows/task.yml"));
+      git("checkout", "-q", ".github/workflows/task.yml");
+      put(".github/workflows/new.yml", "on: pull_request\n");
+      expect(prRules(clone)).toContain(refused("workflows/new.yml"));
+      git("add", "-A");
+      git("commit", "-qm", "A new workflow");
+      expect(prRules(clone)).toContain(refused("workflows/new.yml"));
+      git("reset", "-q", "--hard", "HEAD~1");
+      put(".github/actions/setup/action.yml", "runs: {}\n");
+      expect(prRules(clone)).toContain(refused("actions/setup/action.yml"));
+      rmSync(join(clone, ".github/actions"), { recursive: true });
+      // One that runs only from main goes through: the box holds it for the owner's yes.
+      put(".github/workflows/later.yml", "on:\n  push:\n    branches: [main]\n");
+      expect(prRules(clone)).toBeUndefined();
+      rmSync(join(clone, ".github/workflows/later.yml"));
+      git("branch", "-q", "--unset-upstream");
+      expect(prRules(clone)).toContain(refused("workflows/task.yml"));
+    } finally {
+      if (task === undefined) delete process.env.SHIPIFY_TASK;
+      else process.env.SHIPIFY_TASK = task;
+    }
   });
 });
 

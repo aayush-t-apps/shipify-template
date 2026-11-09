@@ -23,6 +23,7 @@ import {
   type ToolCall,
   goPartOf,
   listCodeOf,
+  signInOf,
 } from "../contracts/index.ts";
 import {
   closedProjectText,
@@ -54,6 +55,7 @@ import { limitName } from "../lib/runs.ts";
 import {
   AT_ONCE,
   droppedBy,
+  type HeldList,
   looksAt,
   nextBranch,
   PLATFORM,
@@ -64,6 +66,8 @@ import {
 } from "../lib/task.ts";
 import { fingerprint, listCode } from "./keys.ts";
 import {
+  firstLine,
+  firstPart,
   goParts,
   isPart,
   openParts,
@@ -71,6 +75,7 @@ import {
   partsOf,
   skipped,
   splitLines,
+  splitParts,
   stopParts,
   unstarted,
   waitingText,
@@ -89,6 +94,7 @@ import type {
   Write,
 } from "./types.ts";
 import { NOT_A_GUESTS, type Word, wordOf } from "./words.ts";
+import { patchParts } from "./workflows.ts";
 
 /** Said under a pick it can't take: nothing ran with another. */
 const PICK_AGAIN = "Nothing ran: send your message again with a pick it takes.";
@@ -144,6 +150,11 @@ export interface Context {
   instant: (name: Instant, rest: string) => string;
   /** A recipe's task: its file on main, read by the snapshot (ADR 0032). */
   recipe?: { name: string; read: { recipe: Recipe } | { gone: true } | { problem: string } };
+  /**
+   * The agents whose login is a sign-in their adapter makes with a one-time code (ADR 0074:
+   * Codex's ChatGPT session), by id, with their names: `<id> sign in` names one.
+   */
+  signsIn: Record<string, string>;
 }
 
 export interface ToolAct {
@@ -157,14 +168,18 @@ export interface ToolAct {
    * Pre-approved forms: the call, its fixed fields, its capped text fields, the fields it takes with
    * any value, the most per run, and the tools whose look calls it still counts after (ADR 0049).
    */
-  pre: {
-    call: string;
-    fixed: Record<string, unknown>;
-    caps: Record<string, number>;
-    any?: string[];
-    max: number;
-    after?: string[];
-  }[];
+  pre: (Form & { after?: string[] })[];
+  /** The forms a guest's run may ask for (ADR 0073): made at once, as a guest approves nothing. */
+  guest?: Form[];
+}
+
+/** A form a call must fit (tools.json's `pre` and `guest`). */
+interface Form {
+  call: string;
+  fixed: Record<string, unknown>;
+  caps: Record<string, number>;
+  any?: string[];
+  max: number;
 }
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
@@ -385,8 +400,50 @@ function dropList(st: TaskState) {
   st.pending.notes = undefined;
   st.pending.split = undefined;
   st.pending.clean = undefined;
+  st.pending.workflow = undefined;
+  st.pending.first = undefined;
   st.pending.list = undefined;
 }
+
+/** A list's held kinds (ADR 0075), as its code names them: a workflow change by its patch's hash. */
+const heldKinds = (p: TaskState["pending"]): unknown[] => [
+  ...(p.workflow ? [{ workflow: p.workflow.sha256, branch: p.workflow.branch }] : []),
+  ...(p.first ? [{ first: p.first }] : []),
+];
+
+/**
+ * A held workflow change's lines on the list (ADR 0075 §5.3): each file, where, the box's facts,
+ * and its exact lines, in one item with no blank line, so a chat shows it whole.
+ */
+export function heldLines(h: HeldList, pr?: string): string[] {
+  const where = `\`${h.branch}\`${pr ? ` (PR #${pr.split("/").pop()})` : ""}`;
+  const parts = patchParts(h.patch);
+  return h.files.map((f, i) => {
+    const diff = parts.get(f) ?? "";
+    const ticks = Math.max(3, ...[...diff.matchAll(/`+/g)].map((m) => m[0].length + 1));
+    const fence = "`".repeat(ticks);
+    return [
+      [
+        `Change \`${f}\` on ${where} ${h.facts[i] ?? ""}`.trim(),
+        h.mainNewer && i === 0
+          ? "The run merged `main`, which changed it too: the patch carries `main`'s newer lines, so approve it before you merge (until then the PR takes them out)."
+          : "",
+        h.outside && i === 0 ? "This run read from outside: read each line before your Yes." : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+      `${fence}diff`,
+      ...diff.split("\n"),
+      fence,
+    ].join("\n   ");
+  });
+}
+
+/** What else a list holds besides calls, notes and a split (ADR 0075): its lines. */
+const heldListLines = (st: TaskState) => [
+  ...(st.pending.workflow ? heldLines(st.pending.workflow, openPr(st)) : []),
+  ...(st.pending.first ? [firstLine(st.pending.first)] : []),
+];
 
 /** A clean start's list (ADR 0070), a line a chat, as its reply shows it and its yes approves it. */
 const cleanLines = (clean: { n: number; title: string }[]) =>
@@ -434,6 +491,50 @@ function cleanStart(s: Snapshot, st: TaskState, fresh: Said[], writes: Write[]):
     reply("needs-you", "Needs you", text, step, {
       list: long ? "github" : listCode([], [], [], clean),
     }),
+  );
+}
+
+/**
+ * The agent a `sign in` names, by its id or its name, when it signs in with a code (`codex sign
+ * in`); a bare `sign in`, the only one that does. None: the words aren't one.
+ */
+function signingIn(text: string, ctx: Context): string | undefined {
+  const named = signInOf(text);
+  if (named === undefined) return undefined;
+  const ids = Object.keys(ctx.signsIn);
+  if (!named) return ids.length === 1 ? ids[0] : undefined;
+  return ids.find((id) => id === named || ctx.signsIn[id]?.toLowerCase() === named);
+}
+
+/**
+ * `<agent> sign in` (ADR 0074): the agent signs in to your account with a one-time code, on GitHub's
+ * machine, by the github job, with no agent and no box. Its reply shows you a link and the code for
+ * any device; once you've used them, the job sets the agent's secret and says so. Only yours: a
+ * guest's is words.
+ */
+function signIn(
+  s: Snapshot,
+  st: TaskState,
+  fresh: Said[],
+  writes: Write[],
+  agent: string,
+  ctx: Context,
+): Plan {
+  st.seen = upTo(s, fresh);
+  st.pending.signIn = { agent, at: s.now };
+  // A new chat's is at work until the job answers; a task's own state stays as it was.
+  if (st.phase === "waiting") st.phase = "working";
+  return box(
+    st,
+    "a sign-in",
+    ...writes,
+    { w: "dispatch", job: "github" },
+    reply(
+      "answer",
+      "Working",
+      `Starting ${ctx.signsIn[agent] ?? agent}'s sign-in on GitHub's machine: a link and a one-time code come here in a minute or two, for your phone or any device.`,
+      `sign-in-${fresh.at(-1)?.id ?? 0}`,
+    ),
   );
 }
 
@@ -566,16 +667,19 @@ function planned(s: Snapshot, ctx: Context): Plan {
   const starting = part !== undefined && s.trigger.kind === "dispatch" && s.trigger.job === "run";
   let fresh = freshOf(s);
   const writes: Write[] = [];
+  /** Your words seen, and the box answers them with no agent: what `writes` holds, then `more`. */
+  const answered = (why: string, ...more: Write[]): Plan => {
+    st.seen = upTo(s, fresh);
+    return box(st, why, ...writes, ...more);
+  };
   // The model a task starts with (its form's Model, or a first line `use <model>`): a pick made on
   // purpose, so one it can't take is said, a typo too, and nothing runs with another (ADR 0042).
   if (first && s.firstUse && !st.use) {
     const u = ctx.use(`use ${s.firstUse}`, undefined);
     if (u?.use) st.use = u.use;
     else if (u && !u.asked) {
-      st.seen = upTo(s, fresh);
       st.bodyHash = s.bodyHash;
-      return box(
-        st,
+      return answered(
         "a `use` it can't take",
         reply("needs-you", "Needs you", `${u.reply} ${PICK_AGAIN}`, "use-first"),
       );
@@ -640,12 +744,9 @@ function planned(s: Snapshot, ctx: Context): Plan {
   // A form with a wrong answer runs nothing until an edit fixes it.
   if (s.form?.problems.length && (first || edited || st.form)) {
     st.form = s.form.problems.join(" ");
-    st.seen = upTo(s, fresh);
     const p = problem("form-wrong", { answer: s.form.problems.join(" ") });
-    return box(
-      st,
+    return answered(
       "a form to fix",
-      ...writes,
       reply("needs-you", "Needs you", renderProblem(p), "form", { problem: p }),
     );
   }
@@ -663,25 +764,33 @@ function planned(s: Snapshot, ctx: Context): Plan {
   )
     return cleanStart(s, st, fresh, writes);
 
+  // `<agent> sign in` as a new chat's words (ADR 0074): its sign-in with a code. Never a guest's.
+  const signsInFirst =
+    first && !guestOf(s) && (!s.issue.body.trim() || s.issue.body.trim() === s.issue.title.trim())
+      ? signingIn(s.issue.title, ctx)
+      : undefined;
+  if (signsInFirst) return signIn(s, st, fresh, writes, signsInFirst, ctx);
+
   // A command on its own as a new task's title (`/apps`): answered with no agent, then closed.
   // A guest's are words for their agent (ADR 0071): the door refuses yours from them already.
   const asked = first && !s.issue.body.trim() && !guestOf(s) ? instantOf(s.issue.title) : null;
-  if (asked) {
-    st.seen = upTo(s, fresh);
-    return box(
-      st,
+  if (asked)
+    return answered(
       `/${asked.name}`,
-      ...writes,
       reply("answer", "Done", ctx.instant(asked.name, asked.rest), `instant-${asked.name}`),
       { w: "close", reason: "completed" },
     );
-  }
 
   // Fixed words: whole comments, each accepted only from where it may be said.
   // `yes` and `no` approve or drop a list; with nothing waiting they're plain words (an answer to
   // the agent's own question), but a list's Yes (`yes <code>`) is answered: its list is gone.
   const listed = Boolean(
-    st.pending.calls || st.pending.notes || st.pending.split || st.pending.clean,
+    st.pending.calls ||
+      st.pending.notes ||
+      st.pending.split ||
+      st.pending.clean ||
+      st.pending.workflow ||
+      st.pending.first,
   );
   // Picks build on each other in the order you said them: each is read against the pick as it
   // stands after the ones before (`use sonnet`, then `use high`, is Sonnet at high).
@@ -692,7 +801,12 @@ function planned(s: Snapshot, ctx: Context): Plan {
     // A guest's words (ADR 0071): a `use` picks, but no approval, command or note is theirs.
     const guest = c.author === "guest";
     const fixed = wordOf(c.text);
-    const word = guest && fixed && NOT_A_GUESTS.has(fixed) ? undefined : fixed;
+    // A `sign in` that names no agent signing in ("please sign in") is words for the agent.
+    const word =
+      (guest && fixed && NOT_A_GUESTS.has(fixed)) ||
+      (fixed === "sign in" && !signingIn(c.text, ctx))
+        ? undefined
+        : fixed;
     // A `use` line in a longer message: this run thinks with it. One that tries a pick it can't
     // take is told (below); one that names no agent or model stays words for the agent.
     const line = use
@@ -753,12 +867,9 @@ function planned(s: Snapshot, ctx: Context): Plan {
     ...(withWords ? usable.filter((x) => x.use && !x.use.use && !x.use.asked) : []),
     ...rest.filter((x) => x.refused),
   ];
-  if (refused.length) {
-    st.seen = upTo(s, fresh);
-    return box(
-      st,
+  if (refused.length)
+    return answered(
       "a `use` it can't take",
-      ...writes,
       ...refused.map((x) =>
         reply(
           "needs-you",
@@ -768,16 +879,13 @@ function planned(s: Snapshot, ctx: Context): Plan {
         ),
       ),
     );
-  }
   const choice = rest.findLast((x) => x.choice)?.choice;
   if (choice) st.use = choice;
   const words = rest.filter((x) => x.word).map((x) => x.word as Word);
   const plain = rest.filter((x) => !x.word);
   const refusedOnly = said.length > 0 && !usable.length;
-  if (refusedOnly || (said.length && !rest.length && !edited)) {
-    st.seen = upTo(s, fresh);
-    return box(st, refusedOnly ? "a word it can't take here" : "a command", ...writes);
-  }
+  if (refusedOnly || (said.length && !rest.length && !edited))
+    return answered(refusedOnly ? "a word it can't take here" : "a command");
 
   // A lone thanks ("ok", "thanks", 👍) is your answer only while a question waits on you; after a
   // PR to merge, a list for your `yes`, or an answer, it's a thanks: a 👍, and the agent stays idle.
@@ -787,14 +895,19 @@ function planned(s: Snapshot, ctx: Context): Plan {
     fresh.length > 0 &&
     fresh.every((c) => acknowledgement(c.text) === "thanks") &&
     !questionWaits(st)
-  ) {
-    st.seen = upTo(s, fresh);
-    return box(st, "a thanks", ...writes, ...thumbsUp(fresh));
-  }
+  )
+    return answered("a thanks", ...thumbsUp(fresh));
 
   // Calls, a split or a clean start listed for your yes: the newest of yes and no decides;
   // anything else plans again.
-  if ((st.pending.calls || st.pending.split || st.pending.clean) && rest.length) {
+  if (
+    (st.pending.calls ||
+      st.pending.split ||
+      st.pending.clean ||
+      st.pending.workflow ||
+      st.pending.first) &&
+    rest.length
+  ) {
     if (rest.every((x) => x.word === "yes" || x.word === "no"))
       return yesOrNo(
         s,
@@ -816,6 +929,11 @@ function planned(s: Snapshot, ctx: Context): Plan {
 
   // `clean start` (ADR 0070): the chats to close, listed for your yes, with no agent.
   if (words.at(-1) === "clean start" && !plain.length) return cleanStart(s, st, fresh, writes);
+
+  // `<agent> sign in` (ADR 0074): its sign-in with a code, by the github job, with no agent.
+  const signing = signingIn(rest.findLast((x) => x.word)?.c.text ?? "", ctx);
+  if (words.at(-1) === "sign in" && signing && !plain.length)
+    return signIn(s, st, fresh, writes, signing, ctx);
 
   // `close`: the task is done, with no agent (its PRs stay as they are; a repeat stops).
   if (words.at(-1) === "close" && !plain.length) {
@@ -843,10 +961,10 @@ function planned(s: Snapshot, ctx: Context): Plan {
   const last = rest.findLast((x) => x.word);
   if (last && !plain.length && (last.word === "go" || last.word === "stop")) {
     const n = last.word === "go" ? goPartOf(last.c.text) : undefined;
-    const parent = openParts(s).length > 0;
+    // A task first (ADR 0075) leaves `go` and `stop` as on a task without parts.
+    const parent = splitParts(s).length > 0;
     const stops = last.word === "stop" && parent;
     if ((last.word === "go" && (parent || n !== undefined)) || stops) {
-      st.seen = upTo(s, fresh);
       const said = !parent
         ? {
             writes: [],
@@ -860,10 +978,8 @@ function planned(s: Snapshot, ctx: Context): Plan {
         st.phase = stops ? "needs-you" : "answered";
         st.closes = undefined;
       }
-      return box(
-        st,
+      return answered(
         stops ? "stop on a split task" : "go on a split task",
-        ...writes,
         ...said.writes,
         reply(
           stops ? "needs-you" : "answer",
@@ -879,14 +995,11 @@ function planned(s: Snapshot, ctx: Context): Plan {
   // word); your next words carry it on. One the door did is a setting, and it said so in the chat
   // already: a run that finds it (one queued for a `close` before it) notes it and says nothing.
   if (words.at(-1) === "reopen" && !plain.length) {
-    st.seen = upTo(s, fresh);
-    if (fresh.at(-1)?.from?.setting) return box(st, "reopened by the door", ...writes);
+    if (fresh.at(-1)?.from?.setting) return answered("reopened by the door");
     const was =
       writes.some((w) => w.w === "reopen") || st.phase === "done" || st.phase === "dropped";
-    return box(
-      st,
+    return answered(
       "reopen",
-      ...writes,
       reply(
         "needs-you",
         "Needs you",
@@ -928,12 +1041,9 @@ function planned(s: Snapshot, ctx: Context): Plan {
   // its plan is the doc you merged until it's built (a big change's `go` is below).
   const go = words.includes("go") && Boolean(st.plan) && (st.built !== st.plan || !docMerged(st));
   if (words.includes("publish") || go) {
-    st.seen = upTo(s, fresh);
     if (!st.plan || !ctx.planMerged(st.plan))
-      return box(
-        st,
+      return answered(
         "publish with no merged plan",
-        ...writes,
         reply(
           "answer",
           "Done",
@@ -945,10 +1055,8 @@ function planned(s: Snapshot, ctx: Context): Plan {
       );
     const again = st.prepared === st.plan || st.built === st.plan;
     st.pending.prepare = { plan: st.plan, at: s.now };
-    return box(
-      st,
+    return answered(
       "publish",
-      ...writes,
       { w: "dispatch", job: "github" },
       reply(
         "answer",
@@ -959,22 +1067,17 @@ function planned(s: Snapshot, ctx: Context): Plan {
     );
   }
   if (words.includes("preview")) {
-    st.seen = upTo(s, fresh);
     const pr = openPr(st);
     if (!pr || !st.project)
-      return box(
-        st,
+      return answered(
         "preview with no PR",
-        ...writes,
         reply("answer", "Done", "There's no PR yet to preview.", "preview-none"),
       );
     // A repo that keeps its own rules has no preview: that's an app's, and nothing of Shipify's
     // goes into such a repo (ADR 0044).
     if (st.ownRules)
-      return box(
-        st,
+      return answered(
         "preview of a repo",
-        ...writes,
         reply(
           "answer",
           "Done",
@@ -983,10 +1086,8 @@ function planned(s: Snapshot, ctx: Context): Plan {
         ),
       );
     st.preview = true;
-    return box(
-      st,
+    return answered(
       "preview",
-      ...writes,
       { w: "preview", repo: st.project, pr },
       reply(
         "answer",
@@ -1025,65 +1126,36 @@ function planned(s: Snapshot, ctx: Context): Plan {
       : nothing("nothing new", st);
   }
 
-  // A note: written by the box, no agent.
-  if (s.parsed.kind === "remember" && first && !guestOf(s)) {
-    st.seen = upTo(s, fresh);
+  // `remember: …` or `forget: …` as a task: the box writes the note, or takes it off its page, with
+  // no agent.
+  const kind = s.parsed.kind;
+  if ((kind === "remember" || kind === "forget") && first && !guestOf(s)) {
     const line = s.parsed.ask.trim();
     if (!line)
-      return box(
-        st,
-        "a note with no words",
-        ...writes,
+      return answered(
+        kind === "remember" ? "a note with no words" : "forget with no words",
         reply(
           "needs-you",
           "Needs you",
-          "What should I remember? Write it after `remember:`.",
-          "remember-empty",
+          `What should I ${kind}? Write it after \`${kind}:\`.`,
+          `${kind}-empty`,
         ),
       );
-    return box(
-      st,
-      "a note",
-      ...writes,
-      { w: "note", topic: s.parsed.topic ?? "Preferences", line },
-      reply("answer", "Done", "", "remember"),
-      { w: "close", reason: "completed" },
-    );
-  }
-
-  // `forget: …` as a task: the box takes the note off its page, no agent.
-  if (s.parsed.kind === "forget" && first && !guestOf(s)) {
-    st.seen = upTo(s, fresh);
-    if (!s.parsed.ask.trim())
-      return box(
-        st,
-        "forget with no words",
-        ...writes,
-        reply(
-          "needs-you",
-          "Needs you",
-          "What should I forget? Write it after `forget:`.",
-          "forget-empty",
-        ),
-      );
-    return box(
-      st,
-      "forget",
-      ...writes,
-      { w: "forget", words: s.parsed.ask.trim() },
-      reply("answer", "Done", "", "forget"),
+    return answered(
+      kind === "remember" ? "a note" : "forget",
+      kind === "remember"
+        ? { w: "note", topic: s.parsed.topic ?? "Preferences", line }
+        : { w: "forget", words: line },
+      reply("answer", "Done", "", kind),
       { w: "close", reason: "completed" },
     );
   }
 
   // Nothing to do yet: a first run with no words at all.
   const words0 = s.parsed.ask.replace(/^\s*[\w.-]+\s*:\s*$/, "").trim();
-  if (first && !words0 && !fresh.length && !/\*\*Files:\*\*/.test(s.issue.body)) {
-    st.seen = upTo(s, fresh);
-    return box(
-      st,
+  if (first && !words0 && !fresh.length && !/\*\*Files:\*\*/.test(s.issue.body))
+    return answered(
       "nothing to do yet",
-      ...writes,
       reply(
         "needs-you",
         "Needs you",
@@ -1091,17 +1163,13 @@ function planned(s: Snapshot, ctx: Context): Plan {
         "empty",
       ),
     );
-  }
 
   // `again` on a repeat, a recipe's included: its job runs now (`continue` still retries a failure).
   const again = fresh.some((c) => /^\s*(run\s+)?again[.!]?\s*$/i.test(c.text));
   if (again && words.includes("continue") && st.repeat) {
-    st.seen = upTo(s, fresh);
     if (ctx.recipe && !("recipe" in ctx.recipe.read))
-      return box(
-        st,
+      return answered(
         "again on a recipe that doesn't read",
-        ...writes,
         reply(
           "answer",
           "Done",
@@ -1109,6 +1177,7 @@ function planned(s: Snapshot, ctx: Context): Plan {
           `again-${fresh.at(-1)?.id}`,
         ),
       );
+    st.seen = upTo(s, fresh);
     st.failed = undefined;
     return runRepeat(s, st, ctx, writes, `again-${fresh.at(-1)?.id ?? s.now}`);
   }
@@ -1116,15 +1185,11 @@ function planned(s: Snapshot, ctx: Context): Plan {
   // A part no run has started starts on the box's run or your `go` on it (ADR 0066). While it
   // waits, your other words (or an edit) get the box's answer, and its run reads them.
   const goHere = part !== undefined && words.includes("go");
-  if (part?.length && !starting && !goHere) {
-    st.seen = upTo(s, fresh);
-    return box(
-      st,
+  if (part?.length && !starting && !goHere)
+    return answered(
       "words on a part that waits",
-      ...writes,
       reply("answer", "Waiting", waitingText(s, part), `part-waits-${fresh.at(-1)?.id ?? 0}`),
     );
-  }
 
   // The agent thinks: on a project's checkout (work), or reading every project (talk).
   const why: ThinkWhy =
@@ -1141,15 +1206,11 @@ function planned(s: Snapshot, ctx: Context): Plan {
               : edited && !fresh.length
                 ? "edited"
                 : "comment";
-  if (words.includes("go") && !goHere && !docMerged(st)) {
-    st.seen = upTo(s, fresh);
-    return box(
-      st,
+  if (words.includes("go") && !goHere && !docMerged(st))
+    return answered(
       "go before the doc merged",
-      ...writes,
       reply("answer", "Done", "Merge the change doc's PR first; then say `go`.", "go-early"),
     );
-  }
   if (why === "continue") {
     st.failed = undefined;
     // You checked what an earlier run left unfinished: it may run again.
@@ -1423,29 +1484,38 @@ function withReads(s: Snapshot, t0: Think): Think {
 }
 
 /**
- * A guest run's answer (ADR 0071): words, a question, choices, files and its own project's pages
- * alone. Anything else is dropped, and named in `left`.
+ * A guest run's answer (ADR 0071): words, a question, choices, files, its own project's pages, and
+ * the calls that fit a tool's guest forms (ADR 0073). Anything else is dropped, and named in `left`.
  */
-function guestsOnly<T extends Result>(r: T, left: string[]): T {
+function guestsOnly<T extends Result>(r: T, left: string[], ctx: Context): T {
   const {
     pr,
     work,
     calls,
     split,
+    first,
     notes,
     repeat,
     quiet,
     ...kept
-  }: T & Partial<Pick<Result, "pr" | "work" | "calls" | "split" | "notes" | "repeat" | "quiet">> =
-    r;
+  }: T &
+    Partial<
+      Pick<Result, "pr" | "work" | "calls" | "split" | "first" | "notes" | "repeat" | "quiet">
+    > = r;
   const why = "a guest's run holds no key, tool or notebook";
   if (pr || work) left.push(`a change (${why}: it changes no repo)`);
-  if (calls?.length) left.push(`tool calls (${why})`);
+  if (first) left.push(`a task first (${why}: it opens no task)`);
+  // Their calls: only a guest form's, which the box makes with no key in their run (ADR 0073).
+  const theirs = (calls ?? []).filter((c) => guestForm(ctx, c, calls ?? []));
+  for (const c of (calls ?? []).filter((c) => !theirs.includes(c)))
+    left.push(
+      `${c.tool}.${c.name} (not a call a guest's run may ask for, or its arguments don't fit)`,
+    );
   if (split?.length) left.push(`a split (${why}: it opens no task)`);
   if (notes?.length) left.push(`notes (${why})`);
   if (repeat) left.push(`a repeat (${why}: it sets none)`);
   if (quiet) left.push("quiet (a guest's run always answers)");
-  return kept as T;
+  return (theirs.length ? { ...kept, calls: theirs } : kept) as T;
 }
 
 function thinkFor(s: Snapshot, st: TaskState, why: ThinkWhy, fresh: Said[]): Think {
@@ -1502,6 +1572,8 @@ function githubJob(st: TaskState, ctx: Context): Plan {
       state: st,
       why: "PRs of a task closed as not planned",
     };
+  if (st.pending.signIn)
+    return { do: "github", job: "sign-in", state: st, why: "an agent's sign-in with a code" };
   return nothing("nothing pending for the github job", st);
 }
 
@@ -1939,17 +2011,23 @@ function repeatWords(
 function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes: Write[]): Plan {
   const fresh = freshOf(s);
   st.seen = upTo(s, fresh);
+  /** The box's answer: what `writes` holds, then `more`. */
+  const told = (why: string, ...more: Write[]) => box(st, why, ...writes, ...more);
   const pend = st.pending.calls;
   // A Yes or No under an older reply names another list: it counts for nothing, and the newest of
   // the rest decides.
-  const code = listCode(pend?.calls, st.pending.notes, st.pending.split, st.pending.clean);
+  const code = listCode(
+    pend?.calls,
+    st.pending.notes,
+    st.pending.split,
+    st.pending.clean,
+    heldKinds(st.pending),
+  );
   const last = said.filter((c) => (listCodeOf(c.text) ?? code) === code).at(-1);
   if (!last) {
     const p = problem("list-gone");
-    return box(
-      st,
+    return told(
       "a yes for another list",
-      ...writes,
       reply("answer", "Done", renderProblem(p), `yes-gone-${said.at(-1)?.id}`, { problem: p }),
     );
   }
@@ -1958,12 +2036,7 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
     dropList(st);
     st.phase = "answered";
     st.closes = quietDay(s);
-    return box(
-      st,
-      "no",
-      ...writes,
-      reply("answer", "Done", "Dropped: nothing was changed.", `no-${last.id}`),
-    );
+    return told("no", reply("answer", "Done", "Dropped: nothing was changed.", `no-${last.id}`));
   }
   // A yes counts from you, on GitHub or through your chat (ADR 0049): whole and unedited, after the
   // list, within a day, with no edit to the task since the list. A chat approves only a list it
@@ -1971,13 +2044,12 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
   const cleanLong = cleanLines(st.pending.clean ?? []).join("\n").length > LIST_MAX;
   if (
     !viaGithub(last) &&
-    (cleanLong || listTooLong(ctx.tools, pend?.calls, st.pending.notes, st.pending.split))
+    (cleanLong ||
+      listTooLong(ctx.tools, pend?.calls, st.pending.notes, st.pending.split, heldListLines(st)))
   ) {
     const p = problem("list-too-long");
-    return box(
-      st,
+    return told(
       "a yes from a chat to a long list",
-      ...writes,
       reply("answer", "Done", renderProblem(p), `yes-long-${last.id}`, {
         links: [["The task on GitHub", ctx.taskUrl]],
         problem: p,
@@ -1985,10 +2057,8 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
     );
   }
   if (last.edited)
-    return box(
-      st,
+    return told(
       "an edited yes",
-      ...writes,
       reply(
         "answer",
         "Done",
@@ -2001,10 +2071,8 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
   const list = st.pending.list;
   const asked = list?.post || s.state.reply || 0;
   if (last.id < asked)
-    return box(
-      st,
+    return told(
       "a yes before the list",
-      ...writes,
       reply(
         "answer",
         "Done",
@@ -2015,10 +2083,8 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
   if (list && Date.parse(s.now) - Date.parse(list.at) > CALLS_GOOD_FOR_MS) {
     dropList(st);
     const p = problem("approval-expired");
-    return box(
-      st,
+    return told(
       "an expired yes",
-      ...writes,
       reply("answer", "Done", renderProblem(p), `yes-late-${last.id}`, { problem: p }),
     );
   }
@@ -2027,10 +2093,8 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
   // the list stays for another yes.
   const clean = st.pending.clean;
   if (clean && !s.cleanable)
-    return box(
-      st,
+    return told(
       "a yes to a clean start, unread",
-      ...writes,
       reply(
         "answer",
         "Done",
@@ -2051,10 +2115,8 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
     dropList(st);
     st.phase = "answered";
     st.closes = quietDay(s);
-    return box(
-      st,
+    return told(
       "yes to a clean start",
-      ...writes,
       ...(shut.length ? [{ w: "close-chats", chats: shut } as const] : []),
       reply(
         "answer",
@@ -2070,17 +2132,27 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
   if (st.pending.notes?.length)
     for (const n of st.pending.notes) out.push({ w: "note", topic: n.topic, line: n.line });
   if (pend) out.push({ w: "calls", calls: pend.calls, fingerprint: pend.fingerprint });
+  // A held workflow change (ADR 0075 §5.5): exactly its patch, pushed by apply with workflows write.
+  if (st.pending.workflow) out.push({ w: "workflow", change: st.pending.workflow, code });
+  // A task first (ADR 0075 §6), with the words you approved: opened, linked and started. This task
+  // waits for it, and goes on with your `continue`.
+  const first = st.pending.first;
+  if (first) out.push({ w: "first", ...firstPart(s, first, st.use) });
   // A split's parts (ADR 0066), opened with the words you approved; nothing starts. The task then
   // waits for your `go`, never closed for quiet.
   const split = st.pending.split;
   dropList(st);
+  if (first) {
+    st.phase = "needs-you";
+    st.closes = undefined;
+    out.push(reply("needs-you", "Needs you", "", `yes-${last.id}`));
+    return box(st, "yes to a task first", ...out);
+  }
   if (split) {
     const parts = partsOf(s, split, st.use);
     if ("wrong" in parts)
-      return box(
-        st,
+      return told(
         "a split that no longer fits",
-        ...writes,
         reply(
           "answer",
           "Done",
@@ -2094,9 +2166,11 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
     out.push(reply("needs-you", "Needs you", "", `yes-${last.id}`));
     return box(st, "yes to a split", ...out);
   }
-  st.phase = "answered";
-  st.closes = quietDay(s);
-  out.push(reply("answer", "Done", "", `yes-${last.id}`));
+  // A workflow change pushed to a PR: the PR waits for your merge.
+  const pr = out.some((w) => w.w === "workflow");
+  st.phase = pr ? "needs-you" : "answered";
+  st.closes = pr ? undefined : quietDay(s);
+  out.push(reply(pr ? "needs-you" : "answer", pr ? "Needs you" : "Done", "", `yes-${last.id}`));
   return box(st, "yes", ...out);
 }
 
@@ -2439,7 +2513,7 @@ function recipeInStep(s: Snapshot, st: TaskState, ctx: Context, writes: Write[])
   return box(st, updated ? "its recipe changed" : "a new recipe", ...writes);
 }
 
-const openPr = (st: TaskState) =>
+export const openPr = (st: TaskState) =>
   [...(st.prs ?? [])].reverse().find((u) => (st.prInfo?.[u]?.state ?? "open") === "open");
 const docMerged = (st: TaskState) =>
   Object.values(st.prInfo ?? {}).some((p) => p.kind === "change" && p.state === "merged");
@@ -2467,6 +2541,15 @@ export function afterThink(
     ("error" in result ? false : Boolean(result.read_outside));
   if (outside) for (const w of d.writes) if (w.w === "reply") w.outside = true;
   return d;
+}
+
+/** A result that says it failed: the task's state, with its first line as the problem. */
+function failedWith(st: TaskState, s: Snapshot, text: string) {
+  st.phase = "failed";
+  st.failed = {
+    at: s.now,
+    problem: problem("unexpected", { first_line: text.split("\n")[0] ?? "" }),
+  };
 }
 
 function decideAfter(
@@ -2500,7 +2583,7 @@ function decideAfter(
         ? "What it had committed is kept on the task's branch, and the next run starts from it."
         : why;
     // A split task's `stop` starts no more parts too (ADR 0066).
-    const parts = s.issue.labels.includes(STARTED_LABEL) && openParts(s).length > 0;
+    const parts = s.issue.labels.includes(STARTED_LABEL) && splitParts(s).length > 0;
     if (parts) writes.push({ w: "labels", remove: [STARTED_LABEL] });
     // Stop the run from the web chat: its answer goes on the status's Last action (ADR 0069).
     const button = meta.stopped?.why === "asked" && Boolean(meta.stopped.button);
@@ -2564,7 +2647,7 @@ function decideAfter(
   }
 
   const left: string[] = [];
-  const r = think.profile === "guest" ? guestsOnly(result, left) : result;
+  const r = think.profile === "guest" ? guestsOnly(result, left, ctx) : result;
   const writes: Write[] = [];
   // The list is the box's alone (ADR 0049): a copy in the agent's words goes, from its heading on.
   let text = withoutList(r.text);
@@ -2580,11 +2663,7 @@ function decideAfter(
     // Its script failed (it exited non-zero, ran for more than a minute, or isn't there): a failure
     // with its cause, counted as a job's is, never a change. Its last output stays the one to beat.
     if (r.state === "failed") {
-      st.phase = "failed";
-      st.failed = {
-        at: s.now,
-        problem: problem("unexpected", { first_line: r.text.split("\n")[0] ?? "" }),
-      };
+      failedWith(st, s, r.text);
       const pauses = failedInARow(st, think);
       return {
         state: st,
@@ -2626,23 +2705,93 @@ function decideAfter(
     });
   if (alone && (r.work || r.pr || r.calls?.length))
     text += `\n\nA split comes alone, so what else this answer asked for wasn't made${r.pr ? " (its commits are kept on the task's branch)" : ""}: ask for it again once the parts are open.`;
-  const work = alone ? undefined : r.work;
-  const pr = alone ? undefined : r.pr;
+  // A task first (ADR 0075 §6): listed for your yes, and alone, as a split is; never from a read
+  // run (a guest's has none left), nor on a project's own thread.
+  const notFirst = !r.first
+    ? undefined
+    : r.split
+      ? "a split came with it: ask for it after the split"
+      : think.profile === "read"
+        ? "a run that reads a repo outside your account opens no task"
+        : s.project?.number === s.n
+          ? "a project's own thread opens none: ask in a chat in it"
+          : undefined;
+  if (notFirst) left.push(`a task first (${notFirst})`);
+  const first = Boolean(r.first) && !alone && !notFirst;
+  if (first && (r.work || r.pr || r.calls?.length))
+    text += `\n\nA task first comes alone, so what else this answer asked for wasn't made${r.pr ? " (its commits are kept on the task's branch)" : ""}: ask for it again once it's merged.`;
+  const work = alone || first ? undefined : r.work;
+  const pr = alone || first ? undefined : r.pr;
 
-  // Work a talk run found for a project, or another of your repos, or a change asked of a stay on
-  // one (it pushes nothing, ADR 0060): a work run follows on it.
+  // What your yes approves: calls, notes, a split, a held workflow change or a task first.
+  let listed = false;
+  // The run's workflow change (ADR 0075 §5.2), as the box read it from its commits: apply holds it
+  // out of the push, and it's listed for your yes when nothing it changes runs before your merge;
+  // else it stays held, and the reply says why. All the run changed: nothing is pushed before the
+  // yes, which pushes it and opens the PR asked for.
+  const held = meta.held;
+  const onlyHeld = Boolean(held?.only && !held.why);
+  const holdIt = (
+    repo: string,
+    branch: string,
+    ask?: { kind: "closes" | "part-of"; title: string; body: string },
+  ) => {
+    if (!held) return;
+    if (held.why) {
+      const files = held.files.map((f) => `\`${f}\``).join(", ");
+      const pipeline =
+        repo !== PLATFORM &&
+        !think.ownRules &&
+        held.files.some(
+          (f) => f === ".github/workflows/ship.yml" || f.startsWith(".github/actions/"),
+        );
+      text += `\n\n${
+        files
+          ? `The workflow change (${files}) is held out of the push, and not listed for your yes: ${held.why}. ${held.key ? "A workflow reads a key only as a secret (`secrets.NAME`), never in its lines." : pipeline ? "A project's pipeline changes through its stack: a `shipify:` task changes the stack, and `upgrade` brings it here." : "It's yours to make on GitHub, if you want it."}`
+          : `The run's workflow change is held out of the push, and not listed for your yes: ${held.why}. Say \`continue\`, and the next run makes it again.`
+      }`;
+      return;
+    }
+    st.branch = branch;
+    st.project = repo;
+    st.pending.workflow = {
+      repo,
+      branch,
+      ...(think.base ? { base: think.base } : {}),
+      at: held.at,
+      files: held.files,
+      patch: held.patch,
+      sha256: held.sha256,
+      facts: held.facts,
+      ...(held.mainNewer ? { mainNewer: true as const } : {}),
+      ...(meta.readOutside || r.read_outside || think.account ? { outside: true as const } : {}),
+      ...(onlyHeld && ask ? { pr: ask } : {}),
+    };
+    listed = true;
+  };
+
+  // Work found for a project, or another of your repos, that this run has no clone of: a work run
+  // follows on it. A work run, a stay's turn too, makes a change to its own project itself (ADR
+  // 0076): a new run for it would start over from the thread, so it's left out, and said.
+  const own = work && think.profile === "work" ? named(s, st, work.project) : undefined;
   if (work && think.profile === "read")
     left.push(
       "a change (a run that reads a repo outside your account changes nothing: ask for it in a new task)",
     );
-  else if (work && (think.profile === "talk" || meta.stayed)) {
+  else if (own && "project" in own && own.project === think.project)
+    left.push(
+      `a work run on ${work?.project} (this run works on its clone, so it makes the change itself and asks for its PR: reply \`continue\` to have it done)`,
+    );
+  else if (work && (think.profile === "talk" || think.profile === "work")) {
     const n = named(s, st, work.project);
     if (n && "refused" in n) text += `\n\n${n.refused}`;
     else if (n) {
       st.pending.work = { project: work.project, brief: work.brief, at: s.now };
       writes.push({ w: "dispatch", job: "run" });
       // Said by the box, whatever the agent wrote: a run starts from this reply, so it's no surprise.
-      text += `\n\nA work run on ${work.project} starts now, from this reply: say \`stop\` to stop it.`;
+      // Once: an agent that said it in its own words too isn't repeated.
+      const starts = `A work run on ${work.project} starts now, from this reply: say \`stop\` to stop it.`;
+      if (!text.includes(starts)) text += `\n\n${starts}`;
     } else {
       const p = problem("no-such-project", {
         project: work.project,
@@ -2664,42 +2813,52 @@ function decideAfter(
     st.branch = branch;
     // A new project's plan, read from the run's commits: its PR is the plan's.
     st.plan = wrotePlan(s, think, meta) ?? st.plan;
-    // A split task closes with its parts (ADR 0066), never with a PR of its own.
-    const parent = pr.kind === "closes" && openParts(s).length > 0;
+    // A split task closes with its parts (ADR 0066), never with a PR of its own; a task first
+    // (ADR 0075) leaves its PR as asked.
+    const parent = pr.kind === "closes" && splitParts(s).length > 0;
     if (parent) text += "\n\nIts PR is `part-of`: this task closes with its sub-tasks.";
-    writes.push({
-      w: "push",
-      repo,
-      branch,
-      kind: parent ? "part-of" : pr.kind,
-      title: pr.title,
-      // A PR always says what it is: the agent's description, or its reply when it gave none.
-      body: pr.body.trim() ? pr.body : r.text,
-      ...(think.base ? { base: think.base } : {}),
-      // A preview is an app's (its pipeline makes it); a repo that keeps its own rules has none.
-      ...((pr.preview || st.preview) && !think.ownRules ? { preview: true } : {}),
-    });
-    needs.repo = repo;
-    if (meta.touchesWorkflows) needs.workflows = true;
+    const kind = parent ? "part-of" : pr.kind;
+    // A PR always says what it is: the agent's description, or its reply when it gave none.
+    const body = pr.body.trim() ? pr.body : r.text;
+    // Its workflow change all it changed: nothing to push before your yes, which opens the PR.
+    if (!onlyHeld || kind === "publish") {
+      writes.push({
+        w: "push",
+        repo,
+        branch,
+        kind,
+        title: pr.title,
+        body,
+        ...(think.base ? { base: think.base } : {}),
+        // A preview is an app's (its pipeline makes it); a repo that keeps its own rules has none.
+        ...((pr.preview || st.preview) && !think.ownRules ? { preview: true } : {}),
+      });
+      needs.repo = repo;
+      if (meta.touchesWorkflows) needs.workflows = true;
+    }
+    if (kind !== "publish") holdIt(repo, branch, { kind, title: pr.title, body });
     st.project = repo;
     st.ownRules = think.ownRules;
     // A preview the agent asked for is on for the task's PR, as your `preview` turns it on.
     if (pr.preview && !think.ownRules) st.preview = true;
   }
-  // A failed run's commits (its checks failed, or it couldn't finish): kept for the next run.
+  // A failed run's commits (its checks failed, or it couldn't finish): kept for the next run, its
+  // workflow change held and not listed: the next run makes it again.
   if (r.state === "failed") {
     const why = keepWork(s, st, think, meta, { writes, needs }, wrotePlan(s, think, meta));
     if (why) text += `\n\n${why}`;
   }
   // A question mid-change (ADR 0041): its commits wait on the task's branch for your answer. The
   // reply reads as it would without them: a guard that keeps them out says nothing new. So are a
-  // split's, whose PR waits (ADR 0066).
-  else if ((r.state === "needs-you" && !r.pr) || (alone && r.pr))
-    keepWork(s, st, think, meta, { writes, needs }, undefined, true);
-
-  // Tool calls: pre-approved ones are made now, when the run read nothing from outside, or only the
-  // tools their form names (ADR 0049); the rest are listed for your exact yes.
-  let listed = false;
+  // split's, whose PR waits (ADR 0066), and a task first's, whatever its state (ADR 0075). A
+  // question's workflow change waits beside it on the list.
+  else if ((r.state === "needs-you" && !r.pr) || (alone && r.pr) || first) {
+    const asks = !alone && !first;
+    const before = writes.length;
+    if (!(asks && onlyHeld)) keepWork(s, st, think, meta, { writes, needs }, undefined, true);
+    if (asks && (onlyHeld || writes.length > before) && think.project)
+      holdIt(think.project, st.branch ?? branchName(s.n, s.issue.title));
+  }
   // A call's files (its tool's args.<call>.files) are ones the task shared, before or in this
   // answer, or ones you sent through a chat on it, by their refs (ADR 0069). Apply
   // shares this answer's before it makes calls, so a pre-approved one can name them.
@@ -2709,7 +2868,7 @@ function decideAfter(
     const arg = ctx.tools[c.tool]?.files?.[c.name];
     return arg && arg in c.args ? c.args[arg] : [];
   };
-  const calls = (alone ? [] : (r.calls ?? [])).filter((c) => {
+  const calls = (alone || first ? [] : (r.calls ?? [])).filter((c) => {
     const ok = ctx.tools[c.tool]?.calls[c.name]?.(c.args) ?? false;
     if (!ok) left.push(`${c.tool}.${c.name} (not a call it may make, or its arguments don't fit)`);
     const files = filesOf(c);
@@ -2733,9 +2892,11 @@ function decideAfter(
       left.push(`${c.tool}.${c.name} (one tool per list: ask again for it after this one)`);
     calls.splice(0, calls.length, ...calls.filter((c) => c.tool === tool));
     // The agent saying it read outside counts as the web; another account's run (ADR 0045) holds
-    // none of your tools: what either asks waits for your yes.
+    // none of your tools: what either asks waits for your yes. A guest's fit their forms, made at
+    // once, as no one's yes is theirs to give (ADR 0073).
     const away = Boolean(r.read_outside) || Boolean(think.account);
-    if (!away && calls.every((c) => preApproved(ctx, c, calls, meta))) {
+    const guest = think.profile === "guest";
+    if (guest || (!away && calls.every((c) => preApproved(ctx, c, calls, meta)))) {
       writes.push({ w: "calls", calls, fingerprint: fingerprint(calls) });
       needs.act = tool;
     } else {
@@ -2759,7 +2920,7 @@ function decideAfter(
     left.push("pages (a run that reads a repo outside your account writes none)");
   else if (r.pages?.length && shut)
     left.push(`pages (${shownProject(shut.name)} is closed · #${shut.number}: reopen it first)`);
-  else if (r.pages?.length && !think.account && !alone)
+  else if (r.pages?.length && !think.account && !alone && !first)
     writes.push({
       w: "pages",
       pages: r.pages,
@@ -2783,6 +2944,10 @@ function decideAfter(
 
   if (alone) {
     st.pending.split = r.split;
+    listed = true;
+  }
+  if (first) {
+    st.pending.first = r.first;
     listed = true;
   }
 
@@ -2812,15 +2977,16 @@ function decideAfter(
   if (left.length) text += `\n\n(Left out: ${left.join("; ")}.)`;
   // The list, once and last: all your yes approves, and its code, which its Yes names (ADR 0049).
   const pend = st.pending;
+  const more = heldListLines(st);
   const list = !listed
     ? undefined
-    : listTooLong(ctx.tools, pend.calls?.calls, pend.notes, pend.split)
+    : listTooLong(ctx.tools, pend.calls?.calls, pend.notes, pend.split, more)
       ? "github"
-      : listCode(pend.calls?.calls, pend.notes, pend.split);
+      : listCode(pend.calls?.calls, pend.notes, pend.split, [], heldKinds(pend));
   if (listed) {
     text += `
 
-${callList(ctx.tools, pend.calls?.calls, pend.notes, pend.split)}`;
+${callList(ctx.tools, pend.calls?.calls, pend.notes, pend.split, more)}`;
     // Its time starts now; apply names the reply that shows it.
     pend.list = { post: 0, at: s.now };
   }
@@ -2828,17 +2994,19 @@ ${callList(ctx.tools, pend.calls?.calls, pend.notes, pend.split)}`;
   // The reply: what needs you (a question, a list, a PR to merge, one this run opened or one still
   // open from before), a failure, or an answer. A task waiting on a PR is never closed for quiet.
   const waiting = Boolean(
-    r.question || st.pending.calls || st.pending.notes || st.pending.split || pr || openPr(st),
+    r.question ||
+      st.pending.calls ||
+      st.pending.notes ||
+      st.pending.split ||
+      st.pending.workflow ||
+      st.pending.first ||
+      pr ||
+      openPr(st),
   );
   st.failed = undefined;
   st.seen = cursor;
-  if (r.state === "failed") {
-    st.phase = "failed";
-    st.failed = {
-      at: s.now,
-      problem: problem("unexpected", { first_line: r.text.split("\n")[0] ?? "" }),
-    };
-  } else
+  if (r.state === "failed") failedWith(st, s, r.text);
+  else
     st.phase =
       waiting || r.state === "needs-you" ? "needs-you" : st.repeat ? "repeating" : "answered";
   // An errand's job on a task its merge closed answers there, and the task stays closed and done.
@@ -2978,20 +3146,28 @@ const readsFit = (meta: ThinkMeta, after: string[] = []) =>
  * within its `after`.
  */
 export function preApproved(ctx: Context, c: ToolCall, all: ToolCall[], meta: ThinkMeta): boolean {
-  const forms = ctx.tools[c.tool]?.pre.filter((p) => p.call === c.name) ?? [];
-  return forms.some(
-    (p) =>
-      readsFit(meta, p.after) &&
-      all.filter((x) => x.tool === c.tool && x.name === c.name).length <= p.max &&
-      Object.entries(p.fixed).every(([k, v]) => JSON.stringify(c.args[k]) === JSON.stringify(v)) &&
-      Object.entries(c.args).every(
-        ([k, v]) =>
-          k in p.fixed ||
-          (p.any ?? []).includes(k) ||
-          (k in p.caps && typeof v === "string" && v.length <= (p.caps[k] ?? 0)),
-      ),
-  );
+  const forms = ctx.tools[c.tool]?.pre ?? [];
+  return forms.some((p) => readsFit(meta, p.after) && fits(p, c, all));
 }
+
+/**
+ * Whether a guest's call fits one of its tool's guest forms (ADR 0073). No rule on reads: a guest's
+ * call makes a drop only they open, or changes one of theirs, which the tool checks.
+ */
+export const guestForm = (ctx: Context, c: ToolCall, all: ToolCall[]) =>
+  (ctx.tools[c.tool]?.guest ?? []).some((p) => fits(p, c, all));
+
+/** A call fits a form: its call, fixed fields equal, text within caps, others only its `any`. */
+const fits = (p: Form, c: ToolCall, all: ToolCall[]) =>
+  p.call === c.name &&
+  all.filter((x) => x.tool === c.tool && x.name === c.name).length <= p.max &&
+  Object.entries(p.fixed).every(([k, v]) => JSON.stringify(c.args[k]) === JSON.stringify(v)) &&
+  Object.entries(c.args).every(
+    ([k, v]) =>
+      k in p.fixed ||
+      (p.any ?? []).includes(k) ||
+      (k in p.caps && typeof v === "string" && v.length <= (p.caps[k] ?? 0)),
+  );
 
 type Note = { topic: string; line: string };
 
@@ -3004,6 +3180,8 @@ const listLines = (
   calls: ToolCall[] = [],
   notes: Note[] = [],
   split: SplitEntry[] = [],
+  /** A held workflow change's and a task first's lines (ADR 0075), made already. */
+  held: string[] = [],
 ) =>
   [
     ...calls.map((c) => {
@@ -3014,6 +3192,7 @@ const listLines = (
     }),
     ...notes.map((n) => `Note in ${n.topic}: ${n.line}`.replace(/\s+/g, " ")),
     ...splitLines(split),
+    ...held,
   ].map((l, i) => `${i + 1}. ${l}`);
 
 /** A list too long for a chat to show whole (LIST_MAX): approved only on GitHub. */
@@ -3022,7 +3201,8 @@ export const listTooLong = (
   calls?: ToolCall[],
   notes?: Note[],
   split?: SplitEntry[],
-) => listLines(tools, calls, notes, split).join("\n").length > LIST_MAX;
+  held?: string[],
+) => listLines(tools, calls, notes, split, held).join("\n").length > LIST_MAX;
 
 /** The list, as you approve it: its heading, saying where your `yes` counts, then its lines. */
 export function callList(
@@ -3030,11 +3210,12 @@ export function callList(
   calls?: ToolCall[],
   notes?: Note[],
   split?: SplitEntry[],
+  held?: string[],
 ): string {
-  const where = listTooLong(tools, calls, notes, split)
+  const where = listTooLong(tools, calls, notes, split, held)
     ? "comment `yes` on the task on GitHub, within a day: it's too long for a chat"
     : "tap Yes, or say `yes`, within a day";
-  return `${LIST_HEAD} (${where}):\n${listLines(tools, calls, notes, split).join("\n")}`;
+  return `${LIST_HEAD} (${where}):\n${listLines(tools, calls, notes, split, held).join("\n")}`;
 }
 
 /**

@@ -15,6 +15,19 @@ export const TOOLS_VERSION = 1;
 const name = /^[a-z][a-z0-9_]*$/;
 const call = z.string().regex(name, "a call's name is lowercase letters, digits and _");
 
+/**
+ * A form a call must fit (ADR 0049): its call, the arguments fixed to these values, the text
+ * arguments capped at these lengths, the arguments it takes with any value its call takes (`any`;
+ * nothing else allowed), and the most such calls in one run.
+ */
+const Form = z.object({
+  call: z.string(),
+  fixed: z.record(z.string(), z.unknown()).default({}),
+  caps: z.record(z.string(), z.number().int().positive().max(10_000)).default({}),
+  any: z.array(z.string()).default([]),
+  max: z.number().int().min(1).max(20).default(1),
+});
+
 /** Which GitHub secret a tool's variable comes from, for each verb that needs it. */
 export const KeyFor = z.object({
   look: z.string().optional(),
@@ -90,23 +103,18 @@ export const ToolEntry = z
       .optional(),
     /**
      * Pre-approved calls (ADR 0031, ADR 0049): made with no `yes` when a run read nothing from
-     * outside, or only the look calls of the tools named in `after`. Each names the call, the
-     * arguments fixed to these values (its target always), the text arguments capped at these
-     * lengths, the arguments it takes with any value its call takes (`any`; nothing else
-     * allowed), and the most such calls in one run. Merging this approves it.
+     * outside, or only the look calls of the tools named in `after`. Each is a form (its target
+     * always fixed). Merging this approves it.
      */
-    pre: z
-      .array(
-        z.object({
-          call: z.string(),
-          fixed: z.record(z.string(), z.unknown()).default({}),
-          caps: z.record(z.string(), z.number().int().positive().max(10_000)).default({}),
-          any: z.array(z.string()).default([]),
-          max: z.number().int().min(1).max(20).default(1),
-          after: z.array(z.string().regex(name)).optional(),
-        }),
-      )
-      .optional(),
+    pre: z.array(Form.extend({ after: z.array(z.string().regex(name)).optional() })).optional(),
+    /**
+     * The calls a guest's run may ask for (ADR 0073), made at once by the box, as a guest's words
+     * approve nothing: each a form, as `pre`'s, with no fixed target. The box starts the tool's
+     * server with SHIPIFY_GUEST (`{"email", "name"}`, from the door) for them, and the server's
+     * guest mode checks that what a call changes is that guest's: the tool's own tests prove it.
+     * Merging this approves it.
+     */
+    guest: z.array(Form).optional(),
     /** How it sets up (ADR 0030 §6): `ship add <name>`. */
     setup: Setup.optional(),
   })
@@ -131,6 +139,8 @@ export const ToolEntry = z
       else if (target && !(target in p.fixed))
         say(`a pre-approved "${p.call}" fixes its target: fixed.${target}`);
     }
+    for (const g of t.guest ?? [])
+      if (!t.act.includes(g.call)) say(`a guest's "${g.call}" isn't one of its act calls`);
     for (const [v, k] of Object.entries(t.keys)) {
       if (t.look.length && !k.look)
         say(`keys.${v} has no look secret, and the tool has look calls`);

@@ -3,9 +3,8 @@
 // the task's facts in a hidden JSON line. These are the pure parts: titles, state, the status
 // comment, the agent's prompt and its result. commands/task.ts does the GitHub and git work.
 import { z } from "zod";
-import { NEEDS_YOU_LABEL, Problem, ToolCall } from "../contracts/index.ts";
+import { NEEDS_YOU_LABEL, Problem, RUN_WRITER, ToolCall } from "../contracts/index.ts";
 import { type Form, type FormRead, readForm } from "./form-reader.ts";
-import { RECORD_WRITER } from "./github.ts";
 import { intentOfWord } from "./intents.ts";
 import { planId } from "./plan.ts";
 import { formatWhen, RepeatState, whenProblem } from "./repeat.ts";
@@ -264,6 +263,32 @@ export const SplitEntry = z.object({
 });
 export type SplitEntry = z.infer<typeof SplitEntry>;
 
+/** A task first (ADR 0075 §6): one task, a fix on main this task waits for. */
+export const FirstEntry = SplitEntry.omit({ after: true });
+export type FirstEntry = z.infer<typeof FirstEntry>;
+
+/** A run's workflow change, held for your yes (ADR 0075 §5.3): what that yes pushes, exactly. */
+export const HeldList = z.object({
+  repo: z.string(),
+  branch: z.string(),
+  /** The repo's default branch, when it isn't main (ADR 0045). */
+  base: z.string().optional(),
+  /** The commit the patch starts from: a branch that isn't on GitHub yet starts there. */
+  at: z.string(),
+  files: z.array(z.string()),
+  patch: z.string(),
+  sha256: z.string(),
+  facts: z.array(z.string()),
+  mainNewer: z.literal(true).optional(),
+  /** The run read from outside: the list says to read each line. */
+  outside: z.literal(true).optional(),
+  /** The PR the run asked for, when nothing else was pushed: your yes opens it. */
+  pr: z
+    .object({ kind: z.enum(["closes", "part-of"]), title: z.string(), body: z.string() })
+    .optional(),
+});
+export type HeldList = z.infer<typeof HeldList>;
+
 /** A task's state, version 2 (ADR 0031): facts, not a phase machine. A state of another version isn't read. */
 export const TaskState = z.object({
   v: z.literal(2),
@@ -330,6 +355,10 @@ export const TaskState = z.object({
       notes: z.array(z.object({ topic: z.string(), line: z.string() })).optional(),
       /** A split a run proposed (ADR 0066): its parts open only after your yes. */
       split: z.array(SplitEntry).optional(),
+      /** A run's workflow change, held (ADR 0075): pushed only after your yes. */
+      workflow: HeldList.optional(),
+      /** A task first (ADR 0075): opened and started only after your yes. */
+      first: FirstEntry.optional(),
       /** A clean start's chats (ADR 0070): closed only after your yes, read again first. */
       clean: z
         .array(z.object({ n: z.number().int().positive(), title: z.string() }))
@@ -353,6 +382,8 @@ export const TaskState = z.object({
       prepare: z.object({ plan: z.string(), at: z.string() }).optional(),
       /** PRs to close because the task was closed as not planned (the github job does it). */
       closePrs: z.array(z.string()).optional(),
+      /** An agent's sign-in with a one-time code (`codex sign in`, ADR 0074): the github job's. */
+      signIn: z.object({ agent: z.string(), at: z.string() }).optional(),
       /** A staging app's release PR, followed to its merge, then its production deploy. */
       release: z.object({ repo: z.string(), pr: z.string(), at: z.string() }).optional(),
     })
@@ -473,14 +504,14 @@ const unescapeHtml = (s: string) =>
 
 /**
  * The status comment and the state it records. Only a comment a run wrote (the workflow's own
- * login, RECORD_WRITER) counts, never another bot's (the agent's bot token can comment), and the
+ * login, RUN_WRITER) counts, never another bot's (the agent's bot token can comment), and the
  * first one wins, so no later comment can stand in for it (the snapshot also checks who last
  * edited it, ADR 0031). A state this version can't read in full keeps
  * what it can (and the comment, so no second status comment starts over with nothing read).
  */
 export function findStatus(comments: Comment[]): { comment?: Comment; state: TaskState } {
   for (const c of comments) {
-    if (c.user.login !== RECORD_WRITER || !c.body.startsWith(MARK)) continue;
+    if (c.user.login !== RUN_WRITER || !c.body.startsWith(MARK)) continue;
     const end = c.body.indexOf(" -->");
     let raw: Record<string, unknown>;
     try {
@@ -522,24 +553,6 @@ export function safeMarkdown(text: string): string {
   const shut = (s.match(/<\/details>/gi) ?? []).length;
   if (open > shut) s += `\n\n${"</details>\n".repeat(open - shut)}`;
   return s;
-}
-
-/** HTML tags that fetch something when GitHub (or a chat) renders them. */
-const FETCHES =
-  /<(?=\/?\s*(?:img|picture|source|video|audio|svg|image|iframe|object|embed|input|link)\b)/gi;
-
-/**
- * A reply's images made inert (ADR 0044), for a run that read outside content: GitHub's image
- * proxy fetches an image when the task is viewed, so a URL in one could carry data out. Every
- * markdown image's `!` is escaped (once, unless it already is), so it reads as the link it points
- * to, inline or by reference; every HTML tag that fetches is shown as text. Everywhere, code
- * included: telling code from text the way GitHub does is a parser's job, and a guess that's wrong
- * once lets an image through. In code that shows a stray `\` or `&lt;`, which is the price.
- */
-export function inertImages(text: string): string {
-  return text
-    .replace(/(\\*)!\[/g, (_, bs: string) => `${bs}${bs.length % 2 ? "" : "\\"}![`)
-    .replace(FETCHES, "&lt;");
 }
 
 /** A question, quoted on every line. */
@@ -652,7 +665,7 @@ export function renderStatus(s: TaskState, view: StatusView = {}): string {
     view.question ? quoted("Question", view.question) : undefined,
     [...prLines(s), ...links.map(([l, u]) => `- ${l}: ${u}`)].join("\n") || undefined,
     s.runs?.length ? renderRuns(s.runs, s.ran ?? s.runs.length, tz, s.last) : undefined,
-    `<sub>${s.pending?.calls || s.pending?.notes || s.pending?.split ? "Say “yes” (exactly that, here or in your chat, where Yes is a tap) to make exactly the listed changes, or “no” to cancel them. Anything else you say plans again." : (view.help ?? `${HELP[s.phase]}${s.phase === "needs-you" && s.plan ? PUBLISH : ""}`)}</sub>`,
+    `<sub>${s.pending?.calls || s.pending?.notes || s.pending?.split || s.pending?.workflow || s.pending?.first ? "Say “yes” (exactly that, here or in your chat, where Yes is a tap) to make exactly the listed changes, or “no” to cancel them. Anything else you say plans again." : (view.help ?? `${HELP[s.phase]}${s.phase === "needs-you" && s.plan ? PUBLISH : ""}`)}</sub>`,
   ]
     .filter(Boolean)
     .join("\n\n");

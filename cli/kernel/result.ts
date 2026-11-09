@@ -4,7 +4,7 @@
 import { z } from "zod";
 import { MAX_FILES_OUT, ToolCall } from "../contracts/index.ts";
 import { limitName } from "../lib/runs.ts";
-import { SplitEntry } from "../lib/task.ts";
+import { FirstEntry, SplitEntry } from "../lib/task.ts";
 import type { Stop } from "./types.ts";
 
 export const RESULT_VERSION = 2;
@@ -41,6 +41,11 @@ export const Result = z.object({
    * the task's parts already there (`#n`).
    */
   split: z.array(SplitEntry).min(2).max(8).optional(),
+  /**
+   * A task first (ADR 0075): a fix on main this task needs before it can go on, as the box runs
+   * main's code. Listed for your yes, alone; on it, opened and started, and this task waits for it.
+   */
+  first: FirstEntry.optional(),
   /** Notes for the notebook: your own words to keep. */
   notes: z
     .array(z.object({ topic: z.string().max(60), line: z.string().max(500) }))

@@ -5,11 +5,14 @@
 - "share the Diwali photos with Mom and Dad, keep them"
 - "what drops do I have?"
 - "revoke the Ladakh drop"
+- "make a page of my trip plan"
+- a guest: "make a page of our trip plan, and share it with Sam"
 
 ## Not this one
 - "summarise the PDF I sent"
 - "build Drop" (the app itself: a task on its own repo)
 - "add Drop as a tool on a new copy of Shipify" (a setup: `pnpm ship add drop`)
+- "make the playground's home page darker" (a change to a project, not a page to share)
 
 ## Cases
 
@@ -40,3 +43,28 @@
   `shipify-files` branch for good, and over 25 MB it isn't shared at all.
 - **Done well:** one `publish` whose `files` names the zip by the ref the box's notes give it
   (`web:f-…`); the box fetches it and gives it to Drop.
+
+### 5. A page asked for, with no word of sharing
+- **Ask:** "make a page of my trip plan: Goa, 12-14 Dec … Add a packing checklist I can tick."
+- **Without it:** seen in a baseline with the skill as it was: the page came back as a file
+  only, with no `publish`, as the owner hadn't said "share". The reply offered a Drop link if the
+  owner asked for one: a second message for what the page ask meant.
+- **Done well:** `trip.html` in the out folder and in `files`, and one `publish` naming it, with
+  `share: "me"` and `expiry: "7d"`, with no look first. The reply says what the page holds and that
+  its link opens it in Drop; the box adds the link, and the file leaves the reply.
+
+### 6. A guest's page, shared with someone
+- **Ask:** a guest: "make a page of our trip plan, and share it with Sam".
+- **Without it:** not yet seen. The risks: a `publish` with `share: "people"` or `people`, which
+  fits no guest form, so the box leaves it out and the page stays a file only; or `share` left
+  out, which fits no form either, as the form fixes `share: "me"`.
+- **Done well:** the page in the out folder and in `files`, and one `publish` with
+  `share: "me"`, `title` and `files`. The reply says the page opens only to them, and how to share
+  it with Sam: Manage it in Drop → **Share** → People (Sam signs in with Google), or a link.
+
+### 7. A file with no word of who
+- **Ask:** "put the report in Drop".
+- **Without it:** not yet seen. The risk: `share: "view"` by habit, so a link anyone can open goes
+  out though the owner never said so.
+- **Done well:** one `publish` with `share: "me"` (or none: the tool makes it only the owner's).
+  The reply says only they can open it, and how to share it.

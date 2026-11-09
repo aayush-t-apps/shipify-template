@@ -7,8 +7,9 @@ guides differ (plans, change docs, ADRs, commands, the quality bar), **Shipify's
 **How agents find them** (ADR 0038):
 - **On a task,** every run hands its agent this folder, from its read-only copy of Shipify. The
   agent lists each skill with its description, and loads one when it fits: pi takes the folder
-  (`--skill`), OpenCode its config's `skills.paths`, and Claude Code finds it linked in its
-  settings folder. A read run gets none.
+  (`--skill`), OpenCode its config's `skills.paths`, Claude Code finds it linked in its
+  settings folder, and Codex linked where it reads a user's (`$HOME/.agents/skills`). A read run
+  gets none.
 - **On this PC,** Claude Code finds them through `.claude/skills` (`ship sync` links it in the
   workspace); other agents read them from the table in `AGENTS.md`.
 
@@ -46,7 +47,7 @@ follows.
 | [api-and-interface-design](api-and-interface-design/SKILL.md) | an HTTP API, a package's exports, types between modules | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills/tree/ce89b03cbd768d4c9f512beedae46c20822a6bf6/skills/api-and-interface-design) | MIT |
 | [security-and-hardening](security-and-hardening/SKILL.md) | user input, sessions, secrets, third parties, dependencies | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills/tree/d1463fd0d6675c6e145d9c57802d70faf84d1f51/skills/security-and-hardening) | MIT |
 | [notion](notion/SKILL.md) | a task reads or changes the owner's Notion (Shipify's Notion tool, `tools/notion`) | this repo | this repo's |
-| [drop](drop/SKILL.md) | a task shares files it made as a link, or changes the owner's drops (Shipify's Drop tool, `tools/drop`) | this repo | this repo's |
+| [drop](drop/SKILL.md) | a task shares files it made as a link, makes a page (ADR 0072), or changes the owner's drops (Shipify's Drop tool, `tools/drop`) | this repo | this repo's |
 | [pdf](pdf/SKILL.md) | a run makes a PDF for the owner or a guest: HTML printed by headless Chromium (`pdf.mjs`) | this repo | this repo's |
 | [knowledge](knowledge/SKILL.md) | a run in a project, a reply kept on its pages, a check of them, a collate of its Inbox, the Journal organized, what's known found (ADR 0069, 0070) | this repo | this repo's |
 | [plug-ins](plug-ins/SKILL.md) | adding or changing any plug-in: a tool, a chat channel, a stack, an agent | this repo | this repo's |
@@ -86,6 +87,9 @@ belongs to the authors named there.
 - **`test-driven-development`:** its "In Shipify" note adds that a test makes what it reads, never
   the owner's own files, which a release's check doesn't have; and it has a `scenarios.md`
   (2026-10-24).
+- **`frontend-design`:** a last section, "A one-file page (in Shipify)", for the pages Drop shows
+  in its sandbox: everything inside the file, what works and what doesn't, small screens first,
+  light and dark, under 1 MB; and a `scenarios.md` (ADR 0072, 2026-11-06).
 - **Everything else:** unchanged.
 
 **Adding or updating one** ([writing-skills](writing-skills/SKILL.md) has the whole way):

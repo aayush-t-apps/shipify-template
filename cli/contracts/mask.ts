@@ -26,3 +26,22 @@ export function maskSecrets(text: string): string {
       )
   );
 }
+
+/** HTML tags that fetch something when GitHub (or a chat) renders them. */
+const FETCHES =
+  /<(?=\/?\s*(?:img|picture|source|video|audio|svg|image|iframe|object|embed|input|link)\b)/gi;
+
+/**
+ * Images made inert (ADR 0044), in a reply of a run that read outside content, and in a Progress
+ * the edge renders: GitHub's image proxy fetches an image when the task is viewed, so a URL in one
+ * could carry data out. Every markdown image's `!` is escaped (once, unless it already is), so it
+ * reads as the link it points to, inline or by reference; every HTML tag that fetches is shown as
+ * text. Everywhere, code included: telling code from text the way GitHub does is a parser's job,
+ * and a guess that's wrong once lets an image through. In code that shows a stray `\` or `&lt;`,
+ * which is the price. One copy for the box and the edge, so the guard can't drift.
+ */
+export function inertImages(text: string): string {
+  return text
+    .replace(/(\\*)!\[/g, (_, bs: string) => `${bs}${bs.length % 2 ? "" : "\\"}![`)
+    .replace(FETCHES, "&lt;");
+}
