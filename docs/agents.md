@@ -12,7 +12,7 @@ each agent's adapter writes them its own way (ADR 0038, ADR 0043).
 
 ## Where it runs, and what it holds
 
-- **Its own Linux user,** one per slot: `shipify-agent-<k>`, started through one sudoers rule set
+- **Its own Linux user,** one per slot: `shipify-agent-<k>`, started through a sudoers rule set
   up by `ship box add`, from an empty environment, with its keys on stdin.
 - **Its login on a pipe:** file descriptor 3, which it reads once, so the login is never in its
   environment, where every command it runs could read it. Its adapter says how it reads it there

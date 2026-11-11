@@ -58,6 +58,7 @@ import {
   type HeldList,
   looksAt,
   nextBranch,
+  type Op,
   PLATFORM,
   PLAYGROUND,
   type SplitEntry,
@@ -144,8 +145,6 @@ export interface Context {
   errand?: ErrandSeen;
   /** The task's own URL, for links. */
   taskUrl: string;
-  /** Operations' form on GitHub, for an operation that starts only there. */
-  operateForm: string;
   /** The answer to `/ping`, `/apps`, `/help`, `/notebook` or `/recipes`, as a chat gets it. */
   instant: (name: Instant, rest: string) => string;
   /** A recipe's task: its file on main, read by the snapshot (ADR 0032). */
@@ -402,13 +401,18 @@ function dropList(st: TaskState) {
   st.pending.clean = undefined;
   st.pending.workflow = undefined;
   st.pending.first = undefined;
+  st.pending.atOnce = undefined;
   st.pending.list = undefined;
 }
 
-/** A list's held kinds (ADR 0075), as its code names them: a workflow change by its patch's hash. */
-const heldKinds = (p: TaskState["pending"]): unknown[] => [
+/**
+ * A list's held kinds (ADR 0075), as its code names them: a workflow change by its patch's hash;
+ * an operation from a chat by its project (ADR 0049).
+ */
+const heldKinds = (p: TaskState["pending"], project?: string): unknown[] => [
   ...(p.workflow ? [{ workflow: p.workflow.sha256, branch: p.workflow.branch }] : []),
   ...(p.first ? [{ first: p.first }] : []),
+  ...(p.atOnce ? [{ operate: p.atOnce, project }] : []),
 ];
 
 /**
@@ -1789,6 +1793,45 @@ function errandOnMerge(
   });
 }
 
+/** What an operation does to the live app, as its list says it before your yes. */
+function operationLine(op: Op, project: string, version?: string): string {
+  if (op === "down")
+    return `Take ${project} down: its URLs go off, and CI checks every change but deploys none. Nothing is deleted, and \`${project}: bring it back\` undoes it.`;
+  if (op === "up")
+    return `Bring ${project} back: its URLs come back on now, and deploys start again with the next merge.`;
+  return `Roll ${project}'s production back to ${version ?? "the release before"}.`;
+}
+
+/**
+ * An operation from a chat that changes the live app at once (ADR 0049, 2026-11-11): listed for
+ * your yes, as calls are, so a word misread or a tap by mistake runs nothing.
+ */
+function listOperation(s: Snapshot, st: TaskState, fresh: Said[], writes: Write[], op: Op): Plan {
+  const p = s.parsed;
+  st.seen = upTo(s, fresh);
+  st.bodyHash = s.bodyHash;
+  dropList(st);
+  st.project = p.project;
+  st.pending.atOnce = { op, ...(p.version ? { version: p.version } : {}) };
+  st.pending.list = { post: 0, at: s.now };
+  st.phase = "needs-you";
+  st.closes = undefined;
+  const text = [
+    `\`${p.project}: ${p.ask}\` changes the live app at once, with no merge, so it runs only after your \`yes\`.`,
+    "",
+    `${LIST_HEAD} (tap Yes, or say \`yes\`, within a day):`,
+    `1. ${operationLine(op, p.project ?? "", p.version)}`,
+  ].join("\n");
+  return box(
+    st,
+    "an operation from a chat",
+    ...writes,
+    reply("needs-you", "Needs you", text, `op-list-${fresh.at(-1)?.id ?? 0}`, {
+      list: listCode([], [], [], [], heldKinds(st.pending, st.project)),
+    }),
+  );
+}
+
 function opPlan(
   s: Snapshot,
   st: TaskState,
@@ -1800,31 +1843,24 @@ function opPlan(
   const p = s.parsed;
   // A release starts from GitHub or a chat alike (one flow, ADR 0049): it opens a PR that only
   // your merge deploys. Taking an app down, bringing it back and a rollback change the live app at
-  // once, so they start, and run again, only on GitHub.
+  // once: on GitHub they run at once; from a chat (a new chat, or its `continue`), only after your
+  // `yes` to them as a list (ADR 0049, 2026-11-11). A guest's title is never an operation.
   const atOnce = p.op !== undefined && AT_ONCE.includes(p.op);
-  const door = s.issue.author === "door";
-  if (atOnce && (door || (fresh.length && fresh.every((c) => !viaGithub(c)) && !first))) {
-    st.seen = upTo(s, fresh);
-    if (door) st.phase = "done";
-    return box(
-      st,
-      "an operation from a chat",
-      ...writes,
-      reply(
-        "answer",
-        "Done",
-        `Nothing ran. \`${p.project}: ${p.ask}\` changes the live app at once, with no merge, so it starts only on GitHub: open the Operate form there, or a task with these words as its title.`,
-        "op-chat",
-        { links: [["The Operate form", ctx.operateForm]] },
-      ),
-      ...(door ? [{ w: "close" as const, reason: "completed" as const }] : []),
-    );
+  const fromChat = atOnce && s.issue.author === "door";
+  const yesOrNoOnly = fresh.every((c) => wordOf(c.text) === "yes" || wordOf(c.text) === "no");
+  if (st.pending.atOnce && fresh.length) {
+    if (yesOrNoOnly) return yesOrNo(s, st, fresh, ctx, writes);
+    dropList(st);
   }
-  const again = fresh.some((c) => (!atOnce || viaGithub(c)) && wordOf(c.text) === "continue");
+  const again = (c: Said) => wordOf(c.text) === "continue";
+  const githubAgain = fresh.some((c) => viaGithub(c) && again(c));
+  if (atOnce && p.op && ((fromChat && first) || (!githubAgain && fresh.some(again))))
+    return listOperation(s, st, fresh, writes, p.op);
   if (
-    first ||
-    again ||
-    (s.trigger.kind === "dispatch" && s.trigger.job === "run" && !fresh.length)
+    (first && !fromChat) ||
+    githubAgain ||
+    (!atOnce && fresh.some(again)) ||
+    (s.trigger.kind === "dispatch" && s.trigger.job === "run" && !fresh.length && !fromChat)
   ) {
     if (!p.op) return nothing("an operation with no action");
     st.seen = upTo(s, fresh);
@@ -2021,7 +2057,7 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
     st.pending.notes,
     st.pending.split,
     st.pending.clean,
-    heldKinds(st.pending),
+    heldKinds(st.pending, st.project),
   );
   const last = said.filter((c) => (listCodeOf(c.text) ?? code) === code).at(-1);
   if (!last) {
@@ -2125,6 +2161,23 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
           ? `Left open, as they changed since the list or something keeps them open now: ${kept.join(", ")}.`
           : "",
         `yes-${last.id}`,
+      ),
+    );
+  }
+  // An operation from a chat (ADR 0049, 2026-11-11): the github job runs it once, as from GitHub.
+  const atOnce = st.pending.atOnce;
+  if (atOnce) {
+    dropList(st);
+    st.phase = "working";
+    st.pending.operate = { ...atOnce, at: s.now };
+    return told(
+      "yes to an operation",
+      { w: "dispatch", job: "github" },
+      reply(
+        "answer",
+        "Working",
+        `Running ${atOnce.op} for ${st.project} on GitHub's machines.`,
+        "op",
       ),
     );
   }

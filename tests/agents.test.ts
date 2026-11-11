@@ -5,7 +5,7 @@ import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { setupCheck } from "../cli/commands/doctor.ts";
+import { setupCheck, tailscaleKeyCheck } from "../cli/commands/doctor.ts";
 import { claude } from "../cli/lib/agents/claude.ts";
 import {
   type Choice,
@@ -837,34 +837,88 @@ describe("the status issue (ADR 0017, ADR 0019)", () => {
 describe("boxes: the setup version (ADR 0017)", () => {
   it("names a box set up by an older box/setup.sh, only on a box", () => {
     const dir = join(ROOT, "tests", "fixtures");
+    const tmp = mkdtempSync(join(tmpdir(), "setup-"));
+    // Neither the box's own update nor a failed check's mark: this machine's own never count.
+    const none = join(tmp, "none");
+    const check = (home: string, script?: string) =>
+      setupCheck("shipify", home, script ?? join(ROOT, "box", "setup.sh"), none, none);
     expect(setupCheck("someone", dir)).toBeUndefined();
     // No record (its setup never finished): version 1, behind the repo's, which a new setup bumps.
     const repos = /^SETUP_VERSION=(\d+)$/m.exec(
       readFileSync(join(ROOT, "box", "setup.sh"), "utf8"),
     )?.[1];
     expect(Number(repos)).toBeGreaterThan(1);
-    expect(setupCheck("shipify", dir)).toMatchObject({
+    expect(check(dir)).toMatchObject({
       ok: false,
       detail: `version 1; the repo's is ${repos}`,
     });
     // The repo's script moved on: the box says so, and how to catch up.
-    const tmp = mkdtempSync(join(tmpdir(), "setup-"));
     writeFileSync(join(tmp, "setup.sh"), "#!/bin/sh\nSETUP_VERSION=2\n");
     writeFileSync(join(tmp, ".shipify-setup"), "1\n");
-    expect(setupCheck("shipify", tmp, join(tmp, "setup.sh"))).toMatchObject({
+    expect(check(tmp, join(tmp, "setup.sh"))).toMatchObject({
       ok: false,
       detail: "version 1; the repo's is 2",
     });
     // The repo's version, but --manage stopped before its end (setup 13): named until it finishes.
     writeFileSync(join(tmp, ".shipify-setup"), "2\nmanage: not finished\n");
-    const stopped = setupCheck("shipify", tmp, join(tmp, "setup.sh"));
+    const stopped = check(tmp, join(tmp, "setup.sh"));
     expect(stopped?.ok).toBe(false);
     expect(stopped?.detail).toContain("version 2, but its --manage part didn't finish");
     writeFileSync(join(tmp, ".shipify-setup"), "2\n");
-    expect(setupCheck("shipify", tmp, join(tmp, "setup.sh"))).toMatchObject({
+    expect(check(tmp, join(tmp, "setup.sh"))).toMatchObject({
       ok: true,
       detail: "version 2",
     });
+  });
+
+  it("says a box from setup 14 on updates itself, and names a failed sandbox check (setup 14)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "setup-"));
+    const script = join(tmp, "setup.sh");
+    writeFileSync(script, "#!/bin/sh\nSETUP_VERSION=14\n");
+    writeFileSync(join(tmp, ".shipify-setup"), "13\n");
+    const none = join(tmp, "none");
+    const updater = join(tmp, "shipify-box-update");
+    writeFileSync(updater, "");
+    // Set up before setup 14: no update of its own, so once more by hand.
+    const before = setupCheck("shipify", tmp, script, none, none);
+    expect(before).toMatchObject({ ok: false, detail: "version 13; the repo's is 14" });
+    expect(before?.fix).toMatch(
+      /^once more, when no task is running: on the box, its here\.sh command again;.*: from setup 14 on, a box applies a newer setup by itself$/,
+    );
+    // With it: nothing to do, and how to do it now anyway.
+    const after = setupCheck("shipify", tmp, script, updater, none);
+    expect(after).toMatchObject({ ok: false, blocking: false });
+    expect(after?.detail).toBe(
+      "version 13; the repo's is 14: it applies it by itself at the next due run while no other slot runs a job, and says how it went on the status task",
+    );
+    expect(after?.fix).toMatch(/^nothing, usually; to do it now, when no task is running/);
+    // A failed sandbox check: named, whatever the version, until a setup passes it.
+    writeFileSync(join(tmp, ".shipify-setup"), "14\n");
+    const open = join(tmp, "sandbox-open");
+    writeFileSync(open, "box setup 14's sandbox check failed on 2026-11-11 12:00 UTC\n");
+    const failed = setupCheck("shipify", tmp, script, updater, open);
+    expect(failed).toMatchObject({
+      ok: false,
+      detail:
+        "box setup 14's sandbox check failed on 2026-11-11 12:00 UTC, so no task runs here until a setup passes it",
+    });
+    expect(failed?.fix).toMatch(/^when no task is running: on the box, its here\.sh command again/);
+  });
+});
+
+describe("boxes: the Tailscale key (--manage)", () => {
+  const status = (self: Record<string, unknown>, state = "Running") =>
+    JSON.stringify({ BackendState: state, Self: { HostName: "homepi", ...self } });
+  it("names a box whose key expires, until its expiry is off, only on a signed-in box", () => {
+    const expiring = tailscaleKeyCheck("shipify", status({ KeyExpiry: "2027-05-10T08:00:00Z" }));
+    expect(expiring).toMatchObject({ ok: false, blocking: false });
+    expect(expiring?.detail).toContain("it expires on 2027-05-10");
+    expect(expiring?.fix).toContain("homepi → ⋯ → Disable key expiry");
+    expect(tailscaleKeyCheck("shipify", status({}))).toMatchObject({ ok: true });
+    // Not a box, no Tailscale, or not signed in: nothing to say.
+    expect(tailscaleKeyCheck("someone", status({ KeyExpiry: "2027-05-10" }))).toBeUndefined();
+    expect(tailscaleKeyCheck("shipify", "")).toBeUndefined();
+    expect(tailscaleKeyCheck("shipify", status({}, "NeedsLogin"))).toBeUndefined();
   });
 });
 

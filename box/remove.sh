@@ -3,8 +3,9 @@
 # box/setup.sh made for the box, and nothing of the machine's own. `pnpm ship box remove <name>
 # --purge` runs it with sudo (here.sh --remove --purge too), once GitHub has forgotten the slots.
 # Goes: the slots' services; the users shipify and shipify-agent-<k>, with their ID ranges, folders
-# and processes (the containers' images too); the sudo rule; the update rule for the slots; the
-# agents' network rules; the containers' settings for the agents; /opt/shipify.
+# and processes (the containers' images too); the sudo rules; the update rule for the slots; the
+# agents' network rules; the containers' settings for the agents; /opt/shipify; the box's own
+# update (setup 14), with its settings, its folder and its log.
 # Stays, as the machine's own: security updates (with the restart at 04:30), Ubuntu's normal updates
 # where setup added them, SSH by key only, zram, never sleeping, and with --manage Tailscale, Cockpit
 # and the firewall; and the tools it installed (Node, gh, Podman), which the docs say how to remove.
@@ -27,7 +28,6 @@ systemctl daemon-reload
 say "The agents' network rules"
 systemctl disable --now -q shipify-agents-net.service 2>/dev/null || true
 rm -f /etc/systemd/system/shipify-agents-net.service /etc/shipify/agents-net.nft
-rmdir /etc/shipify 2>/dev/null || true
 nft delete table inet shipify_agents 2>/dev/null || true
 systemctl daemon-reload
 echo "  gone"
@@ -48,7 +48,12 @@ done
 say "Its rules"
 rm -f /etc/sudoers.d/shipify-agents /etc/needrestart/conf.d/50-shipify-box.conf \
   /etc/containers/shipify-agents.conf /etc/containers/registries.conf.d/50-shipify.conf /etc/containers/nodocker
-echo "  the sudo rule, the update rule for the slots and the agents' container settings: gone"
+# The box's own update (setup 14): the command, its settings, its folder, its log, and a failed
+# sandbox check's mark.
+rm -f /usr/local/sbin/shipify-box-update /etc/shipify/box.env /etc/shipify/sandbox-open /var/log/shipify-box-update.log
+rm -rf /var/lib/shipify
+rmdir /etc/shipify 2>/dev/null || true
+echo "  the sudo rules, the update rule for the slots, the agents' container settings and the box's own update: gone"
 
 say "Checking nothing of the box is left"
 left=$(
@@ -56,7 +61,7 @@ left=$(
     systemctl list-unit-files 'shipify-box*' 'shipify-agents-net*' --no-legend 2>/dev/null
     getent passwd | grep '^shipify'
     grep -H '^shipify' /etc/subuid /etc/subgid
-    ls -d /home/shipify /srv/shipify-agent-* /opt/shipify /etc/sudoers.d/shipify-agents
+    ls -d /home/shipify /srv/shipify-agent-* /opt/shipify /etc/sudoers.d/shipify-agents /usr/local/sbin/shipify-box-update
   } 2>/dev/null || true
 )
 if [ -n "$left" ]; then

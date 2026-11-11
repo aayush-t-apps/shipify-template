@@ -50,9 +50,9 @@ export const LANES = ["tweak", "feature", "big"] as const;
 export const OPS = ["release", "down", "up", "rollback"] as const;
 export type Op = (typeof OPS)[number];
 /**
- * The operations that change the live app at once, with no merge: they start only on GitHub, where
- * your GitHub sign-in says it's you (ADR 0049). A release opens a PR that only your merge deploys,
- * so it starts from any chat.
+ * The operations that change the live app at once, with no merge: on GitHub they run at once; from
+ * a chat, only after your `yes` to them as a list (ADR 0049, 2026-11-11). A release opens a PR that
+ * only your merge deploys, so it runs from anywhere at once.
  */
 export const AT_ONCE: readonly Op[] = ["down", "up", "rollback"];
 
@@ -364,6 +364,9 @@ export const TaskState = z.object({
         .array(z.object({ n: z.number().int().positive(), title: z.string() }))
         .max(100)
         .optional(),
+      /** An operation a chat asked for that changes the live app at once (ADR 0049, 2026-11-11):
+       * run only after your yes. */
+      atOnce: z.object({ op: z.enum(OPS), version: z.string().optional() }).optional(),
       /** The list of those calls and notes: the reply that showed it, and when. A yes counts only
        * after that reply, and within a day of it (ADR 0049). */
       list: z.object({ post: z.number(), at: z.string() }).optional(),

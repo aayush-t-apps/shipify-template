@@ -449,7 +449,7 @@ reads little and misses nothing:
 |---|---|
 | its chat's Progress and the newest 8 messages | older messages, on demand (ADR 0069) |
 | its project's docs, 16 KB of them whole | the others, by title |
-| the chat's newest 5 files, from R2: the ones you sent **and** the ones runs made | an older one: its notes name it, and its reply asks for it (as today) |
+| 5 of the chat's files, from R2: the newest you sent, then the newest runs made in the places left | an older one: its notes name it; one you sent, its reply asks for it (as today); a run's, it reads it from "Files earlier runs made" |
 | `skills/knowledge`: when a doc is due, how to keep Progress short | |
 
 **New:** a run's file now has an R2 ref on its reply's line, so the next run in the chat gets it as
@@ -466,7 +466,7 @@ are the edge's reads today (`edge/src/web/reads.ts`), which the window keeps:
 | **A chat or a doc** | 2 GitHub reads: the issue, and its first 100 comments. Past 100, its newest page too. While it's open, only what's new | the same |
 | **A project's screen** | what its card reads today, and 1 R2 list of its files | the R2 list a minute |
 | **A file** | R2, when you open it | a day, in your browser |
-| **A run** (on the box) | its chat's Progress, the newest 8 messages, 16 KB of its project's docs, and the chat's newest 5 files | the rest, when it asks |
+| **A run** (on the box) | its chat's Progress, the newest 8 messages, 16 KB of its project's docs, and 5 of the chat's files (yours first) | the rest, when it asks |
 
 **Why the edge never reads `shipify-files`:** it would need Contents access to your shipify repo, on
 the Worker that guests use (section 2). R2 is the fast copy, and `shipify-files` the backup behind

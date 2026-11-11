@@ -509,9 +509,10 @@ describe("ship: evolving a project", () => {
     writeFileSync(sb.registry, JSON.stringify(reg));
     const down = ship(sb, "down", "evo-app");
     expect(down.status).toBe("requires-approval");
+    // The pipeline starts first: a refusal leaves the flag as it was.
     expect(down.plannedActions).toEqual([
-      "gh variable set SHIPIFY_DOWN -R mock/evo-app --body true",
       "gh workflow run ship.yml -R mock/evo-app -f action=pause",
+      "gh variable set SHIPIFY_DOWN -R mock/evo-app --body true",
     ]);
     const up = ship(sb, "up", "evo-app");
     expect(up.plannedActions?.join("\n")).toContain("--body false");

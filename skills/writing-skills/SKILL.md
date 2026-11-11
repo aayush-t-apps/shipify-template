@@ -15,6 +15,7 @@ line in one, without a failure you've seen without it.**
 | It's | It goes in |
 |---|---|
 | a fact or a preference ("dark mode in every app") | a note in the notebook |
+| a rule for how runs work ("always do X before a PR") | a playbook or skill, by PR: never a Preference |
 | the steps for one job in Shipify | a playbook (`playbooks/`) |
 | one project's own rule | that repo's `AGENTS.md` |
 | how to do a kind of work well, in any repo | a skill |

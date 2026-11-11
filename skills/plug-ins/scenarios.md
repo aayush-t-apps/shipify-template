@@ -32,3 +32,8 @@
 - **Without it:** not yet seen. The risk: a conformance test that calls the provider, so CI fails
   offline.
 - **Done well:** recorded answers or a stand-in in `tests/`, so the test runs offline.
+
+### 4. A tool's name under `cli/`
+- **Ask:** "show the new tool's link in the setup guide".
+- **Without it:** the tool's URL went into a file under `cli/`, and `tests/core.test.ts` refused it.
+- **Done well:** the name and URL are in the plug-in's own data.

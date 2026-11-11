@@ -172,7 +172,7 @@ Each message you send starts one run. Its prompt holds these, in this order, and
 | **Progress** | where the chat's work stands, from its last run | 16,000 characters |
 | **The project** | its brief and repos, and its chats by title and state: the newest 30 and every one at work, waiting on you or failed; the rest are counted | 4,000 characters of brief, about 3 KB of chats |
 | **The pages** | Preferences, then the project's main page (Now and the Map first), its other pages, then People and the other always pages: each whole while the budget lasts, the rest by title and first line | 16 KB |
-| **Files** | the chat's newest 5 files in its `in/files`: what you sent and what its runs made (ADR 0071); an older one by its notes | 5 files |
+| **Files** | 5 of the chat's files in its `in/files`: the newest you sent, then the newest its runs made in the places left (ADR 0071); an older one by its notes | 5 files |
 | **Notes from the box** | what's missing, if anything: a read that failed, or a page left out as someone else last edited it; and what a word asks ("collate the inbox", Keep on page, "check the project") | a line each |
 
 A run reads the rest only when the ask needs it: a chat that bears on it, a page not shown whole,
@@ -193,8 +193,8 @@ One job for each store (ADR 0071), the same for you and for guests:
 
 **A file's life:** a file you send goes to R2 as it comes, and the run that answers gets it. A file
 your run makes goes to R2 **and** the backup, in the step that posts the reply; a chip under the
-reply opens it in the pane, and the next run in the chat gets the chat's newest 5 files, a run's
-too ("make the PDF shorter" works on the last PDF). A file is never edited: a run makes a new
+reply opens it in the pane, and the next run in the chat gets 5 of the chat's files, a run's too
+("make the PDF shorter" works on the last PDF): yours first, then runs' in the places left. A file is never edited: a run makes a new
 version beside the old one. It leaves R2 30 days after its chat or project closes (or at once,
 with **Delete**); a run's file then shows as **Archived**, linked to the backup. A file no chat
 used (an upload never sent, an old draft's) leaves 60 days after it came. A guest's files live in

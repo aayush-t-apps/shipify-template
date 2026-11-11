@@ -67,6 +67,7 @@ with **Share** at the top for the owner.
   in your out folder, name it in `files`, and propose one `publish` in the same answer, naming it
   the same way, with no look first: the box makes it at once. `share: "me"` unless the owner said
   who; no expiry said is `7d`.
+- **Run `maskSecrets` on a page** (`cli/lib/safety.ts`) before you give it to Drop: a page can hold a key from a log or a file you read.
 - **One page alone in its drop:** then its link opens the page itself. With other files beside it,
   the link opens the drop's list.
 - **The reply is its link.** When the call works, the box leaves the page out of the reply's files

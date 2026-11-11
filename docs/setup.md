@@ -117,7 +117,9 @@ Once, on this PC, about 10 minutes. `ship setup` walks the same.
    `CF_WORKERS_SUBDOMAIN`, variables on shipify). `pnpm ship setup apps` sets each. Without them (or the bot's Variables permission), the
    task's reply names what's missing; add it, then comment `publish`.
 4. **Check:** `pnpm ship box list` shows all three ready. Also check the bot's page: installed on
-   **All repositories**, with **Variables: Read and write**.
+   **All repositories**, with **Variables: Read and write** and **Actions: Read and write** (it
+   starts an app's pipeline to take it down, bring it back or roll it back; an older bot has
+   Actions: Read only, so set it there, save, and accept the change on the install).
 5. **Its logo** (optional, a minute): on the bot's page → **Display information** → **Upload a
    logo**, choose `docs/assets/logo.jpg` (Shipify's sailboat). GitHub has no way to set it from a
    command, and nothing checks it.

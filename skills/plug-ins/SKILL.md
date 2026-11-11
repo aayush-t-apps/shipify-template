@@ -5,7 +5,8 @@ description: Adding a Shipify plug-in well (a tool, a chat channel, a stack, an 
 
 # Adding a plug-in well
 
-Shipify's core names no agent, gateway, tool, channel or host (`tests/core.test.ts` refuses it). Every edge
+Shipify's core names no agent, gateway, tool, channel or host (`tests/core.test.ts` refuses it). A
+tool's name or URL belongs in its plug-in's data, never in a file under `cli/`. Every edge
 plugs in through a contract (`cli/lib/plugins/`, or `edge/src/channels/channel.ts` for a chat
 channel) and passes its kind's conformance test (`tests/plugins/`, `tests/edge/channels.test.ts`,
 `tests/checks.test.ts`, `tests/recipes.test.ts`). `tests/architecture.test.ts` holds the rules: a

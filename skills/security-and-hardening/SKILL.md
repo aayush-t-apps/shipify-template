@@ -118,6 +118,10 @@ A delete, move, or overwrite is only as safe as the value naming its target, and
 
 Why the check is weaker than it reads (marker self-attestation, check/use races): [Destructive paths](references/hardening-patterns.md#destructive-operations-on-derived-paths).
 
+### Service workers
+
+A service worker answers every request in its scope. Before you add a path (an API, a login, a callback), check the worker's scope and fetch handler: a path inside the scope can be served from the cache, or hidden by the app's offline page.
+
 ### Rate limiting
 
 Limit the API generally and auth endpoints strictly (about 10 attempts per 15 minutes). Once more than one process serves traffic, in-memory counters silently become `max × instances`, or never fire on serverless: back the limiter with a shared store.

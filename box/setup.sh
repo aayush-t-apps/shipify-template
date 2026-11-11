@@ -7,6 +7,7 @@
 #   $2  the stacks' doctor checks, one per line: name<TAB>check<TAB>fix (fixes run as root)
 #   $3  the slots' systemd unit, rendered by `ship box add` (the same definition as every box's),
 #       with @SLOT_NAME@ and @SLOT_DIR@ for each slot's
+#   $4  box/update.sh, the box's own setup update (setup 14)
 # What it installs: git, make, gh, Node 22 (pnpm through corepack), shellcheck, fd and sqlite3, the
 # updates waiting now and automatic security updates (gh's and Tailscale's too, rebooting at 04:30
 # when one needs it, never restarting a slot), no sleep, what each stack needs, the user "shipify" (no sudo)
@@ -38,6 +39,16 @@
 # network and Tailscale's open port that older setups let in are taken out, and avahi (mDNS) is off.
 # The firewall comes right after Tailscale's sign-in, before Cockpit; the setup is recorded as done
 # only once --manage finishes, else it ends with exit 4, and ship doctor names the box.
+# Setup 14: a box applies main's newer setup by itself. It keeps its settings (no keys) in
+# /etc/shipify/box.env and installs box/update.sh as /usr/local/sbin/shipify-box-update, which one
+# more sudo line lets the runner start as root: root downloads main's setup itself and runs it with
+# SHIPIFY_REFRESH=1 (the slots' services and registrations as they are, no updates waiting, no
+# sign-in waited for). Root runs the runner's dependencies' installer from its own copy, never the
+# runner's folder. A sandbox check that fails leaves /etc/shipify/sandbox-open: no task's agent
+# starts until a setup passes it.
+# Setup 15: shellcheck 0.11.0, the one Shipify's CI checks with, so a PR that passes this box's
+# checks passes CI too (Ubuntu 24.04's is 0.9.0). Its own release, checked against its checksum, in
+# /usr/local/bin; Ubuntu's package, which setup 7 to 14 installed, stays in /usr/bin, unused.
 # Running it again updates Node to the newest 22.x, and adds or removes slots to match
 # RUNNER_SLOTS.
 # SSH takes keys only, never passwords, once the account running this has a key; with
@@ -55,7 +66,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=13
+SETUP_VERSION=15
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -63,6 +74,7 @@ IMAGE=${SHIPIFY_IMAGE:-}
 ENV_FILE=${1:-}
 PREP=${2:-}
 UNIT_FILE=${3:-}
+UPDATE_FILE=${4:-}
 if [ -z "$IMAGE" ]; then
   [ -n "$ENV_FILE" ] || { echo "Usage: setup.sh <settings> [<prep>] [<unit>] (pnpm ship box add runs it)."; exit 1; }
   set -a
@@ -72,6 +84,10 @@ if [ -z "$IMAGE" ]; then
   rm -f "$ENV_FILE"
 fi
 CONTAINER=${SHIPIFY_CONTAINER:-}
+# Setup 14: run by the box's own update (box/update.sh), with the settings it kept. You set it up
+# with sudo, as SUDO_USER: an update keeps SSH's keys and words as yours.
+REFRESH=${SHIPIFY_REFRESH:-}
+[ -z "$REFRESH" ] || SUDO_USER=${SHIPIFY_ADMIN:-}
 command -v apt-get >/dev/null || { echo "This needs Debian or Ubuntu (apt)."; exit 1; }
 case "$(uname -m)" in
   x86_64) ARCH=x64 ;;
@@ -127,16 +143,37 @@ if ! command -v gh >/dev/null; then
   apt_get install -y -q gh
 fi
 
-# Tools an agent reaches for (setup 7). shellcheck and fd come from Ubuntu's universe, which a
-# trimmed install may leave off: the box works without them, so they never fail the setup.
+# Tools an agent reaches for (setup 7). fd comes from Ubuntu's universe, which a trimmed install may
+# leave off: the box works without these tools, so they never fail the setup.
 say "shellcheck, fd and sqlite3"
-if apt_get install -y -q shellcheck fd-find sqlite3; then
+if apt_get install -y -q fd-find sqlite3; then
   # Ubuntu names fd's program fdfind: `fd` for every user too, unless the machine has one.
   if [ -x /usr/bin/fdfind ] && ! command -v fd >/dev/null; then ln -sf /usr/bin/fdfind /usr/local/bin/fd; fi
-  echo "  done"
+  echo "  fd and sqlite3: done"
 else
-  echo "  skipped: shellcheck, fd and sqlite3 didn't install (shellcheck and fd need Ubuntu's universe: sudo add-apt-repository universe, then box add again)"
+  echo "  skipped: fd and sqlite3 didn't install (fd needs Ubuntu's universe: sudo add-apt-repository universe, then box add again)"
 fi
+# The shellcheck Shipify's CI checks with (Ubuntu 26.04's, on GitHub's machines), not this Ubuntu's,
+# so a PR this box checked passes CI too (setup 15). Its own release, checked against its checksum;
+# a new version is a PR that says so.
+SHELLCHECK=0.11.0
+file="shellcheck-v$SHELLCHECK.linux.$(uname -m).tar.xz"
+case "$ARCH" in
+  x64) sum=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 ;;
+  arm64) sum=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588 ;;
+esac
+if [ "$(/usr/local/bin/shellcheck --version 2>/dev/null | sed -n 's/^version: //p')" = "$SHELLCHECK" ] || {
+  curl -fsSL -o "$WORK/$file" "https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK/$file" \
+    && echo "$sum  $WORK/$file" | sha256sum -c --quiet - \
+    && tar -xJf "$WORK/$file" -C "$WORK" "shellcheck-v$SHELLCHECK/shellcheck" \
+    && install -m 0755 "$WORK/shellcheck-v$SHELLCHECK/shellcheck" /usr/local/bin/shellcheck
+}; then
+  echo "  shellcheck $SHELLCHECK: done"
+else
+  echo "  skipped: shellcheck $SHELLCHECK didn't install (above); the setup's next run tries again"
+fi
+rm -rf "$WORK/shellcheck-v$SHELLCHECK"
+rm -f "$WORK/$file"
 
 say "Node 22 (the newest 22.x) and pnpm"
 base=https://nodejs.org/dist/latest-v22.x
@@ -475,28 +512,51 @@ else
   [ "$labbed" = 0 ] || echo "  skipped: the containers didn't install (above); the box works without them, and box add again tries again"
 fi
 
-# One sudo rule: the runner (shipify) may run commands as its slots' agents, without a password,
-# and as no one else; an agent can't become the runner. sudo starts from no terminal (the runner
-# has none), so no pseudo-terminal either. The rule goes in only once visudo accepts it, and comes
-# out again if the whole configuration then fails visudo's check, so sudo always keeps working.
-say "One sudo rule: the runner starts its slots' agents, and no one else"
+# The box's own update (setup 14): its settings kept for it (no keys: an update registers nothing),
+# and box/update.sh installed as root's own, a new file renamed into place, so an update that runs
+# the old one reads that to its end. Not in a container: a new image is its update.
+UPDATER=/usr/local/sbin/shipify-box-update
+update_rule=""
+if [ -z "$CONTAINER" ] && [ -f "$UPDATE_FILE" ]; then
+  say "Its own updates: main's newer setup, applied by the box"
+  install -d -m 0755 /etc/shipify
+  {
+    echo "# Written by Shipify box setup (docs/box-setup.md): this box's settings, for its own updates (box/update.sh). No keys."
+    for v in RUNNER_URL RUNNER_NAME RUNNER_LABELS RUNNER_SLOTS SHIPIFY_MANAGE SHIPIFY_HERE; do printf '%s=%q\n' "$v" "${!v:-}"; done
+    printf 'SHIPIFY_ADMIN=%q\n' "${SUDO_USER:-}"
+  } > "$WORK/box.env"
+  install -m 0600 -o root -g root "$WORK/box.env" /etc/shipify/box.env
+  install -m 0755 -o root -g root "$UPDATE_FILE" "$UPDATER.new"
+  mv -f "$UPDATER.new" "$UPDATER"
+  update_rule="shipify ALL=(root) NOPASSWD: $UPDATER"
+  echo "  on: when main's setup is newer and no other slot runs a job, the due run starts $UPDATER"
+fi
+
+# The sudo rules: the runner (shipify) may run commands as its slots' agents, without a password,
+# and as no one else; an agent can't become the runner. As root, only the box's own update (setup
+# 14), which runs nothing the runner gives it but the word to start. sudo starts from no terminal
+# (the runner has none), so no pseudo-terminal either. The rules go in only once visudo accepts
+# them, and come out again if the whole configuration then fails visudo's check, so sudo always
+# keeps working.
+say "The sudo rules: the runner starts its slots' agents and the box's own update, nothing else"
 SUDOERS=/etc/sudoers.d/shipify-agents
 agents=$(for k in $(seq 1 "$RUNNER_SLOTS"); do agent_user "$k"; done | paste -sd, -)
 rule="shipify ALL=($agents) NOPASSWD: ALL"
-head="# Written by Shipify box setup (docs/box-setup.md): the runner starts the agents of its slots."
-printf '%s\nDefaults:shipify !use_pty\n%s\n' "$head" "$rule" > "$WORK/shipify-agents"
+rules=$rule${update_rule:+$'\n'$update_rule}
+head="# Written by Shipify box setup (docs/box-setup.md): the runner starts the agents of its slots, and the box's own update."
+printf '%s\nDefaults:shipify !use_pty\n%s\n' "$head" "$rules" > "$WORK/shipify-agents"
 if ! visudo -cqf "$WORK/shipify-agents" >/dev/null 2>&1; then
-  # A sudo without the use_pty setting (sudo-rs, an old sudo): the rule alone.
-  printf '%s\n%s\n' "$head" "$rule" > "$WORK/shipify-agents"
-  visudo -cqf "$WORK/shipify-agents" >/dev/null 2>&1 || { echo "visudo refused the rule, so nothing changed."; exit 1; }
+  # A sudo without the use_pty setting (sudo-rs, an old sudo): the rules alone.
+  printf '%s\n%s\n' "$head" "$rules" > "$WORK/shipify-agents"
+  visudo -cqf "$WORK/shipify-agents" >/dev/null 2>&1 || { echo "visudo refused the rules, so nothing changed."; exit 1; }
 fi
 install -m 0440 -o root -g root "$WORK/shipify-agents" "$SUDOERS"
 if ! visudo -cq >/dev/null 2>&1; then
   rm -f "$SUDOERS"
-  echo "sudo's configuration didn't pass visudo's check with the rule, so the rule is out again."
+  echo "sudo's configuration didn't pass visudo's check with the rules, so they're out again."
   exit 1
 fi
-echo "  $rule"
+printf '  %s\n' "$rule" ${update_rule:+"$update_rule"}
 
 # The newest runner, downloaded once and checked against GitHub's checksum.
 TARBALL=""
@@ -516,15 +576,31 @@ fetch_runner() {
   TARBALL="$WORK/$file"
 }
 
+# runner_deps: the runner's libraries, by its own installer, once. Root runs it from its own copy of
+# the tarball (setup 14), never from the runner's folder, which the runner's user (and so a job) can
+# change. It tries each distribution's package names in turn, so apt prints "Unable to locate" for
+# the ones this system doesn't use: that goes in a log, shown only if it fails.
+DEPS_DONE=""
+runner_deps() {
+  [ -z "$DEPS_DONE" ] || return 0
+  fetch_runner
+  rm -rf "$WORK/runner" && mkdir "$WORK/runner"
+  tar -xzf "$TARBALL" -C "$WORK/runner"
+  if ! "$WORK/runner/bin/installdependencies.sh" >"$WORK/runner-deps.log" 2>&1; then
+    tail -n 30 "$WORK/runner-deps.log"
+    echo "The runner's dependencies didn't install (above)."
+    exit 1
+  fi
+  rm -rf "$WORK/runner"
+  DEPS_DONE=1
+}
+
 # The image (ADR 0056) stops here: the runner's libraries in, its program not (registering
 # downloads it, as on any box, so the image stays small). The rest is each box's own.
 if [ -n "$IMAGE" ]; then
   say "The runner's libraries"
-  fetch_runner
-  mkdir "$WORK/runner"
-  tar -xzf "$TARBALL" -C "$WORK/runner"
-  "$WORK/runner/bin/installdependencies.sh" >"$WORK/runner-deps.log" 2>&1 || { tail -n 30 "$WORK/runner-deps.log"; exit 1; }
-  rm -rf "$TARBALL" "$WORK/runner"
+  runner_deps
+  rm -f "$TARBALL"
   apt-get clean
   rm -rf /var/lib/apt/lists/* /root/.npm /root/.cache
   say "The image is ready: register it with docker run … register (docs/box-setup.md)"
@@ -532,29 +608,18 @@ if [ -n "$IMAGE" ]; then
 fi
 
 # register <folder> <name> <labels> <token>: unpack the runner there and register it, once.
-DEPS_DONE=""
 register() {
   local home=$1 name=$2 labels=$3 token=$4
   if [ -f "$home/.runner" ]; then
     echo "  $name: already registered"
     return
   fi
-  fetch_runner
+  [ -n "$token" ] || { echo "No registration token for $name."; exit 1; }
+  runner_deps
   install -d -o shipify -g shipify "$home"
   # The tarball is in root's own folder: root opens it, and the runner's user unpacks it.
   # shellcheck disable=SC2024 # the redirect is root's on purpose
   sudo -u shipify tar -xzf - -C "$home" < "$TARBALL"
-  # It tries each distribution's package names in turn, so apt prints "Unable to locate" for the
-  # ones this system doesn't use: keep that in a log, shown only if it fails.
-  if [ -z "$DEPS_DONE" ]; then
-    if ! "$home/bin/installdependencies.sh" >"$WORK/runner-deps.log" 2>&1; then
-      tail -n 30 "$WORK/runner-deps.log"
-      echo "The runner's dependencies didn't install (above)."
-      exit 1
-    fi
-    DEPS_DONE=1
-  fi
-  [ -n "$token" ] || { echo "No registration token for $name."; exit 1; }
   # The registration token goes through the environment, not the command line.
   (cd "$home" && ACTIONS_RUNNER_INPUT_TOKEN="$token" sudo -u shipify --preserve-env=ACTIONS_RUNNER_INPUT_TOKEN \
     ./config.sh --unattended --url "$RUNNER_URL" --name "$name" --labels "$labels" --work _work --replace)
@@ -641,6 +706,12 @@ install_unit() {
 if [ -n "$CONTAINER" ]; then
   say "The slots: the container runs them (box/container.sh), restarting each that stops"
   rm -f "$UNIT_FILE"
+elif [ -n "$REFRESH" ]; then
+  # The box's own update (setup 14) leaves the services as they are: it stopped the slots with no
+  # job and starts them after. The slot whose job asked for it takes a changed .env at its next
+  # start.
+  say "The slots as services"
+  echo "  as they are: the box's own update stopped the idle ones, and starts them again once this ends"
 else
 say "The slots as services (they start on boot, and restart on failure)"
 [ -f "$UNIT_FILE" ] || { echo "No service file: run this through pnpm ship box add."; exit 1; }
@@ -665,8 +736,9 @@ updating_now() {
 
 # A fresh install starts current: the updates waiting now, by the same rules as every day. After the
 # slots registered, so a long first update (a new kernel, slow Wi-Fi) never outlasts the
-# registration tokens' hour; the slots get the sandbox label only once this setup ends.
-if [ -z "$CONTAINER" ]; then
+# registration tokens' hour; the slots get the sandbox label only once this setup ends. Not in the
+# box's own update (setup 14): the daily ones take them, and the update stays short.
+if [ -z "$CONTAINER$REFRESH" ]; then
 say "The updates waiting now"
 echo "  installing them (a few minutes on a fresh install; a new kernel takes longest)"
 unattended-upgrade >/var/log/shipify-box-updates.log 2>&1 &
@@ -703,6 +775,11 @@ manage() {
   say "Tailscale (only your own devices can reach this machine)"
   command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh
   if ! tailscale status >/dev/null 2>&1; then
+    # The box's own update (setup 14) waits for nobody: a sign-in takes you.
+    if [ -n "$REFRESH" ]; then
+      echo "  ✗ Tailscale isn't signed in, and the box's own update can't sign in for you: on the box, its here.sh command again"
+      return 1
+    fi
     echo "  Sign in at the link below, with the account your phone's Tailscale app uses (within 15 minutes):"
     tailscale up --ssh --timeout 15m
   else
@@ -1141,7 +1218,18 @@ if [ -n "$windows" ]; then
   echo "  It means no Windows programs from WSL (a link opening in your browser, explorer.exe):"
   echo "  if you need them, make a Pi or a spare Linux machine the box instead (docs/box-setup.md)."
 fi
-[ -n "$walls" ] || { echo "The sandbox isn't right (above); it's safe to run this again."; exit 1; }
+# Setup 14: a check that fails leaves its mark, and no task's agent starts here until a setup passes
+# it (lib/sandbox.ts, prepareRun): a box that updated itself with nobody there never runs tasks
+# with a wall open. The due run and the clean-up still run, and say so.
+SANDBOX_OPEN=/etc/shipify/sandbox-open
+if [ -z "$walls" ]; then
+  install -d -m 0755 /etc/shipify
+  echo "box setup $SETUP_VERSION's sandbox check failed on $(date -u '+%Y-%m-%d %H:%M UTC')" > "$SANDBOX_OPEN"
+  chmod 644 "$SANDBOX_OPEN"
+  echo "The sandbox isn't right (above), so no task runs here until it is; it's safe to run this again."
+  exit 1
+fi
+rm -f "$SANDBOX_OPEN"
 echo "  done: $RUNNER_SLOTS agent(s), each walled off"
 
 # Which setup this box has, for ship doctor. With --manage, noted as not finished until that part

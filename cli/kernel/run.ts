@@ -351,18 +351,30 @@ async function marked(n: number, s: Snapshot, p: Plan): Promise<void> {
   save(n, "plan", { s, p });
 }
 
+/** A chat's files from one place in it: what was sent, or what a run made (`made`). */
+type ChatFiles = { files?: { ref: string; name: string }[]; made?: true } | undefined;
+
 /**
- * The chat files a run fetches: the newest few on the task, so what you sent last isn't crowded out
- * by a long task's first ones; the names of the older ones, to say they were left out.
+ * The chat files a run fetches, in the chat's order: the newest few that were sent, so what you sent
+ * last isn't crowded out by a long task's first ones, nor by the files runs made after it; then the
+ * newest files runs made, in the places left. The names of the ones left out, to say so.
  */
-export function newestFiles(from: ({ files?: { ref: string; name: string }[] } | undefined)[]): {
+export function newestFiles(from: ChatFiles[]): {
   refs: { ref: string; name: string }[];
   older: string[];
+  olderMade: string[];
 } {
-  const all = from.flatMap((f) => f?.files ?? []).filter((f) => !/^https?:/.test(f.ref));
+  const all = from
+    .flatMap((f) => (f?.files ?? []).map((file) => ({ file, made: !!f?.made })))
+    .filter((f) => !/^https?:/.test(f.file.ref));
+  const sent = all.filter((f) => !f.made).slice(-MAX_FILES_IN);
+  const room = MAX_FILES_IN - sent.length;
+  const kept = new Set([...sent, ...(room ? all.filter((f) => f.made).slice(-room) : [])]);
+  const left = all.filter((f) => !kept.has(f));
   return {
-    refs: all.slice(-MAX_FILES_IN),
-    older: all.slice(0, Math.max(0, all.length - MAX_FILES_IN)).map((f) => f.name),
+    refs: all.filter((f) => kept.has(f)).map((f) => f.file),
+    older: left.filter((f) => !f.made).map((f) => f.file.name),
+    olderMade: left.filter((f) => f.made).map((f) => f.file.name),
   };
 }
 
@@ -374,11 +386,13 @@ export function newestFiles(from: ({ files?: { ref: string; name: string }[] } |
 export function chatFrom(
   first: { files?: { ref: string; name: string }[] } | undefined,
   said: Pick<Said, "from" | "made">[],
-): ({ files?: { ref: string; name: string }[] } | undefined)[] {
+): ChatFiles[] {
   return [
     first,
     ...said.map((c) =>
-      c.made ? { files: c.made.map((f) => ({ name: f.name, ref: `web:${f.ref}` })) } : c.from,
+      c.made
+        ? { files: c.made.map((f) => ({ name: f.name, ref: `web:${f.ref}` })), made: true as const }
+        : c.from,
     ),
   ];
 }
@@ -387,11 +401,8 @@ export function chatFrom(
  * Files of the chat, yours and its runs': from the door, by the refs on these lines, into the
  * task's files folder beside what's there. Notes for the agent.
  */
-async function chatFiles(
-  n: number,
-  from: ({ files?: { ref: string; name: string }[] } | undefined)[],
-): Promise<string[]> {
-  const { refs, older } = newestFiles(from);
+async function chatFiles(n: number, from: ChatFiles[]): Promise<string[]> {
+  const { refs, older, olderMade } = newestFiles(from);
   const fetched: string[] = [];
   const missed: string[] = [];
   mkdirSync(filesDir(n), { recursive: true });
@@ -419,7 +430,12 @@ async function chatFiles(
       : []),
     ...(older.length
       ? [
-          `Older files from the chat aren't in the files folder (a run takes the newest ${MAX_FILES_IN}): ${older.join(", ")}. If you need one, ask for it again.`,
+          `Older files sent in the chat aren't in the files folder (a run takes the newest ${MAX_FILES_IN} sent): ${older.join(", ")}. If you need one, ask for it again.`,
+        ]
+      : []),
+    ...(olderMade.length
+      ? [
+          `Older files earlier runs made aren't in the files folder (the files sent come first): ${olderMade.join(", ")}. If you need one, read it from "Files earlier runs made" in this prompt; if it isn't listed there, say you can't see it.`,
         ]
       : []),
   ];

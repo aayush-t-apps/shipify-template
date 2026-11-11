@@ -33,6 +33,7 @@ import {
   onBox,
   prepareRun,
   pruneContainers,
+  REAL_IO,
   readOut,
   runPaths,
   type SandboxIo,
@@ -665,6 +666,27 @@ describe("the sandbox: killing and cleaning", () => {
     // sudo refused: no run.
     const refused = fakeIo(() => ({ code: 1, stderr: "sudo: a password is required" }), root);
     expect(() => prepareRun(2, "78", refused)).toThrow(/Couldn't stop/);
+  });
+
+  it("starts no agent on a box whose last setup failed its sandbox check (box setup 14)", () => {
+    const root = mkdtempSync(join(tmpdir(), "srv-"));
+    mkdirSync(join(root, "shipify-agent-1"));
+    const open = join(root, "sandbox-open");
+    const io = Object.assign(
+      fakeIo((c) => (isLeftCheck(c) ? { code: 1 } : {}), root),
+      { sandboxOpen: open },
+    );
+    // No mark: the run starts.
+    expect(prepareRun(1, "90-1", io).dir).toBe(join(root, "shipify-agent-1", "run-90-1"));
+    writeFileSync(open, "box setup 14's sandbox check failed on 2026-11-11 12:00 UTC\n");
+    const ran = io.calls.length;
+    expect(() => prepareRun(1, "90-2", io)).toThrow(
+      "On this box, box setup 14's sandbox check failed on 2026-11-11 12:00 UTC, so no agent runs here until a setup passes it.",
+    );
+    // Nothing ran as the agent.
+    expect(io.calls).toHaveLength(ran);
+    // The machine's own mark, where setup leaves it.
+    expect(REAL_IO.sandboxOpen).toBe("/etc/shipify/sandbox-open");
   });
 
   it("a guest's run (ADR 0071) gets caches and a containers' store of its own, in its folder", () => {

@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { REPOS_PERMISSIONS } from "../cli/commands/bot.ts";
-import { prRules } from "../cli/commands/workspace.ts";
+import { permissionsRule, prRules, setupRule, setupVersionOf } from "../cli/commands/workspace.ts";
 import { NEEDS_YOU_LABEL } from "../cli/contracts/labels.ts";
 import { GIVE_UP_MS } from "../cli/kernel/decide.ts";
 import { agentOf, agentRepos } from "../cli/kernel/run.ts";
@@ -870,6 +870,48 @@ describe("the workflow rule: a run's workflow change is held, and listed only wh
       if (task === undefined) delete process.env.SHIPIFY_TASK;
       else process.env.SHIPIFY_TASK = task;
     }
+  });
+});
+
+describe("ship pr --check: what boxes and the Apps run with changes only with its note", () => {
+  const setup = readFileSync(join(ROOT, "box/setup.sh"), "utf8");
+  const bot = readFileSync(join(ROOT, "cli/commands/bot.ts"), "utf8");
+
+  it("refuses a change to box/setup.sh's commands that keeps its SETUP_VERSION", () => {
+    const v = setupVersionOf(setup);
+    expect(v).toBeGreaterThanOrEqual(13);
+    // Comments and blank lines aren't run: nothing to bump.
+    expect(setupRule(setup, `${setup}\n# a comment\n\n`)).toBeUndefined();
+    const changed = `${setup}\necho one more step\n`;
+    expect(setupRule(setup, changed)).toContain(
+      `its SETUP_VERSION is ${v} and main's is ${v}: set it to ${v + 1}`,
+    );
+    const bumped = changed.replace(/^SETUP_VERSION=\d+$/m, `SETUP_VERSION=${v + 1}`);
+    expect(setupRule(setup, bumped)).toBeUndefined();
+    // Main moved past the branch's bump (a sibling's merged first): one more.
+    const ahead = setup.replace(/^SETUP_VERSION=\d+$/m, `SETUP_VERSION=${v + 1}`);
+    expect(setupRule(ahead, bumped)).toContain(`set it to ${v + 2}`);
+    // A new script, or one taken out, has no box behind it.
+    expect(setupRule(undefined, setup)).toBeUndefined();
+  });
+
+  it("refuses a change to the Apps' permissions without an Action needed note", () => {
+    const more = bot.replace(/^ {2}statuses: "read",$/m, '  statuses: "write",');
+    expect(more).not.toBe(bot);
+    const log = (lines: string) => `# Changelog\n\n## [Unreleased]\n\n${lines}\n\n## [0.1.0]\n`;
+    expect(permissionsRule(bot, more, log("- A fix."))).toContain("Action needed once");
+    // An older version's note doesn't count.
+    expect(
+      permissionsRule(bot, more, `${log("- A fix.")}\n- **Action needed once:** old.\n`),
+    ).toContain("Action needed once");
+    expect(
+      permissionsRule(bot, more, log("- **Action needed once:** set Statuses to Read and write.")),
+    ).toBeUndefined();
+    // The repos App's are the same; the rest of bot.ts isn't a permission.
+    const repos = bot.replace(/^ {2}issues: "read",$/m, '  issues: "write",');
+    expect(repos).not.toBe(bot);
+    expect(permissionsRule(bot, repos, log("- A fix."))).toContain("Action needed once");
+    expect(permissionsRule(bot, `${bot}\n// a note\n`, log("- A fix."))).toBeUndefined();
   });
 });
 

@@ -198,7 +198,8 @@ function changedFiles(dir: string): string[] {
  * and a task's box before its commits go anywhere (`ship pr <clone> --check`), so nothing CI or a
  * later run would refuse gets in. Against origin/main as it is: the caller fetches when it can.
  *   Shipify:   a CHANGELOG entry under Unreleased, a new version for each stack whose files
- *              changed.
+ *              changed, a new SETUP_VERSION when box/setup.sh's commands changed, and an
+ *              "Action needed" note when the Apps' permissions changed.
  *   A project: every change doc readable, and when merging ships a version (packages, apps
  *              without staging), the version bumped past main's with its changelog section.
  *   Both, from a task: no workflow change that would run before the owner's merge (ADR 0075).
@@ -263,6 +264,52 @@ function workflowRule(dir: string): string | undefined {
   return `This workflow change would run before the owner's merge, so the box can't list it for their yes: ${why}. Take it out of the branch (git checkout ${base ?? "origin/main"} -- <file>, or git rm a new one, then commit), and say in your reply what it would do. A project's pipeline (its ship.yml and actions) changes through its stack, with a \`shipify:\` task; any other is the owner's to make on GitHub.`;
 }
 
+/** A box setup script's version: what `ship doctor` on a box compares with its own record. */
+export const setupVersionOf = (script: string) =>
+  Number(/^SETUP_VERSION=(\d+)$/m.exec(script)?.[1] ?? 0);
+
+/**
+ * box/setup.sh's rule (docs/box-setup.md, "Fast and current"): a change to what it runs raises
+ * SETUP_VERSION past main's, so `ship doctor` names each box set up before it, and the weekly
+ * clean-up tells you. Comments and blank lines aren't run, so they need none.
+ */
+export function setupRule(before: string | undefined, now: string | undefined) {
+  if (before === undefined || now === undefined) return undefined;
+  const commands = (s: string) =>
+    s
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#") && !/^SETUP_VERSION=/.test(l))
+      .join("\n");
+  if (commands(before) === commands(now)) return undefined;
+  const was = setupVersionOf(before);
+  const is = setupVersionOf(now);
+  if (is > was) return undefined;
+  return `box/setup.sh's commands changed, but its SETUP_VERSION is ${is} and main's is ${was}: set it to ${was + 1}, with a "Setup ${was + 1}:" line in its header that says what boxes get, so ship doctor names each box set up before it. Then run ship pr again.`;
+}
+
+/** What the two Apps ask GitHub for (cli/commands/bot.ts): BOT_PERMISSIONS and REPOS_PERMISSIONS. */
+const appPermissions = (botTs: string) =>
+  [...botTs.matchAll(/^export const (?:BOT|REPOS)_PERMISSIONS = \{[^}]*\}/gm)]
+    .map((m) => m[0].replace(/\s+/g, " "))
+    .join("\n");
+
+/**
+ * The Apps' permissions rule (ADR 0049's addendum): GitHub gives a permission added later to an
+ * App made before only once its owner accepts it, by hand on GitHub. So the change's notes, which
+ * the update PR carries, say so in a line that starts "Action needed".
+ */
+export function permissionsRule(
+  before: string | undefined,
+  now: string | undefined,
+  changelog: string,
+) {
+  if (before === undefined || now === undefined) return undefined;
+  if (appPermissions(before) === appPermissions(now)) return undefined;
+  if (/action needed/i.test(unreleased(changelog))) return undefined;
+  return `The Apps' permissions changed (BOT_PERMISSIONS or REPOS_PERMISSIONS in cli/commands/bot.ts), and an App made before gets them only when its owner accepts them on GitHub. Under ## [Unreleased] in CHANGELOG.md, add "**Action needed once:**" and what to do: on the App's permissions page, set <permission> to <access>, save, and accept the change on its install. Then run ship pr again.`;
+}
+
 function platformRules(dir: string): string | undefined {
   const recorded = recordedCheckout(dir) ?? leftConflicts(dir) ?? workflowRule(dir);
   if (recorded) return recorded;
@@ -270,6 +317,21 @@ function platformRules(dir: string): string | undefined {
   const docsOnly = changed.every((f) => /\.md$/.test(f) || f.startsWith("docs/"));
   if (!docsOnly && !changed.includes("CHANGELOG.md"))
     return "Add a CHANGELOG.md entry under ## [Unreleased] for this change, then run ship pr again.";
+  // What a box or an App runs with changed: the change says so, where you'll see it.
+  const onMain = (f: string) => {
+    const r = run("git", ["show", `origin/main:${f}`], { cwd: dir });
+    return r.code === 0 ? r.stdout : undefined;
+  };
+  const here = (f: string) =>
+    existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : undefined;
+  const setup = "box/setup.sh";
+  const bot = "cli/commands/bot.ts";
+  const owed =
+    (changed.includes(setup) ? setupRule(onMain(setup), here(setup)) : undefined) ??
+    (changed.includes(bot)
+      ? permissionsRule(onMain(bot), here(bot), here("CHANGELOG.md") ?? "")
+      : undefined);
+  if (owed) return owed;
   // What a stack puts in projects (its files, or a layer's it's built from) changed: its version
   // moves (ADR 0005). Its guides and migration notes, read from shipify, don't count.
   const stacks = new Set<string>();

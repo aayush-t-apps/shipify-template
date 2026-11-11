@@ -44,7 +44,7 @@ Projects live in `../projects/<id>`, each its own repo with its own `AGENTS.md`.
 | the watch, the status task, a box offline, an app failing | `docs/watch.md` · `edge/` · `.github/workflows/watch.yml` · `cli/commands/watch.ts` |
 | task, repeat, recipe or check: which one, or writing one | the table in `README.md` ("Task, repeat, recipe or check?") · `docs/tasks.md` · a check: `checks/<name>.mjs`, from `checks/example.mjs`, in a PR (`checks/README.md`) · a recipe: `recipes/<name>.md`, from `recipes/examples/`, in a PR (`docs/recipes.md`) |
 | the status page | `docs/door.md` ("The status page") · `pnpm ship door page` (show it, then `--yes`) · `edge/src/page.ts` |
-| Telegram, the web chat, or another channel | `docs/channels.md` · `pnpm ship add telegram` / `pnpm ship add webchat` (show it, then `--yes`) · `pnpm ship selftest chat` · the web chat's code: `edge/src/web/`, `edge/public/admin/chat/` (its service worker `sw.js`; its parts loaded when needed, `workspace.js` and `setup.js`, ADR 0065, and `desk.js` (on the first screen), `project.js`, `export.js`, `repeat.js`, `library.js`, `find.js`, `draw.js`, `attach.js` and their styles, ADR 0069; its files in R2: `edge/src/store.ts`; its diagram frame: `edge/public/draw/`), `edge/src/channels/web.ts`, its notifications `edge/src/push.ts` · every word, task and release works the same from a chat; only merges, and taking an app down, bringing it back or a rollback (`AT_ONCE`), stay on GitHub (ADR 0049) · a new chat: an adapter in `edge/src/channels/` (`plugins/_template/channel/`) |
+| Telegram, the web chat, or another channel | `docs/channels.md` · `pnpm ship add telegram` / `pnpm ship add webchat` (show it, then `--yes`) · `pnpm ship selftest chat` · the web chat's code: `edge/src/web/`, `edge/public/admin/chat/` (its service worker `sw.js`; its parts loaded when needed, `workspace.js` and `setup.js`, ADR 0065, and `desk.js` (on the first screen), `project.js`, `export.js`, `repeat.js`, `library.js`, `find.js`, `draw.js`, `attach.js` and their styles, ADR 0069; its files in R2: `edge/src/store.ts`; its diagram frame: `edge/public/draw/`), `edge/src/channels/web.ts`, its notifications `edge/src/push.ts` · every word, task and release works the same from a chat; only merges stay on GitHub, and taking an app down, bringing it back or a rollback (`AT_ONCE`) run from a chat only after your Yes (ADR 0049) · a new chat: an adapter in `edge/src/channels/` (`plugins/_template/channel/`) |
 | what anyone can ask | `intents.json` (six intents, chat commands, fixed words) · `cli/kernel/words.ts` · `docs/tasks.md` |
 | the notebook | `docs/notebook.md` · `pnpm ship notebook` (on a box) · `remember: …` and `forget: …` (no agent, from any channel), or notes in a run's `result.json` · a repo's own notes: `remember <repo>: …`, read only by runs on that repo · `/notebook` · a way of working is a skill PR, not a note |
 | a project you make, its pages, Inbox and Journal (the Library) | `docs/knowledge.md` (the loop) · `project: <name>`, `add <name>: …`, `jot: …` (the door saves them, no agent: `edge/src/capture.ts`) · a run's `pages` and the Log (`cli/commands/task/notebook.ts`) · Keep on page and "check the project" (`cli/kernel/projects.ts`) · a project's next step and Find by meaning (`edge/src/web/reads.ts`) · `clean start` (`cli/kernel/decide.ts`, `cli/commands/task/sweep.ts`) · `skills/knowledge` · ADR 0069, ADR 0070 |
@@ -87,10 +87,13 @@ The owner's rules, for every change here:
 - **Free only.** No paid service, no domain to buy. Keys live with their boundary: GitHub's
   secrets, each box's runner registration, and the edge's Worker secrets on Cloudflare.
 - **No upgrades on the side.** Versions (each agent's install in `executors.json`, Node 22, pnpm,
-  actions) change only in a PR that says so. OS security updates, the runner's own updates and
-  Node 22.x fixes are the exceptions.
-- **Nothing to sign in to on a box,** and no sudo after `box add`. The runner uses one sudoers rule,
-  made by `box add`, to start the agent's own user (ADR 0031).
+  a box's shellcheck, actions) change only in a PR that says so. OS security updates, the
+  runner's own updates and Node 22.x fixes are the exceptions.
+- **Nothing to sign in to on a box,** and no sudo after `box add`: you never run its setup again.
+  The runner's sudo rules, made by `box add`, start the agent's own user (ADR 0031) and, as root,
+  only the box's own update (setup 14): it applies main's newer `box/setup.sh`, which root downloads
+  from GitHub itself, so a job says "now", never what runs. Root never runs a file the runner or an
+  agent can write.
 - **Everything shows on GitHub:** a run's details on its reply, the watch on the status task, each
   PR linked to its task.
 - **Two planes, and a box knows nothing** (ADR 0019, ADR 0031): GitHub keeps the record and the
@@ -106,7 +109,13 @@ The owner's rules, for every change here:
   guided for a less technical person: one command, one step at a time, a check that names the fix.
 
 Add a `CHANGELOG.md` entry under Unreleased. A stack change also bumps `stacks/<id>/stack.json`,
-and one that needs action in projects gets `stacks/<id>/migrations/<version>.md` (ADR 0005).
+and one that needs action in projects gets `stacks/<id>/migrations/<version>.md` (ADR 0005). A
+change to what `box/setup.sh` runs bumps its `SETUP_VERSION`, with a "Setup N:" line in its header,
+so each box applies it by itself, and says so in your chat with that line. It must work as a box's
+own update (`SHIPIFY_REFRESH=1`): no registration, no sign-in, the slots' services as they are. A
+change to the Apps' permissions (`cli/commands/bot.ts`)
+gets an "**Action needed once:**" line in the changelog: an App made before gets a new permission
+only when its owner accepts it on GitHub. `ship pr` refuses a PR that lacks either one.
 Releases are batched, and published to the template (`docs/releases.md`). Each project carries its
 own pipeline, its stack's `ship.yml`: a change to it reaches a project by `ship upgrade`, as a PR.
 

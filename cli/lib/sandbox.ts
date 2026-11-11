@@ -33,6 +33,7 @@ import {
   fstatSync,
   openSync,
   readdirSync,
+  readFileSync,
   readSync,
   realpathSync,
 } from "node:fs";
@@ -53,6 +54,11 @@ export const AGENT_ROOT = "/srv";
 export const KEPT = ["cache", "data"];
 /** Podman's settings for the agents' users alone (box setup 8, ADR 0064), named in each command. */
 export const CONTAINERS_CONF = "/etc/containers/shipify-agents.conf";
+/**
+ * Left by a box setup whose sandbox check failed (box setup 14), as one line that says when: no
+ * agent starts on the box until a setup passes the check and takes it away.
+ */
+export const SANDBOX_OPEN = "/etc/shipify/sandbox-open";
 /** A run's folder older than this is left over: longer than any job (task.yml's limit, tested). */
 export const STALE_RUN_MS = 8 * 60 * 60_000;
 /** The biggest file readOut takes back. */
@@ -169,6 +175,8 @@ export interface SandboxIo {
   sleep(ms: number): void;
   /** Where the slots' folders are (/srv). */
   root: string;
+  /** A failed sandbox check's mark (SANDBOX_OPEN), when this machine has one to look for. */
+  sandboxOpen?: string;
 }
 
 /** The machine itself: sudo, with nothing of this process's environment. */
@@ -200,6 +208,7 @@ export const REAL_IO: SandboxIo = {
     }),
   sleep: (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
   root: AGENT_ROOT,
+  sandboxOpen: SANDBOX_OPEN,
 };
 
 /**
@@ -644,6 +653,7 @@ export function runPaths(slot: number, runId: string, root = AGENT_ROOT, own = f
  * only its own (0700, its group too), and out/ the runner's to read (2750, group shipify, the only
  * folder that passes that group on). Any process left of the slot's agent is killed
  * first, its earlier runs removed, and what they left of Podman's (ADR 0064) too. Once per job.
+ * Never on a box whose last setup failed its sandbox check (box setup 14).
  */
 export function prepareRun(
   slot: number,
@@ -651,6 +661,15 @@ export function prepareRun(
   io: SandboxIo = REAL_IO,
   own = false,
 ): AgentRun {
+  const open =
+    io.sandboxOpen && existsSync(io.sandboxOpen)
+      ? readFileSync(io.sandboxOpen, "utf8").trim() || "its last setup's sandbox check failed"
+      : "";
+  if (open)
+    throw new ShipError(
+      `On this box, ${open}, so no agent runs here until a setup passes it. The box tries again by itself when main's setup is newer; to do it now, when no task runs: on the box, its here.sh command again (docs/troubleshooting.md).`,
+      "blocked",
+    );
   const run = runPaths(slot, runId, io.root, own);
   const stopped = () => {
     if (!killAll(slot, io))

@@ -214,8 +214,8 @@ A laptop or a spare PC, with only your phone beside it:
    doesn't open, turn on HTTPS certificates there (DNS), then run the same command again.
 4. **Check it:** step 5 below, from your phone: `/ping` in your chat, then a real task.
 
-Anything goes wrong, or `ship doctor` later says its setup is older: the same command again. It
-never needs a PC. (From another machine you can reach, such as another box over Tailscale, steps
+Anything goes wrong: the same command again. It never needs a PC. A newer setup later needs
+nothing from you: the box applies it by itself ([Its own updates](#its-own-updates)). (From another machine you can reach, such as another box over Tailscale, steps
 3 to 5 work as from a PC: as your own user there, `gh auth login`, clone your copy, `make setup`;
 afterwards `gh auth logout` and delete the clone.)
 
@@ -280,10 +280,12 @@ pnpm ship box add mybox --manage --yes  # asks for the machine's password once
 Make a free [Tailscale](https://tailscale.com) account first (sign in with GitHub), and install
 its phone app with the same login.
 
-- **What it installs:** git (2.26 or newer: `ship doctor` checks), make, gh, Node 22, shellcheck,
-  fd and sqlite3 (shellcheck and fd come from Ubuntu's universe, on by default: without it the
-  setup goes on and says how to add them), what each stack needs; automatic security updates
-  (restarting at 04:30 when one needs it, and never restarting a slot mid-task); no sleep (the lid
+- **What it installs:** git (2.26 or newer: `ship doctor` checks), make, gh, Node 22, shellcheck
+  0.11.0 (the one Shipify's CI checks with, from its own release and checked against its
+  checksum, so a PR this box checked passes CI too: setup 15), fd and sqlite3 (fd comes from
+  Ubuntu's universe, on by default: without it the setup goes on and says how to add it), what
+  each stack needs; automatic security updates (restarting at 04:30 when one needs it, and never
+  restarting a slot mid-task); no sleep (the lid
   does nothing, and sleep is off: on a Pi or a VPS this changes nothing); SSH by key only; the
   user `shipify` (no sudo, its home 0700) running one runner per slot as system services (`shipify-box-<name>`, then
   `shipify-box-<name>-<k>`, with `UMask=0077`); the machine's tools in `/opt/shipify`; the sandbox
@@ -403,18 +405,22 @@ reaches the runner's keys or changes what the runner runs next.
 | Its folders | `/home/shipify` (0700): the runners, jobs' folders, logins, caches | `/srv/shipify-agent-<k>` (2711): its runs; the runner may only pass through to a run's `out/`, and other users can pass through but never list it or enter a folder in it |
 | What it writes | for itself alone (`UMask=0077`) | in its run's folder |
 | Its keys | the job's tokens, in processes the agent can't read | only what a run hands it on stdin: a read-only token and the tools' look keys, and its login, which goes on a pipe (fd 3), never in its environment |
-| sudo | one rule: run commands as its slots' agents | none |
+| sudo | run commands as its slots' agents; as root, only the box's own update | none |
 | Tools | `/opt/shipify`, its own | the same, to read and run, never to change |
 
-- **One sudo rule,** `/etc/sudoers.d/shipify-agents`:
+- **The sudo rules,** `/etc/sudoers.d/shipify-agents`:
 
   ```
   Defaults:shipify !use_pty
   shipify ALL=(shipify-agent-1,shipify-agent-2) NOPASSWD: ALL
+  shipify ALL=(root) NOPASSWD: /usr/local/sbin/shipify-box-update
   ```
 
-  It goes in only once `visudo` accepts it, and comes out again if sudo's whole configuration then
-  fails the check, so sudo always keeps working. Nobody types sudo after `box add`.
+  The second line is the box's own update (setup 14, [below](#its-own-updates)): root's own
+  command, which runs nothing the runner hands it but the word to start. The rules go in only once
+  `visudo` accepts them, and come out again if sudo's whole configuration then fails the check, so
+  sudo always keeps working. Nobody types sudo after `box add`. A box in Docker has the first line
+  only: a new image is its update.
 - **The agents' users:** system users with no password and no login shell, never in the runner's
   group, refused cron and at.
 - **The machine's tools,** outside the runner's home so agents can use them and change none:
@@ -448,7 +454,9 @@ reaches the runner's keys or changes what the runner runs next.
   start a Windows program ([This PC](#this-pc)). At setup, also: no agent reaches a private
   network (below). `box add` adds the `sandbox` label only after it passes. `ship doctor` (so each
   weekly clean-up) checks it again, plus the home's 0700, the jobs' umask 0077, and that
-  `shipify-agents-net.service` loaded the network rule (below).
+  `shipify-agents-net.service` loaded the network rule (below). A setup whose check fails (setup
+  14) leaves `/etc/shipify/sandbox-open`: until a setup passes and takes it away, no task's agent
+  starts on the box, and the run says why. The due run and the clean-up still run, and say so.
 - **Its network: the internet, never a private network** (setup 9). An agent and its containers
   reach what the work needs (GitHub, npm, the agent's API), and no private address: not your home
   network (the router, a camera, a NAS, homepi), not the tailnet, nor a cloud's metadata address
@@ -567,10 +575,43 @@ needrestart rule for `shipify-box-*`): a slot takes a new library at its next st
 | Piece | Stays current |
 |---|---|
 | shipify's code | a run fetches its commit only when the box has no copy of it (ADR 0057); the watch's jobs check out their own |
-| Node 22 | `box add` again (or a new image) updates the system's, which a task's run and its agent use; the weekly clean-up takes the newest 22.x for the watch's jobs, and keeps the two newest |
+| Node 22 | each setup (`box add`, its own update, or a new image) updates the system's to the newest 22.x, which a task's run and its agent use; the weekly clean-up takes the newest 22.x for the watch's jobs, and keeps the two newest |
 | pnpm, the agents | pinned (`packageManager`; each agent's `install` in `executors.json`); they change only in a PR. The weekly clean-up removes an agent's other versions |
 | packages | one pnpm store per box, pruned weekly |
-| the box itself | `box/setup.sh`: a change bumps `SETUP_VERSION`, and `ship doctor` names a box set up by an older one |
+| the box itself | `box/setup.sh`: a change to what it runs bumps `SETUP_VERSION` (`ship pr` refuses one that doesn't), and each box applies it by itself ([below](#its-own-updates)) |
+
+### Its own updates
+
+From setup 14 on, a box applies main's newer `box/setup.sh` by itself: you never run its setup again
+for a new version.
+
+1. **When:** the due run (at least once a day) and the weekly clean-up see that the box's setup is
+   older than main's, and no other slot runs a job.
+2. **The ask:** the job runs `sudo -n /usr/local/sbin/shipify-box-update`, the one command the
+   runner may run as root, with its own read token on stdin.
+3. **Root downloads the setup itself:** `box/setup.sh` and `box/update.sh` from your copy's default
+   branch on GitHub, into `/var/lib/shipify/update` (root's alone). The token is used for that one
+   download, never kept, never on a command line. So a job can say "now", never what runs. Root
+   never runs a file the runner or an agent can write.
+4. **It applies it:** in a service of its own (`shipify-setup-update`), so the job's end doesn't cut
+   it off. The slots with no job stop first, since the sandbox check stops every agent's processes.
+   The setup runs with the settings `box add` gave it, kept in `/etc/shipify/box.env` (no keys), as
+   a box's own update: no slot registers, no sign-in is waited for, no updates waiting are taken
+   (the daily ones do), and the slots' services stay as they are. The slots start again after,
+   however it ends. Its log: `/var/log/shipify-box-update.log`.
+5. **It tells you:** "homepi updated its own setup, 13 → 14", with each version's note, on the
+   status task and in your chat, once.
+
+When it can't:
+- **The setup failed:** your chat names why (its ✗ lines), once per version, and the box keeps its
+  older setup. It tries again a day later; to do it now, its `here.sh` command.
+- **Its sandbox check failed:** no task's agent starts on the box until a setup passes it
+  ([above](#the-agents-own-user)).
+- **What it can't do alone:** a slot GitHub deleted (14 days off) registers again only with your
+  approval, and Tailscale signs in only with you. Your chat says so; its `here.sh` command does it.
+- **A box set up by 13 or older** has no update of its own yet: doctor says to run its `here.sh`
+  command once more, and that installs it.
+- **A box in Docker** gets none: a new image is its update.
 
 **Time limits:** the agent works up to 200 minutes in one session (ADR 0059), its fix round 20,
 `make verify` 25, a check one; the run's job stops after 460 minutes. A run cut off anyway is
@@ -589,12 +630,13 @@ the box when the run ends.
 | `pnpm ship box stop` · `start` · `restart` | this machine's box: off until started, even after a restart; on; both, with sudo. Stop asks first while a task runs |
 | `pnpm ship box logs -f` · `peek -f` | this machine's slots' log, live; what the agent is doing now |
 | `pnpm ship box remove <name> [--purge] --yes` | unregisters its slots from GitHub, and stops its services when it's this machine's (with sudo); a Pi's, it says what to run there. `--purge`, on the machine itself: Shipify off it too (`box/remove.sh`) |
-| `pnpm ship doctor` | on a box: its setup version and the sandbox check, among the rest |
+| `pnpm ship doctor` | on a box: its setup version (and whether it updates itself), a failed sandbox check's mark, and the sandbox check, among the rest |
 
 ## Looking after it
 
 - **Usually, nothing:**
   - the box restarts itself, and Ubuntu installs security updates (restarting at 04:30 if needed);
+  - it applies main's newer setup by itself, and tells you ([Its own updates](#its-own-updates));
   - **the weekly clean-up:** the due run starts it on each box once its last is a week old. It
     removes closed and deleted tasks' folders, the agents' run folders older than 8 hours (as each
     agent, who owns them), runs `ship doctor` (the sandbox check included), checks the door
@@ -615,8 +657,9 @@ the box when the run ends.
   shipify-box-<name> shipify-box-<name>-2 …`; logs: `journalctl -u 'shipify-box-<name>*' -f`.
 - **A task cut off mid-run** (a restart, a power cut): the watch marks it Stopped and tells you
   once; reply `continue` and any box carries it on.
-- **Update its setup** (when doctor says it's older), while no task runs: on the box, its
-  `here.sh` command again; from a PC, `pnpm ship box add <user@host> --manage --yes`.
+- **Run its setup again** only when the box says it can't do it alone (a box set up by 13 or
+  older, a slot to register again, a sign-in), while no task runs: on the box, its `here.sh`
+  command again; from a PC, `pnpm ship box add <user@host> --manage --yes`.
 - **Start over,** when running it again doesn't fix something: [Starting over](#starting-over).
 - **A new disk (an SSD), or a fresh OS:** [six steps](#a-new-disk-an-ssd-or-a-fresh-os).
 - **Remove it:** [Taking Shipify off a machine](#taking-shipify-off-a-machine), or write a fresh
@@ -745,7 +788,8 @@ CPU and disk.
   `sudo ufw disable`, or `sudo tailscale up` to sign in again.
 - **A terminal without Cockpit:** Tailscale's admin page → Machines → the box → **SSH to machine**.
 - **Keep it on your tailnet:** Tailscale's admin page → Machines → the box → **Disable key expiry**
-  (otherwise it drops off after 180 days).
+  (otherwise it drops off after 180 days). Until you do, `box add` says so at its end, and
+  `ship doctor` on the box (so the weekly clean-up) names it, with the date.
 - **"Bad Origin" in Cockpit:** run the same command again (`here.sh --manage`, or `box add
   --manage`). It restarts Cockpit only when its settings change, so it works from Cockpit's own
   terminal too.
@@ -796,12 +840,16 @@ PC, `pnpm ship box add <user@host> --manage --yes`. Either works, while no task 
 | the sandbox check says the agents can reach your network | their rules didn't load: `sudo systemctl status shipify-agents-net` says why; then run it again |
 | `ship doctor` (or the clean-up) says the sandbox isn't right | it names the wall that's open. Run `box add` again: it sets the sandbox up and checks it |
 | the sandbox check says an agent's commands can read its memory, or its login isn't on a pipe | both are Ubuntu's own settings, which `box add` leaves as they are: put `kernel.yama.ptrace_scope = 1` in `/etc/sysctl.d/10-ptrace.conf` and run `sudo sysctl --system`; `/bin/sh` must be dash (`ls -l /bin/sh`). Then `box add` again |
-| `box add` stops at "Checking the sandbox" | the line above names the wall. The box keeps working, without the `sandbox` label. Run it again; if it fails the same way, look at `/etc/sudoers.d/shipify-agents` and `ls -ld /home/shipify /srv/shipify-agent-*`. On WSL, "the agents can reach Windows": make the fix it prints in `/etc/wsl.conf` first ([This PC](#this-pc)) |
+| `box add` stops at "Checking the sandbox" | the line above names the wall. The box stays online, but no task's agent starts on it until a setup passes (setup 14). Run it again; if it fails the same way, look at `/etc/sudoers.d/shipify-agents` and `ls -ld /home/shipify /srv/shipify-agent-*`. On WSL, "the agents can reach Windows": make the fix it prints in `/etc/wsl.conf` first ([This PC](#this-pc)) |
 | `box add` says the machine runs another OS | write Ubuntu Server 26.04 LTS (64-bit) on it, then run it again |
 | `box add` can't connect | it says why and prints the fix: `ssh-keygen -R <address>` after a reinstall, `ssh-copy-id` for a missing key; for a key with a passphrase, `eval "$(ssh-agent)" && ssh-add` first. A `--manage` box answers only over Tailscale (setup 13): the PC on your tailnet, and its alias's `HostName` the box's Tailscale name |
+| doctor (or the clean-up) says the box's Tailscale key expires | Tailscale's admin page → Machines → the box → **Disable key expiry**. Already expired: a keyboard on it, then `sudo tailscale up` |
 | can't reach a `--manage` box at all (Tailscale down, or signed out) | a keyboard and screen on it (a VPS: its web console), then `sudo tailscale up`, or `sudo ufw disable` until it's back |
 | this PC's box goes offline when you close WSL | the `.wslconfig` idle timeouts ([This PC](#this-pc)) |
 | `ship doctor` says the kernel is 39-bit | write Ubuntu Server 26.04 LTS instead |
 | offline after a power cut | wait a minute; then Cockpit, or `ssh` in and `sudo systemctl status shipify-box-<name>` |
 | a box's clean-up waits in the queue | its slots lack the `box-<name>` label: run `box add` again |
 | a box vanished from `box list` | GitHub removes a runner that's been off 14 days: run its setup again, which registers its slots again |
+| your chat says a box "couldn't update its own setup" | the reason is in that message (the setup's ✗ lines), the whole setup in the due run's log and in `/var/log/shipify-box-update.log` on the box. It tries again a day later; a fix on main reaches it then. To do it now, run it again |
+| a run stops at its start: "On this box, box setup N's sandbox check failed …" | a setup on that box (its own update, or yours) found a wall open, so no agent runs there. Run it again: it names the wall; a setup that passes lets tasks run again. Then `continue` on the task |
+| doctor says "version 13; the repo's is 14" and nothing changes | a box set up by 13 or older has no update of its own: run it again once, and it applies every newer setup by itself after that |

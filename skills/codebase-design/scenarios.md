@@ -26,3 +26,8 @@
 - **Ask:** "which Cloudflare binding should this app use for shared state?"
 - **Without it:** the run proposed a Durable Object. A Worker that implements one gets no version (preview) URLs, so the app lost its PR previews.
 - **Done well:** check that the stack's deploy and preview flow supports the binding before you propose it.
+
+### 3. A design that guessed about a service
+- **Ask:** "how should the app keep its data on this service?"
+- **Without it:** the run added a new store, said the feature needed no code without a trace of the real path, and put every service path in one change.
+- **Done well:** use the service's own store first, trace the real path, read the service's code for the smallest correct step, and build one path now with the rest named "later".

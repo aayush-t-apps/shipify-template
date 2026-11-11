@@ -10,7 +10,7 @@ Day-to-day commands. Every command and its flags: [cli.md](cli.md). When somethi
 | see all projects, or one | `pnpm ship list` · `pnpm ship status <id>` (health, version, last release, runs, PRs) |
 | release a staging app | the Operate form, or `pnpm ship release <id> --yes`; then merge "Release vX.Y.Z" |
 | roll back production | the Operate form, or `pnpm ship rollback <id> [--to vX.Y.Z] --yes` |
-| take an app down / bring it back | the Operate form, or `pnpm ship down <id> --yes` / `pnpm ship up <id> --yes`. Down: CI still checks merges but deploys and previews nothing, and its URLs are off; the repo, releases and secrets stay |
+| take an app down / bring it back | `<id>: take it down` / `<id>: bring it back` in your chat (tap Yes), the Operate form, or `pnpm ship down <id> --yes` / `pnpm ship up <id> --yes`. Down: CI still checks merges but deploys and previews nothing, and its URLs are off; the repo, releases and secrets stay |
 | staging off or on | `pnpm ship staging <id> off\|on --yes`, then ship the branch as a PR |
 | a new stack version | `pnpm ship upgrade <id>` → `--yes` → migration notes → ship it (or `<app>: upgrade` as a task) |
 | a preview link for a PR | comment `preview` on its task, or `pnpm ship pr <p> --preview --yes` |
@@ -21,7 +21,7 @@ Day-to-day commands. Every command and its flags: [cli.md](cli.md). When somethi
 | a plug-in (Notion, Drop, Telegram) | `pnpm ship add <name>` → `--yes`; `--new` pastes its keys again; `pnpm ship selftest <name>`; `pnpm ship remove <name> --yes` |
 | a key or token to replace | [setup.md](setup.md), "Tokens and secrets" |
 | the projects on a new machine | `pnpm ship sync` (clones what's missing), or `pnpm ship reconcile` |
-| new projects in the task forms | automatic after publishing (a small PR), or `pnpm ship forms --yes` |
+| projects in the task forms | automatic after `publish`, `register` or `unregister` (a small PR), or `pnpm ship forms --yes` |
 | a merge that didn't deploy (GitHub started no run, rarely) | the project's Actions → **ship** → Run workflow → **deploy**: `main` again. For a merge a task follows, the watch says so after 30 minutes, with this fix |
 | an app behind a sign-in (Cloudflare Access) | protect the Worker, then add a **Bypass** rule for `/health` and `/.well-known/shipify.json`, or every deploy's health check fails and rolls back |
 

@@ -68,3 +68,8 @@
   out though the owner never said so.
 - **Done well:** one `publish` with `share: "me"` (or none: the tool makes it only the owner's).
   The reply says only they can open it, and how to share it.
+
+### 8. A page with a key in it
+- **Ask:** "make a page of what the log showed".
+- **Without it:** the page held a key from the log.
+- **Done well:** run `maskSecrets` on the page before you give it to Drop.

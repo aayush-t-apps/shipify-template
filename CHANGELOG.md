@@ -7,10 +7,77 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-11-11
+
+### Added
+
+- **A box applies main's newer setup by itself (box setup 14, task #732).** You never run a box's
+  setup again for a new version. When the box's setup is older than main's and no other slot runs
+  a job, the due run (at least once a day) or the weekly clean-up starts the box's own update,
+  the one command the runner may run as root. Root downloads `box/setup.sh` from your copy's
+  default branch itself, with the job's read token on stdin, and applies it with the settings
+  `box add` gave it (no keys): no slot registers, no sign-in is waited for, the slots with no job
+  stop until it ends. Your chat says what the box got, or why it couldn't (tried again a day
+  later). A setup whose sandbox check fails now leaves a mark, and no agent starts on the box until
+  a setup passes it. Root also runs the runner's dependency installer from its own copy, never the
+  runner's folder. [box-setup.md](docs/box-setup.md#its-own-updates). **Action needed once:** on
+  each box set up by 13 or older, its `here.sh` command once more, while no task runs; that
+  installs its own update, and doctor names each box until then.
+
+### Changed
+
+- **Take an app down from your chat, after your Yes; never a guest (task #729, ADR 0049).**
+  `<app>: take it down`, `bring it back` and `roll back production` from a chat now list what
+  they do, and your Yes (within a day) runs them once on GitHub's machines. On GitHub they still
+  run at once. A chat's `continue` on one lists it again. A guest can't ask for one.
+
+### Fixed
+
+- **`main`'s checks pass again after box setup 14, and a box checks shell scripts as CI does (box
+  setup 15, task #732).** GitHub's machines (Ubuntu 26.04) check with shellcheck 0.11, which
+  names a function only a `trap` runs as never run (SC2329). Box setup 14's `box/update.sh` named
+  only 0.9's code for it (SC2317), so CI failed on `main` after the merge. It now names both. The
+  box's checks before the PR passed, as a box had Ubuntu 24.04's shellcheck 0.9. From setup 15,
+  every box installs 0.11.0, CI's, from shellcheck's own release, checked against its checksum.
+  A box on setup 14 takes it by itself.
+- **What a box or the bot needs from you is checked, not only written (task #732).** Three gaps,
+  each now held by a check that names the fix:
+  - `ship pr` (and a task's box before its PR) refuses a change to what `box/setup.sh` runs that
+    keeps its `SETUP_VERSION`, so `ship doctor` and the weekly clean-up name each box set up
+    before it. #714 changed the firewall step and kept 13.
+  - It refuses a change to the bot's or the repos App's permissions with no "Action needed" line
+    in this changelog, which the update PR carries: GitHub gives an App made before a new
+    permission only after you accept it (#729).
+  - A `--manage` box whose Tailscale key expires (Tailscale's default: 180 days, then the box
+    drops off your tailnet) is named at the end of `box add`, and by doctor on the box every
+    week, with where to turn expiry off, until you do.
+- **A take-down, bring-back or rollback from a task works (task #729).** GitHub refused to start
+  the app's pipeline (HTTP 403): the bot had Actions: Read only. The bot now asks for Actions:
+  Read and write; only the `github` job's token has it, never an agent's. The pipeline now starts
+  before `SHIPIFY_DOWN` changes, so a refusal changes nothing, and it names the fix. **Action
+  needed once:** on the bot's permissions page, set Actions to Read and write, save, and accept
+  the change on its install ([setup.md](docs/setup.md#tasks-the-bot-and-the-agents-login)).
+- **The Operate form lists every app you register or remove, not only the ones you publish (task #724).**
+  `ship register` and `ship unregister` now open the same small forms PR that `ship publish`
+  does, so an app added by hand (like `games`) shows up in the form, and a removed one leaves it.
+- **A file you send is never pushed out of a run's files by the files runs made (task #717).** A
+  run takes 5 of the chat's files: before, the 5 newest, so a file you sent while a run worked was
+  left out once that run's reply posted 5 screenshots, and the next run asked you to send it
+  again. Now your newest files come first, and runs' files fill the places left, in the chat's
+  order. A run's file left out is named apart: the run reads it from "Files earlier runs made".
+
 ## [0.1.20] - 2026-11-09
 
 ### Added
 
+- **Twenty-one weekly lessons in their skills (task #576).** `test-driven-development`: one value
+  per input. `systematic-debugging`: where to look for a generic error, an empty list, a stale
+  client, a CI-only failure, an OS error, and a stale output file; every caller of a shared step;
+  every check on a fix's path. `plug-ins`: tool names stay out of `cli/`. `codebase-design`: four
+  principles for designing on a service. `writing-skills`: run rules go in a playbook or skill.
+  `drop`: `maskSecrets` on a page. `security-and-hardening`: service worker scope (and its first
+  `scenarios.md`). `verification-before-completion`: hand over a file and check an earlier one.
+  Each has a case in its `scenarios.md`. Skill text only: no version change.
 - **Nothing by hand: workflow changes you approve in the chat, and a fix on main as its own task
   (ADR 0075, task #692).** A run never asks you to edit a file, apply a patch or copy words into a
   new chat (the playbook's rule). A run's own change to `.github/workflows/` or

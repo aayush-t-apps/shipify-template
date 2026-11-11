@@ -13,12 +13,16 @@ import { has, run } from "../lib/exec.ts";
 import { gh, ghRun, platformRepo, settingsHome } from "../lib/github.ts";
 import { ok, type Result, ShipError } from "../lib/output.ts";
 
-/** What the bot may do. "Variables" has no manifest key: it's ticked by hand afterwards. */
+/**
+ * What the bot may do. "Variables" has no manifest key: it's ticked by hand afterwards. Actions
+ * write starts an app's pipeline (take it down, bring it back, roll back), only in the github job's
+ * full token: every other mint names its own, smaller set.
+ */
 export const BOT_PERMISSIONS = {
   contents: "write",
   pull_requests: "write",
   issues: "write",
-  actions: "read",
+  actions: "write",
   statuses: "read",
   checks: "read",
   metadata: "read",
@@ -211,7 +215,7 @@ export async function botSetup(
             ]
           : [
               `installed on all repositories? https://github.com/apps/${set[names.slug]}/installations/new`,
-              `settings: ${settingsHome(org)}/apps/${set[names.slug]}/permissions`,
+              `settings (Actions and Variables: Read and write): ${settingsHome(org)}/apps/${set[names.slug]}/permissions`,
             ],
     };
   // The app was created, but finishing it here failed: finish it with the code from that page.

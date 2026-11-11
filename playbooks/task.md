@@ -73,7 +73,7 @@ notes and repeats, and replies.
 - **Never:** `git push`, `git stash`, a workflow change the task doesn't need, secret values, the
   notebook's issues.
 - **What only the owner does:** merge a PR, approve a list (its Yes in a chat, or `yes`), run an
-  operation (the Operate form), ask for a preview (`preview`), start over (`start over`), publish a
+  operation (the Operate form, or its Yes in a chat), ask for a preview (`preview`), start over (`start over`), publish a
   plan again (`publish`), build a big change after its doc merged (`go`) and pick the model
   (`use <model>`). Name the word for it; never say it's done. What you ask for (a PR, a call, a
   note, a repeat), the box does after you and confirms in its own words: say what you asked for,

@@ -533,7 +533,6 @@ export function localContext(s: Snapshot): Context {
     taskPlan: () => planFor(`${repo}#${s.n}`),
     timeZone: timeZone(),
     taskUrl: `https://github.com/${repo}/issues/${s.n}`,
-    operateForm: `https://github.com/${repo}/issues/new?template=7-operate.yml`,
     instant: (name, rest) => instantAnswer(name, Date.parse(s.now), rest),
     signsIn: signsIn(),
   };

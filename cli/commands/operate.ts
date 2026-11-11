@@ -3,10 +3,11 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { listPresets, listStacks } from "../lib/catalog.ts";
 import { loadConfig, PLATFORM_ROOT, projectsDir } from "../lib/config.ts";
-import { ghRun } from "../lib/github.ts";
+import { ghRun, settingsHome } from "../lib/github.ts";
 import { MANIFEST_FILE, readManifest } from "../lib/manifest.ts";
 import { ok, type Result, ShipError } from "../lib/output.ts";
 import { projectsOnGitHub } from "../lib/projects-on-github.ts";
+import { useMocks } from "../lib/providers.ts";
 import {
   entryFromManifest,
   loadRegistry,
@@ -15,6 +16,7 @@ import {
   upsert,
 } from "../lib/registry.ts";
 import type { RegistryEntry } from "../lib/schemas.ts";
+import { forms } from "./workspace.ts";
 
 export function catalog(what: "stacks" | "presets"): Result {
   const rows =
@@ -36,11 +38,22 @@ export function catalog(what: "stacks" | "presets"): Result {
   });
 }
 
+/** The task forms list the apps: a small PR keeps them current (not in tests, which mock GitHub). */
+function formsStep(): string[] {
+  if (useMocks()) return [];
+  try {
+    const url = (forms(true).data as { url?: string } | undefined)?.url;
+    return url ? [`merge ${url} to update the task forms`] : [];
+  } catch {
+    return [];
+  }
+}
+
 export function register(path: string): Result {
   const dir = resolve(path);
   const m = readManifest(dir);
   saveRegistry(upsert(loadRegistry(), entryFromManifest(m, dir)));
-  return ok("register", `registered ${m.id}`);
+  return ok("register", `registered ${m.id}`, { nextSteps: formsStep() });
 }
 
 export function unregister(id: string): Result {
@@ -51,6 +64,7 @@ export function unregister(id: string): Result {
   return ok(
     "unregister",
     `removed ${id} from the index (its files, repo and Workers are untouched)`,
+    { nextSteps: formsStep() },
   );
 }
 
@@ -163,11 +177,27 @@ export async function status(id: string): Promise<Result> {
   return ok("status", id, { data: lines.join("\n") });
 }
 
-/** Run the app's pipeline with a lifecycle action (needs Actions: write on the PC token). */
 /**
- * Operate a live app through its pipeline. `down` takes it offline until `up`: the repo variable
- * SHIPIFY_DOWN makes CI check every change and deploy none, and `make pause` turns its URLs off
- * (production, staging and previews). The repo, code, releases and secrets stay.
+ * GitHub's refusal to start an app's pipeline, with its fix. A 403 in a task's github job is the
+ * bot's: it needs Actions: write (BOT_PERMISSIONS), which a bot made before it lacks.
+ */
+function startRefused(repo: string, stderr: string): ShipError {
+  const slug = process.env.SHIPIFY_BOT_SLUG;
+  if (!/HTTP 403/.test(stderr) || !slug)
+    return new ShipError(`gh workflow run failed: ${stderr.trim()}`);
+  const org = repo.split("/")[0] ?? "";
+  return new ShipError(
+    `The bot may not start ${repo}'s pipeline, so nothing changed.\nIn the bot's permissions, set Actions to Read and write, save, and accept the change on its install: ${settingsHome(org)}/apps/${slug}/permissions`,
+    "blocked",
+  );
+}
+
+/**
+ * Operate a live app through its pipeline (Actions: write: the PC's token, or the bot's in a
+ * task). `down` takes it offline until `up`: the repo variable SHIPIFY_DOWN makes CI check every
+ * change and deploy none, and `make pause` turns its URLs off (production, staging and previews).
+ * The repo, code, releases and secrets stay. The pipeline starts first, so a refusal changes
+ * nothing.
  */
 export function lifecycle(
   id: string,
@@ -209,16 +239,16 @@ export function lifecycle(
       command: action,
       status: "requires-approval",
       summary: `would ${effect} for ${id}`,
-      plannedActions: [...(flag ? [`gh ${flag.join(" ")}`] : []), `gh ${args.join(" ")}`],
+      plannedActions: [`gh ${args.join(" ")}`, ...(flag ? [`gh ${flag.join(" ")}`] : [])],
       nextSteps: [`pnpm ship ${action} ${id} --yes`],
     };
   }
+  const r = ghRun(args);
+  if (r.code !== 0) throw startRefused(repo, r.stderr);
   if (flag) {
     const f = ghRun(flag);
     if (f.code !== 0) throw new ShipError(`gh variable set failed: ${f.stderr.trim()}`);
   }
-  const r = ghRun(args);
-  if (r.code !== 0) throw new ShipError(`gh workflow run failed: ${r.stderr.trim()}`);
   return ok(action, `started: ${effect} for ${id}`, {
     nextSteps: [`gh run watch -R ${repo}`, `pnpm ship status ${id}`],
   });

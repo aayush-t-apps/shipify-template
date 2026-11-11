@@ -45,3 +45,8 @@
 - **Ask:** ask again for an open PR after more work.
 - **Without it:** the run said the PR's kind changed, but only its commits had updated. Its description and task line were as before.
 - **Done well:** read the PR's description on GitHub before you say its kind changed.
+
+### 8. A file named in a reply but not handed over
+- **Ask:** "make a report and share it".
+- **Without it:** the reply named the file, but it was not in the out folder or the files list. An earlier reply's file also lacked what the reply said.
+- **Done well:** put the file in the out folder and the files list, and open an earlier file to check it before you build on it.

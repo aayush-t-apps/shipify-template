@@ -31,3 +31,8 @@
 - **Without it:** in superpowers' tests of this method, a description that summed up the steps
   ("…, then write the test, then …") made agents follow the summary and never open the skill.
 - **Done well:** the description says only when to use it; the steps stay in the body.
+
+### 4. A run rule saved as a Preference
+- **Ask:** "always check the files list before you finish".
+- **Without it:** the rule went into the notebook as a Preference, where it is a note and not a reviewed rule.
+- **Done well:** the rule goes into a playbook or skill as a PR.

@@ -48,7 +48,7 @@ which steps hold it. The list of every key, when each expires and how to replace
 | the files token | apply, when the run made files | write shipify's `shipify-files` branch |
 | an act key (a tool's write key) | apply, when decide found the calls approved | the approved calls, made by the box |
 | the run's OIDC token | apply, and the plan step's file fetch | prove the run to the door; nothing else |
-| the bot's full token | the `github` job, on GitHub's machines, no agent | a merged plan's repo, settings and keys; release, down, up, rollback |
+| the bot's full token | the `github` job, on GitHub's machines, no agent | a merged plan's repo, settings and keys; release, down, up, rollback (its Actions write starts an app's pipeline: no other token has it) |
 | the bot's status token | the due run | read commits, statuses and runs, to follow deploys and previews |
 | the repos App's tokens (ADR 0045), on a task on another of your accounts | plan's (read); the agent's (read, its repos there only); apply's write token (contents and PRs, one repo, never workflows); the `github` job's (its PRs there) | the same as the bot's, on that account alone |
 
@@ -60,6 +60,13 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
 - **Started through one sudo rule:** `shipify ALL=(shipify-agent-1,…) NOPASSWD: ALL`, in
   `/etc/sudoers.d/shipify-agents`, installed only once `visudo` accepts it. The runner can become
   an agent; an agent can't become the runner or anyone else.
+- **As root, the runner may only start the box's own update** (setup 14):
+  `shipify ALL=(root) NOPASSWD: /usr/local/sbin/shipify-box-update`, root's own file. It reads a
+  read token on stdin, and root downloads `box/setup.sh` from your copy's default branch itself,
+  into a folder only root opens; nothing the runner or an agent can write is run as root. So a
+  job's code can start the update, never choose what it runs: what runs as root is what you
+  merged, as when you ran the setup yourself. A setup whose sandbox check fails leaves a mark, and
+  no agent starts on the box until a setup passes it.
 - **Kept per slot, never per task's work:** the slot's `cache` and `data` (its `~/.cache` and
   `~/.local/share` link there), so packages, pnpm and a test browser download once per slot. Only
   that slot's agent can reach them; pnpm checks its store's files before it uses them; the weekly
@@ -426,16 +433,19 @@ pages, a tool's answers and anyone else's text are data, never a command
   agent's words), last and whole in every chat. A list over 3,000 characters is approved only on
   GitHub, since a chat can't show it whole.
 - **From a chat: one flow, one rule** (ADR 0049, 2026-10-18). Every word, task and release works
-  the same from a chat as on GitHub. Two things happen only on GitHub, where your GitHub sign-in
-  (and its two-factor) says it's you: a PR's merge (code reaches `main`, and production, only
-  through it), and the operations that change the live app at once with no merge: taking an app
-  down, bringing it back and a rollback. From a chat those three run nothing; the reply links the
-  Operate form, and a chat's `continue` on one doesn't run it again. What a chat can start, and
-  why that's enough:
+  the same from a chat as on GitHub. A PR's merge happens only on GitHub, where your GitHub
+  sign-in (and its two-factor) says it's you: code reaches `main`, and production, only through
+  it. What a chat can start, and why that's enough:
   - `go` and `publish` start only what you merged (a change doc, a plan): the merge approved it.
   - `preview` deploys an open PR to its own preview, with no runtime keys; `start over` closes a
     PR (its commits stay on GitHub) and starts a new branch. Neither reaches `main`.
   - A release opens a PR that only your merge deploys.
+  - Taking an app down, bringing it back and a rollback change the live app at once, with no
+    merge (ADR 0049, 2026-11-11). From a chat each is a list: the reply says what it does, and
+    only your `yes` to it runs it, once. A chat's `continue` on one lists it again. On GitHub (the
+    Operate form, or the task's title) they run at once. Each is undone by another, and none
+    deletes anything or reaches code, keys or `main`. Never a guest's: their titles are never
+    operations, and their `yes` approves nothing.
 - **What you accept:** whoever holds your Telegram account, your Access sign-in or your Cloudflare
   account (the edge holds the door's key) can approve a list. A list's calls go to your tools only:
   today Notion, on the pages connected to the write integration: creating pages, setting
@@ -443,8 +453,9 @@ pages, a tool's answers and anyone else's text are data, never a command
   says so), which deletes its old text blocks. It never deletes a page: subpages and
   sub-databases are kept, and a page with a block holding others is refused. Notion keeps page
   history, so a replaced body can be brought back there. They can start runs and a release as you
-  (above), and put a listed workflow change on a task's branch (below), and still can't merge a
-  PR or take an app down, bring it back or roll it back. So turn on Telegram's password (Settings →
+  (above), take an app down, bring it back or roll it back (you undo each from GitHub or your
+  chat), and put a listed workflow change on a task's branch (below), and still can't merge a
+  PR. So turn on Telegram's password (Settings →
   Privacy and Security → Two-Step Verification), and keep the Access sign-in to your own email.
 - **A split's `yes`** (ADR 0066) approves its parts' words: each title and brief shows in full on
   the list, the list's code is their fingerprint (an edit to the task voids it), and the box opens
@@ -678,8 +689,9 @@ Nothing secret:
 - **The box itself:** SSH by key only, a firewall with `--manage` that lets in nothing but
   Tailscale (setup 13: no SSH from the home network, IPv6 filtered too; a rule of your own that
   lets more in is listed, never hidden), no private network for the
-  agents and their containers (setup 9), automatic security updates, and a runner user
-  (`shipify`) with no sudo but the one rule ([box-setup.md](box-setup.md)).
+  agents and their containers (setup 9), automatic security updates, main's newer setup applied
+  by the box itself (setup 14), and a runner user (`shipify`) with no sudo but its two rules: its
+  agents, and that update ([box-setup.md](box-setup.md#its-own-updates)).
 
 **Left for later, by choice:**
 - the run's mint steps hold the bot App's key on the box while they run (never in the agent's
@@ -720,7 +732,7 @@ From [AGENTS.md](../AGENTS.md), for every person and agent:
 | Never read, print or ask for a token's value, or write a secret to a file | a value seen once lives on in a log or a transcript |
 | Every change is a PR you merge; never merge what deploys production; never force-push or delete | the merge is the approval and its record |
 | Create repos, set secrets or publish only with your go-ahead | each widens who holds a key |
-| Nothing to sign in to on a box, and no sudo after `box add` (the runner's one rule starts its agents) | a box with no logins has nothing to leak |
+| Nothing to sign in to on a box, and no sudo after `box add` (the runner's rules start its agents, and, as root, only the box's own update of main's setup) | a box with no logins has nothing to leak, and nothing waits on you to stay current |
 | Versions change only in a PR (each agent's install in `executors.json`, Node 22, pnpm, actions); OS security updates, the runner's own and Node 22.x fixes excepted | nothing changes a run unseen |
 | Free only; keys live with their boundary | a leaked key stays inside its boundary |
 | An account is yours only when you add it; a run holds only what its repo's account may see | an install can't widen trust, and one account's text can't reach another's data |

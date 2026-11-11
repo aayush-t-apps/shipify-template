@@ -65,7 +65,7 @@ You don't need to know any word: type what you want, and tap the rest (ADR 0042)
 | `/use` | your model, or that task's as a reply or after its number (`#12 /use`): the model picker ([below](#picking-a-model-your-model)) |
 | `/ping`, `/apps`, `/repos`, `/notebook`, `/recipes`, `/models`, `/help` | answered at once, with no task |
 | `spotter: release` | a release, as the Operate form runs it. It opens a PR: your merge on GitHub deploys it |
-| `spotter: take it down`, `spotter: bring it back`, `spotter: roll back production` | nothing runs: they change the live app at once, so they start only on GitHub. The reply links the Operate form |
+| `spotter: take it down`, `spotter: bring it back`, `spotter: roll back production` | they change the live app at once, so the reply lists what it does: tap Yes (within a day) and it runs once on GitHub's machines. Never a guest's (ADR 0049) |
 
 - **Answered at once, nothing written:** a command alone (`/ask`), a lone thanks, a voice note or
   video with no words, a photo with no caption and no task. The full list:
@@ -508,8 +508,8 @@ as **Change a repo** writes it); a task with none is **General**.
   its project) is open and 30 days after it closes (ADR 0069); several land
   on one task as an album. Photos are shrunk to 2,048 px in your browser, which drops their
   location and camera details. A message holds 16,000 characters: past that the box says how many
-  over and doesn't send (attach it as a file instead). A run takes a task's newest 5 chat files
-  and names the older ones ([tasks.md](tasks.md)).
+  over and doesn't send (attach it as a file instead). A run takes 5 of a task's chat files, the
+  newest you sent first, and names the older ones ([tasks.md](tasks.md)).
 - **Never type a key into it:** your words land on a GitHub task. The page warns before sending
   anything that looks like a key.
 

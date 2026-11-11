@@ -12,6 +12,7 @@ const tryJson = <T>(s: string): T | undefined => {
 import { cpus, freemem, homedir, totalmem, userInfo } from "node:os";
 import { join } from "node:path";
 import { type Executors, loadExecutors, readExecutors } from "../lib/agents.ts";
+import { boxSetup, UPDATER } from "../lib/box-update.ts";
 import { listStacks } from "../lib/catalog.ts";
 import { gitTakesPathspecFiles } from "../lib/checkouts.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
@@ -26,6 +27,7 @@ import {
   agentUser,
   containersProblems,
   REAL_IO,
+  SANDBOX_OPEN,
   type SandboxIo,
   sandboxProblems,
 } from "../lib/sandbox.ts";
@@ -159,6 +161,8 @@ export async function doctor(opts: { yes?: boolean } = {}): Promise<Result> {
   if (sandbox) checks.push(sandbox);
   const containers = containersCheck();
   if (containers) checks.push(containers);
+  const tailscale = tailscaleKeyCheck();
+  if (tailscale) checks.push(tailscale);
   checks.push(watchCheck());
   checks.push(...toolKeyChecks());
   checks.push({
@@ -344,30 +348,42 @@ export async function doctor(opts: { yes?: boolean } = {}): Promise<Result> {
  * On a box that box/setup.sh set up (it runs as the user "shipify"): whether its setup is the
  * repo's, so a change to that script never goes unnoticed on boxes set up before it (ADR 0017).
  * A box from before setup versions has version 1. A `--manage` setup that stopped before its end
- * (box setup 13: no firewall, maybe) is named until it finishes.
+ * (box setup 13: no firewall, maybe) is named until it finishes, and a setup whose sandbox check
+ * failed (box setup 14) until one passes. From setup 14 on, a box applies a newer setup by itself
+ * (lib/box-update.ts); one set up before needs it run once more.
  */
 export function setupCheck(
   user = userInfo().username,
   home = homedir(),
   script = join(PLATFORM_ROOT, "box", "setup.sh"),
+  updater = UPDATER,
+  open = SANDBOX_OPEN,
 ): Check | undefined {
   if (user !== "shipify" || !existsSync(script)) return undefined;
-  const want = Number(/^SETUP_VERSION=(\d+)$/m.exec(readFileSync(script, "utf8"))?.[1] ?? 1);
-  const file = join(home, ".shipify-setup");
-  const text = existsSync(file) ? readFileSync(file, "utf8") : "";
-  const have = Number(/^\d+/.exec(text)?.[0] ?? 0) || 1;
-  const unmanaged = /^manage: not finished$/m.test(text);
+  const { have, want, unmanaged } = boxSetup(home, script);
+  const failed = existsSync(open)
+    ? readFileSync(open, "utf8").trim() || "its last setup's sandbox check failed"
+    : "";
+  const byItself = existsSync(updater);
+  const byHand =
+    "when no task is running: on the box, its here.sh command again; or from a PC, the pnpm ship box add command it was set up with, --manage too if it had it (it asks for sudo once)";
   return {
     name: "box setup is the repo's",
-    ok: have >= want && !unmanaged,
-    detail:
-      have < want
-        ? `version ${have}; the repo's is ${want}`
+    ok: have >= want && !unmanaged && !failed,
+    detail: failed
+      ? `${failed}, so no task runs here until a setup passes it`
+      : have < want
+        ? `version ${have}; the repo's is ${want}${byItself ? ": it applies it by itself at the next due run while no other slot runs a job, and says how it went on the status task" : ""}`
         : unmanaged
           ? `version ${have}, but its --manage part didn't finish (Tailscale, the firewall or Cockpit), so it may take connections from outside Tailscale`
           : `version ${have}`,
     blocking: false,
-    fix: "when no task is running: on the box, its here.sh command again; or from a PC, the pnpm ship box add command it was set up with, --manage too if it had it (it asks for sudo once)",
+    fix:
+      have < want && !byItself
+        ? `once more, ${byHand}: from setup 14 on, a box applies a newer setup by itself`
+        : have < want && !failed
+          ? `nothing, usually; to do it now, ${byHand}`
+          : byHand,
   };
 }
 
@@ -464,6 +480,31 @@ export function containersCheck(
       : `${slots.map(agentUser).join(", ")}: their stores open`,
     blocking: false,
     fix: 'when no task runs: on the box, its here.sh command again; if it says the same, docs/troubleshooting.md, "Containers don\'t start"',
+  };
+}
+
+/**
+ * A box's Tailscale key (`--manage`): by default it expires after 180 days, and the box then drops
+ * off your tailnet, where its firewall lets in nothing else. Turning expiry off is yours, on
+ * Tailscale's admin page, so it's named until it's done. `status` is `tailscale status --json`'s
+ * output; none on a machine without Tailscale, or not signed in.
+ */
+export function tailscaleKeyCheck(user = userInfo().username, status?: string): Check | undefined {
+  if (user !== "shipify") return undefined;
+  const json = status ?? (has("tailscale") ? run("tailscale", ["status", "--json"]).stdout : "");
+  const self = tryJson<{ BackendState?: string; Self?: { HostName?: string; KeyExpiry?: string } }>(
+    json,
+  );
+  if (self?.BackendState !== "Running" || !self.Self) return undefined;
+  const expires = self.Self.KeyExpiry?.slice(0, 10);
+  return {
+    name: "Tailscale: this box's key never expires",
+    ok: !expires,
+    detail: expires
+      ? `it expires on ${expires}: then the box drops off your tailnet, and only a keyboard on it reaches it`
+      : "key expiry off",
+    blocking: false,
+    fix: `on https://login.tailscale.com/admin/machines: ${self.Self.HostName ?? "this box"} → ⋯ → Disable key expiry`,
   };
 }
 

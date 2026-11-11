@@ -73,6 +73,12 @@ You MUST complete each phase before proceeding to the next.
    - Environmental differences
    - A self-hosted run that "lost communication" may be the box, not the code: check its uptime and reset cause (on a Pi, the bootloader `rsts` value) first
    - A tool's key "looks wrong": check the value the tool's process received before you blame the setting. A placeholder like `${NAME}` means the key never reached it
+   - A page shows only a generic error: open it in a headless browser and read the console before you guess
+   - An empty list on a page: watch the network calls. A GET that carries a body, or a call that never leaves, shows up there
+   - A screenshot differs from the code: check that the client runs the current code (a cached build) before you change the code
+   - A failure only in CI: compare the runner's image with yours, and reproduce it in a container of that image
+   - A generic OS error (permission denied, no such file): read the vendor's source for what raises it
+   - A step that may not write its output: remove the old output file first, so a stale file can't pass as the result
 
 4. **Gather Evidence in Multi-Component Systems**
 
@@ -123,6 +129,8 @@ You MUST complete each phase before proceeding to the next.
    - What called this with bad value?
    - Keep tracing up until you find the source
    - Fix at source, not at symptom
+   - A step that many paths share: find every caller before you fix one, and test the fix on each path
+   - After the fix, run it through every check on its path (lint, tests, the box's checks), not only the one that failed
 
 ### Phase 2: Pattern Analysis
 

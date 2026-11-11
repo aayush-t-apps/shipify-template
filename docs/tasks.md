@@ -51,8 +51,9 @@ anything that isn't a reply to one of its messages becomes a new task, titled fr
 - **An operation:** the form on GitHub, or its words as a task's title (`spotter: release`,
   `spotter: take it down`, `spotter: bring it back`, `spotter: roll back production`). A release
   works from any chat too: it opens a PR, and your merge deploys it. The other three change the
-  live app at once, with no merge, so they start (and run again with `continue`) only on GitHub;
-  from a chat, nothing runs and the reply links the form (ADR 0049).
+  live app at once, with no merge: on GitHub they run at once (and again with `continue`); from a
+  chat the reply lists what it does, and only your Yes runs it (a chat's `continue` lists it
+  again). A guest can't ask for one (ADR 0049).
 
 ## What happens: one run, one reply
 
@@ -692,7 +693,8 @@ first closes with its own PR, and a split's parent closes with its parts, as bef
 2. **The box checks again,** as the agent's user, with the same checks `ship pr` makes in a
    terminal: first what the PR needs besides tests (`ship pr <clone> --check`: every change doc
    readable, the version bumped with its changelog section when merging ships one; for Shipify, a
-   changelog line and stack versions), then `make verify`. When they fail, the agent gets one round,
+   changelog line, stack versions, box setup's version and the Apps' "Action needed" note), then
+   `make verify`. When they fail, the agent gets one round,
    in the same session (up to 20 minutes), to fix what they found. If they still fail, no PR opens
    and the reply shows the end of their output. The agent's commits are kept on the task's branch, so `continue`
    carries on from them. Shipify itself keeps the same targets: on it, `make verify` checks what
@@ -812,7 +814,7 @@ new branch, since a merge ends its branch.
 | an image pasted on GitHub, a Telegram photo | the image, to look at (the newest 10, 10 MB each) | larger ones are named and left out |
 | a document from Telegram (PDF, `.md`, CSV, text, code) | the file | over 10 MB, or more than 5 a message: the rest are named |
 | a photo or file from the web chat (any type: PDF, documents, a screenshot) | the file (photos shrunk to 2,048 px in your browser), kept while the chat is open and 30 days after (ADR 0069) | over 95 MB, or more than 5 a message: refused before it's sent |
-| more chat files on one task than a run takes | the newest 5 | the older ones are named: ask for one again |
+| more chat files on one task than a run takes | 5: the newest files sent first, then the newest files runs made in the places left | the older ones are named: a file sent, ask for it again; a run's, it's under "Files earlier runs made" |
 | a link to a file in your repos | the file, fetched before the agent starts (10 at most, 25 MB each) | — |
 | a link to a page or a gist | the page, read from the web | a page it can't reach: said |
 | a file attached on GitHub | nothing: GitHub serves private attachments only to a signed-in browser | said once: paste the text, or link the file |
@@ -830,8 +832,10 @@ new branch, since a merge ends its branch.
   neither the reply nor the web chat's store: the call's answer, with its link, stands for it. It
   stays on `shipify-files`, and a later run reads it there (its prompt's "Files earlier runs
   made"). When the call fails or waits for your Yes, the file shows as above.
-- **The next run in the chat gets them:** the chat's newest 5 files, the ones runs made too, as it
-  gets yours. So "make the PDF shorter" works on the PDF the last run made.
+- **The next run in the chat gets them:** 5 files of the chat, the ones runs made too, as it gets
+  yours. So "make the PDF shorter" works on the PDF the last run made. Your newest files come
+  first, and runs' files fill the places left, so a run's screenshots never push out a file you
+  sent while it worked.
 - **One new doc a run at most:** a reply names a new doc plainly ("New doc: Research"). The box
   writes no second one, and the reply says so ([knowledge.md](knowledge.md)).
 - **Anything that looks like a key** is masked before it's posted or sent.

@@ -23,8 +23,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 13, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=13$/m);
+  it("is version 15, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=15$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -327,9 +327,15 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(mode(slot)).toMatch(new RegExp(`^2\\d{3} ${other}$`));
   });
 
-  it("installs the sudo rule only once visudo accepts it, and takes it out if sudo's whole configuration then fails", () => {
+  it("installs the sudo rules only once visudo accepts them, and takes them out if sudo's whole configuration then fails", () => {
     expect(code).toContain('rule="shipify ALL=($agents) NOPASSWD: ALL"');
     expect(code).toContain("Defaults:shipify !use_pty");
+    // As root, only the box's own update (setup 14), and not in a container (a new image is its
+    // update): the same file, the same checks.
+    expect(code).toContain('update_rule="shipify ALL=(root) NOPASSWD: $UPDATER"');
+    expect(code).toContain("rules=$rule${update_rule:+$'\\n'$update_rule}");
+    expect(code).toContain(`printf '%s\\nDefaults:shipify !use_pty\\n%s\\n' "$head" "$rules"`);
+    expect(code).not.toMatch(/ALL=\(root\) NOPASSWD: ALL/);
     const check = at('visudo -cqf "$WORK/shipify-agents"');
     const install = at('install -m 0440 -o root -g root "$WORK/shipify-agents" "$SUDOERS"');
     const all = at("if ! visudo -cq >/dev/null 2>&1; then");
@@ -369,36 +375,85 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     );
     expect(at("  apt_get install -y -q gh\n")).toBeLessThan(at('say "shellcheck, fd and sqlite3"'));
     expect(code).toMatch(/apt_get install -y -q git make [^\n]* procps\n/);
-    expect(code.match(/shellcheck fd-find sqlite3/g)).toHaveLength(1);
-    expect(step).toContain("if apt_get install -y -q shellcheck fd-find sqlite3; then");
+    expect(code.match(/fd-find sqlite3/g)).toHaveLength(1);
+    expect(step).toContain("if apt_get install -y -q fd-find sqlite3; then");
     // The link only to an fdfind that's there, and never over an fd the machine has.
     expect(step).toContain(
       "if [ -x /usr/bin/fdfind ] && ! command -v fd >/dev/null; then ln -sf /usr/bin/fdfind /usr/local/bin/fd; fi",
     );
   });
 
-  it("goes on when shellcheck, fd and sqlite3 don't install, with one line on how to fix it", () => {
+  it("installs the shellcheck CI checks with, from its release and its checksum, not Ubuntu's (setup 15)", () => {
     const step = setup.slice(at('say "shellcheck, fd and sqlite3"'), at('say "Node 22'));
-    const run = spawnSync(
-      "bash",
-      [
-        "-c",
-        [
-          "set -euo pipefail",
-          `say() { printf '\\n== %s\\n' "$*"; }`,
-          'apt_get() { echo "E: Unable to locate package shellcheck" >&2; return 100; }',
-          step,
-          'echo "went on"',
-        ].join("\n"),
-      ],
-      { encoding: "utf8" },
+    // Ubuntu 24.04's is 0.9.0; GitHub's machines (Ubuntu 26.04) check with 0.11.0.
+    expect(code).not.toMatch(/apt_get install[^\n]*shellcheck/);
+    expect(step).toContain("SHELLCHECK=0.11.0\n");
+    expect(step).toContain('file="shellcheck-v$SHELLCHECK.linux.$(uname -m).tar.xz"');
+    expect(step).toContain(
+      "x64) sum=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 ;;",
     );
-    expect(run.status).toBe(0);
-    expect(run.stdout).toContain(
-      "  skipped: shellcheck, fd and sqlite3 didn't install (shellcheck and fd need Ubuntu's universe: sudo add-apt-repository universe, then box add again)\n",
+    expect(step).toContain(
+      "arm64) sum=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588 ;;",
     );
-    expect(run.stdout).toContain("went on");
-    expect(run.stdout).not.toContain("  done");
+    expect(step).toContain(
+      '"https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK/$file"',
+    );
+    // Checked before it's installed, in /usr/local/bin: ahead of Ubuntu's in every user's PATH.
+    expect(step.indexOf("sha256sum -c --quiet -")).toBeLessThan(step.indexOf("install -m 0755"));
+    expect(step).toContain(
+      'install -m 0755 "$WORK/shellcheck-v$SHELLCHECK/shellcheck" /usr/local/bin/shellcheck\n}; then',
+    );
+  });
+
+  it("goes on when fd, sqlite3 or shellcheck don't install, with a line each; installs no download that isn't the release", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tools-"));
+    // Its shellcheck in the test's folder, not /usr/local/bin.
+    const step = setup
+      .slice(at('say "shellcheck, fd and sqlite3"'), at('say "Node 22'))
+      .replaceAll("/usr/local/bin/shellcheck", join(dir, "shellcheck"));
+    // Not the release: a file of the same name, whose checksum isn't the one setup holds.
+    mkdirSync(join(dir, "src", "shellcheck-v0.11.0"), { recursive: true });
+    writeFileSync(join(dir, "src", "shellcheck-v0.11.0", "shellcheck"), "#!/bin/sh\n");
+    const tar = ["-cJf", join(dir, "fake.tar.xz"), "-C", join(dir, "src"), "shellcheck-v0.11.0"];
+    expect(spawnSync("tar", tar).status).toBe(0);
+    const run = (curl: string) =>
+      bash([
+        `say() { printf '\\n== %s\\n' "$*"; }`,
+        'apt_get() { echo "E: Unable to locate package fd-find" >&2; return 100; }',
+        `curl() { echo curl >> "$WORK/calls"; ${curl}; }`,
+        `WORK='${dir}' ARCH=arm64`,
+        step,
+        'echo "went on"',
+      ]);
+    for (const curl of [
+      'echo "curl: (6) Could not resolve host: github.com" >&2; return 6',
+      `cp '${join(dir, "fake.tar.xz")}' "$3"`,
+    ]) {
+      const r = run(curl);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain(
+        "  skipped: fd and sqlite3 didn't install (fd needs Ubuntu's universe: sudo add-apt-repository universe, then box add again)\n",
+      );
+      expect(r.stdout).toContain(
+        "  skipped: shellcheck 0.11.0 didn't install (above); the setup's next run tries again\n",
+      );
+      expect(r.stdout).toContain("went on");
+      expect(r.stdout).not.toContain("done");
+      expect(existsSync(join(dir, "shellcheck"))).toBe(false);
+    }
+    // There already: nothing downloaded.
+    writeFileSync(
+      join(dir, "shellcheck"),
+      "#!/bin/sh\nprintf 'ShellCheck\\nversion: 0.11.0\\n'\n",
+      {
+        mode: 0o755,
+      },
+    );
+    rmSync(join(dir, "calls"));
+    const again = run("return 6");
+    expect(again.stdout).toContain("  shellcheck 0.11.0: done\n");
+    expect(existsSync(join(dir, "calls"))).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("keeps every box awake and its slots running through updates, the same on any machine (setup 7)", () => {
@@ -441,7 +496,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
   });
 
   it("gives every box containers for its agents, rootless, in a step that never fails the setup (setup 8, ADR 0064)", () => {
-    const step = setup.slice(at("lab() {"), at('say "One sudo rule'));
+    const step = setup.slice(at("lab() {"), at("# The box's own update (setup 14): its settings"));
     // After the agents' users (their ranges need them), and never in an image or a box in Docker.
     expect(at("say \"The agents' users")).toBeLessThan(at("lab() {"));
     expect(step).toContain('if [ -n "$IMAGE$CONTAINER" ]; then');
@@ -512,7 +567,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(code).toContain(
       'useradd --system --user-group --no-create-home --add-subids-for-system --home-dir "$AGENT_ROOT/$u" --shell /usr/sbin/nologin "$u"',
     );
-    const step = setup.slice(at("lab() {"), at('say "One sudo rule'));
+    const step = setup.slice(at("lab() {"), at("# The box's own update (setup 14): its settings"));
     expect(step).toContain("first=$(next_ids /etc/subuid /etc/subgid)");
     expect(step).toContain(
       'grep -q "^$u:" /etc/subuid || usermod --add-subuids "$first-$((first + 65535))" "$u"',
@@ -522,7 +577,10 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     );
     // A slot that goes: its processes, its containers' too (a kill as the agent), its ranges, then
     // its user.
-    const gone = setup.slice(at("goes, with its slot"), at('say "One sudo rule'));
+    const gone = setup.slice(
+      at("goes, with its slot"),
+      at("# The box's own update (setup 14): its settings"),
+    );
     expect(gone.indexOf('sudo -u "$u" kill -KILL -1')).toBeGreaterThan(0);
     expect(gone.indexOf('sudo -u "$u" kill -KILL -1')).toBeLessThan(
       gone.indexOf("usermod --del-subuids"),
@@ -550,7 +608,10 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
   });
 
   it("goes on when the containers don't install, with one line on what it means", () => {
-    const step = setup.slice(at("next_ids() {"), at('say "One sudo rule'));
+    const step = setup.slice(
+      at("next_ids() {"),
+      at("# The box's own update (setup 14): its settings"),
+    );
     const dir = sandbox().dir;
     const bin = join(dir, "bin");
     mkdirSync(bin);
@@ -873,6 +934,211 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(code).toContain("--preserve-env=ACTIONS_RUNNER_INPUT_TOKEN");
     expect(code).not.toMatch(/--token\b/);
   });
+
+  it("runs the runner's dependencies' installer from root's own copy, never the runner's folder (setup 14)", () => {
+    const deps = fn("runner_deps");
+    expect(deps).toContain('tar -xzf "$TARBALL" -C "$WORK/runner"');
+    expect(deps).toContain('"$WORK/runner/bin/installdependencies.sh"');
+    // The runner's user (and so a job) can change its own folder: root runs nothing from it.
+    expect(code).not.toContain('"$home/bin/installdependencies.sh"');
+    // No token, nothing run: a slot only registers with one (the box's own update has none).
+    const register = fn("register");
+    expect(register.indexOf('[ -n "$token" ] ||')).toBeLessThan(register.indexOf("runner_deps"));
+    // The image's build, the same way.
+    expect(setup.slice(at('say "The runner\'s libraries"'))).toMatch(/^ {2}runner_deps$/m);
+  });
+
+  it("keeps its settings and installs its own update, root's own, outside a container (setup 14)", () => {
+    const step = setup.slice(
+      at("# The box's own update (setup 14): its settings"),
+      at('say "The sudo rules'),
+    );
+    expect(step).toContain('if [ -z "$CONTAINER" ] && [ -f "$UPDATE_FILE" ]; then');
+    expect(step).toContain('install -m 0600 -o root -g root "$WORK/box.env" /etc/shipify/box.env');
+    // A new file renamed into place: an update running the old one reads it to its end.
+    expect(
+      step.indexOf('install -m 0755 -o root -g root "$UPDATE_FILE" "$UPDATER.new"'),
+    ).toBeLessThan(step.indexOf('mv -f "$UPDATER.new" "$UPDATER"'));
+    expect(code).toContain("UPDATER=/usr/local/sbin/shipify-box-update");
+    // The settings, as box add gave them, never a registration token; read back the same by bash.
+    const loop = /^ {4}for v in RUNNER_URL [^\n]*$/m.exec(step)?.[0] ?? "";
+    expect(loop).not.toContain("TOKENS");
+    const dir = sandbox().dir;
+    const env = {
+      RUNNER_URL: "https://github.com/someone/shipify",
+      RUNNER_NAME: "homepi",
+      RUNNER_LABELS: "self-hosted,shipify-box,box-homepi",
+      RUNNER_SLOTS: "3",
+      SHIPIFY_MANAGE: "1",
+      RUNNER_TOKENS: "reg-token-never-kept",
+      SUDO_USER: "it's me",
+    };
+    const r = bash(
+      [
+        `{ ${loop}; printf 'SHIPIFY_ADMIN=%q\\n' "\${SUDO_USER:-}"; } > ${dir}/box.env`,
+        'env -i bash -c \'set -a; . "$1"; echo "$RUNNER_LABELS|$RUNNER_SLOTS|$SHIPIFY_MANAGE|$SHIPIFY_HERE|$SHIPIFY_ADMIN"\' x ' +
+          `${dir}/box.env`,
+      ],
+      env,
+    );
+    expect(r.stdout).toBe("self-hosted,shipify-box,box-homepi|3|1||it's me\n");
+    expect(readFileSync(join(dir, "box.env"), "utf8")).not.toContain("reg-token-never-kept");
+  });
+
+  it("in the box's own update, keeps the slots' services, waits for no updates and no sign-in (setup 14)", () => {
+    expect(code).toContain("REFRESH=${SHIPIFY_REFRESH:-}");
+    // SSH's keys and words stay those of the account you set it up with.
+    expect(code).toContain('[ -z "$REFRESH" ] || SUDO_USER=${SHIPIFY_ADMIN:-}');
+    expect(code).toContain('if [ -z "$CONTAINER$REFRESH" ]; then\nsay "The updates waiting now"');
+    // The services as they are: the update stopped the idle slots, and starts them after.
+    const services = at('elif [ -n "$REFRESH" ]; then');
+    expect(services).toBeLessThan(at('[ -f "$UNIT_FILE" ] || { echo "No service file'));
+    // Tailscale's sign-in waits for you: never in an update.
+    const manage = fn("manage");
+    expect(manage.indexOf('if [ -n "$REFRESH" ]; then')).toBeLessThan(
+      manage.indexOf("tailscale up --ssh --timeout 15m"),
+    );
+  });
+
+  it("leaves a mark when the sandbox check fails, and takes it away when it passes (setup 14)", () => {
+    const dir = sandbox().dir;
+    const end = setup
+      .slice(
+        at("SANDBOX_OPEN=/etc/shipify/sandbox-open"),
+        at('echo "  done: $RUNNER_SLOTS agent(s)'),
+      )
+      .replaceAll("/etc/shipify", dir);
+    const run = (walls: string) =>
+      bash(["SETUP_VERSION=14", `walls='${walls}'`, end, "echo passed"]);
+    const failed = run("");
+    expect(failed.status).toBe(1);
+    expect(failed.stdout).toContain(
+      "The sandbox isn't right (above), so no task runs here until it is",
+    );
+    expect(readFileSync(join(dir, "sandbox-open"), "utf8")).toMatch(
+      /^box setup 14's sandbox check failed on \d{4}-\d\d-\d\d \d\d:\d\d UTC\n$/,
+    );
+    const passed = run("ok");
+    expect(passed.stdout).toBe("passed\n");
+    expect(existsSync(join(dir, "sandbox-open"))).toBe(false);
+    // Before the record: a box whose check failed keeps its old version, and tries again.
+    expect(at("SANDBOX_OPEN=/etc/shipify/sandbox-open")).toBeLessThan(at("record() {"));
+  });
+});
+
+describe("box/update.sh: the box's own setup update (setup 14), checked without a box", () => {
+  const file = join(ROOT, "box", "update.sh");
+  const update = readFileSync(file, "utf8");
+  const code = update
+    .split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join("\n");
+  const fn = (name: string) => {
+    const m = new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?\\n\\}$`, "m").exec(update);
+    expect(m, name).not.toBeNull();
+    return m?.[0] ?? "";
+  };
+  const oneLine = (name: string) => {
+    const m = new RegExp(`^${name}\\(\\) \\{ .* \\}$`, "m").exec(update);
+    expect(m, name).not.toBeNull();
+    return m?.[0] ?? "";
+  };
+
+  it("passes shellcheck where it's installed, and runs only as root", () => {
+    const sc = spawnSync("shellcheck", [file], { encoding: "utf8" });
+    if (!sc.error) expect(sc.stdout).toBe("");
+    const r = spawnSync("bash", [file], { encoding: "utf8" });
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain("Run it with sudo.");
+  });
+
+  it("takes the token on stdin, uses it for one download from the box's own repo, and keeps it nowhere", () => {
+    expect(code).toContain('[ $# = 0 ] || { echo "It takes no arguments');
+    expect(code).toContain("IFS= read -r -t 10 token || true");
+    // Into a header file only root reads, never on a command line, gone after the download.
+    expect(code).toContain(
+      `(umask 077 && printf 'Authorization: Bearer %s\\n' "$token" > "$DIR/auth")`,
+    );
+    expect(code).toContain('-H @"$DIR/auth"');
+    expect(code).not.toMatch(/-H "Authorization/);
+    expect(code.indexOf('rm -f "$DIR/auth"')).toBeLessThan(
+      code.indexOf('want=$(version_of "$DIR/setup.sh")'),
+    );
+    // From the repo the box was set up for, its default branch, over HTTPS only.
+    expect(code).toContain("url=$(setting RUNNER_URL)");
+    expect(code).toContain('"https://api.github.com/repos/$repo/contents/box/$1"');
+    expect(code).toContain("--proto '=https'");
+    expect(code).not.toContain("ref=");
+    const repo = (url: string) =>
+      spawnSync(
+        "bash",
+        [
+          "-c",
+          `url='${url}'; repo=\${url#https://github.com/}; if [ "$url" = "$repo" ] || ! [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then echo refused; else echo "$repo"; fi`,
+        ],
+        { encoding: "utf8" },
+      ).stdout.trim();
+    expect(code).toContain(
+      'if [ "$url" = "$repo" ] || ! [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then',
+    );
+    expect(repo("https://github.com/someone/shipify")).toBe("someone/shipify");
+    expect(repo("https://evil.example/someone/shipify")).toBe("refused");
+    expect(repo("https://github.com/someone/shipify/../other")).toBe("refused");
+  });
+
+  it("runs only what root downloaded, from a folder only root opens, as box add would (no tokens)", () => {
+    expect(code).toContain("DIR=/var/lib/shipify/update");
+    expect(code.indexOf('rm -rf "$DIR"')).toBeLessThan(code.indexOf('install -d -m 0700 "$DIR"'));
+    expect(code).toContain('bash "$DIR/setup.sh" "$DIR/box.env" "" "" "$DIR/update.sh"');
+    expect(code).toContain('echo "SHIPIFY_REFRESH=1"');
+    // In a service of its own, so a job that ends or is cancelled doesn't cut the setup off.
+    expect(code).toContain('systemd-run --quiet --wait --collect --unit "$UNIT"');
+    expect(code).toContain("UNIT=shipify-setup-update");
+    // Never a slot's own name (shipify-box-*), which its stop would take for a slot.
+    expect(update).not.toMatch(/UNIT=shipify-box-/);
+  });
+
+  it("registers nothing: a slot with no registration here stops it before any download", () => {
+    expect(code).toContain('f="/home/shipify/runner/slot-$k/.runner"');
+    expect(code.indexOf("Slot $k has no registration here")).toBeLessThan(
+      code.indexOf("fetch setup.sh"),
+    );
+  });
+
+  it("applies a setup only when it's newer, and one that failed only a day later", () => {
+    const dir = sandbox().dir;
+    writeFileSync(join(dir, "setup.sh"), "#!/bin/sh\nSETUP_VERSION=14\n");
+    const say = (lines: string[]) =>
+      spawnSync("bash", ["-c", ["set -euo pipefail", ...lines].join("\n")], {
+        encoding: "utf8",
+      }).stdout;
+    const versions = [oneLine("version_of"), `RECORD=${dir}/.shipify-setup`, fn("recorded")];
+    expect(say([...versions, `version_of ${dir}/setup.sh`, "recorded"])).toBe("14\n0\n");
+    writeFileSync(join(dir, ".shipify-setup"), "13\nmanage: not finished\n");
+    expect(say([...versions, "recorded"])).toBe("13\n");
+    expect(code).toContain('if [ "$want" -le "$have" ]; then');
+    expect(code).toContain(
+      'if [ "$failed" = "$want" ] && [ $(($(date +%s) - at)) -lt 86400 ]; then',
+    );
+    expect(code).toContain('echo "$want $(date +%s)" > "$TRIED"');
+  });
+
+  it("stops only the slots with no job, never while another runs one, and starts them again however it ends", () => {
+    const apply = code.slice(
+      code.indexOf('if [ "${1:-}" = --apply ]; then'),
+      code.indexOf("\nfi\n"),
+    );
+    expect(apply).toContain('if [ "$(printf \'%s\\n\' "$running" | grep -c .)" -gt 1 ]; then');
+    expect(apply).toContain('echo 75 > "$DIR/exit"');
+    expect(apply).toContain('printf \'%s\\n\' "$running" | grep -qx "$unit" && continue');
+    expect(apply.indexOf("trap start_again EXIT")).toBeLessThan(
+      apply.indexOf('systemctl stop "$unit"'),
+    );
+    // A job's slot, from its Worker's group.
+    const busy = fn("busy");
+    expect(busy).toContain("pgrep -u shipify -f 'bin/Runner\\.Worker'");
+    expect(busy).toContain(String.raw`sed -n 's|^0::.*/\(shipify-box-[^/]*\.service\)$|\1|p'`);
+  });
 });
 
 describe("ship box add: setup 5 over SSH, or on this PC (a fake ssh, bash, sudo and gh)", () => {
@@ -1017,13 +1283,19 @@ esac`),
     expect(calls).toContain("mktemp -d");
     // The script goes in on stdin, as every file does: nothing but ssh reaches the machine.
     expect(calls).toContain("umask 077 && cat > /tmp/tmp.Ab12/setup.sh");
-    expect(readFileSync(join(got, "setup.sh"), "utf8")).toContain("SETUP_VERSION=13");
+    expect(readFileSync(join(got, "setup.sh"), "utf8")).toBe(
+      readFileSync(join(ROOT, "box", "setup.sh"), "utf8"),
+    );
+    // The box's own update goes with it (setup 14), for setup to install as root's own.
+    expect(readFileSync(join(got, "update.sh"), "utf8")).toContain(
+      "/usr/local/sbin/shipify-box-update",
+    );
     // The slots GitHub has, so setup registers again one it deleted.
     expect(readFileSync(join(got, "box.env"), "utf8")).toContain('RUNNER_REGISTERED="1 2"');
     // The folder goes in the same session as the setup: no SSH connection after it (setup 13). As
     // you, after sudo: a wrong password, which never runs the setup, leaves no token there either.
     expect(calls).toContain(
-      "ssh -t homepi sh -c 'sudo bash /tmp/tmp.Ab12/setup.sh /tmp/tmp.Ab12/box.env /tmp/tmp.Ab12/prep.tsv /tmp/tmp.Ab12/box.service; r=$?; rm -rf /tmp/tmp.Ab12; exit $r'",
+      "ssh -t homepi sh -c 'sudo bash /tmp/tmp.Ab12/setup.sh /tmp/tmp.Ab12/box.env /tmp/tmp.Ab12/prep.tsv /tmp/tmp.Ab12/box.service /tmp/tmp.Ab12/update.sh; r=$?; rm -rf /tmp/tmp.Ab12; exit $r'",
     );
     expect(calls.slice(calls.indexOf("ssh -t homepi") + 1)).not.toMatch(/^ssh /m);
     expect(calls).not.toContain("/tmp/shipify-box");
@@ -1293,7 +1565,7 @@ esac`),
     const calls = log();
     expect(calls).not.toMatch(/^ssh /m);
     expect(calls).toContain(
-      "sudo bash /tmp/tmp.Ab12/setup.sh /tmp/tmp.Ab12/box.env /tmp/tmp.Ab12/prep.tsv /tmp/tmp.Ab12/box.service",
+      "sudo bash /tmp/tmp.Ab12/setup.sh /tmp/tmp.Ab12/box.env /tmp/tmp.Ab12/prep.tsv /tmp/tmp.Ab12/box.service /tmp/tmp.Ab12/update.sh",
     );
     expect(calls).toContain("bash -c rm -rf /tmp/tmp.Ab12");
     expect(calls).not.toContain("reg-token-never-shown");
@@ -1354,6 +1626,17 @@ esac`),
     expect(r.nextSteps).toContain(
       "from now on, reach it over Tailscale only: in ~/.ssh/config, its HostName is homepi.tail1.ts.net",
     );
+    expect(r.nextSteps?.join("\n")).not.toContain("Disable key expiry");
+    // Its key expires (Tailscale's default): said from the same answer, with where to turn it off.
+    const self = { DNSName: "homepi.tail1.ts.net.", HostName: "homepi", KeyExpiry: "2027-05-10Z" };
+    const status = JSON.stringify({ BackendState: "Running", Self: self });
+    const expiring = machine(0, pi, true, "true", false, "online", status);
+    const said = ship(expiring.sb, "box", "add", "homepi", "--slots", "2", "--manage", "--yes");
+    expect(expiring.log().match(/tailscale status/g)).toHaveLength(1);
+    expect(said.nextSteps?.join("\n")).toContain(
+      "Tailscale: it expires on 2027-05-10: then the box drops off your tailnet",
+    );
+    expect(said.nextSteps?.join("\n")).toContain("homepi → ⋯ → Disable key expiry");
     // Not on Tailscale before (a new box): asked again after, and said either way.
     const fresh = machine(0);
     const first = ship(fresh.sb, "box", "add", "homepi", "--slots", "2", "--manage", "--yes");

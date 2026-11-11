@@ -27,3 +27,8 @@
   nothing new.
 - **Done well:** the agent runs the test files its change touches, and the quick checks, then
   leaves `make verify` to the box, which runs it right after and gives a round to fix a failure.
+
+### 3. Two inputs with one value
+- **Ask:** fix the bug where a command takes the wrong one of two options.
+- **Without it:** the test gave both inputs the same value, so a swap between them passed.
+- **Done well:** each input has its own value and its own test.

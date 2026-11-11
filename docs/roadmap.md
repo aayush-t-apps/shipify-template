@@ -226,9 +226,8 @@ What's left:
 7. **A second record** (Forgejo) and **box kinds** (capability labels).
 8. **The direct layer** (ADR 0057, "Left for later"): chats whose words live off GitHub, in a hub on
    the edge, as a second mailbox for the same loop a stay runs; its own ADR when a need shows.
-9. **Small, for when each is next touched:** `ship unregister` doesn't refresh the Operate form's
-   list (`ship forms` does); two of Claude Code's names live outside its adapter (its plan's limit
-   windows in `cli/lib/runs.ts`, and `box/peek.mjs` reading its session files).
+9. **Small, for when each is next touched:** two of Claude Code's names live outside its adapter
+   (its plan's limit windows in `cli/lib/runs.ts`, and `box/peek.mjs` reading its session files).
 
 ## Not planned
 

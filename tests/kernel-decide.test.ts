@@ -103,7 +103,6 @@ const ctx = (over: Partial<Context> = {}): Context => ({
   taskPlan: () => undefined,
   timeZone: "UTC",
   taskUrl: "https://github.com/o/shipify/issues/12",
-  operateForm: "https://github.com/o/shipify/issues/new?template=7-operate.yml",
   instant: (name, rest) => `answer to /${name}${rest ? ` ${rest}` : ""}`,
   signsIn: { codex: "Codex" },
   ...over,
@@ -311,7 +310,7 @@ describe("plan: intents", () => {
     expect(kinds(writes(chat))).toContain("dispatch");
   });
 
-  it("taking an app down, bringing it back and a rollback start, and run again, only on GitHub", () => {
+  it("taking an app down, bringing it back and a rollback run from a chat only after your yes", () => {
     const door = { ...snap().issue, author: "door" as const };
     for (const [ask, o] of [
       ["take it down", "down"],
@@ -323,25 +322,71 @@ describe("plan: intents", () => {
         ctx(),
       );
       expect(p.do === "box" && p.state.pending.operate, o).toBeUndefined();
-      expect(kinds(writes(p)), o).toEqual(["reply", "close"]);
+      expect(p.do === "box" && p.state.pending.atOnce, o).toEqual({ op: o });
+      expect(p.do === "box" && p.state.phase, o).toBe("needs-you");
+      expect(kinds(writes(p)), o).toEqual(["reply"]);
       const r = replies(writes(p))[0];
       expect(r?.text, o).toContain(`\`spotter: ${ask}\` changes the live app at once`);
-      expect(r?.links, o).toEqual([["The Operate form", ctx().operateForm]]);
+      expect(r?.text, o).toContain(`${LIST_HEAD} (tap Yes, or say \`yes\`, within a day):\n1. `);
+      expect(r?.list, o).toMatch(/^[0-9a-f]{8}$/);
     }
-    // Started on GitHub: a chat's `continue` runs nothing and closes nothing; GitHub's runs it again.
     const down = {
       kind: "op" as const,
       project: "spotter",
       ask: "take it down",
       op: "down" as const,
     };
+    const listed = plan(snap({ parsed: down, issue: door }), ctx());
+    const st = (listed.do === "box" ? listed.state : undefined) as TaskState;
+    const code = replies(writes(listed))[0]?.list;
+    const answer = (c: Said) =>
+      plan(
+        snap({ parsed: down, issue: door, said: [c], statusId: 5, state: { ...st, seen: 100 } }),
+        ctx(),
+      );
+    // Your yes runs it once on GitHub's machines, as the Operate form does.
+    const yes = answer(viaChat(101, `yes ${code}`));
+    expect(kinds(writes(yes))).toContain("dispatch");
+    expect(yes.do === "box" && yes.state.pending.operate?.op).toBe("down");
+    expect(yes.do === "box" && yes.state.pending.atOnce).toBeUndefined();
+    // A no, or a yes to another list, runs nothing.
+    const no = answer(viaChat(101, `no ${code}`));
+    expect(kinds(writes(no))).not.toContain("dispatch");
+    expect(no.do === "box" && no.state.pending.atOnce).toBeUndefined();
+    const other = answer(viaChat(101, "yes 0000aaaa"));
+    expect(kinds(writes(other))).not.toContain("dispatch");
+    // A yes for another project's take-down is another list.
+    const elsewhere = plan(
+      snap({
+        parsed: down,
+        issue: door,
+        said: [viaChat(101, `yes ${code}`)],
+        statusId: 5,
+        state: { ...st, project: "other", seen: 100 },
+      }),
+      ctx(),
+    );
+    expect(kinds(writes(elsewhere))).not.toContain("dispatch");
+    // Started on GitHub: GitHub's `continue` runs it again at once; a chat's lists it for a yes.
     const later = (c: Said) =>
       snap({ parsed: down, said: [c], statusId: 5, state: { bodyHash: "aaaa", seen: 100 } });
     const chat = plan(later(viaChat(101, "continue")), ctx());
     expect(kinds(writes(chat))).toEqual(["reply"]);
-    expect(chat.do === "box" && chat.state.seen).toBe(101);
+    expect(chat.do === "box" && chat.state.pending.atOnce).toEqual({ op: "down" });
     const gh = plan(later(said(101, "continue")), ctx());
     expect(kinds(writes(gh))).toContain("dispatch");
+    // A chat's task restarted with no words runs nothing without your yes.
+    const restarted = plan(
+      snap({
+        parsed: down,
+        issue: door,
+        trigger: { kind: "dispatch", job: "run" },
+        statusId: 5,
+        state: { ...st, seen: 100 },
+      }),
+      ctx(),
+    );
+    expect(kinds(writes(restarted))).not.toContain("dispatch");
   });
 });
 
@@ -3490,10 +3535,10 @@ describe("a run's chat files", () => {
     const got = newestFiles([first, undefined, later, {}, last]);
     expect(got.refs.map((f) => f.name)).toEqual(["f3.jpg", "f4.jpg", "f5.jpg", "f6.jpg", "f7.jpg"]);
     expect(got.older).toEqual(["f1.jpg", "f2.jpg"]);
-    expect(newestFiles([first])).toEqual({ refs: first.files, older: [] });
+    expect(newestFiles([first])).toEqual({ refs: first.files, older: [], olderMade: [] });
   });
 
-  it("take a run's files too, from its reply's line, through the web chat's store: the chat's newest five in all (ADR 0071)", async () => {
+  it("take a run's files too, from its reply's line, through the web chat's store: what was sent first, then the newest runs made in the places left (ADR 0071)", async () => {
     const { chatFrom, newestFiles } = await import("../cli/kernel/run.ts");
     const { saidOf } = await import("../cli/kernel/snapshot.ts");
     const ref = (c: string) => `f-${"8".repeat(13)}-${c.repeat(32)}`;
@@ -3517,16 +3562,32 @@ describe("a run's chat files", () => {
       { ...reply(103, [{ name: "evil.pdf", ref: ref("f") }]), user: { login: "someone" } },
     ]);
     const from = { files: [{ name: "photo.jpg", ref: "telegram:p1" }] };
-    const got = newestFiles(chatFrom(from, said));
-    // Fetched through the door's file route, as `web:<ref>`; what you sent first is the older one.
+    // A file you sent while a run worked, and five the runs made after it: yours still comes.
+    const sent = {
+      from: {
+        ...{ v: 1 as const, person: "o", channel: "web", chat: "c1", id: "u1" },
+        files: [{ name: "list.md", ref: "web:f-list" }],
+      },
+    };
+    const got = newestFiles(chatFrom(from, [sent, ...said]));
+    // Fetched through the door's file route, as `web:<ref>`, in the chat's order; the oldest a
+    // run made are left out, and named apart (the prompt lists them under "Files earlier runs made").
     expect(got.refs).toEqual([
-      { name: "old.pdf", ref: `web:${ref("a")}` },
-      { name: "a.png", ref: `web:${ref("b")}` },
+      { name: "photo.jpg", ref: "telegram:p1" },
+      { name: "list.md", ref: "web:f-list" },
       { name: "b.png", ref: `web:${ref("c")}` },
       { name: "c.png", ref: `web:${ref("d")}` },
       { name: "guide.pdf", ref: `web:${ref("e")}` },
     ]);
-    expect(got.older).toEqual(["photo.jpg"]);
+    expect(got.older).toEqual([]);
+    expect(got.olderMade).toEqual(["old.pdf", "a.png"]);
+    // Five you sent fill every place: no run's file comes.
+    const five = {
+      files: [1, 2, 3, 4, 5].map((i) => ({ name: `p${i}.jpg`, ref: `telegram:p${i}` })),
+    };
+    const full = newestFiles(chatFrom(five, said));
+    expect(full.refs).toEqual(five.files);
+    expect(full.olderMade).toEqual(["old.pdf", "a.png", "b.png", "c.png", "guide.pdf"]);
   });
 });
 

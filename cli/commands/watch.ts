@@ -1,15 +1,16 @@
 // The watch's runs (ADR 0019, docs/watch.md): what watch.yml runs when the watch (the edge's check
 // every 5 minutes) or you press one of its buttons. Each is one job:
 //   due      what's due now (lib: taskDue starts each due task's own run and closes a quiet part),
-//            each box's weekly clean-up once its last is a week old, this box's health, and the
-//            schedule (the soonest time is `watch.next`, which the watch reads)
-//   cleanup  one box's weekly clean-up: closed or deleted tasks' folders, the agents' leftover run
-//            folders (lib/sandbox.ts), old agent installs, doctor (the workflow prunes the
-//            package caches after, while no other slot runs); and, once a week in all, closed
-//            chats' files and the 30-day close (task/sweep.ts, ADR 0069)
+//            each box's weekly clean-up once its last is a week old, this box's own setup update
+//            when main's is newer (lib/box-update.ts), this box's health, and the schedule (the
+//            soonest time is `watch.next`, which the watch reads)
+//   cleanup  one box's weekly clean-up: its own setup update when it's due, closed or deleted
+//            tasks' folders, the agents' leftover run folders (lib/sandbox.ts), old agent
+//            installs, doctor (the workflow prunes the package caches after, while no other slot
+//            runs); and, once a week in all, closed chats' files and the 30-day close
+//            (task/sweep.ts, ADR 0069)
 //   alert    what the watch saw change: a box offline, back, new or gone; an app failing or back
 // A box knows none of this: it runs what the queue hands it. The status issue is the record.
-import { spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,7 @@ import { doorLogin } from "../kernel/snapshot.ts";
 import { agentNews, tidyTools } from "../lib/agent-install.ts";
 import { loadExecutors } from "../lib/agents.ts";
 import { boxFacts } from "../lib/box-facts.ts";
+import { otherSlotBusy, type Updated, updateBox } from "../lib/box-update.ts";
 import { findStack } from "../lib/catalog.ts";
 import { defaultChannels } from "../lib/channels.ts";
 import { copySetting, PLATFORM_ROOT } from "../lib/config.ts";
@@ -122,11 +124,14 @@ export async function watchDue(): Promise<Result> {
   // The agents' pins beside their newest, and any advisory against one (task #673): the reads
   // executors.json names, with no key, only when it's said.
   const agents = sayDigest ? ((await agentNews(loadExecutors())) ?? null) : undefined;
+  // This box's own setup update (box setup 14), when main's is newer: last, as it takes minutes.
+  const updated = inActions() ? tryOr(() => updateBox(box), undefined) : undefined;
   const posted = updateStatusIssue(
     (s) => {
       s.watch = { ...s.watch, last: at.toISOString(), box, run: runUrl(), digest: digestAt };
       setUpcoming(s, data.upcoming);
       for (const e of events) addEvent(s, e, at.toISOString());
+      const update = sayUpdate(s, updated, at.toISOString());
       // Every app, for the edge's /apps and its health guard (ADR 0031), keeping what the watch saw.
       // What the watch saw (failing) and what an operation said (paused) are kept.
       if (data.apps.length)
@@ -161,7 +166,7 @@ export async function watchDue(): Promise<Result> {
             whenHere,
           )
         : "";
-      const text = [health, said.length ? `**Recipes**\n\n${said.join("\n")}` : "", digest]
+      const text = [update, health, said.length ? `**Recipes**\n\n${said.join("\n")}` : "", digest]
         .filter(Boolean)
         .join("\n\n");
       return text ? alertReply(text) : undefined;
@@ -276,6 +281,8 @@ export async function watchCleanup(boxArg?: string): Promise<Result> {
   const box = process.env.SHIPIFY_BOX || process.env.RUNNER_NAME || boxArg || hostname();
   const started = new Date();
   const at = started.toISOString();
+  // Its own setup update first (box setup 14), when main's is newer: doctor then sees the result.
+  const updated = inActions() ? tryOr(() => updateBox(box), undefined) : undefined;
   const t = cleanUpTasks();
   const runs = cleanStaleRuns();
   // On a box, its shared tools kept to the agents' pinned versions and two Node versions, and each
@@ -315,11 +322,12 @@ export async function watchCleanup(boxArg?: string): Promise<Result> {
   const summary = `${t.folders} task folder(s) removed${agents}${swept ? `; ${swept.said}` : ""}${full.length ? `; notebook pages nearly full, to split: ${full.join(", ")}` : ""}${door ? `; ${door}` : ""}`;
   const posted = updateStatusIssue(
     (s) => {
+      const update = sayUpdate(s, updated, at);
       const doctorSays = setCleanup(s, box, { at, run: runUrl(), summary, checks });
       // Two clean-ups in a row whose steps failed: said, as doctor's checks are.
       const sweptSays = swept ? setSwept(s, swept) : undefined;
       const health = inActions() ? setBox(s, box, boxFacts()) : undefined;
-      const said = [doctorSays, sweptSays, health].filter(Boolean).join("\n\n");
+      const said = [update, doctorSays, sweptSays, health].filter(Boolean).join("\n\n");
       return said ? alertReply(said) : undefined;
     },
     { timeZone: timeZone() },
@@ -329,19 +337,14 @@ export async function watchCleanup(boxArg?: string): Promise<Result> {
 }
 
 /**
- * Whether another of this box's slots is running a job (the runner's Worker processes; this job's
- * own is one). When it can't tell, it says busy: the tidy waits for next week.
+ * A box's own setup update (lib/box-update.ts) on the status task: an event, and what to say in
+ * your chats, once per version (a failure that's tried again a day later says nothing new).
  */
-function otherSlotBusy(): boolean {
-  const r = spawnSync(
-    "pgrep",
-    ["-u", String(process.getuid?.() ?? ""), "-fc", "bin/Runner.Worker"],
-    {
-      encoding: "utf8",
-    },
-  );
-  if (r.error || (r.status !== 0 && r.status !== 1)) return true;
-  return Number(r.stdout?.trim() || 0) > 1;
+function sayUpdate(s: StatusIssueState, u: Updated | undefined, at: string): string | undefined {
+  if (!u || s.alerted.includes(u.key)) return undefined;
+  s.alerted = [...s.alerted, u.key].slice(-100);
+  addEvent(s, u.event, at);
+  return u.said;
 }
 
 /**

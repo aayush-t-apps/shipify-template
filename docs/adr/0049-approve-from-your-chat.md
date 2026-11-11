@@ -380,3 +380,32 @@ Built in one PR on task #317, as planned, with these details settled:
   that's about seeing what you approve, not where you are.
 - **The rule, in one line:** a merge, and anything that changes production at once, happen on
   GitHub; all else from any channel.
+
+## Addendum: take an app down from your chat, after your yes (2026-11-11, task #729)
+
+- **What went wrong (#724, #728):** the owner wanted to take `games` down. The chat said it runs
+  only on GitHub, and the Operate form didn't list `games` yet (#724 fixed that). On GitHub,
+  `games: take it down` failed with HTTP 403: the bot had `actions: read`, and starting an app's
+  pipeline (`gh workflow run ship.yml`) needs Actions write. `SHIPIFY_DOWN` was set before the
+  refused start, so the app was half down: CI deployed nothing, and its URLs stayed on.
+- **Decided, by the owner:** an easy way to take an app down from the chat, and never by a guest.
+  Taking an app down, bringing it back and a rollback now work from any chat of yours, as a
+  list: the reply says what the operation does, and only your `yes` to it (its Yes button, within
+  a day, as every list) runs it, once, on GitHub's machines. On GitHub they still run at once: the
+  Operate form is a deliberate act behind your GitHub sign-in. A chat's `continue` on one lists it
+  again; GitHub's runs it again at once.
+- **Why it holds:** the list keeps a word read wrong, or a tap by mistake, from changing the live
+  app. Each of the three is undone by another (`bring it back`, a release), and none deletes
+  anything or reaches code, keys or `main`. Whoever holds your chat could already approve tool
+  calls and start runs and releases; now they could also take an app down or roll it back, which
+  you undo. A merge stays GitHub's alone.
+- **Guests never:** a guest's title is never an operation (`parsedOf`, ADR 0071), decide checks it
+  again, and a guest's `yes` is never an approval (`NOT_A_GUESTS`).
+- **The bot's Actions write:** the manifest asks for `actions: write` (`BOT_PERMISSIONS`). Only the
+  github job's token has the bot's full set; every other mint names its own, smaller one, so no
+  agent gets it. A bot made before has to be given it once on GitHub (its permissions page, then
+  accept the change on its install); until then a take-down says so, with the link.
+- **Nothing half done:** the pipeline starts first, then `SHIPIFY_DOWN` changes, so a refused start
+  changes nothing.
+- **The rule, in one line:** a merge happens on GitHub; an operation that changes the live app at
+  once runs on GitHub at once, or from a chat after your `yes`; all else from any channel.

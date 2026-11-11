@@ -15,6 +15,7 @@ import { boxFacts, factLines } from "../lib/box-facts.ts";
 import { listStacks } from "../lib/catalog.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
 import { has, type RunResult, run } from "../lib/exec.ts";
+import { tailscaleKeyCheck } from "./doctor.ts";
 import { gh, ghJson, ghRun, platformRepo } from "../lib/github.ts";
 import { type Check, fail, ok, type Result, ShipError } from "../lib/output.ts";
 import { sourceControl } from "../lib/providers.ts";
@@ -401,11 +402,13 @@ function rootScript(m: Machine, script: string, files: [name: string, body: stri
   return m.asRoot(["bash", ...all.map(([name]) => `${tmp}/${name}`)], `rm -rf ${tmp}`);
 }
 
+/** A machine's `tailscale status --json`: Cockpit's address and its key's expiry are in it. */
+const tailscaleOf = (m: Machine) => m.sh("tailscale status --json").stdout;
+
 /** Cockpit's address on a machine, from its Tailscale name; none before it's signed in. */
-function consoleOf(m: Machine): string | undefined {
+function consoleOf(status: string): string | undefined {
   try {
-    const ts = m.sh("tailscale status --json");
-    const dns = (JSON.parse(ts.stdout) as { Self?: { DNSName?: string } }).Self?.DNSName;
+    const dns = (JSON.parse(status) as { Self?: { DNSName?: string } }).Self?.DNSName;
     return dns ? `https://${dns.replace(/\.$/, "")}` : undefined;
   } catch {
     return undefined;
@@ -580,13 +583,14 @@ export function boxAdd(
       : [
           `on a box with no swap of its own, swap in memory (zram, ADR 0061): half its memory, compressed, so tasks that overlap slow down instead of having a test killed; a box with swap (WSL, a swap file) keeps its own${m.here && !opts.manage ? "" : ", but Ubuntu's installer's swap file on the disk (/swap.img) goes for it"}`,
         ]),
-    `the sandbox (setup 5): one user per slot for its agent (${agents}), each with its own folder in /srv; one sudo rule, /etc/sudoers.d/shipify-agents, lets the runner run commands as them and no one else (installed only once visudo accepts it)`,
+    `the sandbox (setup 5): one user per slot for its agent (${agents}), each with its own folder in /srv; the sudo rules, /etc/sudoers.d/shipify-agents, let the runner run commands as them${opts.container ? "" : ", and as root only the box's own update (below)"}, and nothing else (installed only once visudo accepts them)`,
     ...(opts.container
       ? []
       : [
           "containers for each slot's agent (ADR 0064): rootless Podman, with docker and docker compose, as the agent's own user with a range of IDs of its own; no Docker Engine, no docker group and no root socket. Ubuntu's normal updates are added where they're missing. A container stops when the agent's turn ends. Each slot's store is checked; when containers don't work, it says why, and the box still takes tasks",
           "the agents' network (setup 9): out to the internet as the work needs, never to a private network (your home network, the tailnet, a cloud's metadata address), nor this machine's SSH and Cockpit (setup 10), nor an IPv6 address but ::1 (setup 11), their containers included; a table of its own in nftables, loaded at every start (shipify-agents-net), for the agents' own packets only, with your own rules left as they are",
           "the updates waiting now, once the slots are registered (a few minutes on a fresh install)",
+          "its own updates (setup 14): when main's box/setup.sh is newer and no other slot runs a job, the due run starts /usr/local/sbin/shipify-box-update, root's own, through one more sudo line; root downloads main's setup from GitHub itself, with the job's read token on stdin, and applies it with the settings it keeps in /etc/shipify/box.env (no keys), so you never run the setup again for a new version",
         ]),
     `then a check that the runner starts each agent without a password, and no agent can read the runner's folders, its environment or another slot's runs, nor write to a root container socket, nor reach a private network (on WSL, nor open Windows' drives or start Windows programs: it prints the fix for /etc/wsl.conf), and that a container's processes go with the box's kill; once it passes, the label "${SANDBOX_LABEL}" on each slot, so task runs can go to them`,
     ...have
@@ -646,11 +650,14 @@ export function boxAdd(
   const unit = boxUnit({ name: "@SLOT_NAME@", dir: "@SLOT_DIR@" });
   // Its console (Cockpit, through Tailscale), for `box list`: asked before the setup when it's on
   // Tailscale already, as after it the firewall shuts out a new connection from the home network.
-  let web = opts.manage ? consoleOf(m) : undefined;
+  let tailscale = opts.manage ? tailscaleOf(m) : "";
+  let web = consoleOf(tailscale);
   const r = rootScript(m, "setup.sh", [
     ["box.env", env],
     ["prep.tsv", stackPrep()],
     ["box.service", unit],
+    // The box's own update (setup 14), which setup installs as root's own.
+    ["update.sh", readFileSync(join(PLATFORM_ROOT, "box", "update.sh"), "utf8")],
   ]);
   // Exit 3 (setup 10): the box works and its sandbox checked out, but its agents' containers don't.
   // Exit 4 (setup 13): the same, but --manage stopped, so its firewall may not be on. Its slots get
@@ -694,8 +701,14 @@ export function boxAdd(
     );
   // Signed in to Tailscale only now: asked again, which works over Tailscale or on the machine
   // itself. Over SSH from the home network it can't: the next `box add --manage` records it.
-  if (opts.manage && !web) web = consoleOf(m);
+  if (opts.manage && !web) {
+    tailscale = tailscaleOf(m);
+    web = consoleOf(tailscale);
+  }
   if (web) setConsole(repo, name, web);
+  // Its key expires in 180 days unless you turn that off (doctor names it weekly until you do).
+  const key = tailscaleKeyCheck("shipify", tailscale);
+  const keyStep = key && !key.ok ? [`Tailscale: ${key.detail}. Turn it off ${key.fix}`] : [];
   // From the home network, a --manage box takes SSH no more (setup 13): said, with the way in.
   const overTailscale =
     opts.manage && !m.here && !unmanaged
@@ -740,6 +753,7 @@ export function boxAdd(
         'ask "how is this box doing?" (a task, or the bot) to check it',
         "pnpm ship box list",
         ...(opts.manage ? ["open the Cockpit address it printed, on your phone or PC"] : []),
+        ...keyStep,
         ...overTailscale,
       ],
     },
