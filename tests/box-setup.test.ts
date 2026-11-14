@@ -2,11 +2,19 @@
 // script runs only on a fresh Ubuntu LTS machine as root (pnpm ship box add), so these hold
 // its order and its words: the sandbox's users, the sudo rule, the folders, and the proof at the end.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isBoxOs, slotsFor } from "../cli/commands/box.ts";
+import { isBoxOs, isLanRange, slotsFor } from "../cli/commands/box.ts";
 import { ROOT, sandbox, ship } from "./helpers.ts";
 
 describe("box/setup.sh: setup 5, checked without a box", () => {
@@ -23,8 +31,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 16, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=16$/m);
+  it("is version 17, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=17$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -476,7 +484,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
       at('say "Swap in memory (zram)"'),
     );
     // Inside the part an image or a container skips: its host decides both.
-    expect(at('if [ -z "$IMAGE$CONTAINER" ]; then\nsay "Automatic security updates"')).toBeLessThan(
+    expect(at('if [ -z "$IMAGE$CONTAINER" ]; then\nsay "Automatic updates"')).toBeLessThan(
       at('say "Updates leave the slots running"'),
     );
     expect(part).toContain("'$nrconf{override_rc}{qr(^shipify-box-)} = 0;'");
@@ -507,6 +515,47 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
       'if [ "${SHIPIFY_HERE:-}" = 1 ] && [ "${SHIPIFY_MANAGE:-}" != 1 ]; then',
     );
     expect(part).toContain("its power settings stay as they are");
+  });
+
+  it("looks after itself: normal updates too, a hardware watchdog, small logs, and cloud-init off once set up (setup 17)", () => {
+    // Ubuntu's normal updates beside its security ones, and the 04:30 restart kept.
+    const updates =
+      /cat > \/etc\/apt\/apt\.conf\.d\/52shipify-updates <<'CONF'\n([\s\S]*?)\nCONF/.exec(
+        setup,
+      )?.[1];
+    expect(updates).toContain(
+      'Unattended-Upgrade::Allowed-Origins { "${distro_id}:${distro_codename}-updates"; };',
+    );
+    expect(updates).toContain('Unattended-Upgrade::Automatic-Reboot-Time "04:30";');
+    // The watchdog and the journal's limit: drop-ins systemd takes without a restart, only when
+    // they changed; this PC keeps its own without --manage, as with sleep.
+    const part = setup.slice(
+      at('say "Restarts when it hangs, and keeps its logs small"'),
+      at('say "Swap in memory (zram)"'),
+    );
+    for (const line of [
+      "WATCHDOG_DROPIN=/etc/systemd/system.conf.d/50-shipify-box.conf",
+      '"[Manager]" "RuntimeWatchdogSec=30s" "RebootWatchdogSec=2min"',
+      'if put_file "$WORK/watchdog.conf" "$WATCHDOG_DROPIN"; then systemctl daemon-reload; fi',
+      "JOURNALD_DROPIN=/etc/systemd/journald.conf.d/50-shipify-box.conf",
+      '"[Journal]" "SystemMaxUse=200M"',
+      'if put_file "$WORK/journald.conf" "$JOURNALD_DROPIN"; then systemctl restart systemd-journald || true; fi',
+      'if [ "${SHIPIFY_HERE:-}" = 1 ] && [ "${SHIPIFY_MANAGE:-}" != 1 ]; then',
+    ])
+      expect(part, line).toContain(line);
+    expect(at('if [ -z "$IMAGE$CONTAINER" ]; then\nsay "Automatic updates"')).toBeLessThan(
+      at('say "Restarts when it hangs, and keeps its logs small"'),
+    );
+    // put_file comes before its first use.
+    expect(at("put_file() {")).toBeLessThan(at('if put_file "$WORK/watchdog.conf"'));
+    // cloud-init off only once the sandbox checked out, before the setup is recorded; never in a
+    // container, nor on this PC without --manage, and only where cloud-init is.
+    const off = at("touch /etc/cloud/cloud-init.disabled");
+    expect(off).toBeGreaterThan(at('rm -f "$SANDBOX_OPEN"'));
+    expect(off).toBeLessThan(at('record "$SETUP_VERSION" "manage: not finished"'));
+    expect(setup.slice(at("# cloud-init off, once the box is set up"), off)).toContain(
+      'if [ -z "$CONTAINER" ] && [ -d /etc/cloud ] && [ ! -e /etc/cloud/cloud-init.disabled ] &&\n  ! { [ "${SHIPIFY_HERE:-}" = 1 ] && [ "${SHIPIFY_MANAGE:-}" != 1 ]; }; then',
+    );
   });
 
   it("gives every box containers for its agents, rootless, in a step that never fails the setup (setup 8, ADR 0064)", () => {
@@ -595,8 +644,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
       at("goes, with its slot"),
       at("# The box's own update (setup 14): its settings"),
     );
-    expect(gone.indexOf('sudo -u "$u" kill -KILL -1')).toBeGreaterThan(0);
-    expect(gone.indexOf('sudo -u "$u" kill -KILL -1')).toBeLessThan(
+    expect(gone.indexOf('sudo -u "$u" kill -KILL -- -1')).toBeGreaterThan(0);
+    expect(gone.indexOf('sudo -u "$u" kill -KILL -- -1')).toBeLessThan(
       gone.indexOf("usermod --del-subuids"),
     );
     expect(gone.indexOf("usermod --del-subuids")).toBeGreaterThan(0);
@@ -737,6 +786,23 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(fn("lab_check")).toMatch(/✗ containers: the box can't remove[^\n]*lab_error/);
     // The kill reaches the agent's range too: a process that survives is a wall, so no label.
     expect(lab).toContain('walls=""');
+    // The kill takes `--` before -1 (setup 17), and when a process outlives it, kill's own exit
+    // and words are said, never swallowed (Ubuntu 26.04's kill refused `-KILL -1`, unseen).
+    const dir = sandbox().dir;
+    const killed = bash([
+      `WORK=${dir}`,
+      `sudo() { echo "$*" >> "${dir}/calls"; echo "kill: failed to parse argument: '(null)'" >&2; return 1; }`,
+      "left_of() { echo 1; }",
+      "sleep() { :; }",
+      fn("kill_agent"),
+      'kill_agent shipify-agent-1 || echo "said: $kill_said"',
+    ]);
+    expect(killed.stdout).toBe("said: kill's exit 1: kill: failed to parse argument: '(null)'\n");
+    expect(readFileSync(join(dir, "calls"), "utf8").split("\n")[0]).toBe(
+      "-u shipify-agent-1 kill -KILL -- -1",
+    );
+    expect(check).toContain(`✗ $u: a process outlived the box's kill ($kill_said)`);
+    expect(lab).toContain(`✗ a container of $u's outlived the box's kill ($kill_said)`);
     // Each slot's store, as its runs open it (setup 10): where setup 8 and 9 failed on a box.
     expect(check).toContain('elif ! podman_as "$u" info >/dev/null 2>"$WORK/lab.log"; then');
     // Each failure says Podman's own error, never a warning that came after it, nor a fix that
@@ -852,21 +918,26 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
 
   it("takes out older setups' rules, says each of yours that lets more in, never 'only' then, and filters IPv6 (setup 13)", () => {
     const dir = sandbox().dir;
-    const run = (rules: string[], defaults: string) => {
+    const run = (rules: string[], defaults: string, lan = "") => {
       writeFileSync(join(dir, "added"), `${rules.join("\n")}\n`);
       writeFileSync(join(dir, "defaults"), defaults);
       writeFileSync(join(dir, "calls"), "");
       // A ufw that keeps its rules in a file: `show added` lists them, `delete` takes one out.
-      const r = bash([
-        "ip() { echo '    inet 100.101.102.103/32 scope global tailscale0'; }",
-        "sleep() { :; }",
-        "ss() { :; }",
-        "systemctl() { return 1; }",
-        'say() { echo "== $*"; }',
-        `ufw() { echo "ufw $*" >> "${dir}/calls"; case "$1" in show) echo "Added user rules (see 'ufw status' for running firewall):"; cat "${dir}/added" ;; delete) shift; grep -vF "ufw $*" "${dir}/added" > "${dir}/kept" || true; mv "${dir}/kept" "${dir}/added" ;; esac; }`,
-        fn("firewall").replaceAll("/etc/default/ufw", join(dir, "defaults")),
-        "firewall",
-      ]);
+      const r = bash(
+        [
+          "ip() { echo '    inet 100.101.102.103/32 scope global tailscale0'; }",
+          "sleep() { :; }",
+          "ss() { :; }",
+          "systemctl() { return 1; }",
+          'say() { echo "== $*"; }',
+          `ufw() { echo "ufw $*" >> "${dir}/calls"; case "$1" in show) echo "Added user rules (see 'ufw status' for running firewall):"; cat "${dir}/added" ;; delete) shift; grep -vF "ufw $*" "${dir}/added" > "${dir}/kept" || true; mv "${dir}/kept" "${dir}/added" ;; esac; }`,
+          /^LAN_SSH_COMMENT=.*$/m.exec(setup)?.[0] ?? "",
+          fn("lan_range_ok"),
+          fn("firewall").replaceAll("/etc/default/ufw", join(dir, "defaults")),
+          "firewall || echo failed",
+        ],
+        { SHIPIFY_LAN_SSH: lan },
+      );
       return {
         out: r.stdout,
         calls: readFileSync(join(dir, "calls"), "utf8"),
@@ -905,6 +976,81 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(plain.out).toContain("on: in through Tailscale only; out as before");
     expect(plain.calls).not.toContain("ufw reload");
     expect(plain.defaults).toBe("IPV6=yes\n");
+  });
+
+  it("keeps SSH open to your own network only with --lan-ssh, and takes its rule out without it (setup 17)", () => {
+    // By default: nothing comes in but through Tailscale (above). The range goes to box.env, so the
+    // box's own update keeps it.
+    expect(setup).toMatch(/for v in RUNNER_URL [^\n]*SHIPIFY_LAN_SSH; do/);
+    const dir = sandbox().dir;
+    const lan =
+      "ufw allow from 192.168.1.0/24 to any port 22 proto tcp comment 'SSH from your network (--lan-ssh)'";
+    const ours = "ufw allow in on tailscale0 comment 'Tailscale: Cockpit, SSH'";
+    const run = (rules: string[], range: string) => {
+      writeFileSync(join(dir, "added"), `${rules.join("\n")}\n`);
+      writeFileSync(join(dir, "calls"), "");
+      const r = bash(
+        [
+          "ip() { echo '    inet 100.101.102.103/32 scope global tailscale0'; }",
+          "sleep() { :; }",
+          "ss() { :; }",
+          "systemctl() { return 1; }",
+          'say() { echo "== $*"; }',
+          `ufw() { echo "ufw $*" >> "${dir}/calls"; case "$1" in show) cat "${dir}/added" ;; delete) shift; grep -vF "ufw $*" "${dir}/added" > "${dir}/kept" || true; mv "${dir}/kept" "${dir}/added" ;; esac; }`,
+          /^LAN_SSH_COMMENT=.*$/m.exec(setup)?.[0] ?? "",
+          fn("lan_range_ok"),
+          fn("firewall").replaceAll("/etc/default/ufw", join(dir, "defaults")),
+          "firewall || echo failed",
+        ],
+        { SHIPIFY_LAN_SSH: range },
+      );
+      return { out: r.stdout, calls: readFileSync(join(dir, "calls"), "utf8") };
+    };
+    writeFileSync(join(dir, "defaults"), "IPV6=yes\n");
+    // Asked: its rule, before the firewall turns on, and said; never "your own" rule.
+    const asked = run([ours], "192.168.1.0/24");
+    expect(asked.calls).toContain(
+      "ufw allow from 192.168.1.0/24 to any port 22 proto tcp comment SSH from your network (--lan-ssh)",
+    );
+    expect(asked.calls.indexOf("ufw allow from")).toBeLessThan(
+      asked.calls.indexOf("ufw --force enable"),
+    );
+    expect(asked.out).toContain(
+      "on: in through Tailscale and SSH from 192.168.1.0/24 (--lan-ssh) only; out as before",
+    );
+    // Asked again, with its rule there: kept as it is.
+    const again = run([ours, lan], "192.168.1.0/24");
+    expect(again.out).not.toContain("taken out");
+    expect(again.out).not.toContain("rules of your own");
+    // Not asked any more: its rule goes, and it's Tailscale only.
+    const dropped = run([ours, lan], "");
+    expect(dropped.out).toContain("taken out: allow from 192.168.1.0/24 to any port 22 proto tcp");
+    expect(dropped.out).toContain("on: in through Tailscale only; out as before");
+    expect(dropped.calls).not.toContain("ufw allow from");
+    // Another range: the old one goes, the new one comes.
+    const moved = run([ours, lan], "10.0.0.0/24");
+    expect(moved.out).toContain("taken out: allow from 192.168.1.0/24");
+    expect(moved.calls).toContain("ufw allow from 10.0.0.0/24 to any port 22 proto tcp");
+    // A range that isn't a private network's: nothing changes, and --manage fails.
+    const open = run([ours], "0.0.0.0/0");
+    expect(open.out).toContain("✗ not on: --lan-ssh takes a private network's range");
+    expect(open.calls).toBe("");
+    expect(open.out.trim().split("\n").pop()).toBe("failed");
+    const ok = (range: string) =>
+      bash([fn("lan_range_ok"), `lan_range_ok '${range}' && echo yes || echo no`]).stdout.trim();
+    for (const good of ["192.168.1.0/24", "10.0.0.0/8", "172.16.0.0/12", "192.168.1.10/32"])
+      expect(ok(good), good).toBe("yes");
+    for (const bad of [
+      "192.168.0.0/8",
+      "172.32.0.0/16",
+      "8.8.8.8/32",
+      "10.0.0.0/33",
+      "192.168.1.0",
+      "192.168.300.0/24",
+      "192.168.1.0/24 to any",
+      "fd00::/8",
+    ])
+      expect(ok(bad), bad).toBe("no");
   });
 
   it("proves the sandbox before it records setup 5", () => {
@@ -1076,6 +1222,23 @@ describe("box/update.sh: the box's own setup update (setup 14), checked without 
   it("takes the token on stdin, uses it for one download from the box's own repo, and keeps it nowhere", () => {
     expect(code).toContain('[ $# = 0 ] || { echo "It takes no arguments');
     expect(code).toContain("IFS= read -r -t 10 token || true");
+    // GitHub's token shapes: a classic one, and since 2026-04-27 an installation's stateless one
+    // (ghs_<app ID>_<a JWT>, about 520 characters, with . and -), which setup 14 to 16 refused.
+    const ok = (token: string) =>
+      spawnSync("bash", ["-c", `${fn("token_ok")}\ntoken_ok "$1"`, "x", token]).status === 0;
+    const jwt = `eyJhbGciOiJSUzI1NiJ9.${"eyJpc3MiOiIxMjM0NTYi".repeat(20)}.${"c2ln-bmF0_dXJl".repeat(20)}`;
+    expect(ok(`ghs_123456_${jwt}`)).toBe(true);
+    // A classic one's shape, made here: a literal would look like a key to the secret scan.
+    expect(ok(`ghs_${"x".repeat(36)}`)).toBe(true);
+    expect(ok("github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz")).toBe(true);
+    for (const bad of ["", "short_1", "ghs_a b", "ghs_abc'def0123456789", "ghs_$(id)0123456789x"])
+      expect(ok(bad), bad).toBe(false);
+    expect(ok(`ghs_${"a".repeat(4093)}`)).toBe(false);
+    // A refused one says its format was, never that there was none.
+    expect(code).toContain('[ -n "$token" ] || { echo "No read token on stdin."; exit 1; }');
+    expect(code).toMatch(
+      /if ! token_ok "\$token"; then\n\s+echo "The read token on stdin was refused: its format/,
+    );
     // Into a header file only root reads, never on a command line, gone after the download.
     expect(code).toContain(
       `(umask 077 && printf 'Authorization: Bearer %s\\n' "$token" > "$DIR/auth")`,
@@ -1621,6 +1784,51 @@ esac`),
     const env = readFileSync(join(got, "box.env"), "utf8");
     expect(env).toContain("SHIPIFY_HERE=1");
     expect(env).toContain("SHIPIFY_MANAGE=1");
+    expect(env).not.toContain("SHIPIFY_LAN_SSH");
+  });
+
+  it("with --manage --lan-ssh <range>: SSH from your network too, a private range only (setup 17)", () => {
+    const { sb, got, log } = machine(0);
+    const plan = ship(sb, "box", "add", "--manage", "--lan-ssh", "192.168.1.0/24");
+    expect(plan.status).toBe("requires-approval");
+    expect((plan.plannedActions ?? []).join("\n")).toContain(
+      "in through Tailscale and SSH from 192.168.1.0/24 (--lan-ssh) only",
+    );
+    expect(plan.nextSteps).toEqual(["pnpm ship box add --manage --lan-ssh 192.168.1.0/24 --yes"]);
+    const r = ship(sb, "box", "add", "--manage", "--lan-ssh", "192.168.1.0/24", "--yes");
+    expect(r.status, r.summary).toBe("succeeded");
+    expect(readFileSync(join(got, "box.env"), "utf8")).toContain("SHIPIFY_LAN_SSH=192.168.1.0/24");
+    // Without --manage, or a range that isn't a private network's: nothing happens.
+    const before = log();
+    for (const [args, said] of [
+      [["--lan-ssh", "192.168.1.0/24"], "--lan-ssh goes with --manage"],
+      [["--manage", "--lan-ssh", "0.0.0.0/0"], "--lan-ssh takes your network's range"],
+      [["--manage", "--lan-ssh", "192.168.0.0/8"], "--lan-ssh takes your network's range"],
+    ] as const) {
+      const no = ship(sb, "box", "add", ...args, "--yes");
+      expect(no.status, args.join(" ")).toBe("blocked");
+      expect(no.summary).toContain(said);
+    }
+    expect(log()).toBe(before);
+    // Without it, the plan says the home network gets no SSH, and how to keep it.
+    expect((ship(sb, "box", "add", "--manage").plannedActions ?? []).join("\n")).toContain(
+      "no SSH from the home network, unless --lan-ssh <range>, for a box with no keyboard",
+    );
+  });
+
+  it("takes a private IPv4 network's range for --lan-ssh, as setup.sh does", () => {
+    for (const good of ["192.168.1.0/24", "10.0.0.0/8", "172.16.0.0/12", "192.168.1.10/32"])
+      expect(isLanRange(good), good).toBe(true);
+    for (const bad of [
+      "192.168.0.0/8",
+      "172.32.0.0/16",
+      "8.8.8.8/32",
+      "10.0.0.0/33",
+      "192.168.1.0",
+      "192.168.300.0/24",
+      "fd00::/8",
+    ])
+      expect(isLanRange(bad), bad).toBe(false);
   });
 
   it("on WSL, takes no --manage: Windows runs that machine", () => {
@@ -1701,7 +1909,8 @@ describe("box/remove.sh: Shipify off a machine, the machine's own left (setup 9)
       expect(code, step).toContain(step);
     // An agent's ranges go before its user, its processes before both: its containers' too, which
     // only a kill as the agent reaches (they run as IDs of its range).
-    expect(code.indexOf('sudo -u "$u" kill -KILL -1')).toBeLessThan(code.indexOf("pkill"));
+    expect(code.indexOf('sudo -u "$u" kill -KILL -- -1')).toBeGreaterThan(0);
+    expect(code.indexOf('sudo -u "$u" kill -KILL -- -1')).toBeLessThan(code.indexOf("pkill"));
     expect(code.indexOf("pkill")).toBeLessThan(code.indexOf("usermod --del-subuids"));
     expect(code.indexOf("usermod --del-subuids")).toBeLessThan(code.indexOf('userdel "$u"'));
     // Then it checks, and says what's left.
@@ -1712,6 +1921,63 @@ describe("box/remove.sh: Shipify off a machine, the machine's own left (setup 9)
     expect(code).not.toMatch(
       /ufw|tailscale|cockpit|zram|logind|sshd|unattended|apt-get|apt |flush ruleset|52shipify-updates/i,
     );
+  });
+});
+
+describe("every kill of every process (-1): `--` before -1 (setup 17)", () => {
+  /**
+   * The kill programs in a text that kill every process (-1) with no `--` before it: one run
+   * through sudo or by its path in a script, or an argv array in TypeScript. Ubuntu 26.04's kill
+   * (procps 4.0.4-9ubuntu1) reads `kill -KILL -1` as no process, so it killed nothing. /bin/sh's
+   * own kill (dash's), in a script that sh runs, refuses `--`, and stays as it is.
+   */
+  const bare = (text: string) => [
+    ...text
+      .split("\n")
+      .filter((l) => !/^\s*(#|\/\/|\*)/.test(l))
+      .filter(
+        (l) =>
+          /(\bsudo\b|\/usr\/bin\/)[^|;&]*\bkill\b[^|;&]*\s-1\b/.test(l) && !/\s--\s+-1\b/.test(l),
+      ),
+    ...[...text.matchAll(/\[[^\]]*"kill"[^\]]*\]/g)]
+      .map((m) => m[0])
+      .filter((a) => {
+        const words = [...a.matchAll(/"([^"]*)"/g)].map((w) => w[1]);
+        const i = words.indexOf("-1");
+        return i > words.indexOf("kill") && words[i - 1] !== "--";
+      }),
+  ];
+
+  it("finds a kill program's -1 with no `--`, and leaves sh's own kill alone", () => {
+    expect(bare('  sudo -u "$u" kill -KILL -1 2>/dev/null || true')).toHaveLength(1);
+    expect(bare('io.run("sudo", ["-n", "-u", user, "--", "kill", "-KILL", "-1"], {')).toHaveLength(
+      1,
+    );
+    expect(bare('  sudo -u "$u" kill -KILL -- -1 2>/dev/null || true')).toEqual([]);
+    expect(bare('["-n", "-u", user, "--", "kill", "-KILL", "--", "-1"]')).toEqual([]);
+    expect(bare('["-n", "-u", LOOK_USER, "--", "kill", "-KILL", String(pid)]')).toEqual([]);
+    expect(bare("  kill -KILL -1 2>/dev/null")).toEqual([]);
+  });
+
+  it("is so in every script and source a box runs", () => {
+    const files = ["box", "cli", "scripts"].flatMap((d) =>
+      readdirSync(join(ROOT, d), { recursive: true, encoding: "utf8" })
+        .filter((f) => /\.(sh|ts|mjs)$/.test(f) && !f.includes("node_modules"))
+        .map((f) => join(d, f)),
+    );
+    const found = files.flatMap((f) =>
+      bare(readFileSync(join(ROOT, f), "utf8")).map((l) => `${f}: ${l.trim()}`),
+    );
+    expect(found).toEqual([]);
+    // Not a scan of nothing: each place that kills every process has one, with `--`.
+    for (const f of ["box/setup.sh", "box/remove.sh"])
+      expect(readFileSync(join(ROOT, f), "utf8"), f).toContain("kill -KILL -- -1");
+    expect(readFileSync(join(ROOT, "cli/lib/sandbox.ts"), "utf8")).toContain(
+      '"kill", "-KILL", "--", "-1"',
+    );
+    // This machine's kill program takes it (signal 0 sends nothing).
+    if (existsSync("/usr/bin/kill"))
+      expect(spawnSync("/usr/bin/kill", ["-0", "--", "-1"]).status).toBe(0);
   });
 });
 

@@ -190,8 +190,8 @@ as its agent starts, and a box checks the labels once a day. What's left:
 
 ## Kept current and safe (task #673, 2026-11-05)
 
-What's automatic: Ubuntu's security updates on a box (daily, a restart at 04:30 when one needs
-it), the runner's own updates, Dependabot's security alerts and its quarterly PRs, and since #673
+What's automatic: Ubuntu's security updates on a box, and its normal ones since box setup 17
+(daily, a restart at 04:30 when one needs it), the runner's own updates, Dependabot's security alerts and its quarterly PRs, and since #673
 the weekly digest's line on the agents behind their newest, with any advisory against a pin first.
 What's left:
 

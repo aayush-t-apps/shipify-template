@@ -11,13 +11,12 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createInterface } from "node:readline";
 import { z } from "zod";
 import { maskSecrets } from "../contracts/index.ts";
-import { UPDATER } from "../lib/box-update.ts";
+import { updaterWorks } from "../lib/box-update.ts";
 import { LOOK_USER, lookArgs, lookUserThere, onBox, SPAWN_ENV, stopLook } from "../lib/sandbox.ts";
 import { command, runTools, type Tools } from "../lib/tools.ts";
 
@@ -495,14 +494,14 @@ export interface Look {
 
 /**
  * Why a box's look server didn't start for want of its user (box setup 16, ADR 0077), and the fix
- * that's true for this box: one with its own updates (the updater, from setup 14) applies it by
- * itself; an older one can't, until it's set up once more. `why`: sudo's words, when it refused.
+ * that's true for this box: one whose updater works (setup 17 on) applies it by itself; an older
+ * one can't, until it's set up once more. `why`: sudo's words, when it refused.
  */
 export const lookMissing = (updates: boolean, why?: string) =>
   `didn't start: this box can't start its user ${LOOK_USER} yet${why ? ` (${why})` : ""}; box setup 16 adds it, ${
     updates
       ? "and the box applies it by itself at its next due run"
-      : "and this box can't apply it by itself, as it was set up before setup 14 gave boxes their own updates: set it up once more, and from then on it updates itself (when no task runs: on the box, its here.sh command again; or from a PC, the `pnpm ship box add` command it was set up with)"
+      : "and this box can't apply it by itself, as its setup is older than 17, the first whose own updates take GitHub's tokens: set it up once more, and from then on it updates itself (when no task runs: on the box, its here.sh command again; or from a PC, the `pnpm ship box add` command it was set up with)"
   }`;
 
 /**
@@ -519,7 +518,7 @@ export async function startLook(
   const argv = [...cli.split(" "), "run", "look"];
   const box = onBox();
   // A box before setup 16 has no look user: said plainly, with no sudo to fail in the run's log.
-  if (box && !lookUserThere()) return { why: lookMissing(existsSync(UPDATER)) };
+  if (box && !lookUserThere()) return { why: lookMissing(updaterWorks()) };
   const [cmd, ...args] = (box ? ["sudo", ...lookArgs(argv)] : argv) as [string, ...string[]];
   const child = spawn(cmd, args, {
     // On a box, from `/`, as an agent's command starts: the runner's folders aren't its user's.
@@ -588,7 +587,7 @@ export async function startLook(
     return {
       why:
         box && /^sudo:/.test(last)
-          ? lookMissing(existsSync(UPDATER), last)
+          ? lookMissing(updaterWorks(), last)
           : `didn't start${last ? ` (${last})` : ""}`,
     };
   }

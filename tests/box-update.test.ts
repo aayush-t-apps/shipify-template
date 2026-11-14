@@ -1,10 +1,17 @@
 // A box's own setup update (box setup 14, cli/lib/box-update.ts): when the due run or the weekly
 // clean-up asks root for it, with what, and what it says. The machine is stood in for (UpdateIo).
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { boxSetup, setupNote, UPDATER, type UpdateIo, updateBox } from "../cli/lib/box-update.ts";
+import {
+  boxSetup,
+  setupNote,
+  UPDATER,
+  type UpdateIo,
+  updateBox,
+  updaterWorks,
+} from "../cli/lib/box-update.ts";
 import { ROOT } from "./helpers.ts";
 
 const SETUP = `#!/usr/bin/env bash
@@ -40,6 +47,7 @@ function box(
     script,
     token: "ghs_readOnlyToken123",
     exists: (p) => p === script || p === UPDATER,
+    works: () => true,
     busy: () => false,
     update(input) {
       inputs.push(input);
@@ -133,6 +141,33 @@ describe("a box's own setup update (box setup 14)", () => {
     expect(updateBox("homepi", refused.io)?.said).toContain(
       "so it keeps 13: sudo: a password is required.",
     );
+  });
+
+  it("never asks an updater from before setup 17, which refuses GitHub's tokens, and says so once with the fix", () => {
+    for (const over of [{}, { busy: () => true }, { token: undefined }]) {
+      const old = box("13\n", undefined, { works: () => false, ...over });
+      expect(updateBox("homepi", old.io)).toEqual({
+        event: "homepi can't update its own setup to 14: its updater refuses GitHub's new tokens",
+        said: "**homepi** can't update its own setup to 14: its updater is from before setup 17, and refuses GitHub's new token format (since 2026-04-27), so it never will by itself. Once, when no task runs: on the box, its here.sh command again; from then on, it updates itself.",
+        key: "setup-update-token:homepi",
+        failed: true,
+      });
+      expect(old.inputs).toEqual([]);
+    }
+  });
+
+  it("tells a working updater by what it is: setup 17's takes GitHub's stateless tokens", () => {
+    const dir = mkdtempSync(join(tmpdir(), "updater-"));
+    const file = join(dir, "shipify-box-update");
+    expect(updaterWorks(file)).toBe(false);
+    writeFileSync(file, readFileSync(join(ROOT, "box", "update.sh"), "utf8"));
+    expect(updaterWorks(file)).toBe(true);
+    // Setup 14 to 16's: the token checked by a case pattern that refuses . and -.
+    writeFileSync(
+      file,
+      `case "$token" in '' | *[!A-Za-z0-9_]*) echo "No read token on stdin."; exit 1 ;; esac\n`,
+    );
+    expect(updaterWorks(file)).toBe(false);
   });
 
   it("reads the box's setup beside the repo's, and each version's note from box/setup.sh", () => {

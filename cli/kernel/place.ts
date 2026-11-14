@@ -67,8 +67,8 @@ export interface Place {
    * to a folder it may read (`{ link }`).
    */
   give(files: Record<string, Given>): void;
-  /** Every process it left, stopped: true when none is left. Before anything is taken back. */
-  stop(): boolean;
+  /** Every process it left, stopped: ok when none is left, else why. Before anything is taken back. */
+  stop(): { ok: boolean; error?: string };
   /** The plain files it left in out/. */
   list(): string[];
   take(name: string, maxBytes?: number): Buffer | undefined;
@@ -172,7 +172,7 @@ function localPlace(dir: string, reopen = false): Place {
         } else writeFileSync(join(dir, n), body);
       }
     },
-    stop: () => true,
+    stop: () => ({ ok: true }),
     list: () =>
       existsSync(at("out"))
         ? readdirSync(at("out")).filter((f) => lstatSync(join(at("out"), f)).isFile())

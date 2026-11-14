@@ -793,7 +793,9 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       report.version ??= ex.install?.version;
       if (outcome.timedOut) report.error ??= `it ran for ${minutes} minutes and was stopped`;
       timing.ran(executor, choice, { report, secs: (performance.now() - started) / 1000 });
-      if (!place.stop()) throw new Error("the agent left processes that couldn't be stopped");
+      const stopped = place.stop();
+      if (!stopped.ok)
+        throw new Error(`the agent left processes that couldn't be stopped: ${stopped.error}`);
       return { outcome, report };
     };
     // A stay's turn carries on in the place as the last turn left it (ADR 0057): a result.json
@@ -1288,7 +1290,9 @@ export async function finish(
     note: `The branch couldn't be brought up to date with main: ${maskSecrets(errorLine(e))}. ${AS_LEFT}`,
   }));
   // As after the agent: nothing of its user's left running before a write key is minted.
-  if (!place.stop()) throw new Error("the finish left processes that couldn't be stopped");
+  const stopped = place.stop();
+  if (!stopped.ok)
+    throw new Error(`the finish left processes that couldn't be stopped: ${stopped.error}`);
   return done;
 }
 

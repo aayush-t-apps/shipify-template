@@ -135,6 +135,15 @@ describe("box/here.sh: before it changes anything", () => {
     // Before anything: the OS isn't even looked at.
     expect(remove.out).not.toContain("Looking at this machine");
     expect([remove.left, container.left]).toEqual([[], []]);
+    // --lan-ssh <range> (box setup 17): with --manage, to box add, which checks the range.
+    expect(runIt(UBUNTU("24.04"), "--help").out).toContain("--lan-ssh <range>");
+    expect(text).toContain('[ -n "${LAN_SSH:-}" ] && args+=(--lan-ssh "$LAN_SSH")');
+    const alone = runIt(UBUNTU("24.04"), "--lan-ssh", "192.168.1.0/24");
+    expect(alone.out).toContain("--lan-ssh goes with --manage");
+    expect(alone.out).not.toContain("Looking at this machine");
+    expect(runIt(UBUNTU("24.04"), "--manage", "--lan-ssh").out).toContain(
+      "--lan-ssh needs a value: --lan-ssh <value>.",
+    );
   });
 
   it("stops at an option with no value, naming it, where it once stopped without a word", () => {

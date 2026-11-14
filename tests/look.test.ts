@@ -389,10 +389,11 @@ describe("the look server (ADR 0077)", () => {
     expect(lookMissing(true)).toBe(
       "didn't start: this box can't start its user shipify-look yet; box setup 16 adds it, and the box applies it by itself at its next due run",
     );
-    // A box set up before setup 14 has no updater: it never applies setup 16 by itself.
+    // A box set up before setup 14 has no updater, and 14 and 15's refuses GitHub's tokens: it
+    // never applies setup 16 by itself.
     const old = lookMissing(false, "sudo: a password is required");
     expect(old).toContain("(sudo: a password is required)");
-    expect(old).toContain("this box can't apply it by itself");
+    expect(old).toContain("this box can't apply it by itself, as its setup is older than 17");
     expect(old).toContain("set it up once more, and from then on it updates itself");
     expect(old).not.toContain("by itself at its next due run");
   });

@@ -57,6 +57,20 @@ export function isBoxOs(os: string): boolean {
   const m = /^ubuntu (\d\d)\.04$/.exec(os.trim());
   return !!m && Number(m[1]) >= 24 && Number(m[1]) % 2 === 0;
 }
+/**
+ * What `--lan-ssh` takes (box setup 17): a private IPv4 network's range, no wider than it
+ * (192.168.1.0/24, 10.0.0.0/8), as box/setup.sh's lan_range_ok checks it again.
+ */
+export function isLanRange(range: string): boolean {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(range);
+  const [a = 0, b = 0, c = 0, d = 0, bits = 99] = m ? m.slice(1).map(Number) : [];
+  if (!m || c > 255 || d > 255 || bits > 32) return false;
+  return (
+    (a === 10 && bits >= 8) ||
+    (a === 172 && b >= 16 && b <= 31 && bits >= 12) ||
+    (a === 192 && b === 168 && bits >= 16)
+  );
+}
 export const slotName = (box: string, k: number) => (k === 1 ? box : `${box}-${k}`);
 const slotNumbers = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
 /** Which slot of `box` a runner is: 1 for the box's own name, k for `<box>-<k>`, else 0. */
@@ -459,6 +473,8 @@ export function boxAdd(
   opts: {
     name?: string;
     manage?: boolean;
+    /** With --manage (box setup 17): SSH from this range of your network too, for a box with no keyboard. */
+    lanSsh?: string;
     replace?: boolean;
     slots?: string;
     /** In Docker (ADR 0056): this container, from its image; `docker run … register` runs it. */
@@ -469,6 +485,16 @@ export function boxAdd(
   if (opts.container && (target !== undefined || opts.manage))
     throw new ShipError(
       "--container is the container's own setup: docker run … register runs it (docs/box-setup.md).",
+      "blocked",
+    );
+  if (opts.lanSsh !== undefined && !opts.manage)
+    throw new ShipError(
+      "--lan-ssh goes with --manage: without it the box has no firewall, and its SSH answers on its network already.",
+      "blocked",
+    );
+  if (opts.lanSsh !== undefined && !isLanRange(opts.lanSsh))
+    throw new ShipError(
+      `--lan-ssh takes your network's range, a private one such as 192.168.1.0/24 (your router shows it), not "${opts.lanSsh}".`,
       "blocked",
     );
   if (target === undefined && process.platform !== "linux")
@@ -569,6 +595,7 @@ export function boxAdd(
       ? []
       : [
           `automatic updates never restart a slot mid-task (needrestart)${m.here && !opts.manage ? "; this PC's power settings stay as they are (--manage: a box you keep, which never sleeps)" : ", and the box never sleeps: the lid does nothing, and sleep is off"}`,
+          `automatic updates, Ubuntu's security and normal ones (setup 17), restarting at 04:30 only when one needs it${m.here && !opts.manage ? "" : "; the hardware watchdog restarts the box when it hangs for 30 seconds, its logs keep 200 MB at most, and cloud-init is off once the setup passes, so the box keeps its own name and network"}`,
         ]),
     `it creates the user "shipify" (no sudo; its home 0700, only its own) and runs ${slots} slot(s)${why}, one task at a time each: the GitHub runners ${slotNumbers(
       slots,
@@ -603,7 +630,7 @@ export function boxAdd(
     ...(opts.manage
       ? [
           "--manage, last, once the sandbox checks out: Tailscale (installed, and signed in at a link it prints within 15 minutes, if it isn't yet), then the firewall, then Cockpit, which listens on the machine itself only and is shared with your own devices by tailscale serve (without NetworkManager, which would take a laptop's Wi-Fi)",
-          "--manage: the firewall, once Tailscale is up: in through Tailscale only (setup 13: no SSH from the home network, avahi's mDNS off), out as before. From then on, reach it over Tailscale. Rules are added, never reset: each of yours that lets something in is listed (undo: sudo ufw disable); ufw's IPv6 goes on where it's off. If this part stops (a missed sign-in), the box still takes tasks, the result says so, and ship doctor names the box until a run again finishes it",
+          `--manage: the firewall, once Tailscale is up: in through Tailscale${opts.lanSsh ? ` and SSH from ${opts.lanSsh} (--lan-ssh)` : ""} only (setup 13: ${opts.lanSsh ? "" : "no SSH from the home network, unless --lan-ssh <range>, for a box with no keyboard; "}avahi's mDNS off), out as before. From then on, reach it over Tailscale. Rules are added, never reset: each of yours that lets something in is listed (undo: sudo ufw disable); ufw's IPv6 goes on where it's off. If this part stops (a missed sign-in), the box still takes tasks, the result says so, and ship doctor names the box until a run again finishes it`,
         ]
       : m.here
         ? []
@@ -619,7 +646,7 @@ export function boxAdd(
       plannedActions: planned,
       checks: readiness(repo),
       nextSteps: [
-        `pnpm ship box add${target ? ` ${target}` : ""}${opts.name ? ` --name ${opts.name}` : ""}${opts.manage ? " --manage" : ""}${opts.replace ? " --replace" : ""}${asked ? ` --slots ${asked}` : ""} --yes`,
+        `pnpm ship box add${target ? ` ${target}` : ""}${opts.name ? ` --name ${opts.name}` : ""}${opts.manage ? " --manage" : ""}${opts.lanSsh ? ` --lan-ssh ${opts.lanSsh}` : ""}${opts.replace ? " --replace" : ""}${asked ? ` --slots ${asked}` : ""} --yes`,
       ],
     };
   checkAdmin(repo);
@@ -643,6 +670,7 @@ export function boxAdd(
       .join(" ")}"`,
     `RUNNER_REGISTERED="${have.map((r) => slotOf(name, r.name)).join(" ")}"`,
     ...(opts.manage ? ["SHIPIFY_MANAGE=1"] : []),
+    ...(opts.lanSsh ? [`SHIPIFY_LAN_SSH=${opts.lanSsh}`] : []),
     ...(m.here ? ["SHIPIFY_HERE=1"] : []),
     ...(opts.container ? ["SHIPIFY_CONTAINER=1"] : []),
   ].join("\n");
@@ -709,9 +737,10 @@ export function boxAdd(
   // Its key expires in 180 days unless you turn that off (doctor names it weekly until you do).
   const key = tailscaleKeyCheck("shipify", tailscale);
   const keyStep = key && !key.ok ? [`Tailscale: ${key.detail}. Turn it off ${key.fix}`] : [];
-  // From the home network, a --manage box takes SSH no more (setup 13): said, with the way in.
+  // From the home network, a --manage box takes SSH no more (setup 13), unless --lan-ssh (setup
+  // 17): said, with the way in.
   const overTailscale =
-    opts.manage && !m.here && !unmanaged
+    opts.manage && !m.here && !unmanaged && !opts.lanSsh
       ? [
           `from now on, reach it over Tailscale only: in ~/.ssh/config, its HostName is ${web ? web.replace("https://", "") : "its Tailscale name (Cockpit's address above, without https://)"}`,
         ]
@@ -1034,7 +1063,7 @@ export function boxRemove(name: string, yes: boolean, purge = false): Result {
     ...(purge
       ? [
           "then take Shipify off this machine (box/remove.sh, with sudo): the slots' services, the users shipify and shipify-agent-<k> with their ID ranges and folders (the containers' images too), the sudo rule, the update rule for the slots, the agents' network rules and /opt/shipify",
-          "what stays, the machine's own: security updates, SSH by key only, zram, never sleeping, Tailscale, Cockpit and the firewall, and the tools it installed (docs/box-setup.md has how to take those off)",
+          "what stays, the machine's own: automatic updates, SSH by key only, zram, never sleeping, the watchdog, the logs' limit, cloud-init off, Tailscale, Cockpit and the firewall, and the tools it installed (docs/box-setup.md has how to take those off)",
         ]
       : []),
   ];

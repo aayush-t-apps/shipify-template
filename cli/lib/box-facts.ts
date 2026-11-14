@@ -61,6 +61,20 @@ const when = (t: Date) =>
 const THROTTLED = "/sys/devices/platform/soc/soc:firmware/get_throttled";
 const THROTTLE_BITS = ["under-voltage", "frequency capped", "throttled", "soft temperature limit"];
 
+/**
+ * A sensor's file, found by its hwmon name (rpi_volt, cpu_thermal): a kernel without the firmware's
+ * file (Ubuntu 26.04's 7.0-raspi has no get_throttled) still has these. Their numbers can change
+ * at each boot, so each is looked up; the numbers have no gaps.
+ */
+function hwmon(read: BoxIo["read"], name: string, file: string): string | undefined {
+  for (let i = 0; i < 16; i++) {
+    const found = read(`/sys/class/hwmon/hwmon${i}/name`);
+    if (found === undefined) return undefined;
+    if (found.trim() === name) return read(`/sys/class/hwmon/hwmon${i}/${file}`);
+  }
+  return undefined;
+}
+
 /** A Raspberry Pi's reset status at boot (the firmware's PM_RSTS), 4 bytes big-endian. */
 const RSTS = "/proc/device-tree/chosen/bootloader/rsts";
 /** PM_RSTS's power-on reset bit (HADPOR): the power was off, cut or dropped too low. */
@@ -79,7 +93,7 @@ function startedBy(rsts: string | undefined): string | undefined {
 
 /**
  * The system, how it last started, uptime, load, memory and swap, disk, temperature and throttling
- * (where the board has them), a pending restart, waiting updates, the box's services, and its slots' memory.
+ * or voltage (where the board has them), a pending restart, waiting updates, the box's services, and its slots' memory.
  */
 export function boxFacts(given: Partial<BoxIo> = {}, now = Date.now()): Fact[] {
   const { read, exec, changed } = { ...machine, ...given };
@@ -132,7 +146,9 @@ export function boxFacts(given: Partial<BoxIo> = {}, now = Date.now()): Fact[] {
   } catch {
     // No statfs here: leave the disk out rather than guess.
   }
-  const temp = Number(read("/sys/class/thermal/thermal_zone0/temp"));
+  const temp = Number(
+    read("/sys/class/thermal/thermal_zone0/temp") ?? hwmon(read, "cpu_thermal", "temp1_input"),
+  );
   if (Number.isFinite(temp) && temp > 0)
     facts.push({
       name: "temperature",
@@ -152,6 +168,24 @@ export function boxFacts(given: Partial<BoxIo> = {}, now = Date.now()): Fact[] {
           ? `not now; since boot: ${before.join(", ")}`
           : "none since boot",
       look: current.length ? `it's throttled now: ${current.join(", ")}` : undefined,
+    });
+  } else {
+    // Without the firmware's file, its hwmon alarm: under-voltage in its last few seconds.
+    const low = hwmon(read, "rpi_volt", "in0_lcrit_alarm")?.trim();
+    if (low === "0" || low === "1")
+      facts.push({
+        name: "voltage",
+        value: low === "1" ? "under-voltage now" : "fine now",
+        look: low === "1" ? "it's under-voltage now: its power supply gives too little" : undefined,
+      });
+  }
+  // The hardware watchdog, which box setup 17 arms: a box that hangs restarts by itself.
+  const watchdog = read("/sys/class/watchdog/watchdog0/state")?.trim();
+  if (watchdog) {
+    const secs = read("/sys/class/watchdog/watchdog0/timeout")?.trim();
+    facts.push({
+      name: "watchdog",
+      value: watchdog === "active" ? `on: a hang of ${secs} s restarts it` : "off",
     });
   }
   const since = changed("/run/reboot-required");

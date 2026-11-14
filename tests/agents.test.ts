@@ -5,7 +5,7 @@ import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { setupCheck, tailscaleKeyCheck } from "../cli/commands/doctor.ts";
+import { bootloaderCheck, setupCheck, tailscaleKeyCheck } from "../cli/commands/doctor.ts";
 import { claude } from "../cli/lib/agents/claude.ts";
 import {
   type Choice,
@@ -871,21 +871,24 @@ describe("boxes: the setup version (ADR 0017)", () => {
     });
   });
 
-  it("says a box from setup 14 on updates itself, and names a failed sandbox check (setup 14)", () => {
+  it("says a box whose updater works (setup 17 on) updates itself, and names a failed sandbox check (setup 14)", () => {
     const tmp = mkdtempSync(join(tmpdir(), "setup-"));
     const script = join(tmp, "setup.sh");
     writeFileSync(script, "#!/bin/sh\nSETUP_VERSION=14\n");
     writeFileSync(join(tmp, ".shipify-setup"), "13\n");
     const none = join(tmp, "none");
     const updater = join(tmp, "shipify-box-update");
-    writeFileSync(updater, "");
-    // Set up before setup 14: no update of its own, so once more by hand.
-    const before = setupCheck("shipify", tmp, script, none, none);
-    expect(before).toMatchObject({ ok: false, detail: "version 13; the repo's is 14" });
-    expect(before?.fix).toMatch(
-      /^once more, when no task is running: on the box, its here\.sh command again;.*: from setup 14 on, a box applies a newer setup by itself$/,
-    );
-    // With it: nothing to do, and how to do it now anyway.
+    // Setup 14 to 16's updater refuses GitHub's tokens: once more by hand, as with none at all.
+    writeFileSync(updater, `case "$token" in '' | *[!A-Za-z0-9_]*) exit 1 ;; esac\n`);
+    for (const which of [none, updater]) {
+      const before = setupCheck("shipify", tmp, script, which, none);
+      expect(before).toMatchObject({ ok: false, detail: "version 13; the repo's is 14" });
+      expect(before?.fix).toMatch(
+        /^once more, when no task is running: on the box, its here\.sh command again;.*: from setup 17 on, a box applies a newer setup by itself$/,
+      );
+    }
+    // Setup 17's: nothing to do, and how to do it now anyway.
+    writeFileSync(updater, readFileSync(join(ROOT, "box", "update.sh"), "utf8"));
     const after = setupCheck("shipify", tmp, script, updater, none);
     expect(after).toMatchObject({ ok: false, blocking: false });
     expect(after?.detail).toBe(
@@ -919,6 +922,36 @@ describe("boxes: the Tailscale key (--manage)", () => {
     expect(tailscaleKeyCheck("someone", status({ KeyExpiry: "2027-05-10" }))).toBeUndefined();
     expect(tailscaleKeyCheck("shipify", "")).toBeUndefined();
     expect(tailscaleKeyCheck("shipify", status({}, "NeedsLogin"))).toBeUndefined();
+    // Or the boxes' tag, whose machines' keys never expire (docs/box-setup.md).
+    expect(expiring?.fix).toContain("tag:shipify-box");
+  });
+});
+
+describe("boxes: a Pi's bootloader (box setup 17)", () => {
+  const said = (status: string) => `*** UPDATE AVAILABLE ***
+
+Run "sudo rpi-eeprom-update -a" to install this update now.
+
+BOOTLOADER: ${status}
+   CURRENT: Wed Nov  5 17:28:26 UTC 2025 (1762363706)
+    LATEST: Fri Jan  9 16:12:13 UTC 2026 (1767975133)
+   RELEASE: default (/usr/lib/firmware/raspberrypi/bootloader-2711/default)
+
+  VL805_FW: Using bootloader EEPROM
+`;
+  it("warns when rpi-eeprom-update says a newer one is out, never blocking, and names the fix", () => {
+    // As Ubuntu 26.04's rpi-eeprom 28.14 says it on a Pi 4, with no sudo.
+    expect(bootloaderCheck(said("update available"))).toEqual({
+      name: "Pi bootloader is current",
+      ok: false,
+      detail:
+        "an update is out: Fri Jan  9 16:12:13 UTC 2026 (this one: Wed Nov  5 17:28:26 UTC 2025)",
+      blocking: false,
+      fix: "when no task runs, in the box's terminal (Cockpit's too): sudo rpi-eeprom-update -a, then sudo reboot",
+    });
+    expect(bootloaderCheck(said("up to date"))).toMatchObject({ ok: true, detail: "up to date" });
+    // Nothing it can read: nothing said.
+    expect(bootloaderCheck("")).toBeUndefined();
   });
 });
 

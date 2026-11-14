@@ -16,13 +16,14 @@
 # After it the box holds no key: each job brings its own (ADR 0031).
 # --manage, for a machine you keep as a box (a laptop, a spare PC): it never sleeps, and gets
 # Tailscale, a firewall that lets in only Tailscale, and Cockpit, as `box add --manage` over SSH; its
-# SSH takes keys only, once your account here has one.
+# SSH takes keys only, once your account here has one. With --lan-ssh <range> (192.168.1.0/24) too,
+# the firewall lets in SSH from your own network as well, for a box with no keyboard.
 # --replace takes the place of a machine that had the same box name (this one, reinstalled).
 # --fresh starts over on this machine: Shipify off it first (box remove --purge), then set up again,
 # with the same slots, in one go.
 # --remove takes the box away; with --purge, Shipify off this machine too (box/remove.sh).
 #
-#   bash here.sh [--manage] [--replace | --fresh] [--remove [--purge]] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]
+#   bash here.sh [--manage [--lan-ssh <range>]] [--replace | --fresh] [--remove [--purge]] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]
 #   curl … | bash -s -- --manage      (options after `bash -s --` when piped)
 # In the box's Docker image (ADR 0056), `docker run -it … register` runs it with --container: as the
 # container's root, with the image's own gh and Node, and `box add --container`.
@@ -90,7 +91,7 @@ cleanup() {
 
 usage() {
   sed -n '2,30p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
-  printf 'bash here.sh [--manage] [--replace | --fresh] [--remove [--purge]] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]\n'
+  printf 'bash here.sh [--manage [--lan-ssh <range>]] [--replace | --fresh] [--remove [--purge]] [--token] [--copy <owner/repo>] [--name <name>] [--slots <n>]\n'
 }
 
 # ---------------------------------------------------------------- 1. looks first
@@ -258,6 +259,7 @@ add() {
   local args=(box add --name "$NAME")
   [ -n "$SLOTS" ] && args+=(--slots "$SLOTS")
   [ "$MANAGE" = 1 ] && args+=(--manage)
+  [ -n "${LAN_SSH:-}" ] && args+=(--lan-ssh "$LAN_SSH")
   [ "$CONTAINER" = 1 ] && args+=(--container)
   [ "$REPLACE" = 1 ] && args+=(--replace)
   if [ "$FRESH" = 1 ]; then
@@ -311,7 +313,7 @@ remove() {
 }
 
 main() {
-  REMOVE=0 PURGE=0 REPLACE=0 FRESH=0 TOKEN=0 CONTAINER=0 MANAGE=0 COPY="" NAME="" SLOTS="" ARCH="" LOGIN=""
+  REMOVE=0 PURGE=0 REPLACE=0 FRESH=0 TOKEN=0 CONTAINER=0 MANAGE=0 LAN_SSH="" COPY="" NAME="" SLOTS="" ARCH="" LOGIN=""
   # value <option> <its value…>: the value given, or a stop that names the option.
   value() {
     if [ $# -lt 2 ] || [ -z "$2" ] || [ "${2#--}" != "$2" ]; then die "$1 needs a value: $1 <value>."; fi
@@ -335,6 +337,10 @@ main() {
         NAME=$(value "$@")
         shift
         ;;
+      --lan-ssh)
+        LAN_SSH=$(value "$@")
+        shift
+        ;;
       --slots)
         SLOTS=$(value "$@")
         shift
@@ -348,6 +354,7 @@ main() {
   # Refused before the login and the clone, as box add would refuse them.
   if [ "$MANAGE" = 1 ] && [ "$REMOVE" = 1 ]; then die "--manage is for adding a box, not removing one."; fi
   if [ "$MANAGE" = 1 ] && [ "$CONTAINER" = 1 ]; then die "--manage isn't for a box in Docker: its host keeps the machine."; fi
+  if [ -n "$LAN_SSH" ] && [ "$MANAGE" != 1 ]; then die "--lan-ssh goes with --manage: without it the box has no firewall, and its SSH answers on its network already."; fi
   if [ "$PURGE" = 1 ] && [ "$REMOVE" != 1 ]; then die "--purge goes with --remove: it takes Shipify off this machine as the box goes."; fi
   if [ "$PURGE" = 1 ] && [ "$CONTAINER" = 1 ]; then die "--purge isn't for a box in Docker: remove its volume instead (docker volume rm)."; fi
   if [ "$REPLACE" = 1 ] && [ "$REMOVE" = 1 ]; then die "--replace is for adding a box, not removing one."; fi

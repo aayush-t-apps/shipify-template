@@ -12,6 +12,20 @@ import { PLATFORM_ROOT } from "./config.ts";
 /** The box's own update, root's own: box/setup.sh installs box/update.sh there. */
 export const UPDATER = "/usr/local/sbin/shipify-box-update";
 
+/**
+ * Whether this box's updater can update it (box setup 17 on). GitHub's installation tokens are
+ * stateless since 2026-04-27 (ghs_<app ID>_<a JWT>, with . and -), and setup 14 to 16's updater
+ * refuses them as no token at all. Read from the updater itself (root's, readable by all), not the
+ * box's recorded setup: a setup that stopped at its sandbox check installed its updater already.
+ */
+export function updaterWorks(updater = UPDATER): boolean {
+  try {
+    return /^token_ok\(\) \{$/m.test(readFileSync(updater, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
 /** box/update.sh's exits: updated, current already, and not now (it's tried again later). */
 const UPDATED = 0;
 const CURRENT = 10;
@@ -80,6 +94,8 @@ export interface UpdateIo {
   /** This job's read token for the repo (GH_TOKEN), which root uses for its one download. */
   token?: string;
   exists(path: string): boolean;
+  /** The updater takes GitHub's tokens (updaterWorks). */
+  works(): boolean;
   busy(): boolean;
   /** `sudo -n` the updater with this on stdin: its exit, its words, and whether it ran out of time. */
   update(input: string): { code: number; out: string; timedOut?: boolean };
@@ -91,6 +107,7 @@ const REAL_IO = (): UpdateIo => ({
   script: SETUP_SH(),
   token: process.env.GH_TOKEN,
   exists: existsSync,
+  works: () => updaterWorks(),
   busy: otherSlotBusy,
   update(input) {
     const r = spawnSync("sudo", ["-n", UPDATER], {
@@ -120,14 +137,23 @@ export interface Updated {
 
 /**
  * This box's own update, when it's due: on a box (the runner's user) whose setup is older than the
- * repo's, with the updater installed (setup 14 on), while no other slot runs a job. Nothing when
+ * repo's, with an updater that works (setup 17 on), while no other slot runs a job. Nothing when
  * there's nothing to say: not a box, current, not now (tried again at the next due run). A box set
- * up before setup 14 has no updater: doctor says to run its setup once more.
+ * up before setup 14 has no updater: doctor says to run its setup once more. One from setup 14 to
+ * 16 has an updater that refuses GitHub's tokens: never asked, and said once, with the fix.
  */
 export function updateBox(box: string, io: UpdateIo = REAL_IO()): Updated | undefined {
   if (io.user !== "shipify" || !io.exists(io.script)) return undefined;
   const before = boxSetup(io.home, io.script);
-  if (before.have >= before.want || !io.exists(UPDATER) || !io.token || io.busy()) return undefined;
+  if (before.have >= before.want || !io.exists(UPDATER)) return undefined;
+  if (!io.works())
+    return {
+      event: `${box} can't update its own setup to ${before.want}: its updater refuses GitHub's new tokens`,
+      said: `**${box}** can't update its own setup to ${before.want}: its updater is from before setup 17, and refuses GitHub's new token format (since 2026-04-27), so it never will by itself. Once, when no task runs: on the box, its here.sh command again; from then on, it updates itself.`,
+      key: `setup-update-token:${box}`,
+      failed: true,
+    };
+  if (!io.token || io.busy()) return undefined;
   const r = io.update(`${io.token}\n`);
   if (r.timedOut || r.code === CURRENT || r.code === NOT_NOW) return undefined;
   const after = boxSetup(io.home, io.script);

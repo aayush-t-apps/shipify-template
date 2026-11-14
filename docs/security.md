@@ -712,9 +712,10 @@ Nothing secret:
 - **On GitHub's machines instead:** CI and deploys, a merged plan's repo, settings and keys
   (`prepare`), and operations. They run from `main`, with no agent.
 - **The box itself:** SSH by key only, a firewall with `--manage` that lets in nothing but
-  Tailscale (setup 13: no SSH from the home network, IPv6 filtered too; a rule of your own that
+  Tailscale (setup 13: no SSH from the home network, unless you ask for it with `--lan-ssh
+  <range>`, a private range only (setup 17); IPv6 filtered too; a rule of your own that
   lets more in is listed, never hidden), no private network for the
-  agents and their containers (setup 9), automatic security updates, main's newer setup applied
+  agents and their containers (setup 9), automatic security and normal updates, main's newer setup applied
   by the box itself (setup 14), and a runner user (`shipify`) with no sudo but its two rules: its
   agents and the look server's user, and that update
   ([box-setup.md](box-setup.md#its-own-updates)).
@@ -764,7 +765,7 @@ From [AGENTS.md](../AGENTS.md), for every person and agent:
 | Every change is a PR you merge; never merge what deploys production; never force-push or delete | the merge is the approval and its record |
 | Create repos, set secrets or publish only with your go-ahead | each widens who holds a key |
 | Nothing to sign in to on a box, and no sudo after `box add` (the runner's rules start its agents, and, as root, only the box's own update of main's setup) | a box with no logins has nothing to leak, and nothing waits on you to stay current |
-| Versions change only in a PR (each agent's install in `executors.json`, Node 22, pnpm, actions); OS security updates, the runner's own and Node 22.x fixes excepted | nothing changes a run unseen |
+| Versions change only in a PR (each agent's install in `executors.json`, Node 22, pnpm, actions); the OS's own updates (Ubuntu's security and normal ones), the runner's own and Node 22.x fixes excepted | nothing changes a run unseen |
 | Free only; keys live with their boundary | a leaked key stays inside its boundary |
 | An account is yours only when you add it; a run holds only what its repo's account may see | an install can't widen trust, and one account's text can't reach another's data |
 

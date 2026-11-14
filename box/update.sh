@@ -40,6 +40,13 @@ recorded() {
   v=$(head -n 1 "$RECORD" 2>/dev/null || true)
   case "$v" in '' | *[!0-9]*) echo 0 ;; *) echo "$v" ;; esac
 }
+# token_ok <token>: it has a GitHub token's shape: letters, digits and _, and . and - too since
+# GitHub's stateless installation tokens (ghs_<app ID>_<a JWT>, from 2026-04-27), 20 to 4096
+# characters. It goes into a header only root reads, never a command line.
+token_ok() {
+  case "$1" in '' | *[!A-Za-z0-9_.-]*) return 1 ;; esac
+  [ "${#1}" -ge 20 ] && [ "${#1}" -le 4096 ]
+}
 # setting <name>: one of the box's settings, as setup wrote them.
 setting() { sed -n "s/^$1=//p" "$CONF" | head -n 1; }
 # busy: the slots' services that run a job now (a runner's Worker in their group), one per line.
@@ -89,7 +96,11 @@ if ! flock -n 9 || systemctl is-active -q "$UNIT.service"; then
   exit 75
 fi
 IFS= read -r -t 10 token || true
-case "$token" in '' | *[!A-Za-z0-9_]*) echo "No read token on stdin."; exit 1 ;; esac
+[ -n "$token" ] || { echo "No read token on stdin."; exit 1; }
+if ! token_ok "$token"; then
+  echo "The read token on stdin was refused: its format isn't a GitHub token's that this update knows (letters, digits, _ . -; 20 to 4096 characters)."
+  exit 1
+fi
 
 url=$(setting RUNNER_URL)
 repo=${url#https://github.com/}

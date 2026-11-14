@@ -12,7 +12,7 @@ const tryJson = <T>(s: string): T | undefined => {
 import { cpus, freemem, homedir, totalmem, userInfo } from "node:os";
 import { join } from "node:path";
 import { type Executors, loadExecutors, readExecutors } from "../lib/agents.ts";
-import { boxSetup, UPDATER } from "../lib/box-update.ts";
+import { boxSetup, UPDATER, updaterWorks } from "../lib/box-update.ts";
 import { listStacks } from "../lib/catalog.ts";
 import { gitTakesPathspecFiles } from "../lib/checkouts.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
@@ -88,7 +88,33 @@ function hostChecks(): Check[] {
       fix: "use Ubuntu Server 26.04 or 24.04 LTS (Raspberry Pi OS's kernel is 39-bit: docs/box-setup.md)",
     });
   }
+  if (has("rpi-eeprom-update")) {
+    const boot = bootloaderCheck(run("rpi-eeprom-update", [], { timeoutMs: 30_000 }).stdout);
+    if (boot) checks.push(boot);
+  }
   return checks;
+}
+
+/**
+ * A Raspberry Pi's bootloader (its EEPROM), from what `rpi-eeprom-update` says (it needs no sudo):
+ * Ubuntu's own service at boot skips a newer one once the bootloader is past a minimum, so it waits
+ * for you. Said, never applied unattended: a flash cut short needs a recovery card. Nothing where
+ * it doesn't say.
+ */
+export function bootloaderCheck(said: string): Check | undefined {
+  const block = /^BOOTLOADER: (.+)\n\s+CURRENT: ([^(\n]*)[^\n]*\n\s+LATEST: ([^(\n]*)/m.exec(said);
+  const status = block?.[1]?.trim() ?? /^BOOTLOADER: (.+)$/m.exec(said)?.[1]?.trim();
+  if (!status) return undefined;
+  const update = /update available/i.test(status);
+  const [current, latest] = [block?.[2]?.trim(), block?.[3]?.trim()];
+  return {
+    name: "Pi bootloader is current",
+    ok: !update,
+    detail:
+      update && current && latest ? `an update is out: ${latest} (this one: ${current})` : status,
+    blocking: false,
+    fix: "when no task runs, in the box's terminal (Cockpit's too): sudo rpi-eeprom-update -a, then sudo reboot",
+  };
 }
 
 /**
@@ -349,8 +375,9 @@ export async function doctor(opts: { yes?: boolean } = {}): Promise<Result> {
  * repo's, so a change to that script never goes unnoticed on boxes set up before it (ADR 0017).
  * A box from before setup versions has version 1. A `--manage` setup that stopped before its end
  * (box setup 13: no firewall, maybe) is named until it finishes, and a setup whose sandbox check
- * failed (box setup 14) until one passes. From setup 14 on, a box applies a newer setup by itself
- * (lib/box-update.ts); one set up before needs it run once more.
+ * failed (box setup 14) until one passes. A box whose updater works (setup 17 on) applies a newer
+ * setup by itself (lib/box-update.ts); one set up before needs it run once more: 13 or older has
+ * no updater, and 14 to 16's refuses GitHub's tokens.
  */
 export function setupCheck(
   user = userInfo().username,
@@ -364,7 +391,7 @@ export function setupCheck(
   const failed = existsSync(open)
     ? readFileSync(open, "utf8").trim() || "its last setup's sandbox check failed"
     : "";
-  const byItself = existsSync(updater);
+  const byItself = updaterWorks(updater);
   const byHand =
     "when no task is running: on the box, its here.sh command again; or from a PC, the pnpm ship box add command it was set up with, --manage too if it had it (it asks for sudo once)";
   return {
@@ -380,7 +407,7 @@ export function setupCheck(
     blocking: false,
     fix:
       have < want && !byItself
-        ? `once more, ${byHand}: from setup 14 on, a box applies a newer setup by itself`
+        ? `once more, ${byHand}: from setup 17 on, a box applies a newer setup by itself`
         : have < want && !failed
           ? `nothing, usually; to do it now, ${byHand}`
           : byHand,
@@ -504,7 +531,7 @@ export function tailscaleKeyCheck(user = userInfo().username, status?: string): 
       ? `it expires on ${expires}: then the box drops off your tailnet, and only a keyboard on it reaches it`
       : "key expiry off",
     blocking: false,
-    fix: `on https://login.tailscale.com/admin/machines: ${self.Self.HostName ?? "this box"} → ⋯ → Disable key expiry`,
+    fix: `on https://login.tailscale.com/admin/machines: ${self.Self.HostName ?? "this box"} → ⋯ → Disable key expiry (or tag your boxes tag:shipify-box, whose keys never expire: docs/box-setup.md)`,
   };
 }
 

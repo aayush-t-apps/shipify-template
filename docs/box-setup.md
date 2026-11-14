@@ -49,6 +49,8 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
   ([below](#taking-shipify-off-a-machine)).
 - `--token` takes a fine-grained token instead of the code: your copy only, Administration and
   Variables write, Contents read, a day long.
+- `--lan-ssh <range>`, with `--manage`: SSH from your own network too, for a box with no keyboard
+  ([below](#what-it-leaves-out-and---manage)).
 - `--copy`, `--name` and `--slots` answer its questions ahead.
 
 **Run it again** for anything: to update the box's setup, to finish one that stopped, or to fix
@@ -56,7 +58,8 @@ what `ship doctor` names. It carries on from what's done, and mends what an olde
 (setup 10: the agents' folders that kept containers from starting; setup 11: the slot folders a
 container changed, and the agents' IPv6; setup 12: containers' network on Ubuntu 26.04; setup 13:
 `--manage` boxes take connections through Tailscale only; setup 16: the look server's user, which
-holds the tools' look keys so no agent does). Run it while no task runs: `box add` refuses while a
+holds the tools' look keys so no agent does; setup 17: Ubuntu 26.04's sandbox check, the box's own
+updates with GitHub's new tokens, and a box that looks after itself). Run it while no task runs: `box add` refuses while a
 slot is busy. A new disk or a fresh OS: [A new disk (an SSD), or a fresh OS](#a-new-disk-an-ssd-or-a-fresh-os).
 
 **It never says done when something isn't:** the setup ends with a line that says what's left
@@ -91,6 +94,10 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
   `~/.ssh/authorized_keys`; without one, its SSH settings stay. Either way, the firewall lets SSH
   in only through Tailscale. Cockpit and Tailscale's SSH don't use SSH's passwords, so they stay a
   way in.
+- **A box with no keyboard (`--lan-ssh <range>`, setup 17):** add `--lan-ssh 192.168.1.0/24`
+  (your home network's range: your router shows it), and the firewall lets SSH in from that range
+  too, so a headless Pi stays reachable when Tailscale is down. Only a private IPv4 range. Run the
+  setup without it, and the rule goes. The default stays: nothing comes in but through Tailscale.
 - **Not on WSL** (Windows runs that machine), nor in Docker.
 
 The whole way for a laptop or a PC, with no other machine: [No PC?](#no-pc-the-machine-sets-itself-up)
@@ -227,7 +234,9 @@ afterwards `gh auth logout` and delete the clone.)
    OS → Ubuntu → Ubuntu Server 26.04.x LTS (64-bit)** (check the version: older ones sit next to
    it); Storage: the SSD.
 2. At OS customisation, **Edit settings**:
-   - a hostname: it becomes the box's name (for example `mybox`);
+   - a hostname: it becomes the box's name (for example `mybox`). Pick it here: cloud-init puts
+     Imager's hostname back at every boot, so a rename on the Pi (`hostnamectl`) is undone, until
+     the box's setup turns cloud-init off (setup 17);
    - a username and password (setup asks for the password once);
    - your Wi-Fi, unless it's on Ethernet;
    - **Services**: enable SSH (password login is fine: step 3 adds your key).
@@ -245,7 +254,19 @@ it. In the installer:
 
 - **A Pi:** plug the SSD into a blue USB 3 port and power on (about two minutes). If it doesn't
   boot, the bootloader is too old: write **Misc utility images → Bootloader → USB Boot** to an SD
-  card, boot from it until the green light blinks steadily, then remove the card.
+  card, boot from it until the green light blinks steadily, then remove the card. Three things
+  found on a Pi 4 with Ubuntu 26.04:
+  - **No address on your network after the first boot** (your router doesn't list it): Ubuntu
+    26.04's first boot on a Pi may come up with no IPv4 address. Turn the power off and on once.
+  - **A USB-SATA case that fails with UAS** (the Pi stops at boot, or `dmesg` shows
+    `uas_eh_abort_handler` and I/O errors): turn UAS off for that case. Find its ID with `lsusb`
+    on any Linux machine (`ID 174c:55aa` is a genuine ASMedia bridge: its vendor ID is `174c`).
+    Then, on the SSD's boot partition, open `current/cmdline.txt` and put
+    `usb-storage.quirks=<VID>:<PID>:u ` at the start of its one line (for example
+    `usb-storage.quirks=174c:55aa:u `). Edit `current/cmdline.txt`, not the `cmdline.txt` beside
+    it: from Ubuntu 25.10 on, the Pi starts from `current/`, and Imager's top-level file is
+    ignored. `current/` keeps the change through kernel updates.
+  - **A hostname that comes back:** step 1 above.
 - **A laptop or a PC:** let the installer finish, remove the stick, and restart. Nothing else on
   the machine needs setting: the setup keeps every box awake, and swaps the installer's swap file
   (`/swap.img`, on the disk) for swap in memory (zram), as a Pi has.
@@ -285,9 +306,10 @@ its phone app with the same login.
   0.11.0 (the one Shipify's CI checks with, from its own release and checked against its
   checksum, so a PR this box checked passes CI too: setup 15), fd and sqlite3 (fd comes from
   Ubuntu's universe, on by default: without it the setup goes on and says how to add it), what
-  each stack needs; automatic security updates (restarting at 04:30 when one needs it, and never
-  restarting a slot mid-task); no sleep (the lid
-  does nothing, and sleep is off: on a Pi or a VPS this changes nothing); SSH by key only; the
+  each stack needs; automatic updates, Ubuntu's security and normal ones (restarting at 04:30
+  when one needs it, and never restarting a slot mid-task); no sleep (the lid
+  does nothing, and sleep is off: on a Pi or a VPS this changes nothing); the hardware watchdog,
+  logs kept to 200 MB, and cloud-init off once the setup passes (setup 17); SSH by key only; the
   user `shipify` (no sudo, its home 0700) running one runner per slot as system services (`shipify-box-<name>`, then
   `shipify-box-<name>-<k>`, with `UMask=0077`); the machine's tools in `/opt/shipify`; the sandbox
   ([below](#the-agents-own-user)), the agents' network wall included; containers for the agents,
@@ -310,7 +332,8 @@ its phone app with the same login.
 - **Without `--manage`, over SSH:** no firewall. Its SSH (keys only) answers on its network, and on
   the internet for a VPS. The plan says so. Use `--manage` for a box that only Tailscale reaches.
 - **Then, over Tailscale only:** with `--manage`, the firewall takes nothing from your home network
-  once Tailscale is up (setup 13), so the next connection must come through Tailscale. Put the
+  once Tailscale is up (setup 13), so the next connection must come through Tailscale (with
+  `--lan-ssh <range>`, SSH from that range still works). Put the
   PC on your tailnet (Tailscale's app), and set the alias's `HostName` to the box's Tailscale name
   (Cockpit's address without `https://`; `box add` prints it). The session that ran the setup
   goes on to the end. Tailscale's SSH may ask you to confirm a connection in a browser (its
@@ -521,7 +544,7 @@ a theory. Nothing to set: `box add` installs it, the same on a Pi, a laptop, a s
   slot's group, so its memory counts as the slot's.
 - **Ubuntu's normal updates:** Podman's fix for stopping containers is only in `<codename>-updates`.
   A box whose sources lack it (homepi's image did) gets it in
-  `/etc/apt/sources.list.d/shipify-updates.sources`. Automatic updates stay security-only.
+  `/etc/apt/sources.list.d/shipify-updates.sources`. Automatic updates take them too (setup 17).
 - **A machine with a Docker of its own** keeps it: setup installs no `docker` command there, and
   removes no package. Agents use `podman`, which takes the same commands.
 - **Your own Podman** on the box works as before, as your user, with your own range and settings.
@@ -582,6 +605,24 @@ lid do nothing, and the sleep states are masked. An automatic update never resta
 needrestart rule for `shipify-box-*`): a slot takes a new library at its next start. This PC without
 `--manage` keeps its own power settings; a container's host keeps its own.
 
+It looks after itself too (setup 17), with nothing for you to do:
+- **Updates:** Ubuntu's security and normal updates install every day (normal ones carry bug fixes,
+  such as Podman's), and gh's, Tailscale's and Cockpit's. A kernel update restarts the box at
+  04:30, only when one asks for it.
+- **A hang:** systemd's watchdog (`/etc/systemd/system.conf.d/50-shipify-box.conf`) keeps the
+  hardware's own timer going; when the kernel or systemd stops for 30 seconds, the timer restarts
+  the machine, and a restart that hangs is forced after 2 minutes. A Pi has such a timer; most VPSs
+  don't, and there it changes nothing. `box health` says whether it's on.
+- **Logs:** the journal keeps 200 MB at most (`/etc/systemd/journald.conf.d/50-shipify-box.conf`),
+  so logs never fill a small disk.
+- **cloud-init off,** once the setup passes (`/etc/cloud/cloud-init.disabled`): it set the machine
+  up at its first boot, but at every boot after it, it put back the image's hostname and
+  `/etc/hosts`, and could rewrite the network. What it wrote stays (the network's netplan file
+  too); it just runs no more.
+
+This PC without `--manage` keeps its own watchdog, logs and cloud-init, as it keeps its power
+settings.
+
 ## Fast and current
 
 | Piece | Stays current |
@@ -594,12 +635,14 @@ needrestart rule for `shipify-box-*`): a slot takes a new library at its next st
 
 ### Its own updates
 
-From setup 14 on, a box applies main's newer `box/setup.sh` by itself: you never run its setup again
-for a new version. A box set up before setup 14 has no updater, so it can't: set it up once more
-(when no task runs: its here.sh command again on the box, or from a PC the `pnpm ship box add`
-command it was set up with), and from then on it updates itself. Until then, doctor's "box setup
-is the repo's" says so, and a run that offers tools says so in place of a sudo error (setup 16's
-look server user, ADR 0077).
+From setup 17 on, a box applies main's newer `box/setup.sh` by itself: you never run its setup again
+for a new version. A box set up by 16 or older can't: 13 or older has no updater, and 14 to 16's
+refuses the installation tokens GitHub gives jobs since 2026-04-27 (`ghs_<app ID>_<a JWT>`, about
+520 characters, with `.` and `-`). Set it up once more (when no task runs: its here.sh command
+again on the box, or from a PC the `pnpm ship box add` command it was set up with), and from then
+on it updates itself. Until then, doctor's "box setup is the repo's" says so, your chat says so
+once, and a run that offers tools says so in place of a sudo error (setup 16's look server user,
+ADR 0077).
 
 1. **When:** the due run (at least once a day) and the weekly clean-up see that the box's setup is
    older than main's, and no other slot runs a job.
@@ -625,8 +668,8 @@ When it can't:
   ([above](#the-agents-own-user)).
 - **What it can't do alone:** a slot GitHub deleted (14 days off) registers again only with your
   approval, and Tailscale signs in only with you. Your chat says so; its `here.sh` command does it.
-- **A box set up by 13 or older** has no update of its own yet: doctor says to run its `here.sh`
-  command once more, and that installs it.
+- **A box set up by 16 or older** has no update of its own that works ([above](#its-own-updates)):
+  doctor and your chat say to run its `here.sh` command once more, and that installs one.
 - **A box in Docker** gets none: a new image is its update.
 
 **Time limits:** the agent works up to 200 minutes in one session (ADR 0059), its fix round 20,
@@ -642,16 +685,17 @@ the box when the run ends.
 | `pnpm ship box list` | every box: online, busy, its slots, "no sandbox", its Cockpit link (from anywhere) |
 | `pnpm ship box add [<user@host>] --yes` | makes a box: a Pi or VPS over SSH, or this PC with no target; again, it brings a box up to date |
 | `pnpm ship box status` | this machine's box (this PC's, or a Pi's when you run it there): each slot's service, GitHub's view and the task it runs |
-| `pnpm ship box health [<user@host>]` | disk, memory and swap, temperature, how a Pi last started (power-on or a restart), a pending restart, updates, services, each slot's memory: here or over SSH |
+| `pnpm ship box health [<user@host>]` | disk, memory and swap, temperature, a Pi's throttling or voltage, how a Pi last started (power-on or a restart), the watchdog, a pending restart, updates, services, each slot's memory: here or over SSH |
 | `pnpm ship box stop` · `start` · `restart` | this machine's box: off until started, even after a restart; on; both, with sudo. Stop asks first while a task runs |
 | `pnpm ship box logs -f` · `peek -f` | this machine's slots' log, live; what the agent is doing now |
 | `pnpm ship box remove <name> [--purge] --yes` | unregisters its slots from GitHub, and stops its services when it's this machine's (with sudo); a Pi's, it says what to run there. `--purge`, on the machine itself: Shipify off it too (`box/remove.sh`) |
-| `pnpm ship doctor` | on a box: its setup version (and whether it updates itself), a failed sandbox check's mark, and the sandbox check, among the rest |
+| `pnpm ship doctor` | on a box: its setup version (and whether it updates itself), a failed sandbox check's mark, the sandbox check, and a Pi's bootloader update, among the rest |
 
 ## Looking after it
 
 - **Usually, nothing:**
-  - the box restarts itself, and Ubuntu installs security updates (restarting at 04:30 if needed);
+  - the box restarts itself, also when it hangs (the watchdog), and Ubuntu installs security and
+    normal updates (restarting at 04:30 if needed);
   - it applies main's newer setup by itself, and tells you ([Its own updates](#its-own-updates));
   - **the weekly clean-up:** the due run starts it on each box once its last is a week old. It
     removes closed and deleted tasks' folders, the agents' run folders older than 8 hours (as each
@@ -662,8 +706,14 @@ the box when the run ends.
     status task, naming what it removed; a problem comes as a comment there, which notifies you on
     GitHub;
   - each due run writes the box's health to the status task (disk, memory and swap, temperature,
-    throttling, how a Pi last started, a pending restart, updates, services, and the most each slot has used since it
-    started); a slot that had a task killed for memory comes as a comment there;
+    a Pi's throttling, or its voltage where the kernel has no throttling file (Ubuntu 26.04's), how
+    a Pi last started, the watchdog, a pending restart, updates, services, and the most each slot
+    has used since it started); a slot that had a task killed for memory, or a Pi that's
+    under-voltage now, comes as a comment there;
+  - **a Pi's bootloader:** Ubuntu installs a newer one by itself only below a minimum version, so
+    `ship doctor` (and so the weekly clean-up) says when one is out, never blocking. It's never
+    applied unattended, since a flash cut short needs a recovery card: when no task runs, in the
+    box's terminal (Cockpit's too), `sudo rpi-eeprom-update -a`, then `sudo reboot`;
   - the watch says when a box is offline for 4 minutes or more, and again when it's back.
 - **See what the agent is doing,** over SSH or Cockpit's terminal:
   `sudo node /home/shipify/runner/_work/shipify/shipify/box/peek.mjs --follow` (the agents'
@@ -673,7 +723,7 @@ the box when the run ends.
   shipify-box-<name> shipify-box-<name>-2 …`; logs: `journalctl -u 'shipify-box-<name>*' -f`.
 - **A task cut off mid-run** (a restart, a power cut): the watch marks it Stopped and tells you
   once; reply `continue` and any box carries it on.
-- **Run its setup again** only when the box says it can't do it alone (a box set up by 13 or
+- **Run its setup again** only when the box says it can't do it alone (a box set up by 16 or
   older, a slot to register again, a sign-in), while no task runs: on the box, its `here.sh`
   command again; from a PC, `pnpm ship box add <user@host> --manage --yes`.
 - **Start over,** when running it again doesn't fix something: [Starting over](#starting-over).
@@ -696,8 +746,8 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
   the machine (its slots on GitHub, services, users, folders and rules, as `--remove --purge`),
   then the box set up again, with the same name and as many slots as it had (`--slots` to change
   it).
-- **What stays:** the machine's own (security updates, SSH, zram, Tailscale, Cockpit, the
-  firewall), and anything else of yours on it. The slots' caches and images download again.
+- **What stays:** the machine's own (automatic updates, SSH, zram, the watchdog, Tailscale,
+  Cockpit, the firewall), and anything else of yours on it. The slots' caches and images download again.
 - **It refuses** while a slot runs a task, and on a machine that is another box.
 - **If it stops,** the same command carries on: a purge that stopped is finished first.
 - **Still wrong after it?** Write the OS fresh: [below](#a-new-disk-an-ssd-or-a-fresh-os).
@@ -730,7 +780,9 @@ across. Keep the old disk as it is: you can read it later.
    either. (A Pi that started from an SD card before: [step 2](#2-start-it).)
 4. **Sign in** from your phone: `ssh-keygen -R <address>` (the machine's key changed), then
    `ssh <user>@<address>`. With the image from the Pi, the user is `ubuntu` and the password
-   `ubuntu`, and it asks for a new one at once; then `sudo hostnamectl set-hostname <name>`.
+   `ubuntu`, and it asks for a new one at once; then `sudo hostnamectl set-hostname <name>`
+   (cloud-init puts the image's name back at a restart until the next step's setup turns it off;
+   `--name` keeps the box's name either way).
 5. **The box again, in one command:**
    ```sh
    curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/here.sh | bash -s -- --manage --replace --copy <owner>/shipify --name <name>
@@ -773,12 +825,16 @@ OS does the same; nothing is lost either way, since a box holds nothing that isn
    sudo apt purge -y podman podman-docker podman-compose uidmap slirp4netns catatonit netavark aardvark-dns && sudo apt autoremove -y
    sudo rm -f /etc/containers/shipify-agents.conf /etc/containers/registries.conf.d/50-shipify.conf /etc/containers/nodocker
    ```
-4. **What stays, as the machine's own:** security updates (with the restart at 04:30), Ubuntu's
+4. **What stays, as the machine's own:** automatic updates (with the restart at 04:30), Ubuntu's
    normal updates where setup added them (`/etc/apt/sources.list.d/shipify-updates.sources`), SSH
-   by key only, zram, and with `--manage` Tailscale, Cockpit, the firewall and avahi off. A laptop you take
+   by key only, zram, the watchdog, the journal's limit, cloud-init off, and with `--manage`
+   Tailscale, Cockpit, the firewall and avahi off. A laptop you take
    back sleeps again with `sudo rm /etc/systemd/logind.conf.d/50-shipify-box.conf` and `sudo
    systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target
-   suspend-then-hibernate.target`, then a restart.
+   suspend-then-hibernate.target`, then a restart. The watchdog, the journal's limit and
+   cloud-init go back with `sudo rm /etc/systemd/system.conf.d/50-shipify-box.conf
+   /etc/systemd/journald.conf.d/50-shipify-box.conf /etc/cloud/cloud-init.disabled`, then a
+   restart.
 
 ## Managing it from a browser
 
@@ -791,7 +847,8 @@ CPU and disk.
   `tailscale serve`. The firewall lets in nothing but Tailscale, IPv4 and IPv6 alike (setup 13:
   no SSH from the home network, and ufw opens no port for Tailscale, which connects from its own
   outgoing traffic or else through its relays; where ufw's IPv6 was off, the setup turns it on).
-  Going out stays open, as the runners need. Your own ufw rules stay, and the setup lists each
+  With `--lan-ssh <range>` (setup 17), SSH from that range of your home network comes in too, and
+  nothing else of it. Going out stays open, as the runners need. Your own ufw rules stay, and the setup lists each
   one that lets something in (a VPS guide's `ufw allow OpenSSH`), with no "only" then: `sudo ufw
   delete <rule>` takes one out. `sudo ufw disable` undoes it all. Avahi (mDNS, `<name>.local`),
   which a Pi's image has, is off too, as ufw lets mDNS in by default, so the home network can't
@@ -799,13 +856,30 @@ CPU and disk.
   restart, undoes it).
 - **No IP blocking needed:** fail2ban, CrowdSec or blocklists guard a port that must stay open to
   the internet. A box has none: nothing on the internet or your home network reaches any of its
-  ports, so there's nothing to block, and nothing more to install.
+  ports (with `--lan-ssh`, only your home network's SSH, which takes keys only), so there's
+  nothing to block, and nothing more to install.
 - **When Tailscale is down:** a keyboard and screen on the box (a VPS: its web console), then
   `sudo ufw disable`, or `sudo tailscale up` to sign in again.
 - **A terminal without Cockpit:** Tailscale's admin page → Machines → the box → **SSH to machine**.
 - **Keep it on your tailnet:** Tailscale's admin page → Machines → the box → **Disable key expiry**
   (otherwise it drops off after 180 days). Until you do, `box add` says so at its end, and
   `ship doctor` on the box (so the weekly clean-up) names it, with the date.
+- **Or tag your boxes, once (optional):** a tagged machine's key never expires, so a new box needs
+  no click. All of it is in Tailscale's admin page, nothing on the box:
+  1. **Access controls:** add the tag, and an SSH rule for it (Tailscale's default SSH rule
+     covers only your own, untagged machines):
+     ```json
+     "tagOwners": { "tag:shipify-box": ["autogroup:admin"] },
+     "ssh": [
+       { "action": "check", "src": ["autogroup:admin"], "dst": ["tag:shipify-box"], "users": ["autogroup:nonroot"] }
+     ]
+     ```
+     Merge them into what's there: keep your own rules, and add the `ssh` entry to its list.
+  2. **Machines:** the box → ⋯ → **Edit ACL tags** → `tag:shipify-box`. Its key expiry goes off
+     by itself, and doctor stops naming it.
+
+  A tagged machine belongs to the tag, not to you: `autogroup:self` rules no longer reach it, so
+  check you can still `ssh` to it and open Cockpit before you tag the next one.
 - **"Bad Origin" in Cockpit:** run the same command again (`here.sh --manage`, or `box add
   --manage`). It restarts Cockpit only when its settings change, so it works from Cockpit's own
   terminal too.
@@ -819,7 +893,8 @@ CPU and disk.
   networks go under `access-points:` in `/etc/netplan/50-cloud-init.yaml` (then `sudo netplan
   apply`).
 - **SSH from anywhere:** with `--manage`, `ssh <user>@<hostname>` over Tailscale, at home too:
-  its home address takes no SSH (setup 13). An alias like `mybox` points at its Tailscale name.
+  its home address takes no SSH (setup 13), unless `--lan-ssh <range>` (setup 17). An alias like
+  `mybox` points at its Tailscale name.
 
 ## About the OS
 
@@ -859,7 +934,13 @@ PC, `pnpm ship box add <user@host> --manage --yes`. Either works, while no task 
 | `box add` stops at "Checking the sandbox" | the line above names the wall. The box stays online, but no task's agent starts on it until a setup passes (setup 14). Run it again; if it fails the same way, look at `/etc/sudoers.d/shipify-agents` and `ls -ld /home/shipify /srv/shipify-agent-*`. On WSL, "the agents can reach Windows": make the fix it prints in `/etc/wsl.conf` first ([This PC](#this-pc)) |
 | `box add` says the machine runs another OS | write Ubuntu Server 26.04 LTS (64-bit) on it, then run it again |
 | `box add` can't connect | it says why and prints the fix: `ssh-keygen -R <address>` after a reinstall, `ssh-copy-id` for a missing key; for a key with a passphrase, `eval "$(ssh-agent)" && ssh-add` first. A `--manage` box answers only over Tailscale (setup 13): the PC on your tailnet, and its alias's `HostName` the box's Tailscale name |
-| doctor (or the clean-up) says the box's Tailscale key expires | Tailscale's admin page → Machines → the box → **Disable key expiry**. Already expired: a keyboard on it, then `sudo tailscale up` |
+| doctor (or the clean-up) says the box's Tailscale key expires | Tailscale's admin page → Machines → the box → **Disable key expiry**, or [tag your boxes](#managing-it-from-a-browser). Already expired: a keyboard on it, then `sudo tailscale up` |
+| `box add` on Ubuntu 26.04 stops at "Checking the sandbox": "a process outlived the box's kill" | a setup before 17: 26.04's `kill` read `kill -KILL -1` as no process (`failed to parse argument`), so it killed nothing. Setup 17 gives it `--`: the newest release's `here.sh`, then it passes. The line now ends with kill's own exit and words |
+| doctor says "Pi bootloader is current" ✗: an update is out | when no task runs, in the box's terminal: `sudo rpi-eeprom-update -a`, then `sudo reboot` ([Looking after it](#looking-after-it)) |
+| a Pi on Ubuntu 26.04 has no address after its first boot | turn the power off and on once ([step 2](#2-start-it)) |
+| a Pi's hostname comes back after a restart | cloud-init puts Imager's back until the setup turns it off (setup 17): rename in Imager, or run the setup ([step 1](#1-write-the-os-on-the-pc)) |
+| a Pi stops at boot from a USB-SATA SSD, or `dmesg` shows `uas_eh_abort_handler` | the case fails with UAS: `usb-storage.quirks=<VID>:<PID>:u` at the start of `current/cmdline.txt` on the boot partition ([step 2](#2-start-it)) |
+| `box health` says "under-voltage now" | the Pi's power supply gives too little: the official one, and no USB disk that draws more than the Pi can give (a powered hub, or a case with its own supply) |
 | can't reach a `--manage` box at all (Tailscale down, or signed out) | a keyboard and screen on it (a VPS: its web console), then `sudo tailscale up`, or `sudo ufw disable` until it's back |
 | this PC's box goes offline when you close WSL | the `.wslconfig` idle timeouts ([This PC](#this-pc)) |
 | `ship doctor` says the kernel is 39-bit | write Ubuntu Server 26.04 LTS instead |
@@ -868,4 +949,4 @@ PC, `pnpm ship box add <user@host> --manage --yes`. Either works, while no task 
 | a box vanished from `box list` | GitHub removes a runner that's been off 14 days: run its setup again, which registers its slots again |
 | your chat says a box "couldn't update its own setup" | the reason is in that message (the setup's ✗ lines), the whole setup in the due run's log and in `/var/log/shipify-box-update.log` on the box. It tries again a day later; a fix on main reaches it then. To do it now, run it again |
 | a run stops at its start: "On this box, box setup N's sandbox check failed …" | a setup on that box (its own update, or yours) found a wall open, so no agent runs there. Run it again: it names the wall; a setup that passes lets tasks run again. Then `continue` on the task |
-| doctor says "version 13; the repo's is 14" and nothing changes | a box set up by 13 or older has no update of its own: run it again once, and it applies every newer setup by itself after that |
+| doctor says "version 16; the repo's is 17" and nothing changes, or your chat says a box "can't update its own setup … refuses GitHub's new token format" | a box set up by 16 or older has no update of its own that works: run it again once, and it applies every newer setup by itself after that |

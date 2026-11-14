@@ -123,6 +123,7 @@ const HELP = `ship: plan, build, ship and maintain Shipify projects (apps and pa
                                             (--slots: tasks at once, 1-9)
                                             (--manage: Tailscale + Cockpit, to manage it from a browser;
                                              on this machine, a box you keep, which never sleeps)
+                                            (--lan-ssh <range>, with --manage: SSH from your network too)
                                             (--container: in the box's Docker image, which docker run … register runs)
   box list | box remove <name> [--purge] [--yes]   the boxes, online or not; one gone
                                             (--purge, on the machine itself: Shipify off it too)
@@ -202,6 +203,7 @@ async function main(argv: string[]): Promise<Result> {
       preview: { type: "boolean", default: false },
       follow: { type: "boolean", short: "f", default: false },
       manage: { type: "boolean", default: false },
+      "lan-ssh": { type: "string" },
       container: { type: "boolean", default: false },
       replace: { type: "boolean", default: false },
       purge: { type: "boolean", default: false },
@@ -322,6 +324,7 @@ async function main(argv: string[]): Promise<Result> {
         return boxAdd(a2, {
           name: values.name,
           manage: values.manage,
+          lanSsh: values["lan-ssh"],
           replace: values.replace,
           slots: values.slots,
           container: values.container,

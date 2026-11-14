@@ -48,7 +48,8 @@ reaches homelab. Each is a later step, only if you ask.
 - The sandbox (ADR 0031, box setup 5): each slot's agent is its own user. The runner starts every
   command through `sudo -n -u shipify-agent-<k>` from an empty environment, so there is no login
   session, no `XDG_RUNTIME_DIR` and no systemd user manager. After each think, the box kills every
-  process of that user (`kill -KILL -1`, `killAll` in `cli/lib/sandbox.ts`). HOME is a fresh
+  process of that user (`kill -KILL -- -1`, `killAll` in `cli/lib/sandbox.ts`; the `--` since
+  box setup 17, as Ubuntu 26.04's kill reads `-KILL -1` as no process). HOME is a fresh
   folder per run; the slot's `cache/` and `data/` are kept across runs.
 
 ## Assumptions, checked
@@ -179,7 +180,7 @@ inside a store would break its images. Podman prunes it instead (section 4).
 
 ### 3. Gone with the run
 
-- **The turn's end:** `killAll` (`kill -KILL -1` as the agent) reaches the container processes: the
+- **The turn's end:** `killAll` (`kill -KILL -- -1` as the agent) reaches the container processes: the
   agent owns their user namespace, so it may signal them (the kernel's rule; the setup's check
   proves it). Its "nothing left" check then looks at the agent's ID range too, not only its user,
   with the same one read of the process list.
@@ -332,7 +333,8 @@ One PR, as decided, with these details found while building:
   state into `runtime/` and starts its pause process, so every later run would prune again. So the
   run start (`fresh` in `cli/lib/sandbox.ts`) empties `runtime/` when it holds anything, prunes
   only when Podman's own state was there (`runtime/libpod`: a tool's socket there costs no Podman
-  call), then stops the pause process (`kill -KILL -1` as the agent) and empties `runtime/` again.
+  call), then stops the pause process (`kill -KILL -1` as the agent, /bin/sh's own kill, which
+  refuses `--`) and empties `runtime/` again.
   The runner then checks, as before any run, that nothing of the agent's or its range's is left.
   A run that used no container leaves `runtime/` empty: no Podman call at the next start.
 - **`podman unshare` for `runtime/` too:** what plain rm can't remove there goes the same way as in

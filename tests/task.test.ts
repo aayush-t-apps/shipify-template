@@ -1065,21 +1065,29 @@ describe("boxes: what setup opens and closes", () => {
       setup.indexOf("firewall() {"),
       setup.indexOf("\n}\n", setup.indexOf("firewall() {")),
     );
-    // Only one allow: no SSH from the home network, no open port for Tailscale.
+    // Only one allow: no SSH from the home network, no open port for Tailscale. The other is
+    // --lan-ssh's, only when asked (setup 17).
     expect(fw.match(/ufw allow /g)).toHaveLength(1);
+    expect(fw).toContain('[ -z "$want" ] || ufw $want comment "$LAN_SSH_COMMENT"');
     expect(fw).not.toContain("41641");
     // The old rules, as `ufw show added` prints them, become `ufw delete` lines; the owner's stay.
-    const take = /old=\$\(ufw show added \| sed -n "(.+)"\)$/m.exec(fw)?.[1] ?? "";
+    const take = (/old=\$\(ufw show added \| sed -n "(.+)"\)$/m.exec(fw)?.[1] ?? "").replace(
+      "$LAN_SSH_COMMENT",
+      "SSH from your network (--lan-ssh)",
+    );
     expect(take).not.toBe("");
     const shown = [
       "Added user rules (see 'ufw status' for running firewall):",
       "ufw allow in on tailscale0 comment 'Tailscale: Cockpit, SSH'",
       "ufw allow 41641/udp comment 'Tailscale direct connections'",
       "ufw allow from 192.168.1.0/24 to any port 22 proto tcp comment 'SSH from this network'",
+      "ufw allow from 10.0.0.0/24 to any port 22 proto tcp comment 'SSH from your network (--lan-ssh)'",
       "ufw allow 8080/tcp comment 'mine'",
     ].join("\n");
     const out = spawnSync("sed", ["-n", take], { input: shown, encoding: "utf8" }).stdout;
-    expect(out).toBe("allow 41641/udp\nallow from 192.168.1.0/24 to any port 22 proto tcp\n");
+    expect(out).toBe(
+      "allow 41641/udp\nallow from 192.168.1.0/24 to any port 22 proto tcp\nallow from 10.0.0.0/24 to any port 22 proto tcp\n",
+    );
     expect(fw).toContain("ufw delete $rule");
     expect(fw.indexOf("ufw delete $rule")).toBeGreaterThan(
       fw.indexOf("ufw allow in on tailscale0"),
@@ -1281,8 +1289,62 @@ describe("boxes: what a box says about itself", () => {
     expect(facts.temperature).toBe("53.6 °C");
     expect(facts.restart).toBe("not needed");
     const names = boxFacts(none).map((f) => f.name);
-    for (const lacking of ["board", "temperature", "throttling", "updates", "services"])
+    for (const lacking of [
+      "board",
+      "temperature",
+      "throttling",
+      "voltage",
+      "watchdog",
+      "updates",
+      "services",
+    ])
       expect(names).not.toContain(lacking);
+  });
+
+  it("reads a Pi's voltage and temperature from hwmon on a kernel without the firmware's file (7.0-raspi)", async () => {
+    const { boxFacts } = await import("../cli/lib/box-facts.ts");
+    // Ubuntu 26.04 on a Pi 4: no get_throttled, nor thermal_zone0 here; hwmon's numbers vary.
+    const pi = (alarm: string) => (f: string) =>
+      ({
+        "/sys/class/hwmon/hwmon0/name": "nvme\n",
+        "/sys/class/hwmon/hwmon1/name": "rpi_volt\n",
+        "/sys/class/hwmon/hwmon1/in0_lcrit_alarm": alarm,
+        "/sys/class/hwmon/hwmon2/name": "cpu_thermal\n",
+        "/sys/class/hwmon/hwmon2/temp1_input": "40894\n",
+      })[f];
+    const facts = (alarm: string) =>
+      Object.fromEntries(
+        boxFacts({ ...none, read: pi(alarm) }).map((f) => [
+          f.name,
+          { value: f.value, look: f.look },
+        ]),
+      );
+    expect(facts("0\n").temperature).toEqual({ value: "40.9 °C", look: undefined });
+    expect(facts("0\n").voltage).toEqual({ value: "fine now", look: undefined });
+    expect(facts("1\n").voltage).toEqual({
+      value: "under-voltage now",
+      look: "it's under-voltage now: its power supply gives too little",
+    });
+    expect(facts("0\n").throttling).toBeUndefined();
+    // With the firmware's file, that says more (since boot too): no voltage line beside it.
+    const both = boxFacts({
+      ...none,
+      read: (f) => (f.endsWith("get_throttled") ? "0\n" : pi("1\n")(f)),
+    }).map((f) => f.name);
+    expect(both).toContain("throttling");
+    expect(both).not.toContain("voltage");
+    // Its hardware watchdog (box setup 17 arms it), where the machine has one.
+    const watchdog = (state: string) =>
+      boxFacts({
+        ...none,
+        read: (f) =>
+          ({
+            "/sys/class/watchdog/watchdog0/state": `${state}\n`,
+            "/sys/class/watchdog/watchdog0/timeout": "30\n",
+          })[f],
+      }).find((f) => f.name === "watchdog")?.value;
+    expect(watchdog("active")).toBe("on: a hang of 30 s restarts it");
+    expect(watchdog("inactive")).toBe("off");
   });
 
   it("says how a Raspberry Pi last started: from power-on (power off, cut or dropped) or a restart", async () => {

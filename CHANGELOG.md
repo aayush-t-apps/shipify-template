@@ -7,6 +7,50 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-11-14
+
+### Fixed
+
+- **Boxes on Ubuntu 26.04 pass the sandbox check (box setup 17, task #748).** Ubuntu 26.04's
+  `kill` (procps 4.0.4-9ubuntu1) reads `kill -KILL -1` as no process ("failed to parse
+  argument"), so the setup's check and each turn's end killed nothing, and a 26.04 box got no
+  `sandbox` label. Every kill of every process now has `--` before `-1` (`killAll`,
+  `box/setup.sh`, `box/remove.sh`), and a test fails on one without it. When a process outlives
+  the kill, the message gives kill's own exit code and words.
+  [ADR 0064](docs/adr/0064-the-lab-containers-on-every-box.md).
+- **A box updates its own setup again (box setup 17).** Since 2026-04-27 GitHub's installation
+  tokens are stateless (`ghs_<app ID>_<a JWT>`, about 520 characters, with `.` and `-`).
+  `box/update.sh` refused them as "No read token on stdin", so no box updated itself. It takes
+  them now (20 to 4096 characters), and a token it refuses is said as a format it doesn't know.
+  **A box on setup 14 to 16 needs its `here.sh` command once:** its updater is the old one, and
+  the due run's token comes from GitHub, so nothing else can bring it to 17. Doctor, your chat
+  (once) and a run that offers tools say so, with the fix: they tell an updater that works by
+  what it is, no longer by its being there, and the due run no longer asks one that can't.
+  AGENTS.md's "no upgrades on the side" now excepts the OS's normal updates too.
+  [box-setup.md](docs/box-setup.md#its-own-updates).
+- **A Pi's voltage and temperature in box health on Ubuntu 26.04.** Its 7.0-raspi kernel has no
+  `get_throttled`: box health reads the hwmon sensors `rpi_volt` (under-voltage now) and
+  `cpu_thermal` instead, found by name.
+
+### Added
+
+- **A box looks after itself (box setup 17).** Automatic updates take Ubuntu's normal updates
+  too (`-updates`; the 04:30 restart stays). systemd's hardware watchdog restarts a box that hangs
+  for 30 seconds. The journal keeps 200 MB at most. cloud-init is off once the setup passes, so it
+  no longer puts back the image's hostname, `/etc/hosts` or network at each boot. Box health
+  shows the watchdog, and `ship doctor` says when a Pi's bootloader has an update (never applied
+  unattended: a flash cut short needs a recovery card). This PC without `--manage` keeps its own.
+  [box-setup.md](docs/box-setup.md#how-every-box-stays-running).
+- **`--lan-ssh <range>`, with `--manage`** (`box add`, `here.sh`): the firewall lets in SSH from
+  a private range of your network too, for a box with no keyboard. The box keeps it for its own
+  updates; a setup without it takes the rule out. The default stays: nothing comes in but through
+  Tailscale. [box-setup.md](docs/box-setup.md#what-it-leaves-out-and---manage).
+- **Docs for a Pi on Ubuntu 26.04:** a USB-SATA case that fails with UAS
+  (`usb-storage.quirks=<VID>:<PID>:u` at the start of `current/cmdline.txt`, which Ubuntu 25.10
+  and newer start from), no IPv4 address at the first boot (power off and on once), and the
+  hostname to pick in Imager. And tagging boxes `tag:shipify-box` in Tailscale, so their keys
+  never expire. [box-setup.md](docs/box-setup.md#2-start-it).
+
 ## [0.1.22] - 2026-11-14
 
 ### Added

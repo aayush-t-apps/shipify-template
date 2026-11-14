@@ -9,8 +9,9 @@
 #       with @SLOT_NAME@ and @SLOT_DIR@ for each slot's
 #   $4  box/update.sh, the box's own setup update (setup 14)
 # What it installs: git, make, gh, Node 22 (pnpm through corepack), shellcheck, fd and sqlite3, the
-# updates waiting now and automatic security updates (gh's and Tailscale's too, rebooting at 04:30
-# when one needs it, never restarting a slot), no sleep, what each stack needs, the user "shipify" (no sudo)
+# updates waiting now and automatic updates (Ubuntu's security and normal ones, gh's and Tailscale's
+# too, rebooting at 04:30 when one needs it, never restarting a slot), no sleep, a hardware watchdog,
+# logs kept small, what each stack needs, the user "shipify" (no sudo)
 # and the box's slots as that user's services (ADR 0020): one GitHub runner each, all labelled
 # shipify-box and box-<name>, each running what the queue hands it, one task at a time (ADR 0019).
 # The sandbox (setup 5, ADR 0031): each slot's agent runs as a user of its own, shipify-agent-<k>,
@@ -54,13 +55,23 @@
 # run's look server holds the tools' look keys as that user, so no agent holds them. The agents'
 # network rules cover it too, and the check at the end proves the runner starts it and it can't
 # read the runner's folders.
+# Setup 17: boxes on Ubuntu 26.04 pass the sandbox check, and every box updates itself again and
+# looks after itself. The kill of every process takes `--` before -1 (26.04's kill read `-KILL -1`
+# as no process, so it killed nothing). The box's own update takes GitHub's stateless tokens
+# (ghs_<app ID>_<a JWT>, since 2026-04-27), which setup 14 to 16 refused: such a box needs its
+# here.sh once. Automatic updates take Ubuntu's normal updates too; systemd's hardware watchdog
+# restarts a machine that hangs for 30 seconds; the journal keeps 200 MB at most; cloud-init is
+# off once the setup passes, so it no longer puts back the hostname, /etc/hosts or the network at
+# each boot. With --manage, --lan-ssh <range> keeps SSH open to your own network (a box with no
+# keyboard); without it, nothing comes in but through Tailscale, as before.
 # Running it again updates Node to the newest 22.x, and adds or removes slots to match
 # RUNNER_SLOTS.
 # SSH takes keys only, never passwords, once the account running this has a key; with
 # SHIPIFY_HERE=1 (`box add` with no target: the PC you run it from) SSH and its power settings stay
 # as they are, unless SHIPIFY_MANAGE=1. With SHIPIFY_MANAGE=1 in the settings file
 # (`box add --manage`, over SSH or on the machine itself): it never sleeps, Tailscale, Cockpit
-# reachable only through it, and a firewall that lets in only Tailscale.
+# reachable only through it, and a firewall that lets in only Tailscale (and SSH from the range in
+# SHIPIFY_LAN_SSH, `--lan-ssh <range>`).
 # In Docker (ADR 0056): SHIPIFY_IMAGE=1 builds the image (box/Dockerfile): the installs alone, with
 # no settings file, then stops. SHIPIFY_CONTAINER=1 (`box add --container`, at `register`) skips
 # the installs the image has, SSH, the OS's updates (a new image is the update) and the services
@@ -71,7 +82,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=16
+SETUP_VERSION=17
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -100,6 +111,11 @@ case "$(uname -m)" in
   *) echo "A box needs a 64-bit OS (x86_64 or aarch64), not $(uname -m)."; exit 1 ;;
 esac
 say() { printf '\n== %s\n' "$*"; }
+# put_file <file> <path>: the file in place, when it differs from what's there. Says whether it did.
+put_file() {
+  cmp -s "$1" "$2" && return 1
+  install -D -m 644 "$1" "$2"
+}
 # This run's own temporary folder, only root's, gone when it ends: nothing goes to a shared /tmp
 # name that another user (an agent's) could have made first.
 WORK=$(mktemp -d)
@@ -198,21 +214,23 @@ node --version
 fi
 
 if [ -z "$IMAGE$CONTAINER" ]; then
-say "Automatic security updates"
+say "Automatic updates"
 cat > /etc/apt/apt.conf.d/20auto-upgrades <<'CONF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 CONF
-# gh and Tailscale come from their own apt sources, which Ubuntu's updates leave out, and Cockpit
-# (--manage) from Ubuntu's backports: only what's installed from there takes its updates. Kernel
-# fixes need a restart: at 04:30, only when an update asks for one. A task running then shows
-# failed; comment "continue" on it.
+# Ubuntu's security updates (its own setting), and its normal ones (setup 17: bug fixes, as
+# Podman's), which nobody would install by hand on a box. gh and Tailscale come from their own apt
+# sources, which Ubuntu's updates leave out, and Cockpit (--manage) from Ubuntu's backports: only
+# what's installed from there takes its updates. Kernel fixes need a restart: at 04:30, only when
+# an update asks for one. A task running then shows failed; comment "continue" on it.
 cat > /etc/apt/apt.conf.d/52shipify-updates <<'CONF'
+Unattended-Upgrade::Allowed-Origins { "${distro_id}:${distro_codename}-updates"; };
 Unattended-Upgrade::Origins-Pattern { "origin=gh"; "origin=Tailscale"; "origin=Ubuntu,archive=${distro_codename}-backports"; };
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "04:30";
 CONF
-echo "  on: security updates every day, restarting at 04:30 when one needs it (the updates waiting now come once the slots are registered)"
+echo "  on: security and normal updates every day, restarting at 04:30 when one needs it (the updates waiting now come once the slots are registered)"
 
 # After an update, needrestart restarts the services whose libraries changed (Ubuntu's apt hook,
 # in its automatic mode). Never a slot's: that would stop its task. A slot takes a new library at
@@ -246,6 +264,35 @@ else
   else
     echo "  the lid does nothing, but sleep isn't off (systemctl mask failed, above); the box works as before"
   fi
+fi
+
+# A box that hangs restarts by itself, and its logs stay small (setup 17). systemd's watchdog: when
+# the kernel or systemd stops for 30 seconds, the hardware's own timer restarts the machine (a Pi
+# has one; a machine without one, as most VPSs, is as before), and a restart that hangs is forced
+# after 2 minutes. The journal keeps 200 MB at most, so logs never fill a small disk. systemd takes
+# both without a restart. This PC keeps its own, as it keeps its power settings.
+say "Restarts when it hangs, and keeps its logs small"
+WATCHDOG_DROPIN=/etc/systemd/system.conf.d/50-shipify-box.conf
+JOURNALD_DROPIN=/etc/systemd/journald.conf.d/50-shipify-box.conf
+if [ "${SHIPIFY_HERE:-}" = 1 ] && [ "${SHIPIFY_MANAGE:-}" != 1 ]; then
+  echo "  skipped: this is the PC you set it up from (no --manage), so its watchdog and logs stay as they are"
+elif [ ! -d /run/systemd/system ]; then
+  echo "  skipped: systemd isn't running here"
+else
+  printf '%s\n' "# Written by Shipify box setup (docs/box-setup.md): a box that hangs restarts by itself." \
+    "[Manager]" "RuntimeWatchdogSec=30s" "RebootWatchdogSec=2min" > "$WORK/watchdog.conf"
+  if put_file "$WORK/watchdog.conf" "$WATCHDOG_DROPIN"; then systemctl daemon-reload; fi
+  if [ "$(cat /sys/class/watchdog/watchdog0/state 2>/dev/null)" = active ]; then
+    echo "  watchdog: on, the hardware restarts this machine when it hangs for 30 seconds"
+  elif [ -e /dev/watchdog0 ]; then
+    echo "  watchdog: set, on from the next restart"
+  else
+    echo "  watchdog: set, but this machine has no hardware watchdog, so a hang still waits for you"
+  fi
+  printf '%s\n' "# Written by Shipify box setup (docs/box-setup.md): logs never fill a small disk." \
+    "[Journal]" "SystemMaxUse=200M" > "$WORK/journald.conf"
+  if put_file "$WORK/journald.conf" "$JOURNALD_DROPIN"; then systemctl restart systemd-journald || true; fi
+  echo "  logs: 200 MB at most"
 fi
 fi
 
@@ -418,8 +465,9 @@ for dir in "$AGENT_ROOT"/shipify-agent-*; do
   [ "$k" -gt "$RUNNER_SLOTS" ] || continue
   u=$(agent_user "$k")
   echo "  $u goes, with its slot"
-  # As the agent first: that reaches its containers too, which run as IDs of its range.
-  sudo -u "$u" kill -KILL -1 2>/dev/null || true
+  # As the agent first: that reaches its containers too, which run as IDs of its range. `--` before
+  # -1 (setup 17): Ubuntu 26.04's kill reads `-KILL -1` as no process, and killed nothing.
+  sudo -u "$u" kill -KILL -- -1 2>/dev/null || true
   pkill -KILL -u "$u" 2>/dev/null || true
   # Its ID ranges first (every one it has), then the user.
   usermod --del-subuids 0-4294967294 --del-subgids 0-4294967294 "$u" 2>/dev/null || true
@@ -464,7 +512,8 @@ lab() {
   say "Containers for the agents (rootless Podman, with docker and docker compose)"
   local codename uri parts pkgs first u k
   # Ubuntu's normal updates, where the box's sources leave them out (a Pi's image can): Podman's
-  # fix for stopping containers is only there (LP #2040483). Automatic updates stay security-only.
+  # fix for stopping containers is only there (LP #2040483). Automatic updates take them too
+  # (setup 17).
   codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
   if [ -n "$codename" ] && [ -z "$(ubuntu_suite "$codename-updates")" ]; then
     uri=$(ubuntu_suite "$codename" | awk 'NR == 1 { print $1 }')
@@ -540,7 +589,7 @@ if [ -z "$CONTAINER" ] && [ -f "$UPDATE_FILE" ]; then
   install -d -m 0755 /etc/shipify
   {
     echo "# Written by Shipify box setup (docs/box-setup.md): this box's settings, for its own updates (box/update.sh). No keys."
-    for v in RUNNER_URL RUNNER_NAME RUNNER_LABELS RUNNER_SLOTS SHIPIFY_MANAGE SHIPIFY_HERE; do printf '%s=%q\n' "$v" "${!v:-}"; done
+    for v in RUNNER_URL RUNNER_NAME RUNNER_LABELS RUNNER_SLOTS SHIPIFY_MANAGE SHIPIFY_HERE SHIPIFY_LAN_SSH; do printf '%s=%q\n' "$v" "${!v:-}"; done
     printf 'SHIPIFY_ADMIN=%q\n' "${SUDO_USER:-}"
   } > "$WORK/box.env"
   install -m 0600 -o root -g root "$WORK/box.env" /etc/shipify/box.env
@@ -776,12 +825,6 @@ fi
 [ ! -f /var/run/reboot-required ] || echo "  they need a restart: it happens at 04:30 by itself, or run: sudo reboot"
 fi
 
-# put_file <file> <path>: the file in place, when it differs from what's there. Says whether it did.
-put_file() {
-  cmp -s "$1" "$2" && return 1
-  install -D -m 644 "$1" "$2"
-}
-
 # Tailscale, then the firewall, then Cockpit on 127.0.0.1 only, shared with your own devices by
 # `tailscale serve`. The firewall comes before Cockpit, so a Cockpit that doesn't install or serve
 # (HTTPS certificates off in Tailscale's admin page) never leaves the machine open. The box already
@@ -839,9 +882,24 @@ manage() {
 # is up, and its allow goes in before the firewall turns on, so a session over Tailscale stays; else
 # it fails, and so does --manage. Rules are added, and older setups' own taken out by their comment,
 # never reset: your own rules stay, and each that lets more in is listed, never "only". To undo:
-# sudo ufw disable.
+# sudo ufw disable. --lan-ssh <range> (setup 17, SHIPIFY_LAN_SSH): SSH from your own network too,
+# for a box with no keyboard; its rule, by its comment, goes again when a setup runs without it.
+LAN_SSH_COMMENT="SSH from your network (--lan-ssh)"
+# lan_range_ok <range>: a range of a private IPv4 network (192.168.1.0/24), and no wider than it.
+lan_range_ok() {
+  local ip=${1%/*} bits=${1##*/} a b c d
+  [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] || return 1
+  IFS=. read -r a b c d <<<"$ip"
+  [ "$c" -le 255 ] && [ "$d" -le 255 ] || return 1
+  case "$a.$b" in
+    10.*) [ "$bits" -ge 8 ] ;;
+    172.1[6-9] | 172.2[0-9] | 172.3[01]) [ "$bits" -ge 12 ] ;;
+    192.168) [ "$bits" -ge 16 ] ;;
+    *) return 1 ;;
+  esac && [ "$bits" -le 32 ]
+}
 firewall() {
-  say "Firewall: in through Tailscale only"
+  say "Firewall: in through Tailscale${SHIPIFY_LAN_SSH:+ and SSH from your network} only"
   # Its address comes a moment after the sign-in.
   for _ in $(seq 1 15); do
     ip -4 addr show tailscale0 2>/dev/null | grep -q inet && break
@@ -851,6 +909,12 @@ firewall() {
     echo "  ✗ not on: Tailscale isn't up (tailscale0 has no address), so nothing changed"
     return 1
   fi
+  local lan=${SHIPIFY_LAN_SSH:-} want=""
+  if [ -n "$lan" ] && ! lan_range_ok "$lan"; then
+    echo "  ✗ not on: --lan-ssh takes a private network's range (192.168.1.0/24), not $lan, so nothing changed"
+    return 1
+  fi
+  [ -z "$lan" ] || want="allow from $lan to any port 22 proto tcp"
   command -v ufw >/dev/null || apt_get install -y -q ufw
   # IPv6 too: ufw filters it only with IPV6=yes (Ubuntu's default), else a public IPv6 address
   # takes anything. A firewall that's on already takes the change with a reload.
@@ -862,15 +926,18 @@ firewall() {
   fi
   # The allow first, then the defaults, then on: no moment shuts out a connection over Tailscale.
   ufw allow in on tailscale0 comment "Tailscale: Cockpit, SSH" >/dev/null
-  # Setups before 13 let in SSH from the machine's own network, and Tailscale's port.
+  # Setups before 13 let in SSH from the machine's own network, and Tailscale's port; --lan-ssh's
+  # rule goes when it's not asked for, or for another range. Then --lan-ssh's own, when asked.
   local old rule
-  old=$(ufw show added | sed -n "s/^ufw \(.*\) comment '\(SSH from this network\|Tailscale direct connections\)'$/\1/p")
+  old=$(ufw show added | sed -n "s/^ufw \(.*\) comment '\(SSH from this network\|Tailscale direct connections\|$LAN_SSH_COMMENT\)'$/\1/p")
   while read -r rule; do
-    [ -n "$rule" ] || continue
+    [ -n "$rule" ] && [ "$rule" != "$want" ] || continue
     # shellcheck disable=SC2086 # the rule's own words, as ufw shows them
     ufw delete $rule >/dev/null
     echo "  taken out: $rule"
   done <<<"$old"
+  # shellcheck disable=SC2086 # the rule's words, from a range lan_range_ok checked
+  [ -z "$want" ] || ufw $want comment "$LAN_SSH_COMMENT" >/dev/null
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
   ufw --force enable >/dev/null
@@ -878,11 +945,13 @@ firewall() {
   # Your own rules that let something in (the OpenSSH allow of a VPS guide): kept, and said.
   local own
   own=$(ufw show added | grep -E '^ufw (route )?(allow|limit) ' | grep -Ev '^ufw (route )?(allow|limit) out ' |
-    grep -v "comment 'Tailscale: Cockpit, SSH'$" | sed 's/^ufw //' || true)
+    grep -v "comment 'Tailscale: Cockpit, SSH'$" | grep -v "comment '$LAN_SSH_COMMENT'$" | sed 's/^ufw //' || true)
+  local ways="Tailscale"
+  [ -z "$lan" ] || ways="Tailscale and SSH from $lan (--lan-ssh)"
   if [ -z "$own" ]; then
-    echo "  on: in through Tailscale only; out as before"
+    echo "  on: in through $ways only; out as before"
   else
-    echo "  on: in through Tailscale, and through rules of your own that are still there:"
+    echo "  on: in through $ways, and through rules of your own that are still there:"
     while read -r rule; do echo "    $rule"; done <<<"$own"
     echo "  For Tailscale only, take each out: sudo ufw delete <the rule above>"
   fi
@@ -899,7 +968,7 @@ firewall() {
   local outside
   outside=$(ss -Htn state established '( sport = :22 )' | awk '{print $4}' | sed 's/:[0-9]*$//; s/^\[//; s/\]$//; s/^::ffff://' |
     grep -Ev '^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|^fd7a:115c:a1e0:' | sort -u | tr '\n' ' ' || true)
-  [ -z "$outside" ] ||
+  [ -z "$outside" ] || [ -n "$lan" ] ||
     echo "  SSH from ${outside% } goes on for now; from now on, connect through Tailscale: ssh ${SUDO_USER:-<you>}@$address"
 }
 
@@ -993,14 +1062,20 @@ left_of() {
   ps -A -o uid= | awk -v u="$uid" -v r="$range" 'BEGIN { split(r, a, " ") }
     $1 == u || (a[2] > 0 && $1 >= a[1] && $1 < a[1] + a[2]) { n++ } END { print n + 0 }'
 }
-# kill_agent <user>: every process of it killed as it, as the box does after each turn; fails when
-# one is still there.
+# kill_agent <user>: every process of it killed as it, as the box does after each turn
+# (cli/lib/sandbox.ts, killAll); fails when one is still there, with kill's own exit and words in
+# kill_said. `--` before -1 (setup 17): Ubuntu 26.04's kill (procps 4.0.4-9ubuntu1) reads
+# `-KILL -1` as no process ("failed to parse argument"), so it killed nothing and the check failed.
+kill_said=""
 kill_agent() {
+  local code
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    sudo -u "$1" kill -KILL -1 2>/dev/null || true
+    code=0
+    sudo -u "$1" kill -KILL -- -1 2>"$WORK/kill.log" || code=$?
     [ "$(left_of "$1")" != 0 ] || return 0
     sleep 0.3
   done
+  kill_said="kill's exit $code: $(head -n 1 "$WORK/kill.log")"
   return 1
 }
 # agent_sh <user> <script>: a script as the agent, in its folder.
@@ -1066,7 +1141,7 @@ lab_check() {
     fi
   fi
   if ! kill_agent "$u"; then
-    echo "  ✗ a container of $u's outlived the box's kill"
+    echo "  ✗ a container of $u's outlived the box's kill ($kill_said)"
     walls=""
   fi
   # A run start: runtime/ emptied, then every container, pod, volume and network removed.
@@ -1148,7 +1223,7 @@ if [ -z "$CONTAINER" ] && command -v podman >/dev/null; then
     elif [ "$k" = 1 ]; then
       lab_check "$u"
     fi
-    kill_agent "$u" || { echo "  ✗ $u: a process outlived the box's kill"; walls=""; }
+    kill_agent "$u" || { echo "  ✗ $u: a process outlived the box's kill ($kill_said)"; walls=""; }
     agent_sh "$u" 'chmod -R u+rwX runtime run-setup-check 2>/dev/null; rm -rf runtime run-setup-check; mkdir -m 700 runtime' 2>/dev/null || true
     rm -rf "$AGENT_ROOT/$u/run-setup-check"
   done
@@ -1263,6 +1338,18 @@ if [ -z "$walls" ]; then
 fi
 rm -f "$SANDBOX_OPEN"
 echo "  done: $RUNNER_SLOTS agent(s) and the look server's user, each walled off"
+
+# cloud-init off, once the box is set up (setup 17): an image's first boot is its job (the user,
+# the network, SSH's keys), but at every boot after it, it put back the image's hostname and
+# /etc/hosts (a rename undone) and could rewrite the network. What it wrote stays, the network's
+# netplan file too; it just runs no more. Not in a container, nor on this PC without --manage. To
+# undo: sudo rm /etc/cloud/cloud-init.disabled.
+if [ -z "$CONTAINER" ] && [ -d /etc/cloud ] && [ ! -e /etc/cloud/cloud-init.disabled ] &&
+  ! { [ "${SHIPIFY_HERE:-}" = 1 ] && [ "${SHIPIFY_MANAGE:-}" != 1 ]; }; then
+  say "cloud-init off: the box keeps its own name and network"
+  touch /etc/cloud/cloud-init.disabled
+  echo "  done: from the next boot, nothing puts back the image's hostname, /etc/hosts or network"
+fi
 
 # Which setup this box has, for ship doctor. With --manage, noted as not finished until that part
 # ends (Tailscale's sign-in missed, Cockpit not served, a Ctrl-C), so doctor names the box until its

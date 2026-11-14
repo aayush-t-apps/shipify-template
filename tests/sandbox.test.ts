@@ -404,7 +404,7 @@ describe("the sandbox: a command as the agent", () => {
     );
     expect(r).toEqual({ code: 124, timedOut: true });
     const kill = io.calls.find((c) => c.args.includes("kill"));
-    expect(kill?.args).toEqual(["-n", "-u", "shipify-agent-3", "--", "kill", "-KILL", "-1"]);
+    expect(kill?.args).toEqual(["-n", "-u", "shipify-agent-3", "--", "kill", "-KILL", "--", "-1"]);
   });
 
   it("runs the wrapper's shell as it would as the agent: secrets exported, the rest of stdin, umask 027", () => {
@@ -511,8 +511,9 @@ describe("the sandbox: killing and cleaning", () => {
     const io = fakeIo((c) =>
       isLeftCheck(c) ? { code: 1 } : { code: 1, stderr: "kill: (-1) - No such process" },
     );
-    expect(killAll(2, io)).toBe(true);
+    expect(killAll(2, io)).toEqual({ ok: true });
     const [kill, left] = io.calls;
+    // `--` before -1: Ubuntu 26.04's kill (procps 4.0.4-9ubuntu1) reads `-KILL -1` as no process.
     expect([kill?.cmd, ...(kill?.args ?? [])]).toEqual([
       "sudo",
       "-n",
@@ -521,6 +522,7 @@ describe("the sandbox: killing and cleaning", () => {
       "--",
       "kill",
       "-KILL",
+      "--",
       "-1",
     ]);
     // The check, as the runner itself (no sudo), for that agent.
@@ -530,19 +532,41 @@ describe("the sandbox: killing and cleaning", () => {
     // Something survived the first time: killed again.
     let survivors = 2;
     const again = fakeIo((c) => (isLeftCheck(c) ? { code: survivors-- > 0 ? 0 : 1 } : {}));
-    expect(killAll(1, again)).toBe(true);
+    expect(killAll(1, again)).toEqual({ ok: true });
     expect(again.calls.filter(isLeftCheck)).toHaveLength(3);
     // sudo refused (no rule, or no such user): not done, and said so.
     const refused = fakeIo(() => ({ code: 1, stderr: "sudo: a password is required" }));
-    expect(killAll(1, refused)).toBe(false);
-    // A process that never goes, or a check that can't tell: not done.
-    for (const code of [0, 2])
-      expect(
-        killAll(
-          1,
-          fakeIo((c) => (isLeftCheck(c) ? { code } : {})),
-        ),
-      ).toBe(false);
+    expect(killAll(1, refused)).toEqual({
+      ok: false,
+      error: "sudo refused (exit 1: sudo: a password is required)",
+    });
+    // A process that never goes: not done, with kill's own exit and words, never swallowed.
+    const parse = "kill: failed to parse argument: '(null)': No such file or directory";
+    expect(
+      killAll(
+        1,
+        fakeIo((c) => (isLeftCheck(c) ? { code: 0 } : { code: 1, stderr: `${parse}\n\nUsage:` })),
+      ),
+    ).toEqual({ ok: false, error: `a process outlived the kill (kill's exit 1: ${parse})` });
+    // A check that can't tell: not done, and why.
+    expect(
+      killAll(
+        1,
+        fakeIo((c) => (isLeftCheck(c) ? { code: 2, stderr: "ps: no proc" } : {})),
+      ),
+    ).toEqual({
+      ok: false,
+      error: "the check for what's left couldn't tell (exit 2: ps: no proc)",
+    });
+  });
+
+  it("puts kill's own words in prepareRun's message when a process outlives it", () => {
+    const io = fakeIo((c) =>
+      isLeftCheck(c) ? { code: 0 } : { code: 1, stderr: "kill: (-1) - Operation not permitted" },
+    );
+    expect(() => prepareRun(1, "9-1", io)).toThrow(
+      "Couldn't stop what shipify-agent-1 left running: a process outlived the kill (kill's exit 1: kill: (-1) - Operation not permitted).",
+    );
   });
 
   it("checks the agent's range too: its containers' processes run as IDs of it (ADR 0064)", () => {
@@ -763,11 +787,13 @@ describe("the sandbox: killing and cleaning", () => {
     expect(script).toContain("[ -d runtime/libpod ]");
     expect(script).toContain("podman system prune --force --volumes");
     expect(script).not.toContain("prune --all");
+    // /bin/sh's own kill (dash's), which refuses `--`; killAll's kill program takes it (below).
     expect(script).toContain("kill -KILL -1");
+    expect(script).not.toContain("kill -KILL -- -1");
     expect(namesOf(make)).toMatchObject(containerEnv(1, root));
     const after = io.calls.slice(io.calls.indexOf(make) + 1);
-    expect(after.map((c) => (isLeftCheck(c) ? "left" : command(c).slice(-3).join(" ")))).toEqual([
-      "kill -KILL -1",
+    expect(after.map((c) => (isLeftCheck(c) ? "left" : command(c).slice(-4).join(" ")))).toEqual([
+      "kill -KILL -- -1",
       "left",
     ]);
   });

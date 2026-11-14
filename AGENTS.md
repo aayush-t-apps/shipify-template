@@ -87,8 +87,9 @@ The owner's rules, for every change here:
 - **Free only.** No paid service, no domain to buy. Keys live with their boundary: GitHub's
   secrets, each box's runner registration, and the edge's Worker secrets on Cloudflare.
 - **No upgrades on the side.** Versions (each agent's install in `executors.json`, Node 22, pnpm,
-  a box's shellcheck, actions) change only in a PR that says so. OS security updates, the
-  runner's own updates and Node 22.x fixes are the exceptions.
+  a box's shellcheck, actions) change only in a PR that says so. The OS's own updates (Ubuntu's
+  security and normal ones, box setup 17), the runner's own updates and Node 22.x fixes are the
+  exceptions.
 - **Nothing to sign in to on a box,** and no sudo after `box add`: you never run its setup again.
   The runner's sudo rules, made by `box add`, start the agent's own user (ADR 0031), the look
   server's user, which holds the tools' look keys so the agent never does (`shipify-look`, ADR

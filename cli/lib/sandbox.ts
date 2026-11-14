@@ -470,32 +470,44 @@ uids=$(ps -A -o uid=) || exit 2
 printf '%s\n' "$uids" | awk -v u="$u" -v r="$r" 'BEGIN { split(r, a, " ") }
   $1 == u || (a[2] > 0 && $1 >= a[1] && $1 < a[1] + a[2]) { f = 1 } END { exit f ? 0 : 1 }'`;
 
+/** A command's exit code and the first line it wrote on stderr, for a message. */
+const said = (r: { code: number; stderr: string }) => {
+  const line = r.stderr.trim().split("\n")[0]?.slice(0, 200);
+  return `exit ${r.code}${line ? `: ${line}` : ""}`;
+};
+
 /**
- * Every process of slot k's agent, killed (`kill -KILL -1` as the agent), and checked gone: after a
- * think, at a time limit, and before a run starts. The kill reaches its containers too: the agent
- * owns their user namespace. True when none is left, of the agent or its range; false when sudo
- * refused or one survived, and then nothing that holds a key may start.
+ * Every process of slot k's agent, killed (`kill -KILL -- -1` as the agent), and checked gone: after
+ * a think, at a time limit, and before a run starts. The kill reaches its containers too: the agent
+ * owns their user namespace. `--` before -1, always: Ubuntu 26.04's kill (procps 4.0.4-9ubuntu1)
+ * reads `-KILL -1` as no process at all, and killed nothing. ok when none is left, of the agent or
+ * its range; else not, with why (kill's own exit and words), and then nothing that holds a key may
+ * start.
  */
-export function killAll(slot: number, io: SandboxIo = REAL_IO): boolean {
+export function killAll(slot: number, io: SandboxIo = REAL_IO): { ok: boolean; error?: string } {
   const user = agentUser(slot);
+  let kill = "";
   for (let tries = 0; tries < 5; tries++) {
-    const k = io.run("sudo", ["-n", "-u", user, "--", "kill", "-KILL", "-1"], {
+    const k = io.run("sudo", ["-n", "-u", user, "--", "kill", "-KILL", "--", "-1"], {
       cwd: "/",
       env: SPAWN_ENV,
       timeoutMs: 30_000,
     });
     // "No such process" is the usual answer: there was nothing to kill.
-    if (k.code !== 0 && /^sudo:/m.test(k.stderr)) return false;
+    if (k.code !== 0 && /^sudo:/m.test(k.stderr))
+      return { ok: false, error: `sudo refused (${said(k)})` };
+    kill = said(k);
     const left = io.run("/bin/sh", ["-c", LEFT, "left", user], {
       cwd: "/",
       env: SPAWN_ENV,
       timeoutMs: 30_000,
     });
-    if (left.code === 1) return true;
-    if (left.code !== 0) return false;
+    if (left.code === 1) return { ok: true };
+    if (left.code !== 0)
+      return { ok: false, error: `the check for what's left couldn't tell (${said(left)})` };
     io.sleep(200);
   }
-  return false;
+  return { ok: false, error: `a process outlived the kill (kill's ${kill})` };
 }
 
 /**
@@ -591,6 +603,8 @@ export function cleanStaleRuns(
  * starts stopped, and runtime/ wiped again: a run starts with nothing of the agent's running and
  * runtime/ empty, so a run that uses no container leaves nothing to do. Each says "podman" when it
  * ran Podman. `kill -KILL -1` spares only the shell itself: nothing else of the agent's runs then.
+ * It's /bin/sh's own kill (dash's), which takes -1 as it is and refuses `--`: only a kill program
+ * (killAll's, through sudo) needs `--` before -1.
  */
 const PODMAN_STATE = String.raw`wipe() {
   chmod -R u+rwX runtime 2>/dev/null; rm -rf runtime 2>/dev/null
@@ -719,9 +733,10 @@ export function prepareRun(
     );
   const run = runPaths(slot, runId, io.root, own);
   const stopped = () => {
-    if (!killAll(slot, io))
+    const k = killAll(slot, io);
+    if (!k.ok)
       throw new ShipError(
-        `Couldn't stop what ${run.user} left running (sudo -n refused, or a process survived): ship doctor's sandbox check says which.`,
+        `Couldn't stop what ${run.user} left running: ${k.error}. ship doctor's sandbox check says more.`,
       );
   };
   stopped();
