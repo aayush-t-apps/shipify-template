@@ -1,6 +1,20 @@
 // @ts-check
 // Shipify chat: the list, threads, the pages, downloads, polling and the copy kept in the browser.
-import { $, api, cap, composer, h, icon, pop, said, set, size, timed, uid } from "./compose.js";
+import {
+  $,
+  api,
+  cap,
+  composer,
+  h,
+  icon,
+  pop,
+  refresher,
+  said,
+  set,
+  size,
+  timed,
+  uid,
+} from "./compose.js";
 
 // A guest, at /guest/ (ADR 0071): only theirs shows, kept apart from yours in this browser.
 const GUEST = location.pathname.startsWith("/guest");
@@ -182,22 +196,15 @@ const clock = () => (R.clk ||= !document.hidden && setInterval(tock, 1e3));
 const ext = (u, t, c = "") => h(`a${c}`, { href: u, target: "_blank", rel: "noopener" }, t);
 const to = (n, t = `#${n}`) => h("a", { href: `#/t/${n}` }, t);
 const back = () => h("a.icon.back", { href: "#/", "aria-label": "Back to the list" }, icon("back"));
-// ↻ in each header (ADR 0049): a tap does what coming back to the page does (wake), and spins until
-// what's on screen is read again. What you've typed stays.
+// ↻ in each header (ADR 0049), or a pull down on a phone: what coming back to the page does (wake),
+// ↻ spinning until what's on screen is read again. What you've typed stays.
+const refresh = refresher(wake);
 const refreshBtn = () => {
   const b = btn(icon("reload"), refresh, ".icon.reload");
   b.ariaLabel = "Refresh";
   b.title = "Refresh";
   return b;
 };
-async function refresh() {
-  document.body.classList.add("spin");
-  try {
-    await wake();
-  } finally {
-    document.body.classList.remove("spin");
-  }
-}
 const ph = () => [1, 2, 3].map(() => h("div.ph"));
 // A state as a symbol and a word, never colour alone; the word says whose turn it is.
 const WORD = { "needs-you": "Needs you", open: "Open", stuck: "Stopped", closed: "Closed" };
@@ -956,6 +963,7 @@ function drawThread(t) {
       root: v.box,
       send: W > 1 ? inProject(v, T.project) : (b, p) => send(v.u ? { ...b, under: v.u.n } : b, p),
       after: redraw,
+      signin,
     };
     R.draft = "";
     const changes = ext(`${T.url}/files`, "The changes");
@@ -1014,11 +1022,11 @@ const summary = (a) =>
     .filter(Boolean)
     .join(" · ");
 
-// The newest reply's buttons, as every chat has them: each sends its words (its question's short
-// answers, then the words it names; Another model opens the chip), or said on GitHub.
+// The newest reply's buttons, as every chat has them: each sends its words (its short answers, then
+// the words it names; Another model opens the chip), or said on GitHub.
 function quickWords(T, r) {
   const now = { close: T.open, reopen: !T.open };
-  const answers = (r.question && r.choices) || [];
+  const answers = r.choices || [];
   const tap = (w) => (w === "/use" ? R.v?.co?.pick?.() : w in now ? turn(T) : say(T.n, w));
   const here = (r.buttons || [])
     .filter((b) => now[b.words] ?? true)

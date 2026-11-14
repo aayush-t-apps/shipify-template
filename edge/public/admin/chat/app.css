@@ -1679,9 +1679,12 @@ body[data-dz]::after {
   object-fit: contain;
 }
 
-/* ↻ turns while what's on screen is read again. */
+/* ↻ turns while what's on screen is read again, and lights for a pull (pull.js). */
 .spin .reload svg {
   animation: turn 0.8s linear infinite;
+}
+.pull .reload {
+  color: var(--acc);
 }
 @keyframes turn {
   to {

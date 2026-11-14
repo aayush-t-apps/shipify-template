@@ -49,6 +49,7 @@ import {
   nextBranch,
   PLATFORM,
   parseTask,
+  parseTitle,
   repeatForm,
   type TaskState,
   type TaskTitle,
@@ -165,7 +166,13 @@ function wordsOf(n: number, r: TaskRecord) {
  * agent: no operation, repo, note or form of theirs reaches the box, whatever they type.
  */
 function parsedOf(title: string, words: string, guest: string | undefined, all: Form[]) {
-  return guest ? ({ kind: "none", ask: title.trim() } as TaskTitle) : parseTask(title, words, all);
+  if (!guest) return parseTask(title, words, all);
+  // But their own memory (ADR 0078): `remember: …`, `forget: …` and `personality: …` write their
+  // page alone, which has no topics.
+  const own = parseTitle(title);
+  return own.kind === "remember" || own.kind === "forget" || own.kind === "personality"
+    ? ({ kind: own.kind, ask: own.ask } as TaskTitle)
+    : ({ kind: "none", ask: title.trim() } as TaskTitle);
 }
 
 /**

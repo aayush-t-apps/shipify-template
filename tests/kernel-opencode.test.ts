@@ -154,9 +154,23 @@ describe("OpenCode's report", () => {
     process.env.SHIPIFY_TOOLS_FILE = join(home, "tools.json");
     process.env.SHIPIFY_NOTES_READ = "a-key";
     const tools = join(home, "run");
-    opencode.argv({ command: ["opencode", "run"], tools: { mode: "look", dir: tools } });
+    opencode.argv({
+      command: ["opencode", "run"],
+      tools: {
+        mode: "look",
+        dir: tools,
+        served: { url: "http://127.0.0.1:4000", tools: ["my_notes"] },
+      },
+    });
     const rules = JSON.parse(readFileSync(join(tools, "gate.json"), "utf8"));
     expect(rules.look).toEqual({ my_notes_read_page: "my_notes.read_page" });
+    // At the run's look server (ADR 0077), the run's token by name: never the tool's own key.
+    const config = JSON.parse(readFileSync(join(tools, "opencode.json"), "utf8"));
+    expect(config.mcp.my_notes).toEqual({
+      type: "remote",
+      url: "http://127.0.0.1:4000/my_notes",
+      headers: { Authorization: "Bearer {env:SHIPIFY_LOOK_TOKEN}" },
+    });
     const check = (tool: string) => ShipifyGate.refused(rules, tool, {}, home, tools);
     expect(check("my_notes_read_page")).toBeUndefined();
     expect(check("my_notes_add")).toBeTruthy();

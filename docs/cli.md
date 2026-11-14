@@ -93,6 +93,7 @@ done on this PC.
 | `remove <name> [--yes]` | undoes it | its own undo, then its keys; for a gateway, its secret, its credentials line and its `SHIPIFY_GATEWAYS` record |
 | `notebook [list]` · `notebook read "<topic>"` | the notebook's and the Library's pages (each project's counted), or one in full ([notebook.md](notebook.md)) | – |
 | `task read <id> [--task <n>]` | on a box, in a run: one message of its task whole, by its id (`0`: the task's own words), for a long thread's older messages (ADR 0069) | – |
+| `recall "<words>"` · `recall <n>` | on a box, in a run: your earlier chats and pages found as the web chat's Find does (by meaning; by words when GitHub refuses it; 10 at most; guests' and the run's own task left out), or one chat, short: its Progress, its newest 2 messages whole, each older one as one line with its id for `task read <id> --task <n>`; a guest's refused, a page sent to `notebook read` (ADR 0078) | – |
 
 **`door setup`** ([door.md](door.md#setting-it-up)): needs the deploy token and account id in your
 credentials file, and `APPS_DOMAIN`. With `--yes`: a page on this PC sends GitHub the App's

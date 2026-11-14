@@ -1,6 +1,6 @@
 // Claude Code's adapter (ADR 0017, docs/agents.md): its flags for a model, an effort and the run's
-// tools (ADR 0015: an MCP config naming keys as ${VAR}, and the allow and deny lists; look calls
-// only, ADR 0031), the commands it must never run (ADR 0043), and a reader for its output, `--output-format stream-json --verbose`: one JSON event
+// tools (ADR 0015: an MCP config naming the run's look server, its token as ${VAR}, ADR 0077, and
+// the allow and deny lists; look calls only, ADR 0031), the commands it must never run (ADR 0043), and a reader for its output, `--output-format stream-json --verbose`: one JSON event
 // a line. Checked against Claude Code 2.1.284 (tests/fixtures/claude-stream.jsonl).
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -9,7 +9,6 @@ import {
   type AgentReport,
   type AgentRun,
   type Commands,
-  command,
   fetchesOutside,
   LOGIN_FD,
   loadTools,
@@ -42,37 +41,34 @@ const skillOf = (name: string, input?: Record<string, unknown>) =>
 /** A tool's call as Claude Code names it: tools.json's notion.search is mcp__notion__search. */
 const callName = (tool: string, call: string) => `mcp__${tool}__${call}`;
 
-/** Claude Code's settings for a run's tools: its MCP config, and the allow and deny lists. */
-export function claudeTools(
-  tools: Tools,
-  mode: Mode,
-  env: NodeJS.ProcessEnv = process.env,
-  root?: string,
-) {
+/**
+ * Claude Code's settings for a run's tools (`offered`: each a remote one, at the run's look server,
+ * ADR 0077): its MCP config, and the allow and deny lists.
+ */
+export function claudeTools(tools: Tools, mode: Mode, env: NodeJS.ProcessEnv = process.env) {
   const { ready, missing } = runTools(tools, mode, env);
   const servers: Record<string, unknown> = {};
   const allow: string[] = [];
   const deny: string[] = [];
   for (const name of Object.keys(ready)) {
     const t = tools[name] as Tools[string];
+    if (!t.url) continue;
     const vars = Object.fromEntries(
       Object.entries(t.keys).map(([v, k]) => [v, `\${${secretFor(k, mode)}}`]),
     );
-    servers[name] = t.url
-      ? {
-          type: "http",
-          url: t.url,
-          headers: Object.fromEntries(
-            Object.entries(t.headers ?? {}).map(([h, v]) => [
-              h,
-              v.replace(
-                /\$\{(\w+)\}/g,
-                (_, x: string) => (vars[x] as string | undefined) ?? `\${${x}}`,
-              ),
-            ]),
+    servers[name] = {
+      type: "http",
+      url: t.url,
+      headers: Object.fromEntries(
+        Object.entries(t.headers ?? {}).map(([h, v]) => [
+          h,
+          v.replace(
+            /\$\{(\w+)\}/g,
+            (_, x: string) => (vars[x] as string | undefined) ?? `\${${x}}`,
           ),
-        }
-      : { ...command(t.run as string[], root), env: vars };
+        ]),
+      ),
+    };
     allow.push(...(ready[name] as string[]).map((c) => callName(name, c)));
     if (mode === "look") deny.push(...t.act.map((c) => callName(name, c)));
   }
@@ -118,8 +114,8 @@ function withCommands(cmd: string[], c: Commands): string[] {
 
 /** Flags for the run's tools; none when tools.json has none ready for it. */
 function withTools(cmd: string[], tools: NonNullable<AgentRun["tools"]>): string[] {
-  const all = offered(loadTools(), tools.only);
-  const t = claudeTools(all, tools.mode, process.env, tools.root);
+  const all = offered(loadTools(), tools.served);
+  const t = claudeTools(all, tools.mode);
   if (!Object.keys(t.ready).length) return cmd;
   mkdirSync(tools.dir, { recursive: true, mode: 0o700 });
   const mcp = join(tools.dir, "mcp.json");

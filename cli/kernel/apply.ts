@@ -11,7 +11,15 @@ import { queue, rec, thisRun, timeZone } from "../commands/task/context.ts";
 import { publishedDeploy } from "../commands/task/deploys.ts";
 import { fileHash, publishMade } from "../commands/task/files.ts";
 import { Status, type StatusIssue } from "../commands/task/issue.ts";
-import { forget, remember, writePages } from "../commands/task/notebook.ts";
+import {
+  forget,
+  forgetFor,
+  pagesTo,
+  remember,
+  rememberFor,
+  setPersonality,
+  writePages,
+} from "../commands/task/notebook.ts";
 import { CLEAN_CLOSED, closeQuiet } from "../commands/task/sweep.ts";
 import {
   asProblem,
@@ -256,16 +264,22 @@ export async function apply(
           await rec().together([{ w: "react", on: { comment: w.comment }, content: w.content }]);
           break;
         case "note":
+          // A guest's go on their own memory page, never on yours (ADR 0078).
           outcomes.push(
-            ...remember(
-              [{ topic: w.topic, text: w.line }],
-              true,
-              s.repos.map((r) => r.name),
-            ),
+            ...(w.guest
+              ? rememberFor(w.guest, [w.line])
+              : remember(
+                  [{ topic: w.topic, text: w.line }],
+                  true,
+                  s.repos.map((r) => r.name),
+                )),
           );
           break;
         case "forget":
-          outcomes.push(...forget(w.words));
+          outcomes.push(...(w.guest ? forgetFor(w.guest, w.words) : forget(w.words)));
+          break;
+        case "personality":
+          outcomes.push(...setPersonality(w.set, w.guest));
           break;
         case "pages":
           outcomes.push(...writePages(w.pages, { ...w, dir: env.out }));
@@ -298,6 +312,25 @@ export async function apply(
             },
           );
           break;
+        case "project-pages": {
+          // A project's pages close and open with it (task #744). Setting a state twice is
+          // harmless, so no journal: what didn't happen is said, and the weekly clean-up closes
+          // the pages a closed project left open.
+          const closing = w.state === "closed";
+          const then = closing
+            ? "the weekly clean-up closes them"
+            : "they're its pages all the same, and open as a run writes them";
+          try {
+            const { left } = pagesTo(w.label, w.state, w.guest);
+            if (left.length)
+              outcomes.push(
+                `Not ${closing ? "closed" : "opened"} with the project, as GitHub refused: ${left.map((n) => `#${n}`).join(", ")}; ${then}.`,
+              );
+          } catch {
+            outcomes.push(`The project's pages couldn't be read just now: ${then}.`);
+          }
+          break;
+        }
         case "calls":
           await journal(
             `calls:${w.fingerprint}`,
@@ -543,9 +576,11 @@ export async function apply(
             links: allLinks.slice(0, 10),
             ...(env.details ? { brief: brief(env.details), run: runNumbers(env.details) } : {}),
             ...(question ? { question: question.slice(0, 2_000) } : {}),
-            ...(question && choices?.length ? { choices } : {}),
+            // Its question's short answers, or with none its next steps (ADR 0078).
+            ...(choices?.length ? { choices } : {}),
             ...(r.list ? { list: r.list } : {}),
             ...(r.keep ? { keep: true as const } : {}),
+            ...(r.undo ? { undo: true as const } : {}),
             ...(named.length ? { files: named } : {}),
             to,
             key,

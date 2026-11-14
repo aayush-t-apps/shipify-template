@@ -64,7 +64,10 @@ export const ReplyLine = z.object({
     })
     .optional(),
   question: z.string().max(2_000).optional(),
-  /** Short answers to the question, which a chat may show as buttons. */
+  /**
+   * Short answers to the question, which a chat may show as buttons; with no question, the next
+   * steps a reply suggests (ADR 0078), each a tap that sends its words.
+   */
   choices: z.array(z.string().min(1).max(60)).max(3).optional(),
   /**
    * A list waits on this reply for your `yes` (ADR 0049): its code (the first 8 characters of the
@@ -74,6 +77,8 @@ export const ReplyLine = z.object({
   list: z.union([z.string().regex(/^[0-9a-f]{8}$/), z.literal("github")]).optional(),
   /** An answer in a project's chat (ADR 0070): a chat shows **Keep on page** under it. */
   keep: z.literal(true).optional(),
+  /** A Personality change (ADR 0078): a chat shows **Change it back** under it. */
+  undo: z.literal(true).optional(),
   /**
    * The files the run made, each by its ref in the web chat's store (R2, ADR 0071): the box picks
    * each ref and the door keeps a copy under it, whatever chat the task came from, so the window

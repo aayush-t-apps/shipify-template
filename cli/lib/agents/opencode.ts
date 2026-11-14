@@ -12,7 +12,7 @@
 //   `reasoning`; its key read once from the pipe by Shipify's gate, which puts it on each call to
 //   that provider: a command it runs gets no fd 3, and the key is in neither its config nor its
 //   environment;
-// - the look tools' MCP servers, local or remote, their act calls hidden;
+// - the look tools at the run's look server (ADR 0077), their act calls hidden;
 // - Shipify's gate (gate.mjs, an OpenCode plugin, with pi's gate beside it and the run's rules,
 //   gate.json), which checks every tool call before it runs, as pi's gate does, its helpers' too,
 //   and says each in its output; its own permissions all allow, but the refused commands (one left
@@ -28,7 +28,6 @@ import {
   type AgentRun,
   agentFile,
   asResult,
-  command,
   fetchesOutside,
   gatewayModelName,
   LOGIN_FD,
@@ -85,10 +84,11 @@ function settings(run: AgentRun): { provider?: string } {
       },
     };
   }
-  // The look tools' servers, local (`run`) or remote (`url`): their keys named as {env:VAR}, never
-  // their values, and every act call hidden. The read profile has none: it holds none of their keys.
+  // The look tools, each a remote one at the run's look server (`offered`, ADR 0077): the run's
+  // token named as {env:VAR}, never its value, and every act call hidden. The read profile has
+  // none: it holds no look token.
   const mode = run.tools?.mode ?? "look";
-  const all = offered(loadTools(), run.tools?.only);
+  const all = offered(loadTools(), run.tools?.served);
   const ready: Record<string, string[]> = reading ? {} : runTools(all, mode, process.env).ready;
   const mcp: Record<string, unknown> = {};
   const hidden: Record<string, "deny"> = {};
@@ -97,25 +97,20 @@ function settings(run: AgentRun): { provider?: string } {
   const look: Record<string, string> = {};
   for (const [name, calls] of Object.entries(ready)) {
     const t = all[name];
-    if (!t) continue;
+    if (!t?.url) continue;
     const vars = Object.fromEntries(
       Object.entries(t.keys).map(([v, k]) => [v, `{env:${secretFor(k, mode)}}`]),
     );
-    if (t.url)
-      mcp[name] = {
-        type: "remote",
-        url: t.url,
-        headers: Object.fromEntries(
-          Object.entries(t.headers ?? {}).map(([h, v]) => [
-            h,
-            v.replace(/\$\{(\w+)\}/g, (_, x: string) => vars[x] ?? `{env:${x}}`),
-          ]),
-        ),
-      };
-    else {
-      const c = command(t.run as string[], run.tools?.root);
-      mcp[name] = { type: "local", command: [c.command, ...c.args], environment: vars };
-    }
+    mcp[name] = {
+      type: "remote",
+      url: t.url,
+      headers: Object.fromEntries(
+        Object.entries(t.headers ?? {}).map(([h, v]) => [
+          h,
+          v.replace(/\$\{(\w+)\}/g, (_, x: string) => vars[x] ?? `{env:${x}}`),
+        ]),
+      ),
+    };
     for (const c of t.act) hidden[callName(name, c)] = "deny";
     for (const c of calls) look[callName(name, c)] = `${name}.${c}`;
   }

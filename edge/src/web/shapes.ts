@@ -235,6 +235,8 @@ export const Thread = z.object({
         project: z.string().optional(),
         /** Its project's number, open or closed: the doc opens over its Docs. */
         of: z.number().optional(),
+        /** Its project is closed (task #744): read-only, with no Edit, until it opens again. */
+        shut: z.literal(true).optional(),
         updated: iso,
       })
       .optional(),
@@ -525,6 +527,18 @@ export const Setup = z.object({
           bytes: z.number(),
         }),
       ),
+    })
+    .optional(),
+  /**
+   * Setup → Personality (ADR 0078): the presets, your page's words now (none: the Default), which
+   * preset they are (`custom`: your own words), and the page's link.
+   */
+  personality: z
+    .object({
+      presets: z.array(z.object({ id: z.string(), name: z.string(), words: z.string() })),
+      preset: z.string(),
+      words: z.string(),
+      url: z.string().optional(),
     })
     .optional(),
 });

@@ -156,6 +156,39 @@ const guests = (G) => {
     o,
   ];
 };
+// Personality (ADR 0078): how Shipify talks to you. A preset is set as you pick it; Custom opens
+// your words, with Save. Each sends `personality: …`, which the box writes with no run.
+const personality = (P) => {
+  const o = A.out();
+  const say = (w) => A.quick(undefined, `personality: ${w}`, o);
+  const opt = (id, name) => h("option", { value: id, selected: id === P.preset }, name);
+  const pick = h(
+    "select",
+    P.presets.map((p) => opt(p.id, p.name)),
+    opt("custom", "Custom"),
+  );
+  const text = h("textarea", { rows: 3, maxlength: "2000", "aria-label": "Your words" });
+  text.value = P.preset === "custom" ? P.words : "";
+  const own = h(
+    "p.row",
+    text,
+    A.btn("Save", () => text.value.trim() && say(text.value.trim())),
+  );
+  const show = () => {
+    own.hidden = pick.value !== "custom";
+  };
+  pick.onchange = () => {
+    show();
+    if (pick.value !== "custom") say(pick.value);
+  };
+  show();
+  return [
+    h("p", "Or say it in any chat: “be more casual with me”. Change it back undoes it."),
+    h("p.row", pick, P.url && A.ext(P.url, "The page", ".btn")),
+    own,
+    o,
+  ];
+};
 // Why the watch started a task's run, in plain words (the record says "started #160 (its job)").
 const WHY = {
   "its job": "its repeat's time came",
@@ -291,6 +324,7 @@ export const setup = () =>
       ),
       h(
         "div.cards",
+        d.personality && sec("Personality", "chat", personality(d.personality)),
         sec(
           "Keys and dates",
           "pin",

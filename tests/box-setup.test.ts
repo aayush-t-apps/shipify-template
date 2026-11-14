@@ -23,8 +23,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 15, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=15$/m);
+  it("is version 16, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=16$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -281,6 +281,20 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     );
   });
 
+  it("gives the look server a user of its own (setup 16, ADR 0077): no home, shell or range, outside the runner's group, in the agents' network rules", () => {
+    expect(code).toContain("LOOK_USER=shipify-look");
+    expect(code).toContain(
+      'useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$LOOK_USER"',
+    );
+    expect(code).not.toMatch(/--add-subids-for-system[^\n]*LOOK_USER/);
+    expect(code).toContain('gpasswd -d "$LOOK_USER" shipify');
+    expect(code).toContain('grep -qx "$LOOK_USER" "$deny"');
+    // Made before the sudo rule names it, and before the network rules take its ID.
+    expect(at("LOOK_USER=shipify-look")).toBeLessThan(at('say "The sudo rules'));
+    expect(at("LOOK_USER=shipify-look")).toBeLessThan(at('agents_net "$(agent_ids)"'));
+    expect(fn("agent_ids")).toContain('echo "$ids, $(id -u "$LOOK_USER")"');
+  });
+
   it("makes each slot's kept folders its agent's own, with no setgid, and mends what setup 8 and 9 left (setup 10)", () => {
     // Made in the slot folder (setgid, group shipify), they took that group, which has no ID in the
     // agent's user namespace: Podman's store couldn't mount. A real run of agent_dirs, as this
@@ -328,7 +342,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
   });
 
   it("installs the sudo rules only once visudo accepts them, and takes them out if sudo's whole configuration then fails", () => {
-    expect(code).toContain('rule="shipify ALL=($agents) NOPASSWD: ALL"');
+    expect(code).toContain('rule="shipify ALL=($agents,$LOOK_USER) NOPASSWD: ALL"');
     expect(code).toContain("Defaults:shipify !use_pty");
     // As root, only the box's own update (setup 14), and not in a container (a new image is its
     // update): the same file, the same checks.
@@ -904,6 +918,13 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
       'wall "$u" "$RUNNER_HOME/_work"',
       'wall "$u" "/proc/$listener/environ"',
       'wall "$u" "$AGENT_ROOT/$(agent_user "$j")"',
+      // The look server's user (setup 16): the runner starts it, and it reads nothing of the
+      // runner's, nor a slot's runs.
+      'sudo -u shipify sudo -n -u "$LOOK_USER" true',
+      'wall "$LOOK_USER" /home/shipify',
+      'wall "$LOOK_USER" "$RUNNER_HOME/_work"',
+      'wall "$LOOK_USER" "/proc/$listener/environ"',
+      'wall "$LOOK_USER" "$AGENT_ROOT/$(agent_user "$k")"',
       // The agent's memory, where its login is: a command reads only its own children's.
       '"$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)" -lt 1',
       "exit 1",
@@ -1669,12 +1690,12 @@ describe("box/remove.sh: Shipify off a machine, the machine's own left (setup 9)
       'systemctl disable --now -q "$unit"',
       "systemctl disable --now -q shipify-agents-net.service",
       "nft delete table inet shipify_agents",
-      "grep -E '^shipify(-agent-[0-9]+)?$'",
+      "grep -E '^shipify(-agent-[0-9]+|-look)?$'",
       'pkill -KILL -u "$u"',
       'usermod --del-subuids 0-4294967294 --del-subgids 0-4294967294 "$u"',
       'userdel "$u"',
       "rm -rf /home/shipify /srv/shipify-agent-* /opt/shipify",
-      "sed -i '/^shipify-agent-[0-9]*$/d' \"$deny\"",
+      "sed -i -e '/^shipify-agent-[0-9]*$/d' -e '/^shipify-look$/d' \"$deny\"",
       "/etc/sudoers.d/shipify-agents /etc/needrestart/conf.d/50-shipify-box.conf",
     ])
       expect(code, step).toContain(step);

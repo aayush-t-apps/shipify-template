@@ -681,10 +681,11 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
     pin: (issue) => pinning("pinIssue", issue),
     unpin: (issue) => pinning("unpinIssue", issue),
     sweep(q) {
-      // Three searches in one query, each 100 at most; a missed one comes up the next week. The
+      // Four searches in one query, each 100 at most; a missed one comes up the next week. The
       // closed and the quiet ones come oldest first (a close is a closed issue's last change, as a
       // word on it opens it again), so the ones about to leave their window are read first. The
-      // quiet search leaves out what stays open for ever, so it can't fill the 100.
+      // quiet search leaves out what stays open for ever, so it can't fill the 100. The open
+      // Library pages come least lately changed first: a closed project's are among the first.
       const without = q.quietWithout.map((l) => ` -label:"${l}"`).join("");
       type Found = {
         nodes: (GqlSwept | null)[];
@@ -692,11 +693,12 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
       };
       const closed = `repo:${repo} is:issue is:closed closed:${q.closedFrom}..${q.closedTo} sort:updated-asc`;
       const PAGE = `pageInfo { hasNextPage endCursor }`;
-      const r = graphql<Record<"closed" | "projects" | "quiet", Found>>(
-        `query($closed: String!, $projects: String!, $quiet: String!) { closed: search(query: $closed, type: ISSUE, first: 100) { nodes { ${SWEPT} } ${PAGE} } projects: search(query: $projects, type: ISSUE, first: 100) { nodes { ${SWEPT} } } quiet: search(query: $quiet, type: ISSUE, first: 100) { nodes { ${SWEPT} } } }`,
+      const r = graphql<Record<"closed" | "projects" | "pages" | "quiet", Found>>(
+        `query($closed: String!, $projects: String!, $pages: String!, $quiet: String!) { closed: search(query: $closed, type: ISSUE, first: 100) { nodes { ${SWEPT} } ${PAGE} } projects: search(query: $projects, type: ISSUE, first: 100) { nodes { ${SWEPT} } } pages: search(query: $pages, type: ISSUE, first: 100) { nodes { ${SWEPT} } } quiet: search(query: $quiet, type: ISSUE, first: 100) { nodes { ${SWEPT} } } }`,
         {
           closed,
           projects: `repo:${repo} is:issue is:open label:project`,
+          pages: `repo:${repo} is:issue is:open label:library sort:updated-asc`,
           quiet: `repo:${repo} is:issue is:open updated:<${q.quietBefore}${without} sort:updated-asc`,
         },
       );
@@ -714,7 +716,12 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
       }
       const of = (nodes: (GqlSwept | null)[] = []) =>
         nodes.filter((i): i is GqlSwept => Boolean(i?.number)).map(swept);
-      return { closed: of(all), projects: of(r.projects?.nodes), quiet: of(r.quiet?.nodes) };
+      return {
+        closed: of(all),
+        projects: of(r.projects?.nodes),
+        pages: of(r.pages?.nodes),
+        quiet: of(r.quiet?.nodes),
+      };
     },
     liveProjects() {
       // Two searches in one query (ADR 0070): the open projects with their chats, and the open

@@ -7,6 +7,85 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-11-14
+
+### Added
+
+- **Your assistant: a Personality you set, memory across chats, and chats that read like chat
+  (ADR 0078, task #741).**
+  - **Personality:** one page, `Notebook: Personality`, read first in every run of yours (2,000
+    characters at most). Say how you want it to talk in any chat ("be more casual with me"), or
+    pick it in **Setup → Personality** (Default, Friendly, Candid, Efficient, Quirky, or your own
+    words); **Change it back** undoes it. Under both is the word `personality: <preset or your
+    words>` (`default`, `undo`), which the box writes with no agent. With no page, the Default's
+    words take the place of the old "be brief and direct" line, in fewer characters.
+  - **Memory:** past chats never go in a prompt by themselves. When an ask builds on an earlier
+    talk, a run finds it by meaning with `ship recall "<words>"` and reads it short with
+    `ship recall <n>` (its Progress, its newest 2 messages, the rest one line each). A line your
+    newer words contradict is taken off as you say them (a run's new `forget`), under the same
+    rule as a note: at once from your words, and after an outside read, on the list for your Yes.
+  - **Guests:** each has a memory page of their own (their Personality, then their notes), which
+    only their runs read: their `remember:`, `forget:` and `personality:` now write it, and so do
+    their runs when they read nothing from outside.
+  - **Chats that read like chat:** the answer first, in plain words, with no report shape for a
+    plain question; a plain answer writes no handoff, so no Progress block and one agent turn
+    less. A reply may end with up to 3 next steps as buttons, in every chat (`choices` with no
+    question). The agent uses its own helpers, web, skills and tools when an ask gains from them.
+    The writing rule (ASD-STE100) stays for docs, PR bodies, plans and skills. A talk run's
+    prompt grows by about 212 tokens with no Personality set.
+  - **Web chat:** Send waits for a photo, also while it's made smaller; an upload after your
+    sign-in ended says so, not "Offline"; a failed upload tries again once you're back online;
+    the Desk opens offline; on a phone, pull down to refresh.
+  - **Codex:** a run on an agent whose login isn't set stops before the clone and the agent, and
+    says what to do (`codex sign in`, or `pnpm ship setup agent <agent>`). A first `use codex`
+    on a box still installs Codex once, as that step holds no login.
+  - No new service, store, key, setting, recipe or workflow change.
+    [notebook.md](docs/notebook.md#your-personality-adr-0078),
+    [channels.md](docs/channels.md#the-web-chat).
+- **The tools' look keys out of the agent's reach (ADR 0077, task #737; box setup 16).** No NAT
+  gateway and no list of allowed hosts: nothing comes in to a box, every connection is TLS or
+  WireGuard, and a list would stop only naive leaks. Instead, for each run that offers tools, the
+  runner starts the run's look server (`ship run look`) as a user of its own, `shipify-look`. It
+  holds the Notion and Drop look keys, starts their servers, and serves the run's look calls on
+  `127.0.0.1` only, to a request with the run's token: an act call, or one the run doesn't offer,
+  is refused. The agent holds that token (`SHIPIFY_LOOK_TOKEN`) in place of the keys, so a command
+  it runs, or a package a project's tests load, finds no look key: the token works only on the box
+  and only while the run lasts. All four agents name each tool as a remote one at the server
+  (checked live with each first). The server records each call it sends on, so a look call a
+  command made counts as a read from outside too. **Setup 16:** the look server's user, in the
+  sudo rule and the agents' network rules, with its walls checked; each box applies it by itself
+  at its next due run, and until then its runs go without tools and say why (never the keys
+  instead). The roadmap's list of allowed hosts goes, with the reason.
+  [security.md](docs/security.md#the-agents-sandbox), [tools.md](docs/tools.md#look-calls).
+
+### Changed
+
+- **A project's pages close and open with it (task #744).** You close nothing by hand. **Close**
+  closes the project's open chats and its pages (its `Notebook: <name>…` issues), as completed;
+  **Reopen** opens its pages again. Writing on a closed project's own thread opens it and its
+  pages too. Its pages stay readable, as before: its screen's Docs, the Library's **Closed
+  projects**, a run in one of its chats, and `ship notebook read`. A closed project's doc has no
+  **Edit** in the pane, and a save is refused. The weekly clean-up gets a third step: it closes
+  each open page whose project isn't open (one closed with GitHub's own button, or before this
+  change), and says so ("closed 3 pages of closed projects (#40, #41, #42)"). A page a run, `add`
+  or `jot:` writes opens again, so a topic never gets a second page. The door now writes a
+  project's reopen as words, as its close, so a run with no agent sees to it. No new service,
+  store, key, setting or workflow change.
+  [knowledge.md](docs/knowledge.md#open-or-closed), [watch.md](docs/watch.md).
+
+### Fixed
+
+- **A box with no look server user says so plainly (task #744).** A box set up before setup 14 has
+  no updater, so it never applies setup 16 by itself. Each run that offered tools still tried
+  `sudo -u shipify-look`: its log showed "unknown user" and "error initializing audit plugin", and
+  the run said the box would fix itself. Now the run checks the user first, with no sudo. It says
+  what's true for the box: it updates itself, or it must be set up once more, after which it updates
+  itself. [box-setup.md](docs/box-setup.md#its-own-updates).
+- **The box's check before a Shipify PR runs each test once (task #744).** `make verify` ran the
+  contract tests, then ran them again among the tests the change reaches (`architecture` and
+  `recipes` ran twice in a measured run). It now leaves them out of the second pass: about 20 s
+  less on each Shipify work run.
+
 ## [0.1.21] - 2026-11-11
 
 ### Added

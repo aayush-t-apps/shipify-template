@@ -84,6 +84,9 @@ const HELP = `ship: plan, build, ship and maintain Shipify projects (apps and pa
   notebook [list] | notebook read "<topic>"   the notebook (docs/notebook.md): its pages, one in full (on a box)
   task read <id> [--task <n>]               one message of a run's task, whole, by its id (0: its own
                                             words): a long thread's older ones (ADR 0069, on a box)
+  recall "<words>" | recall <n>             your earlier chats and pages, found by meaning (10 at most,
+                                            guests' left out); or one chat, short: its Progress, its newest
+                                            2 messages, the rest one line each (ADR 0078, on a box)
   add <name> [--new] [--yes] · remove <name> [--yes]
                                             set up a plug-in from its entry's setup (tools.json), one checked
                                             step at a time (--new: paste every key again), or a gateway's key
@@ -141,7 +144,9 @@ const HELP = `ship: plan, build, ship and maintain Shipify projects (apps and pa
                                             on the box (ADR 0038); the agent, in the slot's sandbox; its
                                             result into writes; the writes; the github job's pending
                                             work; a failure, said)
-  task plans <before> <after>               (task.yml, on a push to main: merged plans start their tasks)
+  run look                                  (think starts it: the run's look server, which holds the
+                                            tools' look keys, ADR 0077; its tools and token on stdin)
+  task plans <before> <after>              (task.yml, on a push to main: merged plans start their tasks)
   watch due · watch cleanup [<box>] · watch alert '<findings>'   (watch.yml calls these, docs/watch.md)
 
   Operate
@@ -397,6 +402,11 @@ async function main(argv: string[]): Promise<Result> {
         throw new ShipError("Use: bot | bot repos | bot repos <account> [--remove]", "blocked");
       return botSetup(values.yes, values.code);
     case "run": {
+      // The run's look server (ADR 0077): think starts it, and it serves until its stdin closes.
+      if (a1 === "look") {
+        await (await import("./kernel/look.ts")).serveLook();
+        return { command: "run look", status: "succeeded", summary: "ended" };
+      }
       const n = Number(need(a2, "<n>"));
       const { isStep, logStep, runFailed, runStep } = await import("./kernel/run.ts");
       // One timing line per step (ADR 0051 B0): what the fixed part costs.
@@ -407,7 +417,7 @@ async function main(argv: string[]): Promise<Result> {
       if (isStep(a1)) return timed(a1, () => runStep(a1, n));
       if (a1 === "failed") return timed("failed", () => runFailed(n));
       throw new ShipError(
-        "Use: run task | plan | agent | think | decide | apply | github | failed <n>",
+        "Use: run task | plan | agent | think | decide | apply | github | failed <n> | run look",
         "blocked",
       );
     }
@@ -421,6 +431,9 @@ async function main(argv: string[]): Promise<Result> {
         "blocked",
       );
     }
+    case "recall":
+      // An earlier chat, fetched when a run needs one (ADR 0078): its words, or its number.
+      return (await import("./commands/recall.ts")).recall(positionals.slice(1));
     case "list":
       return list();
     case "status":

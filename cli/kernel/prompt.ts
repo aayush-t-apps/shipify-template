@@ -1,8 +1,26 @@
 // The agent's prompt (ADR 0031): the task, the conversation, where its files are, and how to
 // finish. The agent only thinks: it reads, changes files in its own clone, commits, and writes
 // result.json. It never pushes, opens a PR or calls an act tool: it asks for those in its result.
+import { DEFAULT_VOICE, PERSONALITY_MAX } from "../contracts/index.ts";
 import { PLATFORM, type TaskState, type TaskTitle } from "../lib/task.ts";
 import type { Profile, ThinkWhy } from "./types.ts";
+
+/**
+ * How a run speaks (ADR 0078): the Personality page's words (the owner's, or a guest's own), first,
+ * or the Default preset's with none. What holds whatever the voice follows it.
+ */
+function voiceLines(p: Pick<PromptInput, "personality">, who: "owner" | "guest"): string[] {
+  const always = "say what you're unsure of, and state a limit plainly rather than work around it.";
+  // No longer than the line it took the place of: a run with no page pays nothing more.
+  if (!p.personality?.words.trim()) return [`${DEFAULT_VOICE} S${always.slice(1)}`];
+  return [
+    `How you speak, in the ${who}'s own words (their Personality page${p.personality.cut ? `, cut at ${PERSONALITY_MAX.toLocaleString("en")} characters: it's longer` : ""}):`,
+    "",
+    p.personality.words.trim(),
+    "",
+    `Whatever the voice, ${always} The ${who}'s words in this task win over the page.`,
+  ];
+}
 
 const WHY: Record<ThinkWhy, string> = {
   new: "you opened this task",
@@ -59,6 +77,13 @@ export interface PromptInput {
   repos?: { name: string; repo: string }[];
   notes: string[];
   notebook?: string;
+  /**
+   * How it speaks (ADR 0078): the owner's Personality page, or a guest's own, PERSONALITY_MAX at
+   * most (`cut`: the page is longer). None: the Default preset's words.
+   */
+  personality?: { words: string; cut: boolean };
+  /** A guest's run (ADR 0078): the notes on their own memory page, cut to its cap. */
+  guestMemory?: string;
   /** A project's pages (ADR 0069), for a run in it: data, in a section of their own. */
   projectPages?: string;
   tools?: string;
@@ -226,15 +251,16 @@ export function buildPrompt(p: PromptInput): string {
           "",
           "This task is a guest's: a person the owner let use the web chat (ADR 0071). You are Shipify,",
           "their assistant here: you answer, research and make files for them. This run holds nothing of",
-          "the owner's: no GitHub key, notebook, tool or repo, and no other chat. Be brief and direct, say",
-          "what you're unsure of, and state a limit plainly. The playbook below is a guest's, and the",
-          `answer you can ask for is words, a question, files and the guest's own project's pages${p.guestCalls ? ", and the few calls below that the box makes for the guest" : ""}.`,
+          "the owner's: no GitHub key, notebook, tool or repo, and no other chat. The playbook below is a",
+          `guest's, and the answer you can ask for is words, a question, files, their own memory and their own project's pages${p.guestCalls ? ", and the few calls below that the box makes for the guest" : ""}.`,
+          "",
+          ...voiceLines(p, "guest"),
         ]
       : [
           "You are Shipify, the owner's personal assistant, not only a coder: you answer, research, plan,",
           "remind, draft, call their tools and change their projects, within what this run may do (below).",
-          "Be brief and direct, say what you're unsure of, and state a limit plainly rather than work",
-          "around it. The owner's words, then their notebook's notes on tone, win over this.",
+          "",
+          ...voiceLines(p, "owner"),
         ]),
     "",
     `# Task #${p.n} in ${p.repo}`,
@@ -290,7 +316,8 @@ export function buildPrompt(p: PromptInput): string {
           `- Files the ${guest ? "guest" : "owner"} sent, and files you make for them: \`${p.paths.files}\` (read) and \`${p.paths.out}\` (write).`,
           p.state.notes?.trim()
             ? `- Your handoff for the next run: \`${p.paths.out}/handoff.md\` is seeded with the last one (the Progress below): edit it in place as you work, keeping what still holds (Goal, Done, Next, Decisions, Open). The box keeps it however this run ends, even if it's stopped.`
-            : `- Your handoff for the next run: keep \`${p.paths.out}/handoff.md\` current as you work (Goal, Done, Next, Decisions, Open). The box keeps it however this run ends, even if it's stopped.`,
+            : // A plain answer keeps none (ADR 0078): no Progress, and one turn less.
+              `- Your handoff for the next run, when the work goes on past this reply: keep \`${p.paths.out}/handoff.md\` current as you work (Goal, Done, Next, Decisions, Open). The box keeps it however this run ends, even if it's stopped.`,
         ]),
     p.state.prs?.length
       ? `- PRs this task opened:\n${p.state.prs.map((u) => `  - ${u}`).join("\n")}`
@@ -301,6 +328,19 @@ export function buildPrompt(p: PromptInput): string {
     p.profile !== "read" && !guest && !p.account ? earlierFiles(p.repo, p.state.shared) : "",
     p.notes.length ? `\n## Notes from the box\n\n${p.notes.map((x) => `- ${x}`).join("\n")}` : "",
     p.notebook ? `\n## The notebook\n\n${p.notebook}` : "",
+    // A guest's memory (ADR 0078): their own page, which only their runs read.
+    guest
+      ? [
+          "",
+          "## Their memory",
+          "",
+          "What the guest asked you to remember, on their own page: only their runs read it. Follow it; their words in this task win.",
+          "",
+          p.guestMemory?.trim() || "(Nothing yet.)",
+          "",
+          'When they tell you a fact or a preference worth keeping, add it to `notes` (`[{"topic": "Memory", "line": "Short answers"}]`): only their words, one line each, nothing already here. When their newer words undo a line here, also put that line\'s words in `forget`. When they say how you should talk to them from now on (not about one reply), put their personality\'s new words, whole, in `personality`. The box writes these after the run, only when it read nothing from outside; else they say `remember: …`.',
+        ].join("\n")
+      : "",
     p.projectPages ? `\n## The project's pages\n\n${p.projectPages}` : "",
     p.tools ? `\n## Tools (look only)\n\n${p.tools}` : "",
     p.ownRules
@@ -356,8 +396,9 @@ export function buildPrompt(p: PromptInput): string {
           "the owner asked from what you read; you ask for no change, note, repeat or call.",
         ]
       : [
-          `Bring \`${p.paths.out}/handoff.md\` up to date first, with what this run did and what's next: it's`,
-          "the chat's Progress, shown at its top.",
+          p.state.notes?.trim()
+            ? `Bring \`${p.paths.out}/handoff.md\` up to date first, with what this run did and what's next: it's\nthe chat's Progress, shown at its top.`
+            : `When the work goes on past this reply, bring \`${p.paths.out}/handoff.md\` up to date first: it's\nthe chat's Progress. A plain answer writes none.`,
           `Write \`${p.paths.result}\` as JSON, then stop; your final answer in the same shape counts too, if`,
           "that file isn't yours to write. The box makes every change you ask for; you never push, open,",
           "merge or close a PR, or call a tool that changes something.",
@@ -375,7 +416,8 @@ export function buildPrompt(p: PromptInput): string {
       ? ""
       : `- A field has a size limit (\`work.brief\` 2,000 characters, a note's \`line\` 500). What's longer\n  (a plan, a long brief) goes whole into a file: ${p.profile === "work" ? "a doc committed in your clone, or " : ""}a file in your out folder, named in\n  \`files\`. The field holds a summary and where the rest is.`,
     "- `question`: one clear question, when you need the owner; `choices`, up to three short answers",
-    '  to it when there are some ("Yes, match it"), which a chat shows as buttons.',
+    '  to it when there are some ("Yes, match it"), which a chat shows as buttons; with no question,',
+    "  up to 3 next steps (the playbook says when).",
     p.profile === "work" && p.ownRules
       ? '- `pr`: `{"kind": "closes", "title": "…", "body": "…"}` once your commits are in your clone and\n  its own tests pass (its CI checks the PR). `kind`: `closes` (finishes the task) or `part-of`.'
       : p.profile === "work"
@@ -393,6 +435,8 @@ export function buildPrompt(p: PromptInput): string {
                 ]
               : []),
             "- `files`: names of files you put in your out folder for the guest (at most 10).",
+            '- `notes`: `[{"topic": "Memory", "line": "…"}]`, `forget` and `personality`: as "Their memory"',
+            "  above says.",
             // Its tools' guest forms (ADR 0073): made at once, for the guest alone.
             ...(p.guestCalls
               ? [
@@ -421,7 +465,8 @@ export function buildPrompt(p: PromptInput): string {
             '- `first`: `{"title": "<repo>: …", "brief": "…"}`: one task, a fix on `main` this task needs',
             "  before it can go on (the playbook's \"A task first\"): listed for the owner's `yes`, then opened",
             "  and started, and this task waits. It comes alone: no `pr`, `work`, `calls` or `split` with it.",
-            '- `notes`: `[{"topic": "Preferences", "line": "…"}]`: the owner\'s own words to keep.',
+            '- `notes`: `[{"topic": "Preferences", "line": "…"}]`: the owner\'s own words to keep; `forget`',
+            "  and `personality`: as the notebook says.",
             ...(p.projectPages
               ? [
                   '- `pages`: `[{"page": "<topic>", "file": "<file>"}]`: a project page\'s whole new text, in a file in your out folder (5 at most); the box writes it (`skills/knowledge`).',

@@ -499,7 +499,8 @@ export async function page(n) {
   set(
     tools,
     own && dl,
-    T.doc && A.btn("Edit", edit, ".btn"),
+    // A closed project's doc is read-only (task #744): Reopen the project to edit it.
+    T.doc && !T.doc.shut && A.btn("Edit", edit, ".btn"),
     !A.GUEST && A.ext(T.url, "History", ".btn"),
   );
   read();

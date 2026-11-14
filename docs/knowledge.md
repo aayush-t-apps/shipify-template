@@ -45,7 +45,8 @@ week, it goes on a project's page.
 6. When the digest or the project's page says so: "collate the inbox".
 7. Back after a break: read Now, then the Map, then the chats' Progress.
 8. Before a decision: "check the project".
-9. Finished: **Close** the project. Its open chats close with it; its pages stay.
+9. Finished: **Close** the project. Its open chats and its pages close with it; its pages stay
+   in the Library, read-only. You close nothing by hand.
 
 ## A project
 
@@ -87,26 +88,37 @@ week, it goes on a project's page.
   refused when the doc changed after you opened it, and starts no run.
 - **It stays.** A project and its chats never close by themselves. **Close** puts it away, and
   closes its open chats as done: but one a run is on, or a repeat or an errand keeps open, which
-  its reply names. Writing on a chat opens it again. Their files go 30 days after.
+  its reply names. Its pages close with it. Writing on a chat opens it again. Their files go 30
+  days after.
 
 ## Open or closed
 
 A project is open or closed, and every screen shows which. Closed means put away: nothing new
-goes into it, and its docs stay.
-- **Close** asks first, in the web chat: "Close games and its 2 open chats? Its docs stay in the
-  Library, read-only. Its files go from 5 Dec, unless you reopen it before." Its reply says the
-  same, every time, and names the chats it closed and the ones it left open.
+goes into it, and its docs stay. Its pages follow it on GitHub too: open while it's open, closed
+while it's closed, so no page of a closed project waits for you to close it.
+- **Close** asks first, in the web chat: "Close games and its 2 open chats? Its docs close with it
+  and stay in the Library, read-only. Its files go from 5 Dec, unless you reopen it before." Its
+  reply says the same, every time, and names the chats it closed and the ones it left open. A run
+  with no agent sees to it: it closes the open chats, then the project's pages (the issues
+  labelled `project:games`), as completed.
 - **Closed, it's read-only.** Its screen says when it closed, what stays and when its files go,
   and shows **Reopen** and **Export** only: no box, New chat here, Add, Collate or Check. Its docs
-  are under **Closed projects** in the Library, and Find and Files mark it "closed".
+  are under **Closed projects** in the Library, and Find and Files mark it "closed". A doc of it
+  opens in the pane with no **Edit**. A run in one of its chats still reads its pages, closed as
+  they are, and `ship notebook read` finds one by its topic.
 - **Words that would add to it** write nothing, and say how to go on: `add games: …` and
   `remember games: …` answer "games is closed · #n: Reopen it first. Nothing was written." A run
   in one of its chats is told the project is closed: it keeps no page, and Keep on page and
   "collate the inbox" say it's read-only.
-- **Reopen** opens the project alone: its chats stay closed. Write on one (its Chats tab) to open
-  it, or start a new chat in it.
+- **Reopen** opens the project and its pages: its chats stay closed. Write on one (its Chats tab)
+  to open it, or start a new chat in it. Writing on the closed project's own thread opens it, and
+  its pages, the same way.
 - **Its files** (its chats' and its docs') go at the weekly clean-up 30 days after it closed. A
   chat left open under it closes after 30 quiet days, as one outside a project does.
+- **Nothing left open:** the weekly clean-up closes any page of a closed project that is still
+  open: one closed with GitHub's own Close button (which starts no run), one GitHub refused to
+  close, or one of a project closed before its pages followed it. A page a run or `add` writes
+  opens again, so a project reopened on GitHub's own button never gets a second page.
 
 ## Keep on page, and check the project
 
@@ -138,7 +150,7 @@ Three layers, cheapest first:
 | Research | chats and Inbox items | "collate the inbox" when 10 finds wait; **Keep on page** on good answers |
 | Decide | facts and open questions in Now | "check the project", then write the decision on the main page |
 | Build | repos named in the brief | a chat per change, a PR each |
-| Done | — | **Close**: its pages stay in the Library, read-only, under Closed projects |
+| Done | — | **Close**: its chats and pages close with it; its pages stay in the Library, read-only, under Closed projects |
 
 A project that never closes is an area (your health, your home): it works the same.
 
@@ -168,6 +180,7 @@ Each message you send starts one run. Its prompt holds these, in this order, and
 
 | Part | What | At most |
 |---|---|---|
+| **Your Personality** | how Shipify talks to you, first, in the prompt's opening lines; with none, the Default's words ([notebook.md](notebook.md#your-personality-adr-0078), ADR 0078) | 2,000 characters |
 | **The ask** | the chat's title and words, and its thread: whole, or past 40 KB its newest 8 messages and every new one whole, each older one a line | about 10k tokens |
 | **Progress** | where the chat's work stands, from its last run | 16,000 characters |
 | **The project** | its brief and repos, and its chats by title and state: the newest 30 and every one at work, waiting on you or failed; the rest are counted | 4,000 characters of brief, about 3 KB of chats |
@@ -179,6 +192,12 @@ A run reads the rest only when the ask needs it: a chat that bears on it, a page
 an older message, your other projects' pages and the on-demand Library (`ship notebook list`,
 then `ship notebook read`). So a run starts small, reads more on demand, and says what it couldn't
 see.
+
+**Memory across chats** (ADR 0078) works the same way, beside the Library: no list of your other
+chats goes in a prompt. When an ask builds on an earlier talk ("like last time"), the run finds
+it with `ship recall "<words>"` (Find by meaning, above) and reads it short with `ship recall
+<n>`: its Progress, its newest 2 messages, the rest one line each. A topic you come back to over
+many chats is a project; a fact for good is a note ([notebook.md](notebook.md#memory-across-chats-adr-0078)).
 
 ## Where each thing lives
 

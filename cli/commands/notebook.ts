@@ -3,10 +3,10 @@
 // only on demand, or by their project's runs), so these run where issues can be read: on a box (a
 // run's agent reads the rest of a page, or a Library page, with `ship notebook read`), not with the
 // PC's token.
-import { firstLine, sameTopic } from "../lib/notebook.ts";
+import { firstLine, type Page, sameTopic } from "../lib/notebook.ts";
 import { ok, type Result, ShipError } from "../lib/output.ts";
-import { tryOr } from "./task/context.ts";
-import { type Notebook, readLibrary } from "./task/notebook.ts";
+import { rec, tryOr } from "./task/context.ts";
+import { type Notebook, readLibrary, readProjectPages } from "./task/notebook.ts";
 
 /** Every page you or a run wrote: the always pages, then the Library's, any project's too. */
 function read(): Notebook {
@@ -40,11 +40,32 @@ export function notebookList(): Result {
   });
 }
 
-/** `ship notebook read <topic>`: one page in full, from the notebook or the Library. */
+/**
+ * A closed project's page (task #744: its pages close with it), read by its project's label: the
+ * project whose name the topic is, or starts (`games-pricing`), the longest name first.
+ */
+function closedProjectPage(topic: string): Page | undefined {
+  const t = topic.trim().toLowerCase();
+  const names = tryOr(() => rec().labels(), [] as string[])
+    .filter((l) => l.startsWith("project:"))
+    .map((l) => l.slice("project:".length))
+    .filter((n) => n && (t === n || t.startsWith(`${n}-`)))
+    .sort((a, b) => b.length - a.length);
+  for (const n of names) {
+    const page = tryOr(() => readProjectPages(n).pages, []).find((p) => sameTopic(p.topic, topic));
+    if (page) return page;
+  }
+  return undefined;
+}
+
+/**
+ * `ship notebook read <topic>`: one page in full, from the notebook or the Library; a closed
+ * project's too.
+ */
 export function notebookRead(topic: string | undefined): Result {
   if (!topic) throw new ShipError('Use: notebook read "<topic>"', "blocked");
   const nb = read();
-  const page = nb.pages.find((p) => sameTopic(p.topic, topic));
+  const page = nb.pages.find((p) => sameTopic(p.topic, topic)) ?? closedProjectPage(topic);
   if (!page)
     throw new ShipError(
       `No page "${topic}". Pages: ${nb.pages.map((p) => p.topic).join(", ") || "none"}.`,

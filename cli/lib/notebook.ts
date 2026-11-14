@@ -4,7 +4,15 @@
 // (`notes`), and the box writes it. The pure parts live here; reading and writing them is
 // commands/task/notebook.ts.
 import { z } from "zod";
-import { GUEST_LABEL, guestLabel, LIBRARY_LABEL, projectLabel } from "../contracts/index.ts";
+import {
+  GUEST_LABEL,
+  guestLabel,
+  guestPrefix,
+  LIBRARY_LABEL,
+  PERSONALITY_MAX,
+  projectLabel,
+  voiceOf,
+} from "../contracts/index.ts";
 import { maskSecrets } from "./safety.ts";
 
 export const NOTEBOOK_LABEL = {
@@ -49,6 +57,51 @@ export const guestLabels = (guest: string) => [
 
 /** A page's title: "Notebook: <Topic>". */
 export const PAGE_PREFIX = "Notebook: ";
+
+/**
+ * A guest's memory page's topic (ADR 0078): `<their prefix> memory`, one page each, labelled
+ * `library`, `guest` and `guest:<id>`, so no run of yours reads it and your lists leave it out.
+ */
+export const guestMemoryTopic = (guest: string) => `${guestPrefix(guest)} memory`;
+/** The most of a guest's memory page their prompt carries (ADR 0078 section 13). */
+export const GUEST_MEMORY_MAX = 8 * 1024;
+const VOICE_HEADING = "## Personality";
+const NOTES_HEADING = "## Notes";
+
+/** A guest's memory page in its two parts: its Personality (with its Before) and its notes. */
+export function memoryParts(body: string): { voice: string; notes: string } {
+  const at = body.indexOf(NOTES_HEADING);
+  const head = at < 0 ? body : body.slice(0, at);
+  return {
+    voice: head.replace(VOICE_HEADING, "").trim(),
+    notes: at < 0 ? "" : body.slice(at + NOTES_HEADING.length).trim(),
+  };
+}
+
+/** A guest's memory page from its two parts, each under its heading when it has words. */
+export const memoryPage = (p: { voice: string; notes: string }) =>
+  `${[
+    p.voice.trim() ? `${VOICE_HEADING}\n\n${p.voice.trim()}` : "",
+    p.notes.trim() ? `${NOTES_HEADING}\n\n${p.notes.trim()}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n")}\n`;
+
+/**
+ * A guest's memory, for their prompt (ADR 0078): their Personality first (PERSONALITY_MAX at
+ * most), then their notes, GUEST_MEMORY_MAX in all; what's past it is cut, and said.
+ */
+export function guestMemory(body: string): { voice: string; notes: string; cut: boolean } {
+  const p = memoryParts(body);
+  const voice = voiceOf(p.voice);
+  const kept = voice.slice(0, PERSONALITY_MAX);
+  const room = Math.max(0, GUEST_MEMORY_MAX - kept.length);
+  return {
+    voice: kept,
+    notes: p.notes.slice(0, room),
+    cut: voice.length > PERSONALITY_MAX || p.notes.length > room,
+  };
+}
 /** A page holds at most this much: a note that would pass it isn't added, and the reply says so. */
 export const MAX_PAGE = 60_000;
 /** The most of the pages a prompt carries in full; the rest by title and first line. */
@@ -88,6 +141,8 @@ export interface Page {
   from?: string;
   /** When its text last changed (ADR 0070): a run's write waits on none newer than its read. */
   editedAt?: string;
+  /** Closed on GitHub: a closed project's page, closed with it (task #744). */
+  closed?: true;
 }
 
 /** "preferences", "People" → "Preferences", "People": a page's topic as its title says it. */
@@ -329,7 +384,8 @@ export function librarySections(
 ): { notebook: string; project?: string } {
   const how = opts.canWrite
     ? [
-        'When the owner tells you a fact or a preference worth keeping, add it to `notes` in your result: `[{"topic": "Preferences", "line": "Answers in bullets"}]`. The box writes it after this run and the reply says so. Only what the owner said, one line each.',
+        'When the owner tells you a fact or a preference worth keeping, add it to `notes` in your result: `[{"topic": "Preferences", "line": "Answers in bullets"}]`. The box writes it after this run and the reply says so. Only what the owner said, one line each, and nothing the notebook says already.',
+        'When their newer words undo a line here, also put its words in `forget` (`["Lives in London"]`), and say "Updated: <old> → <new>". When they say how you should talk to them from now on ("be more casual"; not about one reply), put their Personality page\'s new words, whole, in `personality`.',
         "When they teach a way of working (the steps for a kind of job), don't note it: propose it as a change to `skills/` or `playbooks/` (a work run on shipify), so it's reviewed in a PR before every run follows it.",
         'The Library holds more pages that no run reads until it asks (a Journal, idea dumps, old research): `<ship> notebook list`, then `<ship> notebook read "<topic>"`, when the ask needs them.',
       ]

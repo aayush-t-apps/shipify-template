@@ -1,5 +1,16 @@
 // Projects you make and the Library (ADR 0069): the words that save with no run, and the names.
+// And a project's pages, which close and open with it (task #744).
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { notebookRead } from "../cli/commands/notebook.ts";
+import {
+  pagesTo,
+  readLibrary,
+  readProjectPages,
+  writePages,
+} from "../cli/commands/task/notebook.ts";
 import {
   captureOf,
   fromLine,
@@ -11,6 +22,7 @@ import {
   reposOf,
 } from "../cli/contracts/index.ts";
 import { collateNotes, pageWordNotes, projectLines } from "../cli/kernel/projects.ts";
+import { fakeGh } from "./fixtures/fakes.ts";
 
 describe("a collate's items: whose they are (ADR 0069, 0071)", () => {
   const door = "shipify-door[bot]";
@@ -223,5 +235,116 @@ describe("the words that save with no run (ADR 0069)", () => {
     expect(journalTopic("2026-11-02")).toBe("Journal 2026-11");
     expect(reposOf("Repos: shop-api, Shop-Web shop-api\n\nmore")).toEqual(["shop-api", "shop-web"]);
     expect(reposOf("no repos here")).toEqual([]);
+  });
+});
+
+describe("a project's pages close and open with it (task #744)", () => {
+  const GUEST = "guest-ana-3f9a2c";
+  const label = (name: string) => ({ name });
+  /** A page as GitHub keeps it, a run's own (so the notebook trusts it), open or closed. */
+  const page = (number: number, topic: string, labels: string[], state = "open") => ({
+    issue: {
+      number,
+      title: `Notebook: ${topic}`,
+      body: `# ${topic}\n\nfacts`,
+      state,
+      labels: labels.map(label),
+      user: { login: "github-actions[bot]" },
+    },
+    comments: [],
+  });
+  const lib = (name: string) => ["library", `project:${name}`];
+  /** Runs `f` against a fake GitHub with these pages; what GitHub holds after, by number. */
+  function onGitHub(others: Record<number, ReturnType<typeof page>>, f: () => void) {
+    const saved = { ...process.env };
+    const g = fakeGh({
+      others,
+      labels: [label("library"), label("project:health"), label("project:games")],
+    });
+    try {
+      Object.assign(process.env, g.env, { GITHUB_REPOSITORY: "o/shipify" });
+      delete process.env.SHIPIFY_ISSUES_TOKEN;
+      f();
+    } finally {
+      process.env = saved;
+    }
+    const held = JSON.parse(readFileSync(g.env.FAKE_GH_STATE, "utf8")).others;
+    return (n: number) => held[n].issue as { state: string; body: string };
+  }
+
+  it("closes the open pages under a project's label as completed, none of a guest's, and opens them again", () => {
+    let closed: { done: number[]; left: number[] } | undefined;
+    let opened: { done: number[]; left: number[] } | undefined;
+    const held = onGitHub(
+      {
+        40: page(40, "health", lib("health")),
+        41: page(41, "health-sources", lib("health")),
+        42: page(42, "health-old", lib("health"), "closed"),
+        43: page(43, "games", lib("games")),
+        44: page(44, "health-ana", [...lib("health"), "guest", `guest:${GUEST}`]),
+      },
+      () => {
+        closed = pagesTo("project:health", "closed");
+        opened = pagesTo("project:health", "open");
+      },
+    );
+    expect(closed).toEqual({ done: [40, 41], left: [] });
+    // Opened again: every page under it on your side, the one closed before too.
+    expect(opened).toEqual({ done: [40, 41, 42], left: [] });
+    expect(held(43).state).toBe("open");
+    expect(held(44).state).toBe("open");
+  });
+
+  it("reads a closed project's pages, open or closed; the on-demand Library leaves out a closed one's", () => {
+    let own: string[] = [];
+    let mine: string[] = [];
+    let all: string[] = [];
+    onGitHub(
+      {
+        40: page(40, "health", lib("health"), "closed"),
+        41: page(41, "health-sources", lib("health"), "closed"),
+        43: page(43, "games", lib("games")),
+        45: page(45, "Journal 2026-11", ["library"]),
+      },
+      () => {
+        const topics = (nb: { pages: { topic: string }[] }) => nb.pages.map((p) => p.topic);
+        own = topics(readProjectPages("health"));
+        mine = topics(readLibrary("health"));
+        all = topics(readLibrary("*"));
+      },
+    );
+    expect(own).toEqual(["health", "health-sources"]);
+    expect(mine).toEqual(["Journal 2026-11", "health", "health-sources"]);
+    expect(all).toEqual(["games", "Journal 2026-11"]);
+  });
+
+  it("`ship notebook read` finds a closed project's page by its project's label", () => {
+    let read: ReturnType<typeof notebookRead> | undefined;
+    onGitHub(
+      {
+        40: page(40, "health", lib("health"), "closed"),
+        41: page(41, "health-sources", lib("health"), "closed"),
+      },
+      () => {
+        read = notebookRead("health-sources");
+      },
+    );
+    expect(read?.summary).toBe("health-sources (#41)");
+  });
+
+  it("a run's write opens a page an open project left closed (one reopened on GitHub's own button)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pages-"));
+    writeFileSync(join(dir, "sources.md"), "# health-sources\n\n- [who-2024] a source\n");
+    let said: string[] = [];
+    const held = onGitHub({ 41: page(41, "health-sources", lib("health"), "closed") }, () => {
+      said = writePages([{ page: "health-sources", file: "sources.md" }], {
+        dir,
+        project: "health",
+        outside: false,
+      });
+    });
+    expect(said[0]).toContain("Wrote the page health-sources");
+    expect(held(41).state).toBe("open");
+    expect(held(41).body).toContain("[who-2024] a source");
   });
 });

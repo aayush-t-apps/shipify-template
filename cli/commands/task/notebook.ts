@@ -9,27 +9,36 @@ import {
   GUEST_LABEL,
   guestLabel,
   LIBRARY_LABEL,
+  PERSONALITY_TOPIC,
+  type PersonalityWord,
   PROJECT_LABEL,
   PROJECT_NAME,
+  presetOf,
   projectClosed,
   projectLabel,
   projectNameOf,
   projectOfLabels,
   readFrom,
   RUN_WRITER,
+  undoneVoice,
+  voiceOf,
   withoutLine,
+  withVoice,
 } from "../../contracts/index.ts";
 import { doorLogin } from "../../kernel/snapshot.ts";
 import { platformRepo } from "../../lib/github.ts";
 import type { RecordPage } from "../../lib/plugins/record.ts";
 import {
   dated,
+  guestMemoryTopic,
   hasHidden,
   guestLabels,
   libraryLabels,
   linesWith,
   looksSecret,
   MAX_PAGE,
+  memoryPage,
+  memoryParts,
   NEARLY_FULL,
   NOTEBOOK_LABEL,
   Note,
@@ -101,13 +110,14 @@ function trusted(login: string | undefined, body = "", guest?: string): boolean 
 }
 
 /**
- * The pages under a label that you or a run (or the door, for you) wrote and last edited. A
- * guest's pages (ADR 0071) are read only by that guest's runs (`guest`): yours never read them.
+ * The pages under a label that you or a run (or the door, for you) wrote and last edited: the open
+ * ones, or all (`state`). A guest's pages (ADR 0071) are read only by that guest's runs (`guest`):
+ * yours never read them.
  */
-function readPages(label: string, guest?: string): Notebook {
+function readPages(label: string, guest?: string, state: "open" | "all" = "open"): Notebook {
   const pages: Page[] = [];
   const skipped: string[] = [];
-  for (const p of rec().pages(label)) {
+  for (const p of rec().pages(label, state)) {
     const topic = topicOf(p.title);
     if (!topic) continue;
     const theirs = p.labels.some((l) => l.name === GUEST_LABEL);
@@ -130,6 +140,7 @@ function readPages(label: string, guest?: string): Notebook {
       ...(project ? { project } : {}),
       ...(from ? { from } : {}),
       ...(p.editedAt ? { editedAt: p.editedAt } : {}),
+      ...(p.state === "closed" ? { closed: true as const } : {}),
     });
   }
   return { pages, skipped };
@@ -143,26 +154,61 @@ const withFrom = (page: Page | undefined, body: string) =>
 export const readNotebook = (): Notebook => readPages(NOTEBOOK_LABEL.name);
 
 /**
- * A project's pages (ADR 0069): the Library's pages labelled `project:<name>`; a guest's project's,
- * for that guest's run alone (ADR 0071).
+ * A project's pages (ADR 0069): the Library's pages labelled `project:<name>`, open or closed, as
+ * they close and open with the project (task #744); a guest's project's, for that guest's run alone
+ * (ADR 0071).
  */
 export const readProjectPages = (name: string, guest?: string): Notebook =>
-  readPages(projectLabel(name), guest);
+  readPages(projectLabel(name), guest, "all");
 
 /**
- * The Library's pages a run reads on demand (ADR 0069): the always pages, then the `library` pages
- * of no project, or of this one (`*`: every project's); another project's pages stay out.
+ * The Library's pages a run reads on demand (ADR 0069): the always pages, then the open `library`
+ * pages of no project (`*`: every project's too), and this project's own, open or closed, by its
+ * label; another project's pages stay out.
  */
 export function readLibrary(project?: string): Notebook {
   const always = readNotebook();
   const library = readPages(LIBRARY_LABEL);
+  const own = project && project !== "*" ? readProjectPages(project) : undefined;
   return {
     pages: [
       ...always.pages,
-      ...library.pages.filter((p) => !p.project || project === "*" || p.project === project),
+      ...library.pages.filter((p) => !p.project || project === "*"),
+      ...(own?.pages ?? []),
     ],
-    skipped: [...always.skipped, ...library.skipped],
+    skipped: [...always.skipped, ...library.skipped, ...(own?.skipped ?? [])],
   };
+}
+
+/**
+ * A project's pages set to its state (task #744): each page under its label that isn't so already,
+ * on its side of the wall (a guest's project's, only theirs; yours, none of a guest's). Closed as
+ * completed. Setting a state twice is harmless. The pages it changed, and those GitHub refused.
+ */
+export function pagesTo(
+  label: string,
+  state: "open" | "closed",
+  guest?: string,
+): { done: number[]; left: number[] } {
+  const record = rec();
+  const side = (labels: string[]) =>
+    guest ? labels.includes(guestLabel(guest)) : !labels.includes(GUEST_LABEL);
+  const pages = record
+    .issues({ labels: [label], state: state === "open" ? "closed" : "open" })
+    .filter((i) => !i.pull_request && topicOf(i.title) && side(i.labels.map((l) => l.name)));
+  const done: number[] = [];
+  const left: number[] = [];
+  for (const p of pages)
+    try {
+      record.updateIssue(
+        p.number,
+        state === "open" ? { state } : { state, state_reason: "completed" },
+      );
+      done.push(p.number);
+    } catch {
+      left.push(p.number);
+    }
+  return { done, left };
 }
 
 /**
@@ -310,6 +356,220 @@ export function forget(words: string): string[] {
   ];
 }
 
+// ---------------------------------------------------------------- your Personality (ADR 0078)
+
+/** Words shown in a reply: their first 120 characters, on one line. */
+const shortly = (words: string) => {
+  const one = words.replace(/\s+/g, " ").trim();
+  return one.length > 120 ? `${one.slice(0, 119).trimEnd()}…` : one;
+};
+
+/** Why these words can't be a Personality or a note, or undefined when they can. */
+const refusedWords = (words: string) =>
+  hasHidden(words)
+    ? "it holds characters you can't see (zero-width or direction marks): type it again without them"
+    : looksSecret(words)
+      ? "it looks like a key or a password, and the notebook never keeps one"
+      : undefined;
+
+/**
+ * Your Personality page, `Notebook: Personality`: the open one, or else the newest closed one
+ * (`personality: default` closed it, and `undo` opens it again). One that someone other than you
+ * or a run wrote or last edited is left alone (`skipped`).
+ */
+function personalityPage(): { page?: Page; open: boolean; skipped?: true } {
+  const ours = rec()
+    .pages(NOTEBOOK_LABEL.name, "all")
+    .filter((p) => sameTopic(topicOf(p.title) ?? "", PERSONALITY_TOPIC))
+    .filter((p) => !p.labels.some((l) => l.name === GUEST_LABEL))
+    .sort((a, b) => (a.state === b.state ? b.number - a.number : a.state === "open" ? -1 : 1));
+  const p = ours[0];
+  if (!p) return { open: false };
+  if (!trusted(p.author, p.body) || (p.editor && !trusted(p.editor, p.body)))
+    return { open: p.state === "open", skipped: true };
+  const from = readFrom(p.body) ? p.body.split("\n", 1)[0] : undefined;
+  return {
+    page: {
+      number: p.number,
+      topic: PERSONALITY_TOPIC,
+      body: withoutLine(p.body),
+      url: p.url,
+      ...(from ? { from } : {}),
+    },
+    open: p.state === "open",
+  };
+}
+
+/**
+ * `personality: …`, a run's `personality`, or Setup's menu (ADR 0078): your Personality page's new
+ * words, whole (its last words kept under Before), the Default (the page closes), or its Before
+ * words back (`undo`). A guest's (`guest`) is the Personality on their own memory page. Returns
+ * what the reply says, a line each.
+ */
+export function setPersonality(set: PersonalityWord, guest?: string): string[] {
+  if ("set" in set) {
+    const why = refusedWords(set.set);
+    if (why) return [`Personality not changed: ${why}.`];
+  }
+  if (guest) return guestPersonality(set, guest);
+  const { page, open, skipped } = personalityPage();
+  if (skipped)
+    return [
+      "Personality not changed: its page was last edited by someone other than you or a run, so it's left alone until you save it again on GitHub.",
+    ];
+  const record = rec();
+  const write = (body: string, state?: "open" | "closed") => {
+    if (!page) return;
+    record.updateIssue(page.number, { body: withFrom(page, body), ...(state ? { state } : {}) });
+  };
+  if ("default" in set) {
+    if (!page || !open) return ["Your Personality is the Default already."];
+    write(withVoice(page.body, ""), "closed");
+    return [
+      "Personality: back to the Default, so its page is closed. `personality: undo` brings your words back.",
+    ];
+  }
+  if ("undo" in set) {
+    const back = page ? undoneVoice(page.body) : undefined;
+    if (!page || !back) return ["Nothing to change back: your Personality keeps no earlier words."];
+    write(back, open ? undefined : "open");
+    return [`Personality changed back: “${shortly(voiceOf(back))}”. ${pageUrl(page)}`];
+  }
+  const words = set.set.replace(/<!--/g, "&lt;!--").trim();
+  const preset = presetOf(words);
+  const said = `${preset ? `Personality: ${preset.name}` : "Personality updated"}: “${shortly(words)}”. Every chat from now on talks this way.`;
+  if (page) {
+    write(withVoice(page.body, words), open ? undefined : "open");
+    return [`${said} ${pageUrl(page)}`];
+  }
+  record.makeLabel(NOTEBOOK_LABEL);
+  const made = record.createIssue({
+    title: pageTitle(PERSONALITY_TOPIC),
+    body: `${words}\n`,
+    labels: [NOTEBOOK_LABEL.name],
+  });
+  return [`${said} ${pageUrl(made)}`];
+}
+
+// ---------------------------------------------------------------- a guest's memory (ADR 0078)
+
+/**
+ * A guest's memory page, theirs alone: none until they first use it. One someone else last edited
+ * on GitHub is left out (`skipped`), as a page of yours would be.
+ */
+export function readGuestMemory(guest: string): { page?: Page; skipped?: true } {
+  const read = readPages(LIBRARY_LABEL, guest);
+  const topic = guestMemoryTopic(guest);
+  const page = read.pages.find((p) => sameTopic(p.topic, topic));
+  return page ? { page } : read.skipped.some((t) => sameTopic(t, topic)) ? { skipped: true } : {};
+}
+
+/** What a guest is told when their page is left out: nothing is written over it. */
+const EDITED_ELSEWHERE =
+  "Your memory page was last edited by someone else, so it's left as it is: ask the person who invited you to save it again.";
+
+/** A guest's memory page written whole, or made with their labels, never yours. */
+function writeGuestMemory(guest: string, page: Page | undefined, body: string): Page {
+  const record = rec();
+  if (page) {
+    record.updateIssue(page.number, { body: withFrom(page, body) });
+    page.body = body;
+    return page;
+  }
+  const labels = [...libraryLabels(), ...guestLabels(guest)];
+  for (const l of labels) record.makeLabel(l);
+  const topic = guestMemoryTopic(guest);
+  const made = record.createIssue({
+    title: `${PAGE_PREFIX}${topic}`,
+    body,
+    labels: labels.map((l) => l.name),
+  });
+  return { number: made.number, topic, body, library: true };
+}
+
+/** A guest's Personality, on their memory page: as yours, with no page of its own to close. */
+function guestPersonality(set: PersonalityWord, guest: string): string[] {
+  const { page, skipped } = readGuestMemory(guest);
+  if (skipped) return [EDITED_ELSEWHERE];
+  const parts = memoryParts(page?.body ?? "");
+  if ("default" in set) {
+    if (!voiceOf(parts.voice)) return ["Your personality is the default already."];
+    writeGuestMemory(guest, page, memoryPage({ ...parts, voice: withVoice(parts.voice, "") }));
+    return ["Your personality is back to the default. `personality: undo` brings your words back."];
+  }
+  if ("undo" in set) {
+    const back = undoneVoice(parts.voice);
+    if (!back) return ["Nothing to change back: your personality keeps no earlier words."];
+    writeGuestMemory(guest, page, memoryPage({ ...parts, voice: back }));
+    return [`Your personality changed back: “${shortly(voiceOf(back))}”.`];
+  }
+  const words = set.set.replace(/<!--/g, "&lt;!--").trim();
+  writeGuestMemory(guest, page, memoryPage({ ...parts, voice: withVoice(parts.voice, words) }));
+  const preset = presetOf(words);
+  return [
+    `${preset ? `Your personality: ${preset.name}` : "Your personality is updated"}: “${shortly(words)}”. Your chats from now on talk this way.`,
+  ];
+}
+
+/** A guest's `remember: …` or their run's notes: lines on their memory page, never on yours. */
+export function rememberFor(guest: string, lines: string[]): string[] {
+  const said: string[] = [];
+  const read = readGuestMemory(guest);
+  if (read.skipped) return [EDITED_ELSEWHERE];
+  let page = read.page;
+  for (const raw of lines.slice(0, 5)) {
+    const line = raw
+      .replace(/<!--/g, "&lt;!--")
+      .replace(/\s*\n\s*/g, " ")
+      .trim();
+    const why =
+      !line || line.length > 500
+        ? "a note is one line, 500 characters at most"
+        : refusedWords(line);
+    if (why) {
+      said.push(`Not noted: ${why}.`);
+      continue;
+    }
+    const parts = memoryParts(page?.body ?? "");
+    const words = noteWords(line).toLowerCase();
+    if (
+      parts.notes
+        .split("\n")
+        .some((l) => /^\s*[-*]\s+/.test(l) && noteWords(l).toLowerCase() === words)
+    ) {
+      said.push(`Already noted: ${line}`);
+      continue;
+    }
+    const body = memoryPage({ ...parts, notes: withNote(parts.notes, dated(line, today())) });
+    if (body.length > MAX_PAGE) {
+      said.push("Not noted: your memory is full. Say `forget: …` to take some notes off first.");
+      continue;
+    }
+    page = writeGuestMemory(guest, page, body);
+    said.push(`Noted: ${line}. Your chats from now on know it.`);
+  }
+  return said;
+}
+
+/** A guest's `forget: …` or their run's `forget`: the one line on their memory page that holds it. */
+export function forgetFor(guest: string, words: string): string[] {
+  const want = words.trim();
+  if (!want) return ["What should I forget? Write it after `forget:`."];
+  const { page, skipped } = readGuestMemory(guest);
+  if (skipped) return [EDITED_ELSEWHERE];
+  const parts = memoryParts(page?.body ?? "");
+  const hits = linesWith(parts.notes, want);
+  if (!page || !hits.length) return [`Nothing in your memory says “${want}”.`];
+  if (hits.length > 1)
+    return [
+      `${hits.length} notes say “${want}”, so nothing was removed. Say \`forget:\` with more of the one you mean:`,
+      ...hits.slice(0, 10).map((l) => `- ${noteWords(l)}`),
+    ];
+  const line = hits[0] as string;
+  writeGuestMemory(guest, page, memoryPage({ ...parts, notes: withoutNote(parts.notes, line) }));
+  return [`Forgot: ${noteWords(line)}.`];
+}
+
 /**
  * A run's `pages` (ADR 0069): each page's whole new text, from a file in its out folder, written
  * with the notebook's checks (its size, no key, no hidden characters). A page of the run's own
@@ -405,7 +665,11 @@ export function writePages(
     const text = line && isMain ? withLog(w.text, w.page?.body ?? "", line) : w.text;
     let at: { number: number; url?: string; html_url?: string };
     if (w.page) {
-      record.updateIssue(w.page.number, { body: withFrom(w.page, text) });
+      // A page a run writes is open (task #744): one an open project left closed opens with it.
+      record.updateIssue(w.page.number, {
+        body: withFrom(w.page, text),
+        ...(w.page.closed ? { state: "open" as const } : {}),
+      });
       at = w.page;
     } else {
       const labels = [
@@ -427,7 +691,10 @@ export function writePages(
   }
   // A main page someone else last edited isn't read (`skipped`), so it gets no line either.
   if (line && main?.library && !theirs.some((w) => sameTopic(w.topic, main.topic)))
-    record.updateIssue(main.number, { body: withFrom(main, withLog(main.body, main.body, line)) });
+    record.updateIssue(main.number, {
+      body: withFrom(main, withLog(main.body, main.body, line)),
+      ...(main.closed ? { state: "open" as const } : {}),
+    });
   return said;
 }
 

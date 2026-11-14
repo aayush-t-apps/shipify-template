@@ -66,10 +66,18 @@ describe("a guest's prompt (ADR 0071)", () => {
     expect(p).not.toContain("## 1. Pick the lane");
   });
 
-  it("asks for words, files and its own project's pages: no PR, work, call, split, note or repeat", () => {
+  it("asks for words, files, its own memory and its own project's pages: no PR, work, call, split or repeat", () => {
     const p = buildPrompt(input({ projectPages: "### g3f9a2c-health\n\n# health" }));
-    for (const field of ["`files`", "`pages`", "`question`"]) expect(p, field).toContain(field);
-    for (const field of ["`pr`", "`work`", "`calls`", "`split`", "`notes`", "`repeat`", "`quiet`"])
+    for (const field of [
+      "`files`",
+      "`pages`",
+      "`question`",
+      "`notes`",
+      "`forget`",
+      "`personality`",
+    ])
+      expect(p, field).toContain(field);
+    for (const field of ["`pr`", "`work`", "`calls`", "`split`", "`repeat`", "`quiet`"])
       expect(p, field).not.toContain(`- ${field}:`);
     // Without its own project, no pages either.
     expect(buildPrompt(input())).not.toContain("- `pages`:");

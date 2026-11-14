@@ -481,6 +481,10 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
     ]);
     expect(read.closed[2]?.parent).toEqual({ number: 50, state: "open", labels: ["project"] });
     expect(read.projects.map((i) => [i.number, i.title])).toEqual([[50, "Project: shop"]]);
+    // The open Library pages (task #744): the closed project's page left open is among them.
+    expect(read.pages.map((i) => [i.number, i.labels])).toEqual([
+      [42, ["library", "project:trip"]],
+    ]);
     // The oldest first too, and none with a label the 30-day close leaves open (#46).
     expect(read.quiet.map((i) => [i.number, i.openParts, i.openPrs])).toEqual([
       [45, 0, 0],

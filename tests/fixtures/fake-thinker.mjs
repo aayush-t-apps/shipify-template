@@ -210,6 +210,30 @@ const out = result
 if (result && !process.env.FAKE_WORK) writeFileSync(join(out, "talk-prompt.md"), prompt);
 writeFileSync(join(out, next ? "next-prompt.md" : "prompt.md"), prompt);
 writeFileSync(join(out, "argv.json"), JSON.stringify(process.argv.slice(2)));
+// FAKE_LOOK: a command it runs calls the run's look server, as any command could, with the token
+// its environment holds (ADR 0077); what it got, and the tools' settings it was given, kept.
+if (process.env.FAKE_LOOK) {
+  const argv = process.argv.slice(2);
+  const config = JSON.parse(readFileSync(argv[argv.indexOf("--mcp-config") + 1], "utf8"));
+  const [name, server] = Object.entries(config.mcpServers)[0];
+  const r = await fetch(server.url, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${process.env.SHIPIFY_LOOK_TOKEN}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: process.env.FAKE_LOOK, arguments: { text: "from a command" } },
+    }),
+  });
+  writeFileSync(
+    join(out, "look.json"),
+    JSON.stringify({ config, name, status: r.status, answer: await r.json() }),
+  );
+}
 // The keys it was handed (names only), and where it ran: what a read run holds (ADR 0044).
 writeFileSync(
   join(out, "env.json"),
@@ -218,6 +242,8 @@ writeFileSync(
       "GH_TOKEN",
       "SHIPIFY_AGENT_READ_TOKEN",
       "SHIPIFY_NOTION_READ",
+      "SHIPIFY_JOT_READ",
+      "SHIPIFY_LOOK_TOKEN",
       "CLAUDE_CODE_OAUTH_TOKEN",
     ].filter((k) => process.env[k]),
     login,

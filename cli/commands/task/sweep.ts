@@ -1,15 +1,16 @@
-// The weekly clean-up's own two steps (ADR 0069 §2, §15), with no agent: the files of chats closed
+// The weekly clean-up's own steps (ADR 0069 §2, §15), with no agent: the files of chats closed
 // 30 to 60 days ago (or since the last clean-up) go from the edge's store with the files no chat
-// used, and a chat quiet for 30 days closes. Each box runs its own clean-up (watch.ts), so these
-// run once a week in all, however many boxes: the status record keeps when they last ran, as it
-// keeps the digest's time, and what they did. One read finds it all (the record's `sweep`), and
-// one more for each project closed in the window.
+// used, a chat quiet for 30 days closes, and a closed project's pages left open close (task #744).
+// Each box runs its own clean-up (watch.ts), so these run once a week in all, however many boxes:
+// the status record keeps when they last ran, as it keeps the digest's time, and what they did.
+// One read finds it all (the record's `sweep`), and one more for each project closed in the window.
 import {
   DEPLOYING_LABEL,
   LIBRARY_LABEL,
   PROJECT_LABEL,
   projectLabel,
   projectNameOf,
+  projectOfLabels,
   STATUS_LABEL,
   STAYING_LABEL,
   SUB_TASK_LABEL,
@@ -81,6 +82,26 @@ export const sweepDue = (last: string | undefined, at: Date) =>
 /** A chat in an open project: its parent is one (its sub-issue, or moved in with `in-project`). */
 const inOpenProject = (i: SweptIssue) =>
   Boolean(i.parent?.labels.includes(PROJECT) && i.parent.state === "open");
+/** The open projects' names, as their pages' `project:<name>` labels say them. */
+const openNames = (read: SweepRead) =>
+  new Set(read.projects.map((p) => projectNameOf(p.title)).filter(Boolean));
+/** The most open projects the read takes: past it, one more may be open. */
+const MOST_PROJECTS = 100;
+
+/**
+ * The open pages of a project that isn't open (task #744): a project's pages close with it, so
+ * these are what a close left open (on GitHub's own button, which starts no run; one GitHub
+ * refused; a project closed before its pages followed it). None when the open projects fill the
+ * read, as a project past it may be open.
+ */
+export function pagesToClose(read: SweepRead): SweptIssue[] {
+  if (read.projects.length >= MOST_PROJECTS) return [];
+  const open = openNames(read);
+  return read.pages.filter((i) => {
+    const name = projectOfLabels(i.labels);
+    return Boolean(name && !open.has(name));
+  });
+}
 
 /**
  * The chats whose files go (ADR 0069 §15): each one closed in the window that isn't in an open
@@ -89,7 +110,7 @@ const inOpenProject = (i: SweptIssue) =>
  * number). An open chat of a closed project keeps its files: it's still yours.
  */
 export function filesToForget(read: SweepRead, items: Map<number, ProjectItems>): number[] {
-  const names = new Set(read.projects.map((p) => projectNameOf(p.title)).filter(Boolean));
+  const names = openNames(read);
   const kept = (i: SweptIssue) =>
     inOpenProject(i) ||
     i.labels.some((l) => l.startsWith(`${PROJECT}:`) && names.has(l.slice(PROJECT.length + 1)));
@@ -154,6 +175,8 @@ export interface SweepIo {
   forget(chats: number[]): Promise<Forgotten>;
   /** Closed as completed, with its status line; whether it was. */
   close(i: SweptIssue, at: string): Promise<boolean>;
+  /** A page closed as completed (a page has no status line); whether it was. */
+  closePage(n: number): Promise<boolean>;
 }
 
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
@@ -163,11 +186,11 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 const numbers = (ns: number[]) => ns.map((n) => `#${n}`).join(", ");
 
 /**
- * The two steps, as the clean-up's summary says what each really did: "deleted 12 files (8 MB) of
+ * The steps, as the clean-up's summary says what each really did: "deleted 12 files (8 MB) of
  * 4 closed chats", "no files to delete for 3 closed chats" (none had any, or a pass before took
  * them), "2 files no chat used (1 MB), 60 days old", "closed 2 chats quiet for 30 days (#20,
- * #31)", and what didn't happen, to try next week. With the files deleted in all, for the status
- * record; `last` is the last clean-up's start.
+ * #31)", "closed 3 pages of closed projects (#40, #41, #42)", and what didn't happen, to try next
+ * week. With the files deleted in all, for the status record; `last` is the last clean-up's start.
  */
 export async function sweep(
   at: Date,
@@ -213,6 +236,16 @@ export async function sweep(
     );
   if (left.length)
     said.push(`couldn't close ${plural(left.length, "quiet chat")} (${numbers(left)}): next week`);
+  // A closed project's pages left open close (task #744), so none waits to be closed by hand.
+  const shut: number[] = [];
+  const open: number[] = [];
+  for (const p of pagesToClose(read)) ((await io.closePage(p.number)) ? shut : open).push(p.number);
+  if (shut.length)
+    said.push(`closed ${plural(shut.length, "page")} of closed projects (${numbers(shut)})`);
+  if (open.length)
+    said.push(
+      `couldn't close ${plural(open.length, "page")} of closed projects (${numbers(open)}): next week`,
+    );
   return {
     said: said.join("; ") || "nothing to clear",
     deleted: gone.deleted + gone.unclaimed,
@@ -278,4 +311,19 @@ export async function closeQuiet(
   return true;
 }
 
-const liveIo = (): SweepIo => ({ record: rec(), forget: forgetFiles, close: closeQuiet });
+/** A page closed as completed, with no status line: a page has none (task #744). */
+async function closePage(n: number): Promise<boolean> {
+  try {
+    rec().updateIssue(n, { state: "closed", state_reason: "completed" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const liveIo = (): SweepIo => ({
+  record: rec(),
+  forget: forgetFiles,
+  close: closeQuiet,
+  closePage,
+});

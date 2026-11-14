@@ -20,10 +20,11 @@
 //
 // Nothing secret goes on a command line or into the agent's environment by accident: every command
 // starts from an empty environment (`env -i`) with only the names given, and secrets (a read-only
-// token, the tools' look keys) reach it on stdin, ahead of its own input. The agent's login comes
-// that way too, and goes on fd 3, a pipe it reads once: never in its environment, where every
-// command it runs could read it. Write tokens, the run's OIDC request, the workflow's token and any
-// channel or door key are refused outright.
+// token, the run's look token) reach it on stdin, ahead of its own input. The tools' look keys never
+// reach it: the look server holds them, as a user of its own (LOOK_USER, ADR 0077). The agent's
+// login comes that way too, and goes on fd 3, a pipe it reads once: never in its environment, where
+// every command it runs could read it. Write tokens, the run's OIDC request, the workflow's token
+// and any channel or door key are refused outright.
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -410,6 +411,52 @@ export function asAgentNow(
   });
   if (r.timedOut) killAll(slot, io);
   return { code: r.timedOut ? 124 : r.code, stdout: r.stdout, stderr: r.stderr };
+}
+
+// ---------------------------------------------------------------- the look server's user (ADR 0077)
+
+/**
+ * The look server's user (box setup 16): it holds the tools' look keys for a run, and nothing else.
+ * One for every slot, as each slot's server holds the same keys; never an agent's, nor the runner.
+ */
+export const LOOK_USER = "shipify-look";
+
+/**
+ * How the runner starts a command as the look server's user: `sudo -n -u shipify-look`, from an
+ * empty environment, as an agent's command starts. What it needs comes on its stdin, never a
+ * command line. Spawned with SPAWN_ENV, from `/`.
+ */
+export const lookArgs = (argv: string[]): string[] => [
+  "-n",
+  "-u",
+  LOOK_USER,
+  "--",
+  "/usr/bin/env",
+  "-i",
+  `PATH=${AGENT_PATH}`,
+  "HOME=/nonexistent",
+  `USER=${LOOK_USER}`,
+  `LOGNAME=${LOOK_USER}`,
+  "LANG=C.UTF-8",
+  ...(process.env.TZ ? [`TZ=${process.env.TZ}`] : []),
+  ...argv,
+];
+
+/**
+ * Whether this box has the look server's user (box setup 16), read with `id`: never through sudo,
+ * whose refusal of a user it doesn't know fills a run's log with two lines of errors.
+ */
+export const lookUserThere = (): boolean =>
+  spawnSync("id", ["-u", LOOK_USER], { stdio: "ignore" }).status === 0;
+
+/** A look server that didn't end with its stdin, stopped by its own process ID, as its user. */
+export function stopLook(pid: number, io: SandboxIo = REAL_IO): void {
+  if (!Number.isInteger(pid) || pid < 2) return;
+  io.run("sudo", ["-n", "-u", LOOK_USER, "--", "kill", "-KILL", String(pid)], {
+    cwd: "/",
+    env: SPAWN_ENV,
+    timeoutMs: 30_000,
+  });
 }
 
 /**

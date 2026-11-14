@@ -1,6 +1,7 @@
-// The weekly clean-up's own two steps (ADR 0069, cli/commands/task/sweep.ts): closed chats' files
-// and the 30-day close, once a week in all, however many boxes. And each box's own task folders
-// (cli/commands/task/lifecycle.ts), which grow now that an answered task stays open.
+// The weekly clean-up's own steps (ADR 0069, cli/commands/task/sweep.ts): closed chats' files, the
+// 30-day close and a closed project's pages left open (task #744), once a week in all, however many
+// boxes. And each box's own task folders (cli/commands/task/lifecycle.ts), which grow now that an
+// answered task stays open.
 import { mkdirSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import { cleanUpTasks } from "../cli/commands/task/lifecycle.ts";
 import {
   cleanable,
   filesToForget,
+  pagesToClose,
   QUIET_CLOSED,
   quietToClose,
   type SweepIo,
@@ -37,7 +39,7 @@ const project = (number: number, name: string, state: "open" | "closed" = "open"
 const inProject = (n: number, state: "open" | "closed" = "open") => ({
   parent: { number: n, state, labels: ["project"] },
 });
-const none: SweepRead = { closed: [], projects: [], quiet: [] };
+const none: SweepRead = { closed: [], projects: [], pages: [], quiet: [] };
 /** The door's answer when it deleted nothing. */
 const gone = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0 };
 const chat = (number: number, state: "open" | "closed" = "closed") => ({ number, state });
@@ -90,6 +92,7 @@ describe("the weekly clean-up's files (ADR 0069)", () => {
         return { ...gone, deleted: 9, bytes: 12_400_000 };
       },
       close: async () => true,
+      closePage: async () => true,
     };
     expect(await sweep(AT, io)).toEqual({
       said: "deleted 9 files (12 MB) of 4 closed chats",
@@ -148,6 +151,7 @@ describe("the weekly clean-up's files (ADR 0069)", () => {
         return { ...gone, unclaimed: 2, unclaimedBytes: 1_200_000 };
       },
       close: async () => true,
+      closePage: async () => true,
     };
     expect(await sweep(AT, io)).toEqual({
       said: "deleted 2 files no chat used (1 MB), 60 days old",
@@ -183,6 +187,7 @@ describe("the weekly clean-up's files (ADR 0069)", () => {
       },
       forget: async () => gone,
       close: async () => true,
+      closePage: async () => true,
     };
     await sweep(AT, io, "2026-08-01T03:00:00.000Z");
     // A week ago: 60 days still, so a week the door didn't take is tried again.
@@ -227,6 +232,7 @@ describe("the 30-day close (ADR 0069)", () => {
         closed.push([i.number, at]);
         return i.number !== 32;
       },
+      closePage: async () => true,
     };
     expect((await sweep(AT, io)).said).toBe(
       "closed 3 chats quiet for 30 days (#20, #36, #37); couldn't close 1 quiet chat (#32): next week",
@@ -253,6 +259,45 @@ describe("the 30-day close (ADR 0069)", () => {
     // Every open chat, up to tomorrow, with none of the labels the 30-day close leaves open.
     expect(asked?.quietBefore).toBe("2026-11-03");
     expect(asked?.quietWithout).toContain("needs you");
+  });
+});
+
+describe("a closed project's pages left open (task #744)", () => {
+  const page = (number: number, name?: string) =>
+    issue(number, {
+      title: `Notebook: ${name ?? `journal ${number}`}`,
+      labels: ["library", ...(name ? [`project:${name}`] : [])],
+    });
+  const pages = [page(40, "shop"), page(41, "trip"), page(42), page(43, "trip"), page(44, "gone")];
+
+  it("closes the open pages of every project that isn't open; an open project's and a page of none stay", () => {
+    const read = { ...none, projects: [project(50, "shop")], pages };
+    expect(pagesToClose(read).map((i) => i.number)).toEqual([41, 43, 44]);
+  });
+
+  it("closes none when the open projects fill the read: one past its 100 may be open", () => {
+    const full = Array.from({ length: 100 }, (_, i) => project(100 + i, `p${i}`));
+    expect(pagesToClose({ ...none, projects: full, pages })).toEqual([]);
+  });
+
+  it("closes each one and says so in the clean-up's summary; one it couldn't is said too", async () => {
+    const shut: number[] = [];
+    const io: SweepIo = {
+      record: {
+        sweep: () => ({ ...none, projects: [project(50, "shop")], pages }),
+        projectItems: () => ({ chats: [], pages: [] }),
+      },
+      forget: async () => gone,
+      close: async () => true,
+      closePage: async (n) => {
+        shut.push(n);
+        return n !== 44;
+      },
+    };
+    expect((await sweep(AT, io)).said).toBe(
+      "closed 2 pages of closed projects (#41, #43); couldn't close 1 page of closed projects (#44): next week",
+    );
+    expect(shut).toEqual([41, 43, 44]);
   });
 });
 

@@ -55,10 +55,11 @@ export const shortDay = (ms: number) =>
     .replace(".", "");
 /**
  * What a project's close says, every time (ADR 0069): what stays, what goes and when, and how to
- * undo it. `closedAt`: when it closed (ISO).
+ * undo it. Its docs close with it, and open again with it (task #744). `closedAt`: when it closed
+ * (ISO).
  */
 export const closedProjectText = (closedAt: string) =>
-  `Its docs stay in the Library, read-only. Its files go from ${shortDay(Date.parse(closedAt) + FILES_KEPT_DAYS * 86_400_000)}, unless you reopen it before.`;
+  `Its docs close with it and stay in the Library, read-only. Its files go from ${shortDay(Date.parse(closedAt) + FILES_KEPT_DAYS * 86_400_000)}, unless you reopen it before.`;
 /** A word that would add to a closed project, refused (ADR 0069): nothing is written. */
 export const projectClosed = (name: string, n: number) =>
   `${name} is closed · #${n}: Reopen it first. Nothing was written.`;

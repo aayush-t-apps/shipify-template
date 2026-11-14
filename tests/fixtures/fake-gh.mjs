@@ -450,7 +450,7 @@ if (args[1] === "graphql") {
     };
     out({
       data: Object.fromEntries(
-        ["closed", "projects", "quiet", "inboxes"]
+        ["closed", "projects", "pages", "quiet", "inboxes"]
           .filter((k) => vars[k])
           .map((k) => [k, page(k, find(vars[k]))]),
       ),
@@ -666,6 +666,17 @@ if (method === "GET" && mainOf) {
   if (!sha) fail("Not Found (HTTP 404)");
   out(rest.includes("--jq") ? sha : { sha });
   save();
+  process.exit(0);
+}
+// GitHub's issue search (ADR 0078's `recall`, as the web chat's Find): state.searched, the items it
+// gives whatever the words, as GitHub lists them. A search by meaning (search_type=hybrid) says so
+// in its answer; state.searchRefused, a status (403, 422, 429), is GitHub refusing one.
+if (method === "GET" && path?.startsWith("search/issues?")) {
+  const hybrid = new URLSearchParams(path.split("?")[1]).get("search_type") === "hybrid";
+  save();
+  if (hybrid && state.searchRefused) fail(`HTTP ${state.searchRefused}: refused`);
+  const items = state.searched ?? [];
+  out({ total_count: items.length, items, ...(hybrid ? { search_type: "hybrid" } : {}) });
   process.exit(0);
 }
 // More issues than the task's (#12): ones the door opens (ADR 0027), in state.others by number.

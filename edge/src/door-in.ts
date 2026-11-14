@@ -231,13 +231,16 @@ export async function doorIn(req: Request, env: Env, deps: Deps, ch: Channel): P
 
 /** The commands answered at once that a guest may use (ADR 0071): the rest say what's yours. */
 const GUEST_INSTANT = new Set(["help", "models"]);
-/** What only you save (ADR 0071): a note, or a Journal line. */
-const ONLY_YOU = /^\s*(?:(?:remember|forget)\b[^:\n]*:|jot\s*:)/i;
+/**
+ * What only you save (ADR 0071): a Journal line. A guest's `remember:`, `forget:` and
+ * `personality:` go through, and write their own memory page alone (ADR 0078).
+ */
+const ONLY_YOU = /^\s*jot\s*:/i;
 
 /**
- * Whether these words are only yours to say (ADR 0071): a note, a Journal line, or a fixed word a
- * guest never says (NOT_A_GUESTS, the box's list too). A plain `yes` or `no` stays words: it
- * answers a guest's own run, and approves nothing (the box never reads a guest's words as yours).
+ * Whether these words are only yours to say (ADR 0071): a Journal line, or a fixed word a guest
+ * never says (NOT_A_GUESTS, the box's list too). A plain `yes` or `no` stays words: it answers a
+ * guest's own run, and approves nothing (the box never reads a guest's words as yours).
  */
 function onlyYou(words: string) {
   const fixed = wordOf(words);
@@ -701,10 +704,9 @@ async function write(
     }
   }
   // `close` or `reopen`: the task changes at once, and the word is written after as a setting (ADR
-  // 0040; a part's close as words, below): no run, the chat is told now, and the next run that
-  // reads the task notes it. A close
-  // takes the state labels off in the same write. Already so, or GitHub failing to change it: said,
-  // and nothing is written.
+  // 0040; a part's close and a project's close or reopen as words, below): no run, the chat is told
+  // now, and the next run that reads the task notes it. A close takes the state labels off in the
+  // same write. Already so, or GitHub failing to change it: said, and nothing is written.
   const turn = task !== null && !file ? turnOf(text, task) : undefined;
   if (task !== null && turn) {
     if (open === (turn === "reopen")) return say(ALREADY(task, Boolean(open)), "already");
@@ -724,11 +726,13 @@ async function write(
     open = !open;
   }
   // A part's close (ADR 0066) is a run's to see to, as it starts what waited for it, and so is a
-  // project's, as it closes the project's open chats: its word is written as words, so its run is
-  // never one that skips. GitHub keeps one waiting run per task, and the newest takes its place: a
-  // setting's run would take the close's and skip.
+  // project's close and reopen, as its open chats close and its pages close and open with it (task
+  // #744): its word is written as words, so its run is never one that skips. GitHub keeps one
+  // waiting run per task, and the newest takes its place: a setting's run would take the close's
+  // and skip.
   const seenTo =
-    turn === "close" && (labels.includes(SUB_TASK_LABEL) || labels.includes(PROJECT_LABEL));
+    (turn === "close" && labels.includes(SUB_TASK_LABEL)) ||
+    (turn !== undefined && labels.includes(PROJECT_LABEL));
   const from: From = {
     v: 1,
     person,

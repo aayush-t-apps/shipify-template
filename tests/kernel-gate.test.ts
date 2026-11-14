@@ -242,17 +242,21 @@ describe("a run that reads someone else's repo (ADR 0044)", () => {
     expect(agentSecrets("CLAUDE_CODE_OAUTH_TOKEN", {})).toEqual({
       CLAUDE_CODE_OAUTH_TOKEN: "the-login",
     });
-    // Each tool's look keys, as tools.json names them; never an act key.
+    // No tool's key, look or act, whatever the job holds: the run's look server holds the look
+    // keys (ADR 0077), and the agent only the run's token for it, when the run offers tools.
     expect(Object.keys(agentSecrets("CLAUDE_CODE_OAUTH_TOKEN")).sort()).toEqual([
       "CLAUDE_CODE_OAUTH_TOKEN",
       "GH_TOKEN",
-      "SHIPIFY_DROP_READ_ID",
-      "SHIPIFY_DROP_READ_SECRET",
-      "SHIPIFY_DROP_URL",
-      "SHIPIFY_NOTION_READ",
     ]);
+    expect(
+      agentSecrets("CLAUDE_CODE_OAUTH_TOKEN", { github: "ghs_read", look: "the-run-token" }),
+    ).toEqual({
+      CLAUDE_CODE_OAUTH_TOKEN: "the-login",
+      GH_TOKEN: "ghs_read",
+      SHIPIFY_LOOK_TOKEN: "the-run-token",
+    });
     // A run on another of your accounts (ADR 0045): that account's key, and no tool's.
-    expect(agentSecrets("CLAUDE_CODE_OAUTH_TOKEN", { github: "acme-key", tools: false })).toEqual({
+    expect(agentSecrets("CLAUDE_CODE_OAUTH_TOKEN", { github: "acme-key" })).toEqual({
       CLAUDE_CODE_OAUTH_TOKEN: "the-login",
       GH_TOKEN: "acme-key",
     });
@@ -957,4 +961,93 @@ describe("a conflict with main never leaves markers behind", () => {
     expect(at("notes.txt")).toBe("ours\n");
     expect(at("change.txt")).toBe("x\n");
   }, 60_000);
+});
+
+describe("the run's look server (ADR 0077)", () => {
+  it("holds the tools' look keys: the agent gets the run's token, and a call made any way is in the run's record", async () => {
+    // A tool whose look key is set: the stand-in logs each call to the file its key names.
+    const jots = join(dir, "jots.jsonl");
+    writeFileSync(
+      join(dir, "tools.json"),
+      JSON.stringify({
+        version: 1,
+        jot: {
+          description: "A list of jots",
+          run: [process.execPath, join(ROOT, "tests/fixtures/fake-mcp.mjs")],
+          keys: { JOT_LOG: { look: "SHIPIFY_JOT_READ", act: "SHIPIFY_JOT_WRITE" } },
+          look: ["list"],
+          act: ["add"],
+        },
+      }),
+    );
+    Object.assign(process.env, {
+      SHIPIFY_TOOLS_FILE: join(dir, "tools.json"),
+      SHIPIFY_JOT_READ: jots,
+      SHIPIFY_JOT_WRITE: "never-the-agents",
+      SHIPIFY_AGENT_LOGIN: "the-login",
+      // A command the agent runs calls the look server itself, not its own tool (FAKE_LOOK).
+      FAKE_LOOK: "list",
+      FAKE_RESULT: JSON.stringify({ v: 2, state: "done", text: "Looked." }),
+    });
+    const talk: Think = { profile: "talk", why: "new", notes: [], fresh: [], web: false };
+    const { out, result, placeOut } = await run(snap(), {}, talk);
+    expect(result).toMatchObject({ state: "done", text: "Looked." });
+    // It held the run's token. (Off a box the agent inherits this process's environment, the jot
+    // key too; on one it starts from nothing, and gets what agentSecrets hands it: above, no key.)
+    const env = JSON.parse(readFileSync(placeOut("env.json"), "utf8"));
+    expect(env.keys).toContain("SHIPIFY_LOOK_TOKEN");
+    // Its settings name the tool at the look server, on this machine, with the token by name.
+    const look = JSON.parse(readFileSync(placeOut("look.json"), "utf8"));
+    expect(look.name).toBe("jot");
+    expect(look.config.mcpServers.jot).toEqual({
+      type: "http",
+      url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/jot$/),
+      headers: { Authorization: `Bearer \${SHIPIFY_LOOK_TOKEN}` },
+    });
+    expect(JSON.stringify(look.config)).not.toContain(jots);
+    // The call went through, with the look key, which the look server alone gave the tool's server.
+    expect(look.status).toBe(200);
+    expect(JSON.stringify(look.answer)).toContain("added from a command");
+    expect(readFileSync(jots, "utf8")).toContain('"name":"list"');
+    // The look server recorded it, though the agent's own report names no tool's call: the run
+    // read from outside (ADR 0049).
+    expect(out.meta).toMatchObject({ looked: ["jot"], readOutside: true });
+    const prompt = readFileSync(placeOut("prompt.md"), "utf8");
+    expect(prompt).toContain("- jot: `mcp__jot__list`");
+    // Gone with the run: its port answers no more.
+    await expect(fetch(look.config.mcpServers.jot.url, { method: "POST" })).rejects.toThrow();
+  }, 90_000);
+
+  it("leaves the run without tools when it doesn't start, and says why: never the keys instead", async () => {
+    writeFileSync(
+      join(dir, "tools.json"),
+      JSON.stringify({
+        version: 1,
+        jot: {
+          description: "A list of jots",
+          run: [process.execPath, join(ROOT, "tests/fixtures/fake-mcp.mjs")],
+          keys: { JOT_LOG: { look: "SHIPIFY_JOT_READ" } },
+          look: ["list"],
+        },
+      }),
+    );
+    Object.assign(process.env, {
+      SHIPIFY_TOOLS_FILE: join(dir, "tools.json"),
+      SHIPIFY_JOT_READ: join(dir, "jots.jsonl"),
+      FAKE_RESULT: JSON.stringify({ v: 2, state: "done", text: "No tools." }),
+    });
+    const talk: Think = { profile: "talk", why: "new", notes: [], fresh: [], web: false };
+    // A CLI that isn't there: the look server can't start, as on a box before setup 16.
+    const { out, placeOut } = await run(
+      snap(),
+      { lookCli: `${process.execPath} ${join(dir, "none.mjs")}` },
+      talk,
+    );
+    const env = JSON.parse(readFileSync(placeOut("env.json"), "utf8"));
+    expect(env.keys).not.toContain("SHIPIFY_LOOK_TOKEN");
+    expect(readFileSync(placeOut("argv.json"), "utf8")).not.toContain("--mcp-config");
+    const prompt = readFileSync(placeOut("prompt.md"), "utf8");
+    expect(prompt).toMatch(/- jot: not connected on this run \(the box's look server didn't start/);
+    expect(out.details?.notes?.join("\n")).toMatch(/look server didn't start.*without tools/);
+  }, 90_000);
 });

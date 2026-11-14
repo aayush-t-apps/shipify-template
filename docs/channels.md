@@ -84,11 +84,12 @@ You don't need to know any word: type what you want, and tap the rest (ADR 0042)
   shortened. A list over 3,000 characters shows its heading alone, which says to approve it on
   GitHub.
 - **The run's one line:** "Sonnet · 48 s · 3 tool calls".
-- **Buttons that send words** (ADR 0042): a question's short answers; the fixed words a reply asks
-  for (Continue, Close…); **Another model** under a failure; **Stop repeating** under a reminder;
-  **Keep on page** under an answer in a project's chat that kept nothing yet (it sends "keep this
-  on the page", ADR 0070). Under a list, only **Yes** and **No**: none of the others, so a tap
-  can't drop the list by mistake.
+- **Buttons that send words** (ADR 0042): a question's short answers, or a reply's next steps
+  with no question (ADR 0078); the fixed words a reply asks for (Continue, Close…); **Another
+  model** under a failure; **Stop repeating** under a reminder; **Keep on page** under an answer
+  in a project's chat that kept nothing yet (it sends "keep this on the page", ADR 0070); **Change
+  it back** under a Personality change (`personality: undo`). Under a list, only **Yes** and
+  **No**: none of the others, so a tap can't drop the list by mistake.
   A tap is the same as typing those words as a reply: the same checks, and a setting starts no run.
   The tapped message's buttons go once spent, so a tap can't be sent twice by mistake. A tap on a
   message Telegram no longer shows whole (so its task can't be read) is told, and nothing is
@@ -228,9 +229,10 @@ chat, where a doc or a file opens.
 
 **What the first screen loads** (ADR 0069): the page with the Desk, 43 KB at most as sent. The
 rest loads the first time it's used, each with its own budget: the Library (`library.js`), Find
-in this chat (`find.js`), diagrams (`draw.js`), a file's shrink and upload (`attach.js`), New
-project's form (`project.js`), and the styles of the model picker, Status & setup and New repeat
-(`pick.css`, `setup.css`, `repeat.css`). One that can't load says so.
+in this chat (`find.js`), diagrams (`draw.js`), a file's shrink and upload (`attach.js`), a pull
+down to refresh (`pull.js`, on the first touch), New project's form (`project.js`), and the
+styles of the model picker, Status & setup and New repeat (`pick.css`, `setup.css`,
+`repeat.css`). One that can't load says so.
 
 **Projects you make** (ADR 0069, `project.js`; the process: [knowledge.md](knowledge.md)):
 - **In the list,** projects come first, under a **Projects** heading, each a card folded with its
@@ -395,6 +397,9 @@ as **Change a repo** writes it); a task with none is **General**.
   The changes** and the merge are on GitHub, which shows the diff (the door App can't read files).
 - **A question's answers are buttons:** when the run gave short answers to its question, each is a
   button that sends it as your words ("Yes, match it").
+- **Next steps are buttons too** (ADR 0078): a reply with no question may end with up to 3 next
+  steps, when one is clear ("Make it a task", "Remind me Monday at 9"). A tap sends those words in
+  that chat; nothing starts until you tap, and a next step is never `yes` or `no`.
 - **The box:** words; 📎 files and photos, or paste; one model chip ("Auto · Sonnet", "Pi ·
   glm-5.3-flash · High"), from `executors.json`, which sends a `use` line so you never type one.
   On a task it shows what its runs use (a `use` in its first message too) until you pick again;
@@ -433,8 +438,9 @@ as **Change a repo** writes it); a task with none is **General**.
 - **The words a reply asks for are buttons,** the same ones Telegram shows, from one list
   (`replyButtons`, `cli/contracts/answers.ts`): the fixed words the newest reply names (`continue`,
   `close`, `reopen`, `again`, `resume`, `no`, `stop`, `stop repeating`), **Another model** under a
-  failure (it opens the chip), and **Stop repeating** under a reminder. Under a list, only **Yes**
-  and **No** (ADR 0049). `go`, `start over`, `preview` and `publish` are buttons too, as every
+  failure (it opens the chip), **Stop repeating** under a reminder, and **Change it back** under a
+  Personality change (it sends `personality: undo`, ADR 0078). Under a list, only **Yes** and
+  **No** (ADR 0049). `go`, `start over`, `preview` and `publish` are buttons too, as every
   word works from a chat. So a run
   stopped by your plan's limit is one tap to carry on once it resets. The door's own answers
   (`/use`, `/tasks`) stand here as text: the chip and the list do the same.
@@ -471,6 +477,11 @@ as **Change a repo** writes it); a task with none is **General**.
     key, set 2026-10-06" from `SHIPIFY_GATEWAYS`, which `pnpm ship add openrouter --yes` writes,
     or "no key" with that command to copy; or its own login, with the days to renew it), its Auto
     and efforts, and its models.
+  - **Personality** (ADR 0078), the first card: how Shipify talks to you, as a menu of Default,
+    Friendly, Candid, Efficient, Quirky and Custom. A preset is set as you pick it; Custom opens
+    your words with **Save**, and the card links the page. Each sends `personality: …`, which the
+    box writes with no run ([notebook.md](notebook.md#your-personality-adr-0078)). Saying it in
+    any chat ("be more casual with me") does the same.
   - **Cards,** side by side on a PC: keys and dates (each with a bar of the days left), tools (the
     chats are under Chats), the boxes (which task each busy slot is on, when its health was last
     read, its console), projects, chats and the door, each saying how to change it. **Check its health** starts a task, with Haiku, that looks at the box
@@ -502,14 +513,23 @@ as **Change a repo** writes it); a task with none is **General**.
   and while a run works it's read every 30 seconds (the thread shows the run every 5).
 - **↻** in each header (left of **New chat**, and in a thread's or a page's) does what coming back
   does: what's on screen is read at once, and a newer version of the page loads if nothing is
-  typed. It turns until the read ends, and what you've typed stays. Dragging down is the
-  browser's own reload of the whole page.
+  typed. It turns until the read ends, and what you've typed stays. **On a phone, pulling down**
+  at the top of the list, a thread or a page does the same (ADR 0078): ↻ lights once you've
+  pulled far enough, and letting go there reads. A tap or a pull while a read is going is ignored.
+  The browser's own pull-to-refresh stays off, so a pull never reloads the page and loses what
+  you typed.
 - **Limits, said before you send:** up to 5 files a message, 95 MB each, kept while their chat (or
   its project) is open and 30 days after it closes (ADR 0069); several land
   on one task as an album. Photos are shrunk to 2,048 px in your browser, which drops their
   location and camera details. A message holds 16,000 characters: past that the box says how many
   over and doesn't send (attach it as a file instead). A run takes 5 of a task's chat files, the
   newest you sent first, and names the older ones ([tasks.md](tasks.md)).
+- **Uploads** (ADR 0078): a file you add is in the box at once, and **Send** says "Uploading…" and
+  waits until it's sent up, also while a photo is made smaller (a photo that can't be made smaller
+  goes as it is). An upload that fails while the network is up asks the edge once: if Access's
+  sign-in ended, it says "Your sign-in ended: tap to sign in again", as a message does; really
+  offline, "Offline". A file that failed offline is sent again once, by itself, when the network
+  comes back; **Retry** stays on it.
 - **Never type a key into it:** your words land on a GitHub task. The page warns before sending
   anything that looks like a key.
 
@@ -540,9 +560,9 @@ edge's one Worker on Cloudflare's free plan, and GitHub is the record:
   keeps them, and the edge fetches one when you look.
 - **Your browser:** the list, the menu (models, projects) and the last 30 threads you opened, so
   the page opens at once; the groups you folded and the doc pane's width. The page's service
-  worker keeps the page's own files (the page, its scripts, styles, manifest and icon), so it opens
-  offline too: each comes from the network first, and the last copy when that fails. What the
-  page reads (`api/…`) it never keeps.
+  worker keeps the page's own files (the page, its scripts, styles, manifest and icon, and the
+  Desk's), so the first screen opens offline too after a first visit: each comes from the network
+  first, and the last copy when that fails. What the page reads (`api/…`) it never keeps.
 
 **Coming back to it** (another app, the phone asleep, the tab again): away, it asks for nothing.
 Back, it reads what's on screen at once (the list, the thread, or the page you're on, redrawn
@@ -726,7 +746,11 @@ your agents and models (`use …`) but Codex, which thinks with your own ChatGPT
 their picker doesn't list it, and `use codex` is refused). No Jot, Library, Apps, Repeats, Setup,
 status page or run details.
 A run that stays after its answer (ADR 0057) answers a guest's next words as it does yours.
-Refused with one line, writing nothing: `remember`, `forget`, `jot`, `/tasks`, `/apps`, `/ping`,
+**Their own memory** (ADR 0078): their `remember: …`, `forget: …` and `personality: …`, and what
+their runs note, go on a page of their own that only their runs read
+([notebook.md](notebook.md#a-guests-memory-adr-0078)); they set how Shipify talks to them by
+saying so, as you do (Setup's menu is yours).
+Refused with one line, writing nothing: `jot`, `/tasks`, `/apps`, `/ping`,
 `/repos`, `/notebook`, `/recipes`, and every fixed word only you say: `yes <code>`, `no <code>`,
 `go` (`go #n`, `go.`), `publish`, `preview`, `start over`, `clean start`. A plain `yes` or `no`
 answers their own run. A repo's name in their words is only words: no clone, no PR.
@@ -743,7 +767,8 @@ no more calls; in Drop, their drops end within 30 days, or at once with **Revoke
 **What keeps your things yours:**
 - Each person sees only their own: the edge checks every read and write against the record (the
   door's from-line naming the guest, their files' prefix), never against what the page sends.
-- Their runs hold no GitHub key, notebook or tool of yours, and get caches of their own. Your
+- Their runs hold no GitHub key, notebook, Personality or tool of yours, and get caches of their
+  own; their memory page never reaches a run of yours. Your
   login reaches their agent on a pipe, as for your runs, so no command finds it: never an agent
   whose login is a file (Codex), whose task the default agent takes instead. Their commands'
   environment holds nothing of yours: no login, people list, repo or Cloudflare values.

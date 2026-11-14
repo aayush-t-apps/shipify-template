@@ -84,7 +84,7 @@ say what's wrong.
 |---|---|
 | `description` | what it reaches |
 | `run` | the command that starts its MCP server (a path in this repo). Or `url` and `headers`, for a remote one |
-| `keys` | each variable its server reads, and the secret it comes from per verb: `look` (read-only: the think step) and `act` (write: the apply step, only for approved calls) |
+| `keys` | each variable its server reads, and the secret it comes from per verb: `look` (read-only: the think step, which hands it to the run's look server, never the agent, ADR 0077) and `act` (write: the apply step, only for approved calls) |
 | `oneKey` | `true` when the provider has no read-only key: both verbs name one secret |
 | `look` · `act` | its calls, sorted: reads the agent makes, and changes the box makes after your `yes`. A call in neither is never offered |
 | `args` | per act call, its argument schema (`required`, `properties`): a proposal that doesn't fit is dropped and said |
@@ -181,7 +181,8 @@ adapter's own variables (Claude Code: `CLAUDE_CONFIG_DIR`, `DISABLE_AUTOUPDATER=
 `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`; pi: `PI_CODING_AGENT_DIR`, `PI_OFFLINE=1`,
 `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, `SHIPIFY_LOGIN_FD=3`; OpenCode: `OPENCODE_CONFIG`,
 its `XDG_*` folders, the `OPENCODE_DISABLE_*` switches, `SHIPIFY_LOGIN_FD=3`; Codex: `CODEX_HOME`); on stdin, a read-only
-`GH_TOKEN` and the tools' look keys; on fd 3, a pipe it reads once, its login (its own, or its
+`GH_TOKEN` and, when the run offers tools, the run's look token (`SHIPIFY_LOOK_TOKEN`: the
+tools' look keys stay with the run's look server, ADR 0077); on fd 3, a pipe it reads once, its login (its own, or its
 gateway's key), never in its environment ([agents.md](agents.md)). Codex's login, your ChatGPT
 session, is a file in its run's `CODEX_HOME` instead (ADR 0074).
 

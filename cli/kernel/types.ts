@@ -1,6 +1,13 @@
 // The core's data (ADR 0031): a snapshot of a task, read once, and the writes a run makes. Plain
 // values, so decide is tested as `snapshot → writes` with no GitHub.
-import type { From, Link, Problem, ReplyKind, ToolCall } from "../contracts/index.ts";
+import type {
+  From,
+  Link,
+  PersonalityWord,
+  Problem,
+  ReplyKind,
+  ToolCall,
+} from "../contracts/index.ts";
 import type { FormRead } from "../lib/form-reader.ts";
 import type { SessionUsed } from "../lib/plugins/agent.ts";
 import type { NewPart, RecordFamily } from "../lib/plugins/record.ts";
@@ -281,6 +288,8 @@ export type Write =
       list?: string;
       /** An answer in a project's chat (ReplyLine's `keep`, ADR 0070): **Keep on page** under it. */
       keep?: true;
+      /** A Personality change (ReplyLine's `undo`, ADR 0078): **Change it back** under it. */
+      undo?: true;
       links?: Link[];
       files?: string[];
       problem?: Problem;
@@ -291,11 +300,20 @@ export type Write =
       outside?: true;
     }
   | { w: "labels"; add?: string[]; remove?: string[] }
-  /** `forget: …`: the one note holding these words, taken off its page by the box. */
-  | { w: "forget"; words: string }
+  /**
+   * `forget: …`, or a run's `forget` (ADR 0078): the one note holding these words, taken off its
+   * page by the box. A guest's (`guest`, by their id) comes off their memory page alone.
+   */
+  | { w: "forget"; words: string; guest?: string }
   | { w: "close"; reason?: "completed" | "not_planned" }
   | { w: "reopen" }
-  | { w: "note"; topic: string; line: string }
+  | { w: "note"; topic: string; line: string; guest?: string }
+  /**
+   * `personality: …`, or a run's `personality` (ADR 0078): the Personality page's new words (a
+   * preset's by its name), the Default (`default`: the page closes) or its last words (`undo`). A
+   * guest's is the Personality on their memory page.
+   */
+  | { w: "personality"; set: PersonalityWord; guest?: string }
   /**
    * Library pages rewritten from the run's files (ADR 0069): its project's, or, when it read
    * nothing from outside, the Library's own (a Journal); never an always page or another project's.
@@ -321,6 +339,12 @@ export type Write =
    * project's as you close it. `why` is their status line: a clean start's when none is given.
    */
   | { w: "close-chats"; chats: { number: number; labels: string[] }[]; why?: string }
+  /**
+   * A project's pages (its `project:<name>` label) closed or opened with it (task #744): closed as
+   * it closes, open as it opens again, so none waits to be closed by hand. A guest's project's
+   * (`guest`, their id) takes only their pages; yours, none of a guest's.
+   */
+  | { w: "project-pages"; label: string; state: "open" | "closed"; guest?: string }
   | {
       w: "push";
       repo: string;

@@ -14,8 +14,8 @@
 //   0043; its bubblewrap fails on a Pi anyway), and commands get the run's whole environment;
 // - Shipify's gate as its PreToolUse hook (gate.mjs, with pi's gate beside it and the run's rules,
 //   gate.json), which checks each command, patch and tool call before it runs, its helpers' too;
-// - the look tools' MCP servers, only their look calls enabled and approved, keys named, never
-//   their values;
+// - the look tools, each at the run's look server (ADR 0077), only their look calls enabled and
+//   approved, the run's token named, never its value;
 // - Shipify's skills, linked where it reads a user's ($HOME/.agents/skills).
 // Its answer: the result file, or its final message in the result's shape.
 import { spawn, spawnSync } from "node:child_process";
@@ -29,7 +29,6 @@ import {
   type AgentRun,
   agentFile,
   asResult,
-  command,
   fetchesOutside,
   loadTools,
   type OutputReader,
@@ -79,41 +78,30 @@ function settings(run: AgentRun): string[] {
   ];
   if (run.effort) set.push(["model_reasoning_effort", run.effort]);
   if (run.commands?.web === false) set.push(["web_search", "disabled"]);
-  // The look tools' servers: only their look calls enabled, approved (with no one to ask, an MCP
-  // call that needs approval is refused), keys named, never their values. A local server gets its
-  // keys under the names it reads through a shell (Codex passes a variable on by its own name
-  // only); a remote one, its bearer token or a header that is one key.
+  // The look tools, each a remote one at the run's look server (`offered`, ADR 0077): only their
+  // look calls enabled, approved (with no one to ask, an MCP call that needs approval is refused),
+  // its bearer token or a header that is one key named by its variable, never its value.
   const mode = run.tools?.mode ?? "look";
-  const all = offered(loadTools(), run.tools?.only);
+  const all = offered(loadTools(), run.tools?.served);
   const look: string[] = [];
   for (const [name, calls] of Object.entries(runTools(all, mode, process.env).ready)) {
     const t = all[name];
-    if (!t) continue;
+    if (!t?.url) continue;
     const vars = Object.entries(t.keys).map(([v, k]) => [v, secretFor(k, mode)] as const);
-    let where: Record<string, unknown> | undefined;
-    if (t.url) {
-      const named = (v: string) => vars.find(([x]) => v === `\${${x}}`)?.[1];
-      const bearer = /^Bearer (\$\{\w+\})$/.exec(t.headers?.Authorization ?? "")?.[1];
-      const headers = Object.entries(t.headers ?? {}).filter(
-        ([h]) => !(bearer && h === "Authorization"),
-      );
-      const env = headers.map(([h, v]) => [h, named(v)] as const);
-      if (env.every(([, v]) => v) && (!bearer || named(bearer)))
-        where = {
-          url: t.url,
-          ...(bearer ? { bearer_token_env_var: named(bearer) } : {}),
-          ...(env.length ? { env_http_headers: Object.fromEntries(env) } : {}),
-        };
-    } else {
-      const c = command(t.run as string[], run.tools?.root);
-      const exports = vars.map(([v, s]) => `${v}="$${s}"`).join(" ");
-      where = {
-        command: "sh",
-        args: ["-c", `${exports} exec "$0" "$@"`, c.command, ...c.args],
-        env_vars: vars.map(([, s]) => s),
-      };
-    }
-    if (!where) continue;
+    // A tool's variable, or else a variable of the agent's own by that name (the run's token).
+    const named = (v: string) =>
+      vars.find(([x]) => v === `\${${x}}`)?.[1] ?? /^\$\{(\w+)\}$/.exec(v)?.[1];
+    const bearer = /^Bearer (\$\{\w+\})$/.exec(t.headers?.Authorization ?? "")?.[1];
+    const headers = Object.entries(t.headers ?? {}).filter(
+      ([h]) => !(bearer && h === "Authorization"),
+    );
+    const env = headers.map(([h, v]) => [h, named(v)] as const);
+    if (!env.every(([, v]) => v) || (bearer && !named(bearer))) continue;
+    const where = {
+      url: t.url,
+      ...(bearer ? { bearer_token_env_var: named(bearer) } : {}),
+      ...(env.length ? { env_http_headers: Object.fromEntries(env) } : {}),
+    };
     set.push([
       `mcp_servers.${name}`,
       { ...where, enabled_tools: calls, default_tools_approval_mode: "approve" },

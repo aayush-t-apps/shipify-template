@@ -154,14 +154,15 @@ const title = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const button = (words: string, label = title(words)): Button => ({ label, words });
 
 /**
- * A reply's buttons, the same for every chat: the agent's quick answers to its question, then the
- * fixed words its words name, Another model on a failure, and Stop repeating under a reminder. A
- * question with no quick answers opens the reply box (`asks`) instead; with them, a tap replies.
- * Nothing else opens it. Under a list (ADR 0049) only its Yes (`yes <code>`, so it approves that
- * list alone) and No: none for a list too long for a chat to show whole, approved on GitHub.
+ * A reply's buttons, the same for every chat: the agent's quick answers to its question (or, with
+ * none, its next steps, ADR 0078), then the fixed words its words name, Another model on a failure,
+ * Stop repeating under a reminder, and Change it back under a Personality change. A question with
+ * no quick answers opens the reply box (`asks`) instead; with them, a tap replies. Nothing else
+ * opens it. Under a list (ADR 0049) only its Yes (`yes <code>`, so it approves that list alone) and
+ * No: none for a list too long for a chat to show whole, approved on GitHub.
  */
 export function replyButtons(
-  r: Pick<ReplyLine, "kind" | "state" | "question" | "choices" | "list" | "keep">,
+  r: Pick<ReplyLine, "kind" | "state" | "question" | "choices" | "list" | "keep" | "undo">,
   md: string,
 ): { rows: Button[][]; asks: boolean } {
   const asks = Boolean(r.question);
@@ -171,21 +172,21 @@ export function replyButtons(
         r.list === "github" ? [] : [[button(`yes ${r.list}`, "Yes"), button(`no ${r.list}`, "No")]],
       asks,
     };
-  // A quick answer "Yes" or "No" stays text: tapped later, it would answer a list.
-  const answers = r.question
-    ? (r.choices ?? [])
-        .filter((c) => {
-          const w = wordOf(c);
-          return !w || !LIST_WORDS.includes(w);
-        })
-        .map((c) => button(c, c))
-    : [];
+  // A quick answer or a next step "Yes" or "No" stays text: tapped later, it would answer a list.
+  const answers = (r.choices ?? [])
+    .filter((c) => {
+      const w = wordOf(c);
+      return c.length <= 60 && (!w || !LIST_WORDS.includes(w));
+    })
+    .map((c) => button(c, c));
   const words = asked(md).map((w) => button(w));
   if (r.kind === "failed") words.push(button(PICKER, "Another model"));
   if (r.state === REMINDER && !words.some((b) => b.words === "stop repeating"))
     words.push(button("stop repeating"));
   // An answer in a project's chat (ADR 0070): its key facts filed on the project's pages.
   if (r.keep) words.push(button("keep this on the page", "Keep on page"));
+  // A Personality change (ADR 0078): its last words back.
+  if (r.undo) words.push(button("personality: undo", "Change it back"));
   return {
     rows: [answers, words].filter((row) => row.length),
     // A question always asks: a chat opens its reply box on it when none of its buttons fit.

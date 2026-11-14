@@ -150,6 +150,11 @@ class El {
           .filter((x) => x !== c)
           .join(" ");
       },
+      contains: (c: string) => l().includes(c),
+      toggle: (c: string, on = !l().includes(c)) => {
+        this.className = [...l().filter((x) => x !== c), ...(on ? [c] : [])].join(" ");
+        return on;
+      },
     };
   }
   focus() {}
@@ -227,10 +232,14 @@ describe("the page", () => {
   // Find button took the page to 43 KB; a project's screen (four tabs) took project.js to 5 KB, and
   // a doc with Edit in the pane, Files by project, workspace.js to 10. A repo's page that counts
   // only what the list has open (never a thread kept on the device), its figures in one row and its
-  // chats' titles in two lines took workspace.js to 10.4 KB: 11.
+  // chats' titles in two lines took workspace.js to 10.4 KB: 11. The web chat's fixes (ADR 0078,
+  // section 10): a file's work after it's in the box went to attach.js (2 KB still), which left the
+  // page room for ↻ one at a time; a pull down to refresh is pull.js, loaded on the first touch, 1.
+  // Setup's Personality card (ADR 0078: a menu of presets, your own words, Save) took setup.js and
+  // .css from 5.9 KB to 6.2: 7.
   const LAZY = {
     workspace: 11,
-    setup: 6,
+    setup: 7,
     plan: 3,
     repeat: 4,
     pick: 5,
@@ -241,6 +250,7 @@ describe("the page", () => {
     find: 2,
     draw: 2,
     attach: 2,
+    pull: 1,
   };
   /** Parts loaded as the page is, on the first screen: they count in its 43 KB too. */
   const FIRST = ["desk"];
@@ -299,12 +309,13 @@ describe("the page", () => {
     expect(js).toContain('lazy("library")');
     expect(js).toContain('lazy("find")');
     expect(js).toContain('lazy("draw")');
-    // The model picker and a file's upload, by the box they're for: never imported at its top
-    // either.
+    // The model picker and a file's upload, by the box they're for, and a pull down to refresh, by
+    // ↻'s helper: never imported at its top either.
     const co = readFileSync(join(ROOT, dir, "compose.js"), "utf8");
     expect(co).toContain('import("./pick.js")');
     expect(co).toContain('import("./attach.js")');
-    expect(co).not.toMatch(/^import[^;]*(?:pick|attach)/m);
+    expect(co).toContain('import("./pull.js")');
+    expect(co).not.toMatch(/^import[^;]*(?:pick|attach|pull)/m);
     // A part with its own stylesheet asks for it as it loads, and is ready once it's in.
     for (const k of ["workspace", "plan", "project", "desk", "setup", "repeat", "pick"]) {
       expect(files(dir), k).toContain(`${dir}/${k}.css`);
@@ -313,12 +324,12 @@ describe("the page", () => {
       );
     }
     expect(co).toContain("p.init().then(() => p.picker(");
-    // Each takes what the page lends it, and nothing else of the page's.
+    // Each takes what the page lends it, and nothing else of the page's (a pull needs nothing).
     for (const k of Object.keys(LAZY)) {
       const part = readFileSync(join(ROOT, dir, `${k}.js`), "utf8");
       expect(part, k).toMatch(/export (?:function|const) init\b/);
       const from = [...part.matchAll(/from "(\.[^"]+)"/g)].map((m) => m[1]);
-      expect(from, k).toEqual(["./compose.js"]);
+      expect(from, k).toEqual(k === "pull" ? [] : ["./compose.js"]);
     }
     // What app.js asks of the workspace, it has.
     const ws = readFileSync(join(ROOT, dir, "workspace.js"), "utf8");
@@ -332,7 +343,8 @@ describe("the page", () => {
       library: ["library"],
       find: ["find"],
       draw: ["draw"],
-      attach: ["upload", "shrink"],
+      attach: ["add", "put", "upload", "shrink"],
+      pull: ["start"],
       setup: ["notify"],
     };
     for (const [k, l] of Object.entries({ ...has, repeat: ["repeats", "repeatForm"] }))
@@ -562,13 +574,81 @@ describe("the page", () => {
   );
 
   // ↻ (ADR 0049): left of New chat, and in a thread's and a page's header; a tap reads what's on
-  // screen again as coming back to the page does (wake). Dragging down stays the browser's reload.
+  // screen again as coming back to the page does (wake). A pull down does the same (ADR 0078); the
+  // browser's own pull stays off, so a pull never reloads the page and loses what you typed.
   it.skipIf(!have)("has ↻ in each header, which reads again as coming back does", () => {
     const js = readFileSync(join(ROOT, dir, "app.js"), "utf8");
     expect(js).toContain('$("#new").before(refreshBtn())');
     expect(js).toContain('h("header.head", back(), h("h2.title", title), refreshBtn())');
     expect(js).toMatch(/set\(v\.head, back\(\), [^\n]*refreshBtn\(\)/);
-    expect(js).toMatch(/async function refresh\(\) \{[\s\S]*?await wake\(\);/);
+    expect(js).toContain("const refresh = refresher(wake);");
+    expect(js).toContain('btn(icon("reload"), refresh, ".icon.reload")');
+    const css = readFileSync(join(ROOT, dir, "app.css"), "utf8");
+    expect(css).toMatch(/\nbody \{[^}]*overscroll-behavior: none;/);
+  });
+
+  // ADR 0078, section 10: at the top of the list, a thread or a page, a pull past 80px lights ↻
+  // and, let go there, reads as ↻ does (pull.js, loaded on the first touch). One while a read goes
+  // is ignored, as a second ↻ is; a short pull, one not from the top or with two fingers, none.
+  it.skipIf(!have)("pulls down to refresh, one read at a time, as ↻ does", async () => {
+    await inFakeDom(async (make) => {
+      const body = make("body");
+      Object.assign(document, { body });
+      const on: Record<string, (e: unknown) => unknown> = {};
+      vi.stubGlobal("addEventListener", (k: string, f: (e: unknown) => unknown) => {
+        on[k] = f;
+      });
+      const { refresher } = await import(join(ROOT, dir, "compose.js"));
+      let reads = 0;
+      let done = () => {};
+      const go = refresher(() => {
+        reads++;
+        return new Promise<void>((r) => {
+          done = r;
+        });
+      });
+      const top = { scrollTop: 0 };
+      const touch = (s: object | null, y: number, fingers = 1) => ({
+        target: { closest: (q: string) => (q === "#list, .msgs, .page" ? s : null) },
+        touches: Array.from({ length: fingers }, () => ({ clientY: y })),
+      });
+      /** A finger down at `from`, moved to `to`, let go; what the cue was before it let go. */
+      const pull = async (s: object | null, from: number, to: number, fingers = 1) => {
+        await on.touchstart?.(touch(s, from, fingers));
+        on.touchmove?.(touch(s, to, fingers));
+        const lit = body.className.includes("pull");
+        on.touchend?.({});
+        return lit;
+      };
+      expect(await pull(top, 100, 200)).toBe(true);
+      expect(reads).toBe(1);
+      expect(body.className).toBe("spin");
+      // While it reads: another pull, or ↻, is ignored.
+      expect(await pull(top, 100, 200)).toBe(true);
+      await go();
+      expect(reads).toBe(1);
+      done();
+      await vi.waitFor(() => expect(body.className).toBe(""));
+      // Too short, not from the top, two fingers, or back up before letting go: nothing.
+      expect(await pull(top, 100, 170)).toBe(false);
+      expect(await pull({ scrollTop: 300 }, 100, 400)).toBe(false);
+      expect(await pull(null, 100, 400)).toBe(false);
+      expect(await pull(top, 100, 300, 2)).toBe(false);
+      await on.touchstart?.(touch(top, 100));
+      on.touchmove?.(touch(top, 300));
+      on.touchmove?.(touch(top, 120));
+      on.touchend?.({});
+      expect(reads).toBe(1);
+      // A cue left lit (a touch the browser took) is put out by the next touch: a tap doesn't read.
+      body.classList.add("pull");
+      await on.touchstart?.(touch(top, 100));
+      on.touchend?.({});
+      expect(reads).toBe(1);
+      // ↻ once the read is done: it reads.
+      go();
+      expect(reads).toBe(2);
+      done();
+    });
   });
 
   // The sweep of ADR 0069, section 9: a word still being composed (Safari's 229) never sends; the
@@ -654,6 +734,232 @@ describe("the page", () => {
       vi.useRealTimers();
       vi.unstubAllGlobals();
     }
+  });
+
+  /** An upload as the box sends it (attach.js), answered by hand. */
+  class Up {
+    static sent: Up[] = [];
+    upload = {};
+    status = 0;
+    response: unknown = null;
+    body?: File;
+    onload?: () => void;
+    onerror?: () => void;
+    onabort?: () => void;
+    onloadend?: () => void;
+    open() {}
+    setRequestHeader() {}
+    send(b: File) {
+      this.body = b;
+      Up.sent.push(this);
+    }
+    abort() {
+      this.onabort?.();
+      this.onloadend?.();
+    }
+    /** The edge took it. */
+    took(ref: string) {
+      const f = this.body as File;
+      this.status = 200;
+      this.response = { ref, name: f.name, type: f.type, size: f.size };
+      this.onload?.();
+      this.onloadend?.();
+    }
+    /** A network error: offline, or Access's redirect to its sign-in followed. */
+    lost() {
+      this.onerror?.();
+      this.onloadend?.();
+    }
+  }
+  type Live = El & {
+    oninput?: () => void;
+    onchange?: () => void;
+    onsubmit?: (e: object) => void;
+  };
+  type Heard = [string, () => void, { once?: boolean }?];
+  /**
+   * The box you write in (compose.js) in the fake DOM, files on: what it sent, the network up or
+   * down, and the window's `online` by hand (a listener added `once` goes, as a browser's does).
+   */
+  async function openBox() {
+    Up.sent = [];
+    const net = { onLine: true };
+    const heard: Heard[] = [];
+    vi.stubGlobal("XMLHttpRequest", Up);
+    vi.stubGlobal("navigator", net);
+    vi.stubGlobal("localStorage", { getItem: () => null, setItem() {}, removeItem() {} });
+    vi.stubGlobal("addEventListener", (...h: Heard) => heard.push(h));
+    const { composer } = await import(join(ROOT, dir, "compose.js"));
+    const sent: { words: string; files: { ref: string; name: string }[] }[] = [];
+    let signins = 0;
+    const form: Live = composer({
+      menu: { files: { on: true, most: 5, bytes: 1e7 }, commands: [] },
+      task: 7,
+      send: (m: (typeof sent)[number]) => sent.push(m),
+      signin: () => signins++,
+    });
+    const el = (f: (e: El) => boolean) => form.all().find(f) as Live;
+    const tray = el((e) => e.className === "tray");
+    const online = () => heard.filter(([k]) => k === "online");
+    return {
+      net,
+      sent,
+      tray,
+      online,
+      signins: () => signins,
+      go: form.querySelector(".send") as El,
+      hint: form.querySelector(".hint") as El,
+      type: (w: string) => {
+        const ta = el((e) => e.tag === "textarea");
+        ta.value = w;
+        ta.oninput?.();
+      },
+      add: (f: File) => {
+        const pick = el((e) => e.attrs.type === "file");
+        Object.assign(pick, { files: [f] });
+        pick.onchange?.();
+      },
+      send: () => form.onsubmit?.({ preventDefault() {} }),
+      /** A button in the tray, by its word or its name: Retry, Remove a.txt. */
+      click: (l: string) =>
+        tray
+          .all()
+          .find((e) => e.tag === "button" && (e.textContent === l || e.attrs["aria-label"] === l))
+          ?.click(),
+      back: () => {
+        net.onLine = true;
+        for (const h of online()) {
+          if (h[2]?.once) heard.splice(heard.indexOf(h), 1);
+          h[1]();
+        }
+      },
+    };
+  }
+
+  // ADR 0078, section 10: a file is in the box from the moment it's added, so Send says
+  // "Uploading…" and waits while a photo is made smaller and sent up. One that can't be made
+  // smaller goes as it is, at once (the shrink's own rule), and the wait ends with it.
+  it.skipIf(!have)("waits to send a photo till it's in, while it's made smaller too", async () => {
+    await inFakeDom(async () => {
+      const b = await openBox();
+      let made = 0;
+      let cant: (e: Error) => void = () => {};
+      vi.stubGlobal("createImageBitmap", () => {
+        made++;
+        return new Promise((_, no) => {
+          cant = no;
+        });
+      });
+      b.type("what's in this?");
+      expect(b.go.disabled).toBe(false);
+      const photo = new File(["jpeg"], "a.jpg", { type: "image/jpeg" });
+      b.add(photo);
+      // At once: in the box, and Send waits.
+      expect(b.tray.textContent).toContain("a.jpg");
+      expect(b.go.disabled).toBe(true);
+      expect(b.hint.textContent).toBe("Uploading…");
+      // Made smaller: Send still waits, nothing sent up yet.
+      await vi.waitFor(() => expect(made).toBe(1));
+      b.send();
+      expect(b.sent).toEqual([]);
+      expect(Up.sent).toEqual([]);
+      // It can't be: it goes as it is, and Send waits on that.
+      cant(new Error("can't read it"));
+      await vi.waitFor(() => expect(Up.sent).toHaveLength(1));
+      expect(Up.sent[0]?.body).toBe(photo);
+      b.send();
+      expect(b.sent).toEqual([]);
+      expect(b.hint.textContent).toBe("Uploading…");
+      // In: Send goes, the photo with the words.
+      Up.sent[0]?.took("r1");
+      await vi.waitFor(() => expect(b.go.disabled).toBe(false));
+      b.send();
+      expect(b.sent.map((m) => [m.words, m.files.map((f) => f.ref)])).toEqual([
+        ["what's in this?", ["r1"]],
+      ]);
+    });
+  });
+
+  // ADR 0078, section 10: XHR follows Access's redirect to its sign-in and fails as if offline.
+  // With the network up the edge is asked once, as api() asks; a sign-in that ended says so at the
+  // top, as a message's does (app.js `signin`). Really offline, or the edge not reached: "Offline".
+  it.skipIf(!have)("tells an upload's sign-in that ended from being offline", async () => {
+    const js = readFileSync(join(ROOT, dir, "app.js"), "utf8");
+    expect(js).toMatch(/after: redraw,\s*signin,\n/);
+    await inFakeDom(async () => {
+      const b = await openBox();
+      const asked: RequestInit[] = [];
+      let edge = async (): Promise<object> => ({ type: "opaqueredirect", status: 0, ok: false });
+      vi.stubGlobal("fetch", (_: string, init: RequestInit) => {
+        asked.push(init);
+        return edge();
+      });
+      b.add(new File(["notes"], "a.txt", { type: "text/plain" }));
+      await vi.waitFor(() => expect(Up.sent).toHaveLength(1));
+      Up.sent[0]?.lost();
+      await vi.waitFor(() => expect(b.signins()).toBe(1));
+      expect(asked.map((i) => i.redirect)).toEqual(["manual"]);
+      expect(b.tray.textContent).toContain("Your sign-in ended: Tap to sign in again.");
+      // Not sent again by itself: the sign-in comes first.
+      expect(b.online()).toEqual([]);
+      // Really offline: "Offline", the edge not asked.
+      const OFF = "Offline: Try again in a minute.";
+      b.net.onLine = false;
+      b.click("Retry");
+      await vi.waitFor(() => expect(Up.sent).toHaveLength(2));
+      Up.sent[1]?.lost();
+      await vi.waitFor(() => expect(b.tray.textContent).toContain(OFF));
+      expect(asked).toHaveLength(1);
+      // The network up, the edge not reached: "Offline" too, once asked.
+      b.net.onLine = true;
+      edge = async () => {
+        throw new TypeError("Failed to fetch");
+      };
+      b.click("Retry");
+      await vi.waitFor(() => expect(Up.sent).toHaveLength(3));
+      expect(b.tray.textContent).not.toContain("Offline");
+      Up.sent[2]?.lost();
+      await vi.waitFor(() => expect(b.tray.textContent).toContain(OFF));
+      expect(asked).toHaveLength(2);
+      expect(b.signins()).toBe(1);
+    });
+  });
+
+  // ADR 0078, section 10: an upload that failed offline is sent again once, by itself, when the
+  // network comes back, as a message is (app.js `again`); one taken off the box isn't.
+  it.skipIf(!have)("sends an upload again once, by itself, when the network is back", async () => {
+    await inFakeDom(async () => {
+      const b = await openBox();
+      b.net.onLine = false;
+      b.type("the notes");
+      b.add(new File(["notes"], "a.txt", { type: "text/plain" }));
+      await vi.waitFor(() => expect(Up.sent).toHaveLength(1));
+      Up.sent[0]?.lost();
+      await vi.waitFor(() => expect(b.tray.textContent).toContain("Offline"));
+      expect(b.go.disabled).toBe(true);
+      expect(b.online().map(([, , o]) => o)).toEqual([{ once: true }]);
+      // Back: sent again, as it was.
+      b.back();
+      expect(Up.sent).toHaveLength(2);
+      expect(Up.sent[1]?.body?.name).toBe("a.txt");
+      expect(b.tray.textContent).not.toContain("Offline");
+      // Once: back again, nothing more goes.
+      b.back();
+      expect(Up.sent).toHaveLength(2);
+      Up.sent[1]?.took("r1");
+      await vi.waitFor(() => expect(b.go.disabled).toBe(false));
+      // Taken off the box while offline: not sent when the network is back.
+      b.net.onLine = false;
+      b.add(new File(["more"], "b.txt", { type: "text/plain" }));
+      await vi.waitFor(() => expect(Up.sent).toHaveLength(3));
+      Up.sent[2]?.lost();
+      await vi.waitFor(() => expect(b.online()).toHaveLength(1));
+      b.click("Remove b.txt");
+      b.back();
+      expect(Up.sent).toHaveLength(3);
+      b.send();
+      expect(b.sent.map((m) => m.files.map((f) => f.name))).toEqual([["a.txt"]]);
+    });
   });
 
   // Find in this chat (find.js, loaded the first time it opens): a row under the head, the hits
@@ -765,9 +1071,8 @@ describe("the page", () => {
     expect(co).toContain('"Attach as a file"');
     expect(co).toContain("`message-${now14()}.txt`");
     expect(at).toContain('x.setRequestHeader("x-file-task", task)');
-    expect(co).toMatch(
-      /const \{ upload \} = await import\("\.\/attach\.js"\);\s*if \(!files\.includes\(it\)\) return;/,
-    );
+    expect(co).toContain("has: (it) => tray.isConnected && files.includes(it),");
+    expect(at).toMatch(/export function put\(it, b\) \{\s*if \(!b\.has\(it\)\) return;/);
     // Taken off the box, or with a draft untouched for 30 days: only what was sent up from it.
     expect(co).toContain("if (it.u && it.ref) unfile(it.ref)");
     expect(co).toMatch(/2592e6[\s\S]{0,120}if \(f\.u\) unfile\(f\.ref\)/);
@@ -1421,9 +1726,18 @@ describe("the page", () => {
         if (!up) throw new TypeError("Failed to fetch");
         return new Response(`v1 ${u}`, { status: u.endsWith("setup.js") ? 404 : 200 });
       });
-      // Installed: the page's files kept at once (the page that installed it came before it).
+      // Installed: the page's files kept at once (the page that installed it came before it), the
+      // Desk's too: the first screen opens offline after a first visit (ADR 0078).
       await w.fire("install", {}).done();
-      const files = ["app.css", "app.js", "compose.js", "icon.svg", "manifest.json"];
+      const files = [
+        "app.css",
+        "app.js",
+        "compose.js",
+        "desk.css",
+        "desk.js",
+        "icon.svg",
+        "manifest.json",
+      ];
       expect([...w.kept.keys()].sort()).toEqual([SCOPE, ...files.map((f) => SCOPE + f)]);
       // Online: the network's answer, and a copy kept; an error isn't kept.
       const js = w.fire("fetch", { request: new Request(`${SCOPE}workspace.js`) });

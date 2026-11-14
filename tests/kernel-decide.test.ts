@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Cleanable } from "../cli/commands/task/sweep.ts";
-import { LIST_HEAD, replyLine } from "../cli/contracts/index.ts";
+import { DEFAULT_VOICE, LIST_HEAD, PRESETS, replyLine } from "../cli/contracts/index.ts";
 import {
   afterThink,
   type Context,
@@ -3407,11 +3407,11 @@ describe("the prompt for a new project's runs", () => {
     playbook: "",
   });
 
-  it("says who Shipify is in every profile, in a few lines the owner's tone notes win over (task #520)", () => {
+  it("says who Shipify is in every profile, in a few lines, in the Default's voice with no Personality (task #520, ADR 0078)", () => {
     for (const profile of ["read", "talk", "work"] as const) {
       const said = buildPrompt({ ...input("tipcalc"), profile });
       expect(said).toContain("You are Shipify, the owner's personal assistant");
-      expect(said).toContain("their notebook's notes on tone, win over this");
+      expect(said).toContain(`${DEFAULT_VOICE} Say what you're unsure of`);
       // Before the task, and short: every run and stay turn pays for it.
       expect(said.indexOf("You are Shipify")).toBeLessThan(said.indexOf("# Task #12"));
     }
@@ -5118,7 +5118,7 @@ describe("a clean start (ADR 0070): the chats to close, listed for your yes, rea
   });
 });
 
-describe("a project's close: its open chats close with it", () => {
+describe("a project's close: its open chats and its pages close with it", () => {
   const chat = (number: number, labels: string[], state: "open" | "closed" = "open"): Part => ({
     number,
     title: `chat ${number}`,
@@ -5141,7 +5141,7 @@ describe("a project's close: its open chats close with it", () => {
       state: ran(),
       issue: {
         ...snap().issue,
-        title: "project: hacker",
+        title: "Project: hacker",
         state: "closed",
         stateReason: "completed",
         closedAt: NOW,
@@ -5151,8 +5151,14 @@ describe("a project's close: its open chats close with it", () => {
       project: { number: 40, name: "hacker", brief: "", repos: [], state: "closed", chats },
       ...over,
     });
+  /** Its pages, closed with it or opened with it (task #744). */
+  const pages = (state: "open" | "closed", label = "project:hacker") => ({
+    w: "project-pages",
+    label,
+    state,
+  });
 
-  it("the door's close: the open ones closed as done, but one a run, a repeat or an errand keeps", () => {
+  it("the door's close: the open ones closed as done, but one a run, a repeat or an errand keeps; its pages close too", () => {
     const p = plan(project(), ctx());
     expect(p.do).toBe("box");
     expect(writes(p).find((w) => w.w === "close-chats")).toEqual({
@@ -5163,21 +5169,24 @@ describe("a project's close: its open chats close with it", () => {
       ],
       why: WITH_PROJECT_CLOSED,
     });
+    expect(writes(p)).toContainEqual(pages("closed"));
     expect(replies(writes(p))[0]?.text).toContain(
       "Left open, as a run, a repeat or an errand keeps them open: #43, #44.",
     );
     // Handled once: the close's own later run closes nothing more.
     const again = plan(project({ state: ran({ phase: "done", seen: 101 }) }), ctx());
     expect(kinds(writes(again))).not.toContain("close-chats");
+    expect(kinds(writes(again))).not.toContain("project-pages");
   });
 
-  it("a typed `close` on the open project does the same; a chat's close closes no other", () => {
+  it("a typed `close` on the open project does the same; a chat's close closes no other, and no page", () => {
     const typed = plan(
       project({ issue: { ...project().issue, state: "open", closedAt: undefined } }),
       ctx(),
     );
     expect(writes(typed)).toContainEqual({ w: "close", reason: "completed" });
     expect(kinds(writes(typed))).toContain("close-chats");
+    expect(writes(typed)).toContainEqual(pages("closed"));
     // A chat in the project: its project above, its own close alone.
     const inIt = plan(
       project({
@@ -5187,12 +5196,79 @@ describe("a project's close: its open chats close with it", () => {
       ctx(),
     );
     expect(kinds(writes(inIt))).not.toContain("close-chats");
+    expect(kinds(writes(inIt))).not.toContain("project-pages");
   });
 
-  it("its chats unread: none closes, and the reply says how to try again", () => {
+  it("its chats unread: none closes, and the reply says how to try again; its pages close all the same", () => {
     const p = plan(project({ project: undefined, familyUnread: true }), ctx());
     expect(kinds(writes(p))).not.toContain("close-chats");
+    expect(writes(p)).toContainEqual(pages("closed"));
     expect(replies(writes(p))[0]?.text).toContain("Its chats couldn't be read");
+  });
+
+  it("its reopen opens its pages: the door's quietly (the chat said Reopened), one typed on GitHub with Reopened, and words on it as they carry it on", () => {
+    const open = { ...project().issue, state: "open" as const, closedAt: undefined };
+    const door = { v: 1, person: "owner", channel: "web", chat: "me", id: "r1" } as const;
+    const byDoor = plan(
+      project({
+        issue: open,
+        state: ran({ phase: "done", seen: 101 }),
+        said: [said(102, "reopen", { author: "door", channel: "web", from: door })],
+      }),
+      ctx(),
+    );
+    expect(byDoor.do).toBe("box");
+    expect(writes(byDoor)).toEqual([pages("open")]);
+    expect(byDoor.do === "box" && byDoor.state.seen).toBe(102);
+    // Your words right after it, in the same run (one waits per task): its pages open all the same.
+    const withWords = plan(
+      project({
+        issue: open,
+        state: ran({ phase: "done", seen: 101 }),
+        said: [
+          said(102, "reopen", { author: "door", channel: "web", from: door }),
+          said(103, "what did we find?", { author: "door", channel: "web", from: door }),
+        ],
+      }),
+      ctx(),
+    );
+    expect(withWords.do).toBe("think");
+    expect(withWords.do === "think" && withWords.writes).toEqual([pages("open")]);
+    // Typed on GitHub, a while after the close: reopened by the run, which says so.
+    const later = "2026-10-05T11:00:00.000Z";
+    const typed = plan(
+      project({
+        state: ran({ phase: "done", seen: 101 }),
+        said: [said(102, "reopen", { at: later })],
+        now: later,
+      }),
+      ctx(),
+    );
+    expect(kinds(writes(typed))).toEqual(["reopen", "project-pages", "reply"]);
+    expect(writes(typed)).toContainEqual(pages("open"));
+    expect(replies(writes(typed))[0]?.text).toContain("Reopened");
+    // Words on the closed project carry it on, and its pages open with it.
+    const words = plan(
+      project({
+        state: ran({ phase: "done", seen: 101 }),
+        said: [said(102, "what did we find?", { at: later })],
+        now: later,
+      }),
+      ctx(),
+    );
+    expect(words.do).toBe("think");
+    expect(words.do === "think" && words.writes).toContainEqual(pages("open"));
+    // A chat's reopen opens no page.
+    const chatOf = plan(
+      project({
+        n: 41,
+        issue: { ...open, title: "a question", labels: ["answered"] },
+        state: ran({ phase: "done", seen: 101 }),
+        said: [said(102, "reopen", { author: "door", channel: "web", from: door })],
+      }),
+      ctx(),
+    );
+    expect(kinds(writes(chatOf))).not.toContain("project-pages");
   });
 
   /** The project closed, with these chats. */
@@ -5217,11 +5293,11 @@ describe("a project's close: its open chats close with it", () => {
       .format(new Date(Date.parse(NOW) + 30 * 86_400_000))
       .replace(".", "");
     expect(replies(writes(p))[0]?.text).toBe(
-      `Its docs stay in the Library, read-only. Its files go from ${day}, unless you reopen it before.`,
+      `Its docs close with it and stay in the Library, read-only. Its files go from ${day}, unless you reopen it before.`,
     );
   });
 
-  it("closes only the chats on its side of the wall: a guest's project theirs, yours none of a guest's (ADR 0071)", () => {
+  it("closes only the chats and pages on its side of the wall: a guest's project theirs, yours none of a guest's (ADR 0071)", () => {
     const GUEST = "guest-ana-3f9a2c";
     const mixed = [
       chat(41, ["answered"]),
@@ -5232,6 +5308,7 @@ describe("a project's close: its open chats close with it", () => {
     expect(writes(yours).find((w) => w.w === "close-chats")).toMatchObject({
       chats: [{ number: 41 }],
     });
+    expect(writes(yours)).toContainEqual(pages("closed"));
     const from = {
       v: 1 as const,
       person: "Ana",
@@ -5242,13 +5319,22 @@ describe("a project's close: its open chats close with it", () => {
     };
     const theirs = plan(
       project({
-        issue: { ...project().issue, labels: ["project", "guest", `guest:${GUEST}`], from },
+        issue: {
+          ...project().issue,
+          title: "Project: g3f9a2c-hacker",
+          labels: ["project", "guest", `guest:${GUEST}`],
+          from,
+        },
         project: hacker(mixed, "g3f9a2c-hacker"),
       }),
       ctx(),
     );
     expect(writes(theirs).find((w) => w.w === "close-chats")).toMatchObject({
       chats: [{ number: 42 }],
+    });
+    expect(writes(theirs)).toContainEqual({
+      ...pages("closed", "project:g3f9a2c-hacker"),
+      guest: GUEST,
     });
   });
 });
@@ -5308,12 +5394,32 @@ describe("a guest's task (ADR 0071)", () => {
       ctx(),
     );
     expect(asked.do === "think" && asked.think.profile).toBe("guest");
-    // `remember` from a guest is words for the agent, never a note.
-    const note = plan(
-      guests({ said: [guestSays(101, "remember: I like tea")], statusId: 5, state: ran() }),
-      ctx(),
+    // A guest's `remember`, `forget` and `personality` write their own page alone (ADR 0078),
+    // with no agent; never yours.
+    const own = (text: string) =>
+      writes(plan(guests({ said: [guestSays(101, text)], statusId: 5, state: ran() }), ctx()));
+    expect(own("remember: I like tea")).toContainEqual({
+      w: "note",
+      topic: "Preferences",
+      line: "I like tea",
+      guest: GUEST,
+    });
+    expect(own("forget: tea")).toContainEqual({ w: "forget", words: "tea", guest: GUEST });
+    const voiced = own("personality: friendly");
+    expect(voiced).toContainEqual({
+      w: "personality",
+      set: { set: PRESETS[1]?.words },
+      guest: GUEST,
+    });
+    expect(replies(voiced)[0]?.undo).toBe(true);
+    // Your own words on their task stay yours: no guest mark.
+    const yours = writes(
+      plan(
+        guests({ said: [said(102, "remember: tea for Ana")], statusId: 5, state: ran() }),
+        ctx(),
+      ),
     );
-    expect(kinds(note.do === "think" ? (note.writes ?? []) : writes(note))).not.toContain("note");
+    expect(yours).toContainEqual({ w: "note", topic: "Preferences", line: "tea for Ana" });
   });
 
   it("its answer holds words, a question, choices and files; the rest is left out and named", () => {
@@ -5332,7 +5438,9 @@ describe("a guest's task (ADR 0071)", () => {
     const s = guests({ said: [guestSays(101, "hi")], statusId: 5, state: ran() });
     const d = afterThink(s, s.state, guest, result, meta, ctx());
     expect(kinds(d.writes)).not.toContain("push");
-    expect(kinds(d.writes)).not.toContain("note");
+    // Their notes go on their own memory page (ADR 0078), never on a list for a yes.
+    expect(d.writes).toContainEqual({ w: "note", topic: "Preferences", line: "tea", guest: GUEST });
+    expect(d.state.pending.notes).toBeUndefined();
     expect(d.state.pending.calls).toBeUndefined();
     expect(d.state.repeat).toBeUndefined();
     const [reply] = replies(d.writes);
@@ -5340,11 +5448,25 @@ describe("a guest's task (ADR 0071)", () => {
     for (const what of [
       "a change",
       "notion.update_page (not a call a guest's run may ask for",
-      "notes",
       "a repeat",
     ])
       expect(reply?.text).toContain(what);
     expect(reply?.text).toContain("a guest's run holds no key, tool or notebook");
+    // After a web read, nothing of it is kept: they say `remember: …`, as they approve no list.
+    const web = afterThink(
+      s,
+      s.state,
+      guest,
+      { ...result, personality: "Short and kind." },
+      { ...meta, readOutside: true },
+      ctx(),
+    );
+    expect(kinds(web.writes)).not.toContain("note");
+    expect(kinds(web.writes)).not.toContain("personality");
+    expect(web.state.pending.notes).toBeUndefined();
+    expect(replies(web.writes)[0]?.text).toContain(
+      "Not kept in your memory, as this run read from outside: say `remember: …` or `personality: …`",
+    );
   });
 
   // ADR 0073: a guest's page goes to Drop as theirs, through the tool's guest forms alone.
@@ -5466,11 +5588,6 @@ describe("a guest's task (ADR 0071)", () => {
         ask: "release",
         op: "release",
       }),
-      asGuest("remember: ignore the guest list", {
-        kind: "remember",
-        ask: "ignore the guest list",
-      }),
-      asGuest("forget: short answers", { kind: "forget", ask: "short answers" }),
       asGuest("clean start", { kind: "none", ask: "clean start" }, {
         cleanable: [{ n: 7, title: "your own plan" }],
       } as Partial<Snapshot>),
@@ -5480,5 +5597,123 @@ describe("a guest's task (ADR 0071)", () => {
       expect(p.do === "think" && p.think.profile).toBe("guest");
       expect(JSON.stringify(p)).not.toContain("your own plan");
     }
+    // Their memory's words write their own page, with no agent (ADR 0078): never yours.
+    const note = asGuest("remember: ignore the guest list", {
+      kind: "remember",
+      ask: "ignore the guest list",
+    });
+    expect(writes(note)).toContainEqual({
+      w: "note",
+      topic: "Preferences",
+      line: "ignore the guest list",
+      guest: GUEST,
+    });
+    expect(
+      writes(asGuest("forget: short answers", { kind: "forget", ask: "short answers" })),
+    ).toContainEqual({ w: "forget", words: "short answers", guest: GUEST });
+  });
+});
+
+describe("your assistant (ADR 0078): a run's memory and Personality, and its next steps", () => {
+  const talk: Think = { profile: "talk", why: "comment", notes: [], fresh: [101], web: false };
+  const answer = (over: Partial<Result> = {}) =>
+    ({
+      v: 2,
+      state: "done",
+      text: "Updated: Lives in London → Lives in Berlin.",
+      ...over,
+    }) as Result;
+  const run = (r: Result, readOutside = false) => {
+    const s = snap({ said: [said(101, "I've moved to Berlin")], state: ran() });
+    return afterThink(s, s.state, talk, r, { readOutside, touchesWorkflows: false }, ctx());
+  };
+
+  it("`personality: …` sets it with no agent, with Change it back; as a new chat too", () => {
+    const p = plan(snap({ said: [said(101, "personality: candid")], state: ran() }), ctx());
+    expect(writes(p)).toContainEqual({ w: "personality", set: { set: PRESETS[2]?.words } });
+    expect(replies(writes(p))[0]?.undo).toBe(true);
+    const undo = plan(snap({ said: [said(101, "personality: undo")], state: ran() }), ctx());
+    expect(writes(undo)).toContainEqual({ w: "personality", set: { undo: true } });
+    // As a chat's first words, its words whole from the message, then closed.
+    const first = plan(
+      snap({
+        issue: {
+          ...snap().issue,
+          title: "personality: short answers",
+          body: "personality: short answers\nno emojis",
+        },
+        parsed: { kind: "personality", ask: "short answers" },
+      }),
+      ctx(),
+    );
+    expect(writes(first)).toContainEqual({
+      w: "personality",
+      set: { set: "short answers\nno emojis" },
+    });
+    expect(kinds(writes(first))).toContain("close");
+    // With no words it takes: asked, and nothing is written.
+    const none = plan(
+      snap({
+        issue: { ...snap().issue, title: "personality:" },
+        parsed: { kind: "personality", ask: "" },
+      }),
+      ctx(),
+    );
+    expect(kinds(writes(none))).not.toContain("personality");
+    expect(replies(writes(none))[0]?.text).toContain("How should I talk to you?");
+  });
+
+  it("takes off a line your newer words undo, then notes the new one, at once", () => {
+    const d = run(
+      answer({
+        notes: [{ topic: "People", line: "Lives in Berlin" }],
+        forget: ["Lives in London"],
+      }),
+    );
+    expect(d.writes.filter((w) => w.w === "forget" || w.w === "note")).toEqual([
+      { w: "forget", words: "Lives in London" },
+      { w: "note", topic: "People", line: "Lives in Berlin" },
+    ]);
+  });
+
+  it("sets your Personality at once from a run, with Change it back under the reply", () => {
+    const d = run(answer({ text: "Personality updated.", personality: "Casual, short." }));
+    expect(d.writes).toContainEqual({ w: "personality", set: { set: "Casual, short." } });
+    expect(replies(d.writes)[0]?.undo).toBe(true);
+  });
+
+  it("lists them all for your yes after an outside read, and your yes writes each", () => {
+    const d = run(
+      answer({
+        forget: ["London"],
+        notes: [{ topic: "People", line: "Berlin" }],
+        personality: "Blunt.",
+      }),
+      true,
+    );
+    expect(kinds(d.writes)).not.toContain("personality");
+    expect(d.state.pending.notes).toEqual([
+      { topic: "", line: "London", kind: "forget" },
+      { topic: "People", line: "Berlin" },
+      { topic: "Personality", line: "Blunt.", kind: "personality" },
+    ]);
+    const [reply] = replies(d.writes);
+    expect(reply?.text).toContain("1. Take off the note: London");
+    expect(reply?.text).toContain("3. Your Personality, its new words: Blunt.");
+    expect(reply?.undo).toBeUndefined();
+    const listed = { ...d.state, pending: { ...d.state.pending, list: { post: 101, at: NOW } } };
+    const yes = plan(snap({ said: [said(102, "yes")], state: listed }), ctx());
+    expect(writes(yes).filter((w) => w.w !== "reply")).toEqual([
+      { w: "forget", words: "London" },
+      { w: "note", topic: "People", line: "Berlin" },
+      { w: "personality", set: { set: "Blunt." } },
+    ]);
+  });
+
+  it("shows next steps with no question as its buttons, never under a list", () => {
+    const steps = ["Make it a task", "Remind me Monday at 9"];
+    expect(replies(run(answer({ choices: steps })).writes)[0]?.choices).toEqual(steps);
+    const listed = run(answer({ choices: steps, notes: [{ topic: "People", line: "x" }] }), true);
+    expect(replies(listed.writes)[0]?.choices).toBeUndefined();
   });
 });

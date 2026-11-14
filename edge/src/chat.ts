@@ -60,7 +60,7 @@ export const SET_FOR_NEXT = (pick: string, task: number) =>
 export const TURNED = (task: number, open: boolean) => `${open ? "Reopened" : "Closed"} · #${task}`;
 /** After TURNED, for a project reopened (ADR 0069): what stays as it was, and how to go on. */
 export const PROJECT_REOPENED =
-  ". Its chats stay closed: write on one (its Chats tab) to open it, or start a new chat in it.";
+  ". Its docs open with it; its chats stay closed: write on one (its Chats tab) to open it, or start a new chat in it.";
 /** A close or reopen GitHub took, whose note on the task it then didn't: done, and said truly. */
 export const TURNED_UNNOTED = (task: number, open: boolean) =>
   `${TURNED(task, open)}. Its note on the task couldn't be written (GitHub failed), so a run won't mention it: nothing else to do.`;

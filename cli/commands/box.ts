@@ -583,7 +583,7 @@ export function boxAdd(
       : [
           `on a box with no swap of its own, swap in memory (zram, ADR 0061): half its memory, compressed, so tasks that overlap slow down instead of having a test killed; a box with swap (WSL, a swap file) keeps its own${m.here && !opts.manage ? "" : ", but Ubuntu's installer's swap file on the disk (/swap.img) goes for it"}`,
         ]),
-    `the sandbox (setup 5): one user per slot for its agent (${agents}), each with its own folder in /srv; the sudo rules, /etc/sudoers.d/shipify-agents, let the runner run commands as them${opts.container ? "" : ", and as root only the box's own update (below)"}, and nothing else (installed only once visudo accepts them)`,
+    `the sandbox (setup 5): one user per slot for its agent (${agents}), each with its own folder in /srv, and one for the look server (shipify-look, setup 16), which holds the tools' look keys for a run so no agent does; the sudo rules, /etc/sudoers.d/shipify-agents, let the runner run commands as them${opts.container ? "" : ", and as root only the box's own update (below)"}, and nothing else (installed only once visudo accepts them)`,
     ...(opts.container
       ? []
       : [

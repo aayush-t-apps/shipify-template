@@ -34,13 +34,20 @@ each agent's adapter writes them its own way (ADR 0038, ADR 0043).
 |---|---|
 | its login, on its pipe: Claude Code's `CLAUDE_CODE_OAUTH_TOKEN`, or its gateway's key (pi and OpenCode: `OPENROUTER_API_KEY`, or `AI_GATEWAY_API_KEY` through Vercel); Codex's `CODEX_AUTH`, your ChatGPT session, as a file in its run's home | a write token for any repo |
 | a read-only GitHub token | the record's token (the one that writes comments) |
-| each tool's look key | a tool's act key |
+| the run's look token, for the tools at the run's look server (ADR 0077), when the run offers tools | a tool's key, look or act: the look server holds the look keys, as a user of its own |
 | | a channel's key, or the door's keys, or another agent's login |
 
 Write tokens are made after it stops, for exactly the one repo the run changes. A run that reads a
 repo outside your account holds its login alone (the read profile, below). A run on another of your
-accounts (ADR 0045) holds its login and that account's read-only key alone: no tool's key, and no
+accounts (ADR 0045) holds its login and that account's read-only key alone: no tool, and no
 notebook in its prompt. Details: [security.md](security.md).
+
+**Its tools are remote ones** (ADR 0077): every agent gets each look tool as an MCP server at the
+run's look server (`http://127.0.0.1:<port>/<tool>`), with `Authorization: Bearer` and the run's
+token by its name (`SHIPIFY_LOOK_TOKEN`), never its value: the contract's `offered` gives the
+adapters those, and no agent starts a tool's server or holds its key. Checked live with Claude
+Code 2.1.284, Codex 0.167.0, pi 1.0.2 and OpenCode 1.18.34: each connected with the token from
+its environment.
 
 **What it does on a run** (the prompt and `playbooks/task.md` say how):
 - **A question:** reads the web and the tools' look calls, and clones a project's or repo's code
@@ -428,6 +435,15 @@ The listed models are a few of hundreds. The rest are found by a word, on any ch
   run that finds the mark only puts it on the `PATH`: no lock, no walk of its files and no start
   (pi's `--version` alone takes 3–4 s on a Pi). One that finds an install without it (stopped
   halfway, its program there but cut short) removes it and installs again.
+- <a id="a-run-with-no-login-stops-at-once"></a>**A run with no login stops at once** (ADR 0078):
+  when the agent's login (its own secret, or its gateway's key) isn't set, the run stops before
+  the clone and the agent (`loginMissing` in `cli/kernel/think.ts`), and its Failed reply says
+  what to do: `<agent> sign in` for an agent that signs in from a chat (`codex sign in`), else
+  `pnpm ship setup agent <agent>` on a PC (problems `agent-not-signed-in` and
+  `agent-login-missing`). Off a box it applies only to an agent whose login is a file (Codex), as
+  another agent may use its own sign-in on that computer. A stay's turn carries on with the login
+  its run had. The install step comes before and holds no login, so a first `use codex` on a box
+  still installs Codex once.
 - **The agent's own `ship` commands start the built CLI** (ADR 0051): `node <copy>/cli/dist/ship.mjs`
   in the read-only copy of Shipify the job makes first, one file that starts in 0.66 s. An adapter
   finds its own files (pi's and OpenCode's gates) with the contract's `agentFile`, from the
@@ -537,8 +553,9 @@ runs. A run that ends without a usable `result.json` fails, and the reply says w
   ignores settings files; its answer still comes back in the result's shape (its StructuredOutput
   tool). Recorded live on 2.1.284 in `tests/fixtures/claude-decisions.json`'s `read`: the tools it
   was offered, and reads outside its folders refused.
-- **Tools:** an MCP config with only the look calls allowed and the act calls refused, keys named as
-  `${VAR}`, never their values. `notion.search` is its `mcp__notion__search`.
+- **Tools:** an MCP config with only the look calls allowed and the act calls refused, each tool at
+  the run's look server (`type: http`), its token named as `${VAR}`, never its value.
+  `notion.search` is its `mcp__notion__search`.
 - **Settings:** only its own user's settings and the run's MCP config (`--setting-sources user
   --strict-mcp-config`, which the adapter adds), so a project's files can't widen what it may do.
   Its settings and sessions live in the run's `config/` (`CLAUDE_CONFIG_DIR`), and it never updates
@@ -561,16 +578,16 @@ small agent core that does the work its own way:
   <config>/pi-sessions --provider shipify-<gateway> --model <id> --thinking <effort>`, with
   `--session <id>` to carry on in a session (a catch-up, the fix round), the prompt on stdin.
 - **Its settings folder** is the run's own `in/tools` (`PI_CODING_AGENT_DIR`): `models.json` (the
-  gateway as a provider of its own, so any model id there runs, with no key), `mcp.json` (the look tools'
-  servers, local or remote (`url` and `headers`), which pi's built-in MCP reads: each server's look
-  calls offered to the model as themselves, every other call hidden, pi's codemode off, keys named
-  as `${VAR}`; a header value starting with `!`, which pi would run as a command, leaves that tool
-  out), and the gate: `gate.mjs` and its rules, `gate.json`. The folder is emptied and they're
-  given again before every ask, so a run can't change the rules a resumed ask starts with, nor add
-  what pi would load from there (an extension, a `settings.json`). At the end the gate names the tools
-  pi didn't get, in one entry in pi's output that the run details show: those left out
-  (`gate.json`'s `left`) and each look call whose server didn't connect, which pi says only on its
-  own screen.
+  gateway as a provider of its own, so any model id there runs, with no key), `mcp.json` (the look
+  tools at the run's look server (`url` and `headers`), which pi's built-in MCP reads: each
+  server's look calls offered to the model as themselves, every other call hidden, pi's codemode
+  off, the run's token named as `${VAR}`; its one header is the contract's, never one that starts
+  with `!`, which pi would run as a command), and the gate: `gate.mjs` and its rules,
+  `gate.json`. The folder is emptied and they're given again before every ask, so a run can't
+  change the rules a resumed ask starts with, nor add what pi would load from there (an extension,
+  a `settings.json`). At the end the gate names each look call pi didn't get, its server not
+  connected, in one entry in pi's output that the run details show: pi says it only on its own
+  screen.
 - **Nothing of the project's own** loads (`--no-approve`: no `.pi`), and nothing runs in the
   background (`PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`).
 - **Its gateway's key:** pi passes its whole environment to every command it runs, so the key never
@@ -623,8 +640,8 @@ helpers):
   paid one).
 - **Its config** is the run's `in/tools/opencode.json` (`OPENCODE_CONFIG`), given again before
   every ask: the gateway as a provider of its own (any model id there runs; each effort as the
-  gateway's `reasoning`, `off` as none), with no key; the look tools' MCP servers, local or remote,
-  keys named as `{env:VAR}`; its own permissions all `allow` but the refused commands (an `ask`
+  gateway's `reasoning`, `off` as none), with no key; the look tools at the run's look server
+  (`type: remote`), the run's token named as `{env:VAR}`; its own permissions all `allow` but the refused commands (an `ask`
   would end a run with no one to answer), the act calls `deny` (so the model never sees them);
   Shipify's skills (`skills.paths`); and the gate as its plugin.
 - **Nothing of the project's own** loads (no `opencode.json`, `.opencode` or plugins, no Claude Code
@@ -692,10 +709,10 @@ here on your ChatGPT plan (ADR 0074):
   no hook, so a shell it starts is past the gate; the read-only key and the box's own push stay
   the wall. Its refusals show in the job's log (Codex's output doesn't carry them), not in the
   run details.
-- **Tools:** each look tool's MCP server with only its look calls enabled and approved (with no
-  one to ask, a call that needs approval is refused); a local one gets its keys under the names it
-  reads, through a shell (Codex passes a variable on by its own name only), never their values.
-  `notion.search` is its `mcp__notion__search`.
+- **Tools:** each look tool at the run's look server, with only its look calls enabled and
+  approved (with no one to ask, a call that needs approval is refused), the run's token by its
+  variable's name (`bearer_token_env_var`), never its value. `notion.search` is its
+  `mcp__notion__search`.
 - **Its login:** your ChatGPT session, Codex's own `auth.json`, which the run writes in its home
   before the first ask (`loginFile`). Codex takes a ChatGPT session only from there, so its
   commands can read it: it never thinks for a read run or a guest's (the default agent does, on
@@ -704,6 +721,10 @@ here on your ChatGPT plan (ADR 0074):
   signed out of all sessions, changed your password, or a refresh token was used twice too far
   apart), the run fails with Codex's words and the fix: `codex sign in`, or `pnpm ship setup agent
   codex --new`.
+- **No sign-in yet:** a run on Codex with no `CODEX_AUTH` stops before the clone and the agent
+  (ADR 0078), and its reply says "Codex isn't signed in: say `codex sign in`"
+  ([A run with no login](#a-run-with-no-login-stops-at-once)). The box still installs Codex the
+  first time a run picks it (about 400 MB, once a box), as the install step holds no login.
 - **Its sign-in** (`signIn`): Codex's own `codex login` at the pinned version through `npx`
   (nothing installed), in a folder of its own, so it's a session for Shipify alone and Codex on
   your PC keeps its own. Two ways in:

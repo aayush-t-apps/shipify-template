@@ -8,6 +8,7 @@ export * from "./labels.ts";
 export * from "./lines.ts";
 export * from "./log.ts";
 export * from "./mask.ts";
+export * from "./personality.ts";
 export * from "./problems.ts";
 export * from "./projects.ts";
 export * from "./settings.ts";

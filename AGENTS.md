@@ -90,7 +90,9 @@ The owner's rules, for every change here:
   a box's shellcheck, actions) change only in a PR that says so. OS security updates, the
   runner's own updates and Node 22.x fixes are the exceptions.
 - **Nothing to sign in to on a box,** and no sudo after `box add`: you never run its setup again.
-  The runner's sudo rules, made by `box add`, start the agent's own user (ADR 0031) and, as root,
+  The runner's sudo rules, made by `box add`, start the agent's own user (ADR 0031), the look
+  server's user, which holds the tools' look keys so the agent never does (`shipify-look`, ADR
+  0077), and, as root,
   only the box's own update (setup 14): it applies main's newer `box/setup.sh`, which root downloads
   from GitHub itself, so a job says "now", never what runs. Root never runs a file the runner or an
   agent can write.

@@ -67,24 +67,35 @@ export const choiceFor = (executorId: string, use: { model?: string; effort?: st
   choose(executorId, executors()[executorId], use);
 
 /**
- * The prompt's Tools section (ADR 0031: the agent only looks): each tool it may look with and its
- * calls, and each one left out and why. None when tools.json lists none.
+ * The prompt's Tools section (ADR 0031: the agent only looks): each tool the run's look server
+ * serves (`served`, ADR 0077) and its look calls, and each one left out and why: its key not set,
+ * or its server, or the look server, not started. None when tools.json lists none.
  */
-export function promptTools(executorId: string): string | undefined {
+export function promptTools(
+  executorId: string,
+  served: { tools: string[]; missing: { tool: string; why: string }[] } = {
+    tools: [],
+    missing: [],
+  },
+): string | undefined {
   const { tools: all, broken } = readTools();
   if (!Object.keys(all).length && !broken.length) return undefined;
   const entry = executors()[executorId];
   if (!adapterOf(entry)?.tools)
     return "This agent can't use Shipify's tools here: answer from what you can read, and say a tool would help.";
-  const { ready, missing } = runTools(all, "look");
+  const { missing } = runTools(all, "look");
   missing.push(
+    ...served.missing,
     ...broken.map((tool) => ({ tool, why: "its tools.json entry is wrong: ship doctor says why" })),
   );
   const name = (tool: string, call: string) => callNameFor(entry, tool, call);
   const lines = [
-    ...Object.entries(ready).map(
-      ([tool, calls]) => `- ${tool}: ${calls.map((c) => `\`${name(tool, c)}\``).join(", ")}`,
-    ),
+    ...served.tools.flatMap((tool) => {
+      const calls = all[tool]?.look ?? [];
+      return calls.length
+        ? [`- ${tool}: ${calls.map((c) => `\`${name(tool, c)}\``).join(", ")}`]
+        : [];
+    }),
     ...missing.map((m) => `- ${m.tool}: not connected on this run (${m.why})`),
   ];
   const acts = Object.entries(all).flatMap(([tool, t]) => t.act.map((c) => `${tool}.${c}`));

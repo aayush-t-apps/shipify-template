@@ -943,17 +943,18 @@ export async function thread(
   // A doc (ADR 0071): its short name, and when it changed, for its Edit.
   const isDoc = labels.some((l) => l === NOTEBOOK_LABEL || l === LIBRARY_LABEL);
   const docOf = projectOfLabels(labels);
-  // Its project's number, open or closed, from the index: the doc opens over that project's Docs.
-  const of =
+  // Its project, open or closed, from the index: the doc opens over that project's Docs, and with no
+  // Edit while it's closed (task #744).
+  const ix =
     isDoc && docOf
       ? (await projectIndex(env, deps).catch(() => [] as Indexed[])).find((p) => p.name === docOf)
-          ?.n
       : undefined;
   const doc = isDoc
     ? {
         name: docName(issue.title.replace(/^Notebook: /, ""), docOf),
         ...(docOf ? { project: shownProject(docOf) } : {}),
-        ...(of ? { of } : {}),
+        ...(ix ? { of: ix.n } : {}),
+        ...(ix && !ix.open ? { shut: true as const } : {}),
         updated: issue.updated_at,
       }
     : undefined;

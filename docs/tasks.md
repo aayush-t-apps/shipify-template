@@ -23,6 +23,7 @@ anything that isn't a reply to one of its messages becomes a new task, titled fr
 | `<account>/<repo>: …` (`acme/api: rate-limit /login`) | change | the same, on a repo on another of your accounts ([Any account](#any-account)) |
 | `new: …` | new | a plan PR; merging it builds and publishes the app |
 | `remember: …`, `remember <topic>: …` | remember | a note in the [notebook](notebook.md), written with no agent; the task closes |
+| `personality: …` (a preset, your own words, `default` or `undo`) | remember | how Shipify talks to you, your Personality page, written with no agent ([notebook.md](notebook.md#your-personality-adr-0078)); the task closes |
 | `repeat: …`, or the Repeat form | repeat | a reminder, a job or a check on a schedule ([Repeats](#repeats)) |
 | the Operate form, or its title from any channel (`<app>: release`, `take it down`, `bring it back`, `roll back production`) | operate | a release, take-down, bring-back or rollback, run once on GitHub's machines with no agent |
 | `shipify: release`, `shipify: release minor` or `major` | operate | a release of Shipify itself: checked, versioned (patch by default) and published to the template, which offers it to every copy as a PR ([releases.md](releases.md)) |
@@ -232,10 +233,14 @@ run stays in the guest profile, so nothing of yours reaches it.
   and login (your pick, or the guest's `use`); the run's clock; and the stay
   ([above](#a-run-that-stays)), whose turn hands the agent no token.
 - **Its answer** may hold only words, a question, choices, files, pages onto its own project's
-  docs (docs that carry that guest's mark), and calls that fit a tool's guest forms (ADR 0073:
+  docs (docs that carry that guest's mark), calls that fit a tool's guest forms (ADR 0073:
   Drop's, a page only they open, or a change to one made for them), which the box makes at once
-  for that guest ([tools.md](tools.md#guests-calls)). Anything else (a PR, work, other calls, a
-  split, notes, a repeat, quiet) is dropped, and the reply names why, as a read run's refusals are.
+  for that guest ([tools.md](tools.md#guests-calls)), and notes, lines to forget and a
+  Personality for the guest's own memory page (ADR 0078), written only when the run read nothing
+  from outside. Anything else (a PR, work, other calls, a split, a repeat, quiet) is dropped, and
+  the reply names why, as a read run's refusals are.
+- **Its prompt** holds the guest's own memory page: their Personality first, then their notes, 8
+  KB in all ([notebook.md](notebook.md#a-guests-memory-adr-0078)).
 - **A guest's words are never yours:** their author is `guest`, so `yes`, `no`, `go`, `publish`,
   `preview`, `start over` or `clean start` in them approves nothing (`NOT_A_GUESTS`).
 - **Nothing of yours in its environment:** its commands start with `LANG` and `SHIPIFY_TASK`
@@ -356,12 +361,13 @@ changes the live app at once (taking an app down, bringing it back, a rollback) 
 | `go` | builds a big change once its doc PR is merged; on a new project's task until it's built, the same as `publish`. On a split task, starts its ready sub-tasks; `go #n` starts that one now; on a sub-task that hasn't started, starts it now ([Sub-tasks](#sub-tasks-one-task-a-few-prs)) | the doc (or plan) is merged; the task has open sub-tasks; the sub-task never ran |
 | `stop repeating` | ends a repeat and closes the task | it repeats |
 | `resume` | starts a paused repeat again | it's paused |
-| `close` | closes the task: its PRs stay, a repeat pauses (`resume` carries it on); write again to reopen it. From a chat, the door closes it at once with its state labels, the chat answers "Closed · #12", and no run starts: the next run that reads the task notes it (ADR 0040). On GitHub, a run closes it and says so | always |
-| `reopen` | reopens a closed task with no agent, and it waits for what you'd like next. From a chat, the door reopens it at once ("Reopened · #12") and no run starts: your next words do. On GitHub, a run reopens it, a minute or more after it closed, and says so | it's closed |
+| `close` | closes the task: its PRs stay, a repeat pauses (`resume` carries it on); write again to reopen it. From a chat, the door closes it at once with its state labels, the chat answers "Closed · #12", and no run starts: the next run that reads the task notes it (ADR 0040). A split's part and a project are the exceptions: a run with no agent sees to the close, as it starts what waited for the part (ADR 0066), or closes the project's open chats and its pages ([knowledge.md](knowledge.md#open-or-closed)). On GitHub, a run closes it and says so | always |
+| `reopen` | reopens a closed task with no agent, and it waits for what you'd like next. From a chat, the door reopens it at once ("Reopened · #12") and no run starts: your next words do. A project's reopen is seen to by a run with no agent, which opens its pages again. On GitHub, a run reopens it, a minute or more after it closed, and says so | it's closed |
 | `stop` | stops the run that's going, within a minute: what it committed stays on the task's branch, and the run stays ([above](#a-run-that-stays)), so your next words carry on in the same session ([below](#words-while-a-run-works)). On a split task, no more sub-tasks start; the ones that run finish | always |
 | `clean start` | lists, with no agent, the open chats outside your projects that nothing keeps open (the 30-day close's rules, whatever their age: no repeat, errand, open PR or part, none at work or waiting on you), the oldest 100, but this one (ADR 0070). On `yes`, the box reads them again and closes each as done, as the 30-day close does: one with new words since the list stays open. Their files go 30 days later; your projects and pages stay. Export first what you want to keep | anywhere, as a whole message or a new chat |
 | `sign in` · `<agent> sign in` | signs an agent whose login is a sign-in (Codex, ADR 0074) in to your own account, with no agent and no box: `codex sign in` (or `sign in to codex`; `sign in` alone when only one agent signs in). On GitHub's machine, the github job starts the agent's own sign-in with a code; in a minute or two a reply shows a link and a one-time code (15 minutes, once), for your phone or any device. Once you've used them, the job keeps the session as the agent's secret (`CODEX_AUTH`) and says ✓ with your plan; else it says why, and nothing changes. Words that name no such agent ("please sign in") are plain words | anywhere, as a whole message or a new chat; never a guest's |
-| `remember: …` · `forget: …` | keeps or removes a note in the notebook, with no agent ([notebook.md](notebook.md)) | always |
+| `remember: …` · `forget: …` | keeps or removes a note in the notebook, with no agent ([notebook.md](notebook.md)); a guest's, on their own memory page (ADR 0078) | always |
+| `personality: …` · `personality: default` · `personality: undo` | sets your Personality page whole (a preset by its name, or your words), closes it for the Default, or puts its last words back, with no agent; a guest's, on their own page (ADR 0078). Setup's menu and **Change it back** send it | always |
 | `jot: …` · `add <project>: …` · `project: <name>` | from a chat, the door saves them with no run (ADR 0069): a dated line in this month's Journal, an item in a project's Inbox, a new project ([knowledge.md](knowledge.md)) | from a chat, as a new message |
 | `/ping` · `/apps` · `/repos` · `/help` · `/notebook` · `/recipes` · `/models` | the same answer a chat gets, with no agent | anywhere |
 | `use <model>` | the model (or effort, or agent) for the task's runs: alone, from your next message (from a chat it starts no run; on GitHub a run says so); as a line in a message, from that message's run | anywhere |
@@ -526,6 +532,13 @@ A **repeat** is a task with a time. One you want to keep and review as a file is
 - **A question's answers:** a run that asks may give up to three short answers (`choices`). They're
   written under its question ("Answers: “Yes, match it” · “No, leave it”") for GitHub and Telegram,
   and the web chat shows them as buttons; any answer is just your words.
+- **Next steps** (ADR 0078): a reply with no question may end with up to three next steps
+  (`choices` alone), when one is clear ("Make it a task"). Every chat shows them as buttons that
+  send their words; never `yes` or `no`, never under a list, and nothing starts until you tap.
+- **Memory and your Personality from a run** (ADR 0078): besides `notes`, a run may name lines
+  your newer words undo (`forget`, taken off first) and your Personality page's new words
+  (`personality`, with **Change it back**). The same rule as a note: written at once from your
+  words; after a run that read outside content, listed for your `yes`.
 - **A lone thanks** (`ok`, `thanks`, 👍) answers a question waiting on you. After a PR to merge,
   a list for your `yes`, or an answer, it's a thanks: a 👍, and the agent isn't run.
 - **Answered, then quiet:** the task stays open (ADR 0069). With no new word for 7 days it folds
@@ -675,7 +688,8 @@ first closes with its own PR, and a split's parent closes with its parts, as bef
   chat goes to it. The process, the Inbox and the Journal: [knowledge.md](knowledge.md).
 - **Progress:** where the task's work stands (Goal, Done, Next, Decisions, Open), up to 16,000
   characters. The agent calls it its handoff: the next run starts with it in `out/handoff.md` and
-  edits it in place, and the web chat shows it above the thread, folded.
+  edits it in place, and the web chat shows it above the thread, folded. A plain answer writes
+  none (ADR 0078): a chat that only talks shows no Progress, and its run takes one turn less.
 - **A long thread:** past 40 KB of conversation, a run gets its Progress, the newest 8 messages
   and every new one whole, and each older one as a line (its date, who, its first line and its
   id); `ship task read <id>` prints one whole. At 200 messages a run reads about 85 KB instead of
@@ -882,6 +896,8 @@ watch):
 | `verify-failed` | the box's checks (`ship pr --check`, `make verify`) failed, so no PR | `continue`, or say what to change |
 | `agent-stopped` | the agent stopped before it finished (its clock, a crash, an answer that didn't read); its work is kept | `continue` |
 | `agent-error` | the agent ended with its model's error, in its words ("… at openrouter.ai answered: …") | `continue`, or another model (`/use`) |
+| `agent-not-signed-in` | the agent isn't signed in (its login isn't set), so the run stopped before it started (ADR 0078) | `<agent> sign in` (`codex sign in`), then `continue`; or another agent (`/use`) |
+| `agent-login-missing` | the agent's login or its gateway's key isn't set, so the run stopped before it started | `pnpm ship setup agent <agent>` on a PC, then `continue`; or another agent (`/use`) |
 | `result-wrong` | the agent's answer didn't fit the result's shape, named, with its words below | `continue`, or another model (`/use`) |
 | `plan-used-up` | your plan's limit is used up, and when it resets; the work is kept | `continue` after that time |
 | `step-failed` | one of the run's steps broke, named with its error | `continue`; if it fails the same way, it's Shipify's: the run's log has the rest |

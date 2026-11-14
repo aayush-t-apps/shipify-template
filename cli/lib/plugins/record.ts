@@ -162,6 +162,11 @@ export interface SweepRead {
   /** Open, and labelled `project`. */
   projects: SweptIssue[];
   /**
+   * Open, and labelled `library`, the least lately changed first: a closed project's pages left
+   * open (task #744) are among them.
+   */
+  pages: SweptIssue[];
+  /**
    * Open, with no word or change since before `quietBefore`, and none of `quietWithout`'s labels;
    * the oldest first.
    */
@@ -277,9 +282,9 @@ export interface TaskRecord {
   commentWriters(comment: { id: number; node_id?: string }): { author: string; editor?: string };
   /**
    * What the weekly clean-up reads (ADR 0069), in one read: the issues closed in a window of days,
-   * the open projects, and the open issues quiet since a day with none of the labels it leaves open
-   * (`quietWithout`), each with its labels, its parent and what it has open. Days as YYYY-MM-DD.
-   * Pull requests are none of them.
+   * the open projects, the open Library pages, and the open issues quiet since a day with none of
+   * the labels it leaves open (`quietWithout`), each with its labels, its parent and what it has
+   * open. Days as YYYY-MM-DD. Pull requests are none of them.
    */
   sweep(q: {
     closedFrom: string;

@@ -57,7 +57,7 @@ export type Op = (typeof OPS)[number];
 export const AT_ONCE: readonly Op[] = ["down", "up", "rollback"];
 
 export interface TaskTitle {
-  kind: "app" | "new" | "question" | "remember" | "forget" | "op" | "none";
+  kind: "app" | "new" | "question" | "remember" | "forget" | "personality" | "op" | "none";
   project?: string;
   ask: string;
   /** kind "remember": the notebook page it goes on (Preferences when none is given). */
@@ -121,7 +121,7 @@ export function looksAt(text: string): string[] {
 /**
  * The title's first word, as intents.json names it (ADR 0031): `acme-site: bigger margins` ·
  * `new: a tip calculator` · `ask: …` · `remember: short answers` · `remember People: Ana designs` ·
- * `forget: short answers` ·
+ * `forget: short answers` · `personality: friendly` ·
  * `acme-site: release`. Anything else is a question.
  */
 export function parseTitle(title: string): TaskTitle {
@@ -138,6 +138,9 @@ export function parseTitle(title: string): TaskTitle {
   // `forget: …` takes one note off your pages, by its words, with no agent either.
   const gone = /^forget\s*:\s*(.*)$/is.exec(t);
   if (gone || /^forget$/i.test(t)) return { kind: "forget", ask: (gone?.[1] ?? "").trim() };
+  // `personality: …` sets how Shipify speaks to you (ADR 0078), with no agent either.
+  const voice = /^personality\s*:\s*(.*)$/is.exec(t);
+  if (voice) return { kind: "personality", ask: (voice[1] ?? "").trim() };
   const note = /^remember(?:\s+([^:]+?))?\s*:\s*(.*)$/is.exec(t);
   if (note)
     return {
@@ -351,8 +354,19 @@ export const TaskState = z.object({
           outside: z.boolean().optional(),
         })
         .optional(),
-      /** Notes a run that read outside content proposed: written only after your yes. */
-      notes: z.array(z.object({ topic: z.string(), line: z.string() })).optional(),
+      /**
+       * Notes a run that read outside content proposed: written only after your yes. With them, its
+       * lines to take off (`forget`) and its Personality's new words (`personality`, ADR 0078).
+       */
+      notes: z
+        .array(
+          z.object({
+            topic: z.string(),
+            line: z.string(),
+            kind: z.enum(["forget", "personality"]).optional(),
+          }),
+        )
+        .optional(),
       /** A split a run proposed (ADR 0066): its parts open only after your yes. */
       split: z.array(SplitEntry).optional(),
       /** A run's workflow change, held (ADR 0075): pushed only after your yes. */

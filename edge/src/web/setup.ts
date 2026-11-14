@@ -11,8 +11,14 @@ import {
   zoneName,
   effortsFor,
   gatewayName,
+  GUEST_LABEL,
   guestLabel,
   guestOwns,
+  PERSONALITY_TOPIC,
+  PRESETS,
+  presetOf,
+  voiceOf,
+  withoutLine,
 } from "../../../cli/contracts/index.ts";
 import executors from "../../../executors.json" with { type: "json" };
 import pkg from "../../../package.json" with { type: "json" };
@@ -185,7 +191,7 @@ const list = (v: unknown) =>
 export async function setup(env: Env, deps: Deps, s: Settings, chat: string): Promise<Setup> {
   const gh = github(env, deps);
   const kv = kvOf(env);
-  const [raw, record, runs, devices, guests] = await Promise.all([
+  const [raw, record, runs, devices, guests, personality] = await Promise.all([
     runners(gh, deps.now(), 30_000, reader(env, deps)).catch(() => []),
     statusOf(env, deps)
       .then((x) => x?.record)
@@ -202,6 +208,7 @@ export async function setup(env: Env, deps: Deps, s: Settings, chat: string): Pr
           .catch(() => [])
       : undefined,
     guestsSeen(env, deps, s).catch(() => undefined),
+    personalitySeen(env, deps).catch(() => undefined),
   ]);
   // Which task each busy slot is on: each live run's job names its runner (four runs at most).
   const live = (runs.workflow_runs ?? []).filter((r) => r.status === "in_progress").slice(0, 4);
@@ -294,6 +301,42 @@ export async function setup(env: Env, deps: Deps, s: Settings, chat: string): Pr
     },
     ...(devices ? { devices } : {}),
     ...(guests ? { guests } : {}),
+    ...(personality ? { personality } : {}),
+  };
+}
+
+/**
+ * Setup → Personality (ADR 0078): your page as it is now, from one listing of the notebook's pages
+ * (their raw text), and the presets. The menu changes it with the word `personality: …`, which the
+ * box writes with no run, so this only reads.
+ */
+async function personalitySeen(env: Env, deps: Deps) {
+  const gh = github(env, deps);
+  type Page = {
+    title?: string;
+    body?: string | null;
+    html_url?: string;
+    labels?: { name?: string }[];
+    pull_request?: unknown;
+  };
+  const pages = await read<Page[]>(
+    env,
+    deps,
+    `repos/${gh.repo}/issues?labels=notebook&state=open&per_page=100`,
+    { html: false },
+  );
+  const page = pages.find(
+    (p) =>
+      !p.pull_request &&
+      new RegExp(`^Notebook:\\s*${PERSONALITY_TOPIC}\\s*$`, "i").test(p.title ?? "") &&
+      !(p.labels ?? []).some((l) => l.name === GUEST_LABEL),
+  );
+  const words = page ? voiceOf(withoutLine(page.body)) : "";
+  return {
+    presets: PRESETS.map(({ id, name, words }) => ({ id, name, words })),
+    preset: words ? (presetOf(words)?.id ?? "custom") : "default",
+    words,
+    ...(page?.html_url ? { url: page.html_url } : {}),
   };
 }
 

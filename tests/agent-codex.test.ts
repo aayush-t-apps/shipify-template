@@ -19,13 +19,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { asProblem, renderProblem } from "../cli/contracts/index.ts";
 import { agentForRun } from "../cli/kernel/agent.ts";
 import { agentOf, runRenew } from "../cli/kernel/run.ts";
 import { context } from "../cli/kernel/snapshot.ts";
-import { handOver, think } from "../cli/kernel/think.ts";
+import { handOver, loginMissing, think } from "../cli/kernel/think.ts";
 import type { Plan, Snapshot, Think } from "../cli/kernel/types.ts";
 import { codex, deviceCode, renewed } from "../cli/lib/agents/codex.ts";
-import { loadExecutors } from "../cli/lib/agents.ts";
+import { ADAPTERS, loadExecutors, loginOf, readExecutors } from "../cli/lib/agents.ts";
 import { mockCallsLogged } from "../cli/lib/providers.ts";
 import { newState, type TaskState } from "../cli/lib/task.ts";
 import { models } from "../edge/src/web/setup.ts";
@@ -67,6 +68,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "codex-run-"));
   const executors = JSON.parse(readFileSync(join(ROOT, "executors.json"), "utf8"));
   executors.codex.task = [process.execPath, join(ROOT, "tests/fixtures/fake-codex.mjs")];
+  // Claude Code's stand-in, for a read run and a guest's, which go to it (FAKE_FINAL: its answer).
+  executors.claude.task = [process.execPath, join(ROOT, "tests/fixtures/fake-thinker.mjs")];
   writeFileSync(join(dir, "executors.json"), JSON.stringify(executors));
   process.env = {
     ...saved,
@@ -229,6 +232,92 @@ describe("where Codex never thinks (ADR 0074)", () => {
   });
 });
 
+describe("a run on an agent whose login isn't set (ADR 0074, ADR 0078 section 11)", () => {
+  /** The run as its job's think step starts it, and the folder its agent works in. */
+  const task = () => join(sb.dir, ".tasks", "7");
+  const run = (t: Think = talk, s: Snapshot = snap) =>
+    think(s, t, {
+      files: join(dir, "files"),
+      keep: join(task(), "out"),
+      local: join(task(), "agent"),
+    });
+
+  it("stops before Codex starts, with no login file written, and says to sign in", async () => {
+    delete process.env.SHIPIFY_AGENT_LOGIN;
+    delete process.env.CODEX_AUTH;
+    // The problem as the run's step keeps it for its Failed reply (runStep, `run failed`).
+    const p = asProblem(await run().catch((e: unknown) => e));
+    expect(p).toMatchObject({
+      code: "agent-not-signed-in",
+      what: "Codex isn't signed in (CODEX_AUTH isn't set), so the run stopped before it started.",
+    });
+    expect(renderProblem(p)).toContain(
+      "**What to do:** Say `codex sign in`, and use the link and the code its reply gives. Then say `continue`, or pick another agent with /use.",
+    );
+    expect(existsSync(join(task(), "agent", "out", "given.json"))).toBe(false);
+    expect(existsSync(join(task(), "agent", "config", "codex", "auth.json"))).toBe(false);
+  });
+
+  it("starts Codex as before once its login is set, under its own name too (a PC)", async () => {
+    delete process.env.SHIPIFY_AGENT_LOGIN;
+    process.env.CODEX_AUTH = sessionOf();
+    await run();
+    const given = JSON.parse(readFileSync(join(task(), "agent", "out", "given.json"), "utf8"));
+    expect(given.login).toBe(sessionOf());
+    expect(JSON.parse(readFileSync(join(task(), "out", "result.json"), "utf8"))).toMatchObject({
+      state: "done",
+    });
+  });
+
+  it.each(["read", "guest"] as const)(
+    "leaves a %s run alone: Claude Code thinks, as before",
+    async (profile) => {
+      delete process.env.SHIPIFY_AGENT_LOGIN;
+      delete process.env.CODEX_AUTH;
+      process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "Four." });
+      const out = await run({ ...talk, profile, web: false });
+      expect(out.details?.agent).toBe("claude");
+      expect(out.details?.notes?.join("\n")).toMatch(/^Codex reads its login from a file/m);
+      expect(JSON.parse(readFileSync(join(task(), "out", "result.json"), "utf8"))).toMatchObject({
+        text: "Four.",
+      });
+    },
+  );
+
+  it("on a box, stops any agent whose login isn't set, and names its setup step when it has no sign-in word", () => {
+    delete process.env.SHIPIFY_AGENT_LOGIN;
+    const file = join(ROOT, "executors.json");
+    const all = loadExecutors(file);
+    const { gateways } = readExecutors(file);
+    const missing = (id: string, box: boolean) => {
+      const ex = all[id];
+      return loginMissing(id, ex, loginOf(ex, gateways)?.secret, ADAPTERS[ex?.adapter ?? ""], box);
+    };
+    // Off a box, Claude Code or pi may use their own sign-in there; Codex has none but the run's.
+    expect(missing("claude", false)).toBeUndefined();
+    expect(missing("pi", false)).toBeUndefined();
+    expect(missing("codex", false)?.code).toBe("agent-not-signed-in");
+    expect(missing("claude", true)).toMatchObject({
+      code: "agent-login-missing",
+      what: "Claude Code has no login (CLAUDE_CODE_OAUTH_TOKEN isn't set), so the run stopped before it started.",
+      fix: "Run `pnpm ship setup agent claude` on a PC. Then say `continue`, or pick another agent with /use.",
+    });
+    // A gateway's key: its agent's own setup step sets it.
+    expect(missing("pi", true)).toMatchObject({
+      code: "agent-login-missing",
+      fix: expect.stringMatching(/^Run `pnpm ship setup agent pi` on a PC\./),
+    });
+    expect(missing("codex", true)?.code).toBe("agent-not-signed-in");
+    // Handed over by the job, or set under its own name: it starts.
+    process.env.SHIPIFY_AGENT_LOGIN = "the-login";
+    expect(missing("claude", true)).toBeUndefined();
+    expect(missing("codex", true)).toBeUndefined();
+    delete process.env.SHIPIFY_AGENT_LOGIN;
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    expect(missing("pi", true)).toBeUndefined();
+  });
+});
+
 describe("Codex's write-back check", () => {
   const given = sessionOf();
   it("keeps only a newer session for the same account", () => {
@@ -304,7 +393,7 @@ describe("Codex's gate, as its PreToolUse hook", () => {
     const argv = codex.argv({
       command: ["codex", "exec"],
       commands: { deny: ["git push", "git stash"], web: true },
-      tools: { mode: "look", dir: tools, root: ROOT, only: [] },
+      tools: { mode: "look", dir: tools },
       folders: { write: [join(run, "out")] },
     });
     const hook = /command="(node [^"]+)"/.exec(argv.join("\n"))?.[1] ?? "";

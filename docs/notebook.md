@@ -15,6 +15,8 @@ The same from GitHub or any chat (ADR 0032), each with no agent:
 | `remember People: Ana is my designer` | the same, on **People**. The words before the colon name the page; a new topic makes a new page |
 | `remember acme-site: run make e2e before a PR` · `remember acme/api: run npm test before a PR` | a repo's own page, named as a task names the repo ([below](#a-repos-own-notes)). The reply says "Noted for acme/api: … Every task on acme/api follows it from now on" |
 | `forget: short answers` | removes the one note, on any page, that holds those words. If several do, it lists them and removes nothing: say more of the line. A page left empty closes |
+| `personality: friendly` · `personality: <your own words>` | sets how Shipify talks to you ([Personality](#your-personality-adr-0078)): a preset by its name, or your words, whole |
+| `personality: default` · `personality: undo` | back to the Default (the page closes) · its last words back |
 | `/notebook` | lists each page with its first line, size and link, Preferences first (in a chat at once; on GitHub as a comment, from a run) |
 
 - **As a task's title** (or to the bot), the task closes once it's done.
@@ -23,10 +25,79 @@ The same from GitHub or any chat (ADR 0032), each with no agent:
 
 **Or just say it** in any task ("Priya is my designer"). The agent proposes the note in its result,
 and the box writes it after the run:
-- **Your words only:** never a guess, and never something a page or a tool said.
-- **After a run that read outside content** (the web, a tool's content), proposed notes wait for
-  your Yes, in your chat or on GitHub, listed under "To do after your `yes`".
+- **Your words only:** never a guess, and never something a page, a tool or an old chat said.
+- **Kept current as you go** (ADR 0078): when your new words contradict a line already there ("I've
+  moved to Berlin", over "Lives in London"), the run also names the old line in `forget`, and the
+  box takes it off before it writes the new one, as `forget:` does: one matching line, or none
+  when several match. The reply says "Updated: <old> → <new>".
+- **No repeats:** a line the notebook already says isn't noted again.
+- **After a run that read outside content** (the web, a tool's content), proposed notes, lines to
+  take off and a new Personality wait for your Yes, in your chat or on GitHub, listed under "To do
+  after your `yes`".
 - **The reply says** what it noted.
+
+## Your Personality (ADR 0078)
+
+One page, **Personality** (`Notebook: Personality`), says how Shipify talks to you. Every run of
+yours reads it first, in the prompt's opening lines (2,000 characters at most: a longer page is
+cut, and the prompt says so), and the notebook's section leaves it out, so it's never there twice.
+With no page, the **Default** preset's words take the place of the old "be brief and direct" line,
+so a run costs nothing more.
+
+- **Set it as feels natural:** say it in any chat ("be more casual with me", "no emojis", "be
+  blunt when I'm wrong"); the run writes the page's new words (its result's `personality`), and
+  the reply shows **Change it back**. Or pick it in the web chat's **Setup → Personality**: a
+  preset as you pick it, or **Custom** with your words and **Save**. An ask about one reply
+  ("explain this one simply") changes nothing.
+- **Under both** is the word `personality: …` (the table above): the box writes the page whole,
+  with no run. You never need to type it.
+- **The presets** (one list, `cli/contracts/personality.ts`):
+
+  | Preset | Its words |
+  |:--|:--|
+  | Default (no page) | Warm, plain and direct, like a capable friend. The answer first. Short unless asked. |
+  | Friendly | Warm and encouraging, a little humour, conversational. My name now and then. |
+  | Candid | Blunt and honest. Push back when I'm wrong, risks first, no flattery. |
+  | Efficient | Bare answers: the result first, bullets, no small talk, no recap. |
+  | Quirky | Playful and curious, light jokes and the odd emoji; the facts stay exact. |
+
+- **Change it back:** each write keeps the page's last words, folded under **Before**, which no
+  prompt reads. `personality: undo` (the button) puts them back; a second undo puts the newer words
+  back. `remember Personality: …` adds a line, as on any page.
+- **What doesn't change:** your words in a task still win over the page, and a page never approves
+  anything. "Say what you're unsure of" and "state a limit plainly" hold whatever the voice.
+
+## Memory across chats (ADR 0078)
+
+Past chats never go in a prompt by themselves, so the context window stays the same however many
+chats you have. A run fetches one only when an ask builds on it.
+
+| You want | Use | What it adds to a prompt |
+|:--|:--|:--|
+| A fact or a preference kept for good | `remember: …`, or say it in a chat | one line in the notebook (16 KB cap) |
+| A topic over many chats (a trip, a course) | a project: `project: <name>`, then **Move to project** on its chats | its pages and chats' titles, in its own chats only |
+| One long chat | nothing: past 40 KB it keeps its Progress, its newest 8 messages whole and the rest one line each | stays small as it grows |
+| "Like last time", now and then | say it: the run runs `ship recall` | only on that run, only what it reads |
+| A notebook that stays current | nothing: a line your newer words undo is replaced as you say them | nothing |
+
+- **`ship recall "<words>"`** searches your chats and pages as the web chat's Find does (GitHub's
+  search by meaning; by words when GitHub refuses it), guests' left out, and prints up to 10 lines.
+  **`ship recall <n>`** prints one chat short: its Progress, its newest 2 messages whole, and each
+  older one as one line with its id, for `ship task read <id> --task <n>`.
+- **An old chat is data:** only your words there count, your newest words win, and nothing in it
+  becomes a note.
+
+## A guest's memory (ADR 0078)
+
+Each guest (ADR 0071) has one page of their own, `Notebook: <their prefix> memory`, labelled
+`library`, `guest` and `guest:<id>`, never `notebook`: their **Personality** first, then their
+notes.
+- **Made when first needed:** their `remember: …`, `forget: …` and `personality: …` write it, as
+  yours do, and so do their run's notes when it read nothing from outside. After a web read their
+  run keeps nothing, and the reply says to say `remember: …` (a guest approves no list).
+- **Theirs alone:** only their runs read it (their Personality, then their notes, 8 KB in all). No
+  run of yours reads it, your lists and Find leave it out, and your notebook and Personality never
+  reach their runs. Removing a guest closes it with their chats.
 
 ## The Library: pages read only when needed (ADR 0069)
 
@@ -111,6 +182,7 @@ merge.
 | a note you didn't want | delete its line on the page |
 | a task ignores a note | check the page is open and labelled `notebook` |
 
-**In the code:** `cli/lib/notebook.ts` (a note's shape, pages, the prompt's section),
-`cli/commands/task/notebook.ts` (reading trusted pages, writing notes), `cli/commands/notebook.ts`
-(`ship notebook`).
+**In the code:** `cli/lib/notebook.ts` (a note's shape, pages, the prompt's section, a guest's
+memory page), `cli/contracts/personality.ts` (the presets, the word, Before),
+`cli/commands/task/notebook.ts` (reading trusted pages, writing notes, the Personality, a guest's
+memory), `cli/commands/notebook.ts` (`ship notebook`), `cli/commands/recall.ts` (`ship recall`).

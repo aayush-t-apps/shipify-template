@@ -2,8 +2,17 @@
 // (as a Journal line is, capture.ts), under a `from` line that names you, so the notebook counts
 // the page as yours (cli/commands/task/notebook.ts, `trusted`). Only a notebook or Library page:
 // task.yml starts no run for those, so an edit starts none. Refused when the doc changed after you
-// opened it (its `updated_at`, as you read it), and past 60,000 characters, as a run's write is.
-import { fromLine, GUEST_LABEL, LIBRARY_LABEL, readFrom } from "../../../cli/contracts/index.ts";
+// opened it (its `updated_at`, as you read it), past 60,000 characters, as a run's write is, and
+// while its project is closed (task #744).
+import {
+  fromLine,
+  GUEST_LABEL,
+  LIBRARY_LABEL,
+  PROJECT_LABEL,
+  projectOfLabels,
+  projectTitle,
+  readFrom,
+} from "../../../cli/contracts/index.ts";
 import { type GitHub, GitHubError, guestsOwn } from "../github.ts";
 import { NOTEBOOK_LABEL } from "../settings.ts";
 
@@ -12,6 +21,7 @@ export const MOST_DOC = 60_000;
 
 interface Doc {
   body?: string | null;
+  state?: string;
   updated_at?: string;
   locked?: boolean;
   pull_request?: unknown;
@@ -22,6 +32,15 @@ interface Doc {
 
 /** What a save says: the doc's new time, or why it was refused (`status`, and what to do). */
 export type Saved = { updated: string } | { status: number; error: string; fix: string };
+
+/** Whether the project of this name is open: one read of the open projects, 100 at most. */
+async function projectOpen(gh: GitHub, name: string) {
+  const open = await gh.json<{ title?: string; pull_request?: unknown }[]>(
+    "GET",
+    `repos/${gh.repo}/issues?labels=${PROJECT_LABEL}&state=open&per_page=100`,
+  );
+  return open.some((p) => !p.pull_request && p.title === projectTitle(name));
+}
 
 /** Saves your words on doc `n`, when it is as you read it (`updated`). `id`: this edit's own. */
 export async function saveDoc(
@@ -51,6 +70,12 @@ export async function saveDoc(
       : { status: 409, error: `#${b.n} is a guest's doc.`, fix: "Read it; only they edit it." };
   if (!labels.some((l) => (!me.guest && l === NOTEBOOK_LABEL) || l === LIBRARY_LABEL))
     return { status: 409, error: `#${b.n} isn't a doc.`, fix: "Write in it as a chat." };
+  // A closed project's docs closed with it (task #744): read-only until it opens again. A closed doc
+  // of an open project (one reopened on GitHub's own button), or of none, opens as it's saved.
+  const closed = i.state === "closed";
+  const project = closed ? projectOfLabels(labels) : undefined;
+  if (project && !(await projectOpen(gh, project)))
+    return { status: 409, error: "Its project is closed.", fix: "Reopen the project to edit it." };
   if (i.updated_at !== b.updated)
     return { status: 409, error: "It changed.", fix: "Copy your words, then reload." };
   // Its hidden line kept when it names you already; else one that does (a guest's names them).
@@ -69,6 +94,7 @@ export async function saveDoc(
         });
   const done = await gh.json<{ updated_at?: string }>("PATCH", `repos/${gh.repo}/issues/${b.n}`, {
     body: `${head}\n${words}\n`,
+    ...(closed ? { state: "open" } : {}),
   });
   return { updated: done.updated_at ?? "" };
 }

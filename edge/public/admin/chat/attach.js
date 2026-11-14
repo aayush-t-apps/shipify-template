@@ -1,10 +1,48 @@
 // @ts-check
 // Shipify chat: a file you add to the box (compose.js), loaded the first time you add one, so the
 // first screen doesn't carry it: a photo made smaller, then each sent up with its progress.
-import { fail, h } from "./compose.js";
+import { api, fail, h, size } from "./compose.js";
 
 /** What the page lends (app.js `lazy`): nothing needed. */
 export const init = () => {};
+
+/**
+ * A file just put in the box (Send waits on it from then): made smaller if a photo, then sent up.
+ * `b` is the box (compose.js): `has`, `drop`, `draw`, `say`, `signin`, `m` and `task`.
+ */
+export async function add(it, b) {
+  const f = await shrink(it.file);
+  const most = b.m().files.bytes;
+  if (!b.has(it)) return;
+  if (f.size > most) {
+    b.say(`${f.name} is over ${size(most)}.`);
+    return b.drop(it);
+  }
+  if (/^(audio|video)\//.test(f.type)) b.say("A run can't listen to or watch this.");
+  const url = /^image\//.test(f.type) && URL.createObjectURL(f);
+  Object.assign(it, { file: f, name: f.name, type: f.type, size: f.size, url });
+  put(it, b);
+}
+
+/** Sent up, or again on Retry. Failed offline: sent again once, by itself, when it's back online. */
+export function put(it, b) {
+  if (!b.has(it)) return;
+  // Its bar moves where it is: the tray isn't drawn again for each step.
+  const u = upload(it.file, b.task, (p) => {
+    it.p = p;
+    if (it.bar) it.bar.value = p;
+  });
+  Object.assign(it, { err: "", p: 0, abort: u.abort });
+  const no = (e) => {
+    it.err = `${e.message}: ${e.fix}`;
+    // Access's sign-in ended: the bar at the top says so, as for a message.
+    if (e.signin) b.signin();
+    else if (e.off && b.has(it))
+      addEventListener("online", () => it.err && put(it, b), { once: true });
+  };
+  u.p.then((r) => Object.assign(it, r), no).finally(b.draw);
+  b.draw();
+}
 
 // With the open chat's number: a new chat's files get it when the door opens the chat.
 export function upload(f, task, onp) {
@@ -31,8 +69,13 @@ export function upload(f, task, onp) {
     x.upload.onload = () => give(12e4, "The edge didn't answer in 2 minutes");
     x.onloadend = () => clearTimeout(wait);
     x.onload = () => (x.status < 300 && x.response?.ref ? ok(x.response) : no(fail(x.response)));
-    x.onerror = () => no(fail(null, true));
-    x.onabort = x.onerror;
+    // XHR follows Access's redirect to its sign-in and fails as if offline. With the network up,
+    // the edge is asked once as api() asks (a redirect not followed): a sign-in ended says so.
+    x.onerror = async () => {
+      const a = navigator.onLine !== false && (await api("menu", 0, "").catch((e) => e));
+      no(a?.signin ? a : fail(null, true));
+    };
+    x.onabort = () => no(fail(null, true));
     x.send(f);
     moving();
   });

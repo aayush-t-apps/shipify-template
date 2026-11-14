@@ -198,12 +198,17 @@ export const inboxOf = (text: string) =>
 const guestMarks = (guest: string) => [GUEST_LABEL, guestLabel(guest)];
 
 /**
- * A page by its topic among these, or a new one with its first words (a guest's with their marks:
- * their from-line names them already).
+ * A page by its topic among these, open or closed (an open one first), or a new one with its first
+ * words (a guest's with their marks: their from-line names them already). A closed one opens as it
+ * is written (task #744: a project reopened on GitHub's own button, a Journal closed by hand), so a
+ * topic never gets a second page.
  */
 async function pageOf(gh: GitHub, from: From, topic: string, labels: string[], first: string) {
   const title = `Notebook: ${topic}`;
-  const had = (await under(gh, labels.at(-1) as string)).find((i) => i.title === title);
+  const all = (await under(gh, labels.at(-1) as string, "all")).filter((i) => i.title === title);
+  const had = all.find((i) => i.state !== "closed") ?? all[0];
+  if (had?.state === "closed")
+    await gh.json("PATCH", `repos/${gh.repo}/issues/${had.number}`, { state: "open" });
   if (had) return { ...had, made: false };
   const made = await gh.json<Issue>("POST", `repos/${gh.repo}/issues`, {
     title,

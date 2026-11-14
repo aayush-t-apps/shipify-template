@@ -11,6 +11,10 @@ import {
   LIST_HEAD,
   LIST_MAX,
   type Link,
+  PERSONALITY_MAX,
+  PERSONALITY_TOPIC,
+  type PersonalityWord,
+  personalityWord,
   pickerAsked,
   PROJECT_LABEL,
   problem,
@@ -30,8 +34,11 @@ import {
   GUEST_LABEL,
   guestLabel,
   guestPrefix,
+  projectLabel,
+  projectNameOf,
   shownProject,
   useLine,
+  withoutLine,
 } from "../contracts/index.ts";
 import { RECIPE_LABEL, type Recipe } from "../lib/recipes.ts";
 import {
@@ -364,13 +371,18 @@ function byButton(s: Snapshot, st: TaskState, button: boolean, writes: Write[]):
  * `forget: …` as a whole one-line comment: a note
  * to write or to remove. Anything longer ("Remember the old design: blue header, bring it back") is
  * words for the agent. A new task's title is read by lib/task.ts' parseTitle, which takes longer topics.
+ * And `personality: …` (ADR 0078), whole, lines too: the Personality page's new words.
  */
 const noteOf = (
   text: string,
 ):
   | { kind: "remember"; ask: string; topic?: string }
   | { kind: "forget"; ask: string }
+  | { kind: "personality"; set: PersonalityWord }
   | undefined => {
+  // `personality: …` (ADR 0078): your words for how it talks to you, lines too.
+  const voice = personalityWord(text);
+  if (voice) return { kind: "personality", set: voice };
   const t = text.trim();
   if (t.includes("\n")) return undefined;
   const m = /^(remember|forget)(?:\s+([\p{L}\p{N}'&./_-]{1,140}))?\s*:\s*(\S.{0,499})$/iu.exec(t);
@@ -378,6 +390,17 @@ const noteOf = (
   if (m[1].toLowerCase() === "forget")
     return m[2] ? undefined : { kind: "forget", ask: m[3].trim() };
   return { kind: "remember", ask: m[3].trim(), ...(m[2] ? { topic: m[2] } : {}) };
+};
+
+/**
+ * A note, a forget or a Personality, as the box writes it: on your pages, or on a guest's own page
+ * (`guest`, by their id, ADR 0078), which has no topics.
+ */
+const noteWrite = (n: NonNullable<ReturnType<typeof noteOf>>, guest = ""): Write => {
+  const theirs = guest ? { guest } : {};
+  if (n.kind === "personality") return { w: "personality", set: n.set, ...theirs };
+  if (n.kind === "forget") return { w: "forget", words: n.ask, ...theirs };
+  return { w: "note", topic: n.topic ?? "Preferences", line: n.ask, ...theirs };
 };
 
 /** The newest comment id among these, or the cursor. */
@@ -550,7 +573,18 @@ function closeWord(s: Snapshot, st: TaskState, fresh: Said[]): Write[] {
   dropList(st);
   st.closes = undefined;
   st.phase = "done";
-  return [...off, ...projectChats(s, fresh)];
+  return [...off, ...projectChats(s, fresh), ...projectPages(s, "closed")];
+}
+
+/**
+ * A project's pages follow it (task #744): closed as it closes, open as it opens again, so none
+ * waits to be closed by hand. They stay its pages either way. None for a task that isn't a project.
+ */
+function projectPages(s: Snapshot, state: "open" | "closed"): Write[] {
+  const name = s.issue.labels.includes(PROJECT_LABEL) ? projectNameOf(s.issue.title) : undefined;
+  if (!name) return [];
+  const guest = guestOf(s);
+  return [{ w: "project-pages", label: projectLabel(name), state, ...(guest ? { guest } : {}) }];
 }
 
 /** What keeps a project's chat open as the project closes: a run on it, a repeat or an errand. */
@@ -729,7 +763,7 @@ function planned(s: Snapshot, ctx: Context): Plan {
         ...thumbsUp(later),
       );
     }
-    writes.push({ w: "reopen" });
+    writes.push({ w: "reopen" }, ...projectPages(s, "open"));
     // Its new words: yours since, and any from before the close no run read (a merge came first),
     // as runPlan's 👀 says; not those said as it closed.
     fresh = fresh.filter((c) => Math.abs(Date.parse(c.at) - closed) > AFTER_CLOSE_MS);
@@ -828,7 +862,8 @@ function planned(s: Snapshot, ctx: Context): Plan {
       choice: line?.use,
       refused: line && !line.use ? line.reply : undefined,
       instant: guest ? undefined : instantOf(c.text),
-      note: guest ? undefined : noteOf(c.text),
+      // A guest's `remember:`, `forget:` and `personality:` write their own page (ADR 0078).
+      note: noteOf(c.text),
     };
   });
   // A list's Yes with no list waiting (made, dropped, expired): said, with no agent.
@@ -853,17 +888,26 @@ function planned(s: Snapshot, ctx: Context): Plan {
     const i = x.instant as NonNullable<typeof x.instant>;
     writes.push(reply("answer", "Done", ctx.instant(i.name, i.rest), `instant-${x.c.id}`));
   }
-  // `remember: …` and `forget: …` on any task: the box writes or removes the note, with no agent.
+  // `remember: …`, `forget: …` and `personality: …` on any task: the box writes or removes the
+  // note, or sets the Personality, with no agent. A guest's go on their own page (ADR 0078).
   const notes = usable.filter((x) => !x.use && !x.instant && x.note);
-  for (const x of notes) {
-    const n = x.note as NonNullable<typeof x.note>;
+  for (const x of notes)
     writes.push(
-      n.kind === "remember"
-        ? { w: "note", topic: n.topic ?? "Preferences", line: n.ask }
-        : { w: "forget", words: n.ask },
+      noteWrite(
+        x.note as NonNullable<typeof x.note>,
+        x.c.author === "guest" ? (guestOf(s) ?? "") : "",
+      ),
     );
-  }
-  if (notes.length) writes.push(reply("answer", "Done", "", `notes-${notes.at(-1)?.c.id}`));
+  if (notes.length)
+    writes.push(
+      reply(
+        "answer",
+        "Done",
+        "",
+        `notes-${notes.at(-1)?.c.id}`,
+        notes.some((x) => x.note?.kind === "personality") ? { undo: true } : {},
+      ),
+    );
   const rest = usable.filter((x) => !x.use && !x.instant && !x.note);
   // A pick it can't take, in your words: said, and nothing runs, never with a model you didn't
   // choose (ADR 0042). Your words are read: send them again with a pick it takes.
@@ -995,13 +1039,19 @@ function planned(s: Snapshot, ctx: Context): Plan {
     }
   }
 
+  // A project's pages open with it (task #744), in the run that reads its `reopen`, with your words
+  // after it too (one run waits per task), unless the reopen above (words on it closed) took them.
+  const reopened = writes.some((w) => w.w === "reopen");
+  const pages = words.includes("reopen") && !reopened ? projectPages(s, "open") : [];
+  writes.push(...pages);
   // `reopen`: the task open again with no agent (written above, or by the door as it wrote the
   // word); your next words carry it on. One the door did is a setting, and it said so in the chat
-  // already: a run that finds it (one queued for a `close` before it) notes it and says nothing.
+  // already: a run that finds it (one queued for a `close` before it) notes it and says nothing. A
+  // project's is words, so this run opens its pages, quietly too.
   if (words.at(-1) === "reopen" && !plain.length) {
     if (fresh.at(-1)?.from?.setting) return answered("reopened by the door");
-    const was =
-      writes.some((w) => w.w === "reopen") || st.phase === "done" || st.phase === "dropped";
+    if (pages.length && fresh.at(-1)?.from) return answered("a project reopened");
+    const was = reopened || st.phase === "done" || st.phase === "dropped";
     return answered(
       "reopen",
       reply(
@@ -1130,27 +1180,44 @@ function planned(s: Snapshot, ctx: Context): Plan {
       : nothing("nothing new", st);
   }
 
-  // `remember: …` or `forget: …` as a task: the box writes the note, or takes it off its page, with
-  // no agent.
+  // `remember: …`, `forget: …` or `personality: …` as a task: the box writes the note, takes it off
+  // its page or sets the Personality, with no agent. A guest's go on their own page (ADR 0078).
   const kind = s.parsed.kind;
-  if ((kind === "remember" || kind === "forget") && first && !guestOf(s)) {
+  if ((kind === "remember" || kind === "forget" || kind === "personality") && first) {
     const line = s.parsed.ask.trim();
-    if (!line)
+    // Your Personality's words whole: the message's, as a title holds only its first line.
+    const said = withoutLine(s.issue.body).trim();
+    const voice =
+      kind === "personality"
+        ? personalityWord(/^personality\s*:/i.test(said) ? said : s.issue.title)
+        : undefined;
+    if (!line || (kind === "personality" && !voice))
       return answered(
-        kind === "remember" ? "a note with no words" : "forget with no words",
+        kind === "remember"
+          ? "a note with no words"
+          : kind === "forget"
+            ? "forget with no words"
+            : "a Personality with no words it takes",
         reply(
           "needs-you",
           "Needs you",
-          `What should I ${kind}? Write it after \`${kind}:\`.`,
+          kind === "personality"
+            ? `How should I talk to you? Write it after \`personality:\`: a preset (default, friendly, candid, efficient, quirky) or your own words, ${PERSONALITY_MAX.toLocaleString("en")} characters at most.`
+            : `What should I ${kind}? Write it after \`${kind}:\`.`,
           `${kind}-empty`,
         ),
       );
     return answered(
-      kind === "remember" ? "a note" : "forget",
-      kind === "remember"
-        ? { w: "note", topic: s.parsed.topic ?? "Preferences", line }
-        : { w: "forget", words: line },
-      reply("answer", "Done", "", kind),
+      kind === "remember" ? "a note" : kind,
+      noteWrite(
+        voice
+          ? { kind: "personality", set: voice }
+          : kind === "forget"
+            ? { kind, ask: line }
+            : { kind: "remember", ask: line, ...(s.parsed.topic ? { topic: s.parsed.topic } : {}) },
+        guestOf(s),
+      ),
+      reply("answer", "Done", "", kind, voice ? { undo: true } : {}),
       { w: "close", reason: "completed" },
     );
   }
@@ -1488,8 +1555,9 @@ function withReads(s: Snapshot, t0: Think): Think {
 }
 
 /**
- * A guest run's answer (ADR 0071): words, a question, choices, files, its own project's pages, and
- * the calls that fit a tool's guest forms (ADR 0073). Anything else is dropped, and named in `left`.
+ * A guest run's answer (ADR 0071): words, a question, choices, files, its own project's pages, the
+ * calls that fit a tool's guest forms (ADR 0073), and notes, lines to forget and a Personality for
+ * their own memory page (ADR 0078). Anything else is dropped, and named in `left`.
  */
 function guestsOnly<T extends Result>(r: T, left: string[], ctx: Context): T {
   const {
@@ -1498,14 +1566,11 @@ function guestsOnly<T extends Result>(r: T, left: string[], ctx: Context): T {
     calls,
     split,
     first,
-    notes,
     repeat,
     quiet,
     ...kept
-  }: T &
-    Partial<
-      Pick<Result, "pr" | "work" | "calls" | "split" | "first" | "notes" | "repeat" | "quiet">
-    > = r;
+  }: T & Partial<Pick<Result, "pr" | "work" | "calls" | "split" | "first" | "repeat" | "quiet">> =
+    r;
   const why = "a guest's run holds no key, tool or notebook";
   if (pr || work) left.push(`a change (${why}: it changes no repo)`);
   if (first) left.push(`a task first (${why}: it opens no task)`);
@@ -1516,7 +1581,6 @@ function guestsOnly<T extends Result>(r: T, left: string[], ctx: Context): T {
       `${c.tool}.${c.name} (not a call a guest's run may ask for, or its arguments don't fit)`,
     );
   if (split?.length) left.push(`a split (${why}: it opens no task)`);
-  if (notes?.length) left.push(`notes (${why})`);
   if (repeat) left.push(`a repeat (${why}: it sets none)`);
   if (quiet) left.push("quiet (a guest's run always answers)");
   return (theirs.length ? { ...kept, calls: theirs } : kept) as T;
@@ -2182,8 +2246,7 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
     );
   }
   const out: Write[] = [...writes];
-  if (st.pending.notes?.length)
-    for (const n of st.pending.notes) out.push({ w: "note", topic: n.topic, line: n.line });
+  if (st.pending.notes?.length) for (const n of st.pending.notes) out.push(noteOfList(n));
   if (pend) out.push({ w: "calls", calls: pend.calls, fingerprint: pend.fingerprint });
   // A held workflow change (ADR 0075 §5.5): exactly its patch, pushed by apply with workflows write.
   if (st.pending.workflow) out.push({ w: "workflow", change: st.pending.workflow, code });
@@ -2987,13 +3050,27 @@ function decideAfter(
       ...(think.profile === "guest" && guestOf(s) ? { guest: guestOf(s) } : {}),
     });
   // Notes: your own words, written now; from a run that read outside content (any tool's too), or
-  // one on another of your accounts (ADR 0045), whose repos others write too, after your yes.
-  if (r.notes?.length) {
-    if (meta.readOutside || r.read_outside || think.account) {
-      st.pending.notes = r.notes;
-      listed = true;
-    } else for (const n of r.notes) writes.push({ w: "note", topic: n.topic, line: n.line });
-  }
+  // one on another of your accounts (ADR 0045), whose repos others write too, after your yes. So
+  // are the lines your newer words undo, taken off first, and your Personality's new words (ADR
+  // 0078). A guest's go on their own page, only from a run that read nothing from outside: a guest
+  // approves no list, so they say `remember: …` instead.
+  const memory: Note[] = [
+    ...(r.forget ?? []).map((line) => ({ topic: "", line, kind: "forget" as const })),
+    ...(r.notes ?? []),
+    ...(r.personality
+      ? [{ topic: PERSONALITY_TOPIC, line: r.personality, kind: "personality" as const }]
+      : []),
+  ];
+  const fromOutside = Boolean(meta.readOutside || r.read_outside || think.account);
+  const theirs = think.profile === "guest" ? (guestOf(s) ?? "") : "";
+  if (memory.length && think.profile === "guest" && (fromOutside || !theirs))
+    text += `\n\nNot kept in your memory, as this run read from outside: say \`remember: …\`${r.personality ? " or `personality: …`" : ""} to keep it.`;
+  else if (memory.length && fromOutside && !theirs) {
+    st.pending.notes = memory;
+    listed = true;
+  } else if (memory.length) writes.push(...memory.map((n) => noteOfList(n, theirs)));
+  // Its Personality, written now: Change it back under the reply.
+  const voiced = Boolean(r.personality) && !fromOutside && (think.profile !== "guest" || !!theirs);
 
   if (alone) {
     st.pending.split = r.split;
@@ -3108,9 +3185,12 @@ ${callList(ctx.tools, pend.calls?.calls, pend.notes, pend.split, more)}`;
         step,
         {
           ...(r.question ? { question: r.question } : {}),
-          ...(r.question && r.choices?.length ? { choices: r.choices } : {}),
+          // With no question, its next steps as buttons (ADR 0078); never under a list, whose
+          // buttons are its Yes and No alone.
+          ...(r.choices?.length && (r.question || !list) ? { choices: r.choices } : {}),
           ...(list ? { list } : {}),
           ...(keep ? { keep: true as const } : {}),
+          ...(voiced ? { undo: true as const } : {}),
           links,
           ...(r.files?.length ? { files: r.files } : {}),
           ...(think.occasion ? { occasion: think.occasion } : {}),
@@ -3222,7 +3302,25 @@ const fits = (p: Form, c: ToolCall, all: ToolCall[]) =>
       (k in p.caps && typeof v === "string" && v.length <= (p.caps[k] ?? 0)),
   );
 
-type Note = { topic: string; line: string };
+/** A note on a list, or a line to take off, or the Personality's new words (ADR 0078). */
+type Note = { topic: string; line: string; kind?: "forget" | "personality" };
+
+/** A listed note as the box writes it, after your yes or at once: on a guest's page with `guest`. */
+const noteOfList = (n: Note, guest = ""): Write => {
+  const theirs = guest ? { guest } : {};
+  if (n.kind === "forget") return { w: "forget", words: n.line, ...theirs };
+  if (n.kind === "personality") return { w: "personality", set: { set: n.line }, ...theirs };
+  return { w: "note", topic: n.topic, line: n.line, ...theirs };
+};
+
+/** A listed note's line: what your yes writes, takes off or sets. */
+const noteLine = (n: Note) =>
+  (n.kind === "forget"
+    ? `Take off the note: ${n.line}`
+    : n.kind === "personality"
+      ? `Your Personality, its new words: ${n.line}`
+      : `Note in ${n.topic}: ${n.line}`
+  ).replace(/\s+/g, " ");
 
 /**
  * A list's lines, as you approve them: each call (the tool, the call, what its tool says an
@@ -3243,7 +3341,7 @@ const listLines = (
         .map(([, w]) => w);
       return `\`${c.tool}.${c.name}\`${warn.length ? ` (${warn.join("; ")})` : ""} with \`${JSON.stringify(c.args)}\``;
     }),
-    ...notes.map((n) => `Note in ${n.topic}: ${n.line}`.replace(/\s+/g, " ")),
+    ...notes.map(noteLine),
     ...splitLines(split),
     ...held,
   ].map((l, i) => `${i + 1}. ${l}`);

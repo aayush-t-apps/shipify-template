@@ -1,13 +1,14 @@
 // Think (ADR 0031): the agent's step, and the only one where project code runs. On a box it runs as
 // the slot's own Linux user (lib/sandbox.ts) in a fresh folder: its own clone, a read-only copy of
-// Shipify's tools and skills, the owner's files. It holds the agent's login and read-only keys, and
+// Shipify's tools and skills, the owner's files. It holds the agent's login, a read-only GitHub key
+// and the run's look token (the tools' look keys stay with the run's look server, ADR 0077), and
 // nothing that can write. What it leaves (result.json, files, its commits as a git bundle) is taken
 // back into the runner's own folder once every process of the agent's is stopped.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { z } from "zod";
 import { rec, tryOr } from "../commands/task/context.ts";
-import { readNotebook, readProjectPages } from "../commands/task/notebook.ts";
+import { readGuestMemory, readNotebook, readProjectPages } from "../commands/task/notebook.ts";
 import {
   canonicalJson,
   errorLine,
@@ -16,7 +17,11 @@ import {
   maskSecrets,
   modelFacts,
   modelLookup,
+  PERSONALITY_MAX,
+  PERSONALITY_TOPIC,
+  problem,
   shownProject,
+  voiceOf,
 } from "../contracts/index.ts";
 import { accountOf } from "../lib/accounts.ts";
 import { adapterOf, heldTo, loginOf, modelLabel, readExecutors } from "../lib/agents.ts";
@@ -25,10 +30,15 @@ import { cloneArgs, gitConfig, githubUrl, keyFor } from "../lib/clones.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
 import { copyValues } from "../lib/generate.ts";
 import { ghRun, platformRepo } from "../lib/github.ts";
-import { libraryGaps, librarySections, pagesFor, sameTopic } from "../lib/notebook.ts";
+import { guestMemory, libraryGaps, librarySections, pagesFor, sameTopic } from "../lib/notebook.ts";
 import { readPeople } from "../lib/people.ts";
 import { planOfFile } from "../lib/plan.ts";
-import type { Adapter, AgentReport, SessionUsed } from "../lib/plugins/agent.ts";
+import {
+  type Adapter,
+  type AgentReport,
+  LOOK_TOKEN,
+  type SessionUsed,
+} from "../lib/plugins/agent.ts";
 import { repoFor } from "../lib/projects-on-github.ts";
 import type { RunDetails } from "../lib/runs.ts";
 import { onBox } from "../lib/sandbox.ts";
@@ -45,6 +55,7 @@ import {
 } from "./agent.ts";
 import { guestOf, guestsProject, laterWords, openPr } from "./decide.ts";
 import { hash8 } from "./keys.ts";
+import { type Look, lookTools, startLook } from "./look.ts";
 import { familyLines } from "./parts.ts";
 import { closedPagesNote, collateNotes, pageWordNotes, projectLines } from "./projects.ts";
 import { doorLogin } from "./snapshot.ts";
@@ -124,42 +135,34 @@ export interface ThinkOut {
 }
 
 /**
- * Secrets the agent gets: its login (its own, or its gateway's key: on a box the job hands it over
- * as SHIPIFY_AGENT_LOGIN, named by plan's `login`), and the read-only keys it holds: GitHub's for
- * its repos, and the tools' look keys. Never a write key, never the run's own.
- * - A read run (ADR 0044) holds none: a repo outside your account is data, and the run holds
- *   nothing of yours for it to reach.
- * - A run on another of your accounts (ADR 0045) holds that account's key, and no tool's.
+ * What the agent holds besides its login, every turn of a stay too: the run's read key, and the
+ * tools through the run's look server (ADR 0077); a run on another account no tools (ADR 0045); a
+ * read run (ADR 0044) and a guest's run (ADR 0071) nothing at all.
  */
-/**
- * What the agent holds besides its login, every turn of a stay too: the run's read key and the
- * tools' look keys; a run on another account no tools (ADR 0045); a read run (ADR 0044) and a
- * guest's run (ADR 0071) nothing at all.
- */
-export const holdFor = (t: Pick<Think, "profile" | "account">, key: string | undefined) =>
+export const holdFor = (
+  t: Pick<Think, "profile" | "account">,
+  key: string | undefined,
+): { github?: string; tools?: boolean } =>
   t.profile === "read" || t.profile === "guest"
     ? {}
     : { ...(key ? { github: key } : {}), tools: !t.account };
 
+/**
+ * Secrets the agent gets: its login (its own, or its gateway's key: on a box the job hands it over
+ * as SHIPIFY_AGENT_LOGIN, named by plan's `login`), GitHub's read-only key for its repos, and the
+ * run's token for its look server (LOOK_TOKEN, ADR 0077), which works on this box alone and only
+ * while the run does. Never a tool's key, look or act: the look server holds the look keys, as a
+ * user of its own. Never a write key, never the run's own.
+ */
 export function agentSecrets(
   login: string | undefined,
-  hold: { github?: string; tools?: boolean } = {
-    github: process.env.SHIPIFY_AGENT_READ_TOKEN,
-    tools: true,
-  },
+  hold: { github?: string; look?: string } = { github: process.env.SHIPIFY_AGENT_READ_TOKEN },
 ): Record<string, string> {
   const value = process.env.SHIPIFY_AGENT_LOGIN || (login ? process.env[login] : undefined);
-  // The tools' look keys, as tools.json names them, for their MCP servers: the agent's config
-  // names each as ${VAR}, which stays as written when the agent doesn't hold it.
-  const look = hold.tools
-    ? Object.values(loadTools()).flatMap((t) => Object.values(t.keys).map((k) => k.look ?? ""))
-    : [];
   return {
     ...(login && value ? { [login]: value } : {}),
     ...(hold.github ? { GH_TOKEN: hold.github } : {}),
-    ...Object.fromEntries(
-      look.flatMap((k) => (k && process.env[k] ? [[k, process.env[k] as string]] : [])),
-    ),
+    ...(hold.look ? { [LOOK_TOKEN]: hold.look } : {}),
   };
 }
 
@@ -252,6 +255,8 @@ export interface ThinkIn {
   used?: SessionUsed;
   /** A gateway's public answer, read with no key: what the run's model takes (none: not read). */
   look?: (url: string) => Promise<string | null>;
+  /** The CLI the run's look server starts from (ADR 0077): shipifyCopy's when unset. */
+  lookCli?: string;
 }
 
 /** The run's folder's name, which every step of its job opens again by: a stay, the renew. */
@@ -267,6 +272,8 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
   mkdirSync(io.keep, { recursive: true });
   const env = runEnv(s, guest);
   const keep = (name: string, body: string | Buffer) => writeFileSync(join(io.keep, name), body);
+  // The run's look server (ADR 0077), once it's started: ended with the run however it ends.
+  let look: Look | undefined;
   try {
     // A check: its reviewed script, as the agent's user, with no keys and a minute at most. The agent
     // follows only when the repeat asks (a recipe with a check) and the output changed.
@@ -320,8 +327,14 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     // repos are written by others too.
     const away = Boolean(t.account);
     const key = runKey(t);
+    const hold = holdFor(t, key);
     const login = loginOf(ex, harness.gateways)?.secret;
-    const held = handOver(agentSecrets(login, holdFor(t, key)), login, adapter);
+    // Its login named but not set (ADR 0074): the run stops now, before the clone and the agent,
+    // and its reply says how to sign in. A stay's turn carries on with the login its run had.
+    const unset = io.resume
+      ? undefined
+      : loginMissing(executor, ex, login, adapter, Boolean(onBox()));
+    if (unset) throw Object.assign(new Error(unset.what), { problem: unset });
     const notes = [
       ...t.notes,
       ...(io.notes ?? []).map(asGiven),
@@ -457,7 +470,32 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       ),
       away,
     };
-    const pages = nb && !reading ? pagesFor(nb.pages, pagesRun) : [];
+    // Your Personality (ADR 0078): the prompt's opening lines, so never in the notebook's section
+    // too. A run on another of your accounts holds only its repo's page (ADR 0047), so not this.
+    const isVoice = (p: { topic: string; project?: string }) =>
+      !p.project && sameTopic(p.topic, PERSONALITY_TOPIC);
+    const voicePage = nb && !reading && !away ? nb.pages.find(isVoice) : undefined;
+    const pages = nb && !reading ? pagesFor(nb.pages, pagesRun).filter((p) => !isVoice(p)) : [];
+    // A guest's memory (ADR 0078): their own page, read by their runs alone.
+    const memory = guest
+      ? tryOr<ReturnType<typeof readGuestMemory> & { failed?: true }>(
+          () => readGuestMemory(guestOf(s) ?? ""),
+          { failed: true },
+        )
+      : {};
+    if (memory.failed || memory.skipped)
+      notes.push(
+        memory.failed
+          ? "The guest's memory page couldn't be read, so it isn't below: say so in your reply."
+          : "The guest's memory page was last edited by someone else, so it's left out: say so in your reply.",
+      );
+    const theirMemory = memory.page ? guestMemory(memory.page.body) : undefined;
+    const ownVoice = voicePage ? voiceOf(voicePage.body) : "";
+    const voice = theirMemory
+      ? { words: theirMemory.voice, cut: theirMemory.cut }
+      : ownVoice
+        ? { words: ownVoice.slice(0, PERSONALITY_MAX), cut: ownVoice.length > PERSONALITY_MAX }
+        : undefined;
     // What the prompt can't carry is said, never missing quietly: a read that failed, and the
     // pages left out as someone else last edited them.
     if (!reading && !guest) {
@@ -526,6 +564,41 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     }
     // "keep this on the page" and "check the project" (ADR 0070): what the run does with the pages.
     if (!reading && !away) notes.push(...pageWordNotes(asks, inProject?.name, shut));
+    // What the run's details say besides the agent's own; a read of your words that failed while
+    // it worked is one, told once, never dropped (ADR 0059).
+    const checkNotes: string[] = [];
+    // The tools, through the run's look server (ADR 0077): it holds their look keys, as a user of
+    // its own on a box, and the agent holds only the run's token. One that doesn't start leaves the
+    // run without tools, and says why: never their keys in the agent's environment instead.
+    const served: { tools: string[]; missing: { tool: string; why: string }[] } = {
+      tools: [],
+      missing: [],
+    };
+    const given = hold.tools && adapter?.tools ? lookTools(loadTools(), copy.root) : {};
+    if (Object.keys(given).length) {
+      const started = await startLook(given, io.lookCli ?? copy.cli);
+      if ("look" in started) {
+        look = started.look;
+        served.tools = look.tools;
+        served.missing = look.missing;
+      } else {
+        served.missing = Object.keys(given).map((tool) => ({
+          tool,
+          why: `the box's look server ${started.why}`,
+        }));
+        checkNotes.push(
+          `The tools' look server ${maskSecrets(started.why)}, so the run went on without tools.`,
+        );
+      }
+    }
+    const held = handOver(
+      agentSecrets(login, {
+        ...(hold.github ? { github: hold.github } : {}),
+        ...(look ? { look: look.token } : {}),
+      }),
+      login,
+      adapter,
+    );
     const prompt = buildPrompt({
       repo: platformRepo(),
       n: s.n,
@@ -561,8 +634,11 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       // accounts gets that page alone (ADR 0047), adding nothing to it.
       ...(library ? { notebook: library.notebook } : {}),
       ...(library?.project ? { projectPages: library.project } : {}),
+      // How it speaks (ADR 0078): your Personality, or a guest's own, first; and a guest's notes.
+      ...(voice?.words ? { personality: voice } : {}),
+      ...(guest ? { guestMemory: theirMemory?.notes ?? "" } : {}),
       // A read run has no tool's calls (ADR 0044), nor a run on another account or a guest's.
-      ...(reading || away || guest ? {} : { tools: promptTools(executor) }),
+      ...(reading || away || guest ? {} : { tools: promptTools(executor, served) }),
       // A guest's run asks the box for its tools' guest forms alone (ADR 0073): no key, no tool.
       ...(guest ? { guestCalls: guestCalls() } : {}),
       ...(t.account ? { account: t.account } : {}),
@@ -615,8 +691,7 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
           tools: {
             mode: "look",
             dir: toolsDir,
-            root: copy.root,
-            ...(away || guest ? { only: [] } : {}),
+            ...(look ? { served: { url: look.url, tools: look.tools } } : {}),
           },
           resultSchema: RESULT_SCHEMA,
           // A work run's folder is its clone: your files, its copy of Shipify and its out/ are
@@ -656,9 +731,6 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       place.give({ [relative(place.dir, loginAt)]: held.file as string });
     }
     let stopBy: Said | undefined;
-    // What the run's details say besides the agent's own; a read of your words that failed while
-    // it worked is one, told once, never dropped (ADR 0059).
-    const checkNotes: string[] = [];
     const tell = (note: string) => checkNotes.includes(note) || checkNotes.push(note);
     // One ask of the agent: the prompt, what you wrote since, or what to fix, in the same session.
     // While it works, the task is read now and then for your `stop`, which stops all of it.
@@ -907,6 +979,8 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       keep("result.json", canonicalJson(result));
       halted();
     }
+    // Every ask is done: the look server ends, its record whole, and the run's token works no more.
+    await look?.close();
     // The agent's commits, bundled for apply: for the PR it asked for, or, from a work run that
     // failed, stopped or asks you something with none, to keep on the task's branch (decide says
     // where they go). Edits it hadn't committed go in first, as one commit.
@@ -956,15 +1030,17 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
         if (body) keep(name, body);
       }
     // Outside content, from every ask (the first, each catch-up, the fix round): the tools whose
-    // look calls (tool.call) it made, and anything else (ADR 0049): what the adapter says its agent
-    // read, a check (it reads the web), a read profile's repos.
+    // look calls (tool.call) it made, as its agent says and as the look server recorded them (ADR
+    // 0077: a call a command made too), and anything else (ADR 0049): what the adapter says its
+    // agent read, a check (it reads the web), a read profile's repos.
     const all = timing.report;
     const looked = [
-      ...new Set(
-        Object.keys(all.tools ?? {})
+      ...new Set([
+        ...Object.keys(all.tools ?? {})
           .filter((x) => x.includes("."))
           .map((x) => x.split(".")[0] as string),
-      ),
+        ...(look?.looked() ?? []),
+      ]),
     ];
     const elsewhere = reading || Boolean(checked) || Boolean(all.readOutside);
     const readOutside = elsewhere || looked.length > 0;
@@ -993,8 +1069,32 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     keep("meta.json", JSON.stringify(meta));
     return { out: io.keep, meta, details: timing.details(t.why, "thought", checkNotes) };
   } finally {
+    await look?.close();
     place.stop();
   }
+}
+
+/**
+ * Why a run stops before its agent starts (ADR 0074): its entry names a login that isn't set, as
+ * agentSecrets reads it. Then an agent that reads its login from a file the run writes (`loginFile`)
+ * has no login at all, on a box or off. On a box (`box`), no agent has one, as a box signs in to
+ * nothing. Off a box, another agent can use its own sign-in on that computer, so it starts. What to
+ * do: its sign-in word, when it signs in with a code from a chat, else its step in `pnpm ship setup`.
+ */
+export function loginMissing(
+  id: string,
+  ex: { name?: string; login?: unknown } | undefined,
+  login: string | undefined,
+  adapter: Pick<Adapter, "name" | "loginFile" | "signIn"> | undefined,
+  box: boolean,
+) {
+  if (!login || agentSecrets(login, {})[login]) return undefined;
+  if (!adapter?.loginFile && !box) return undefined;
+  const said = { agent: ex?.name ?? adapter?.name ?? id, secret: login, id };
+  // `<id> sign in` names an agent with a login of its own, never a gateway's key (signsIn).
+  return ex?.login && adapter?.signIn
+    ? problem("agent-not-signed-in", said)
+    : problem("agent-login-missing", said);
 }
 
 /** The model a run's agent thought with, for its error: "Sonnet", "glm-5.3-flash at openrouter.ai". */

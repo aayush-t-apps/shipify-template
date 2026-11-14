@@ -17,6 +17,7 @@ const RESERVED = new Set([
   "ask",
   "do",
   "new",
+  "personality",
   "ping",
   "question",
   "recipe",

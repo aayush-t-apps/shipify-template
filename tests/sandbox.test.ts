@@ -29,7 +29,9 @@ import {
   containerEnv,
   give,
   killAll,
+  LOOK_USER,
   listOut,
+  lookArgs,
   onBox,
   prepareRun,
   pruneContainers,
@@ -42,6 +44,7 @@ import {
   sandboxProblems,
   sandboxSlots,
   slotOf,
+  stopLook,
   sudoArgs,
 } from "../cli/lib/sandbox.ts";
 
@@ -468,6 +471,38 @@ describe("the sandbox: a command as the agent", () => {
     // Once, and only on the pipe: not exported, nor anywhere in its environment.
     expect(r.stdout.split(login)).toHaveLength(2);
     expect(r.stdout).toContain("TOKEN_A=a");
+  });
+});
+
+describe("the sandbox: the look server's user (ADR 0077, box setup 16)", () => {
+  it("starts it through sudo as its own user, from an empty environment, its command after", () => {
+    const args = lookArgs([
+      "node",
+      "/opt/shipify/tool/shipify-app/abc/cli/dist/ship.mjs",
+      "run",
+      "look",
+    ]);
+    expect(args.slice(0, 6)).toEqual(["-n", "-u", "shipify-look", "--", "/usr/bin/env", "-i"]);
+    expect(args).toContain("HOME=/nonexistent");
+    expect(args.slice(-4)).toEqual([
+      "node",
+      "/opt/shipify/tool/shipify-app/abc/cli/dist/ship.mjs",
+      "run",
+      "look",
+    ]);
+    // Its keys and token go on its stdin, never here.
+    expect(args.join(" ")).not.toMatch(/TOKEN|KEY|SECRET|_READ/);
+    expect(LOOK_USER).toBe("shipify-look");
+  });
+
+  it("stops one server by the ID it gave, as its user: never every process of a user all slots share", () => {
+    const io = fakeIo();
+    stopLook(4242, io);
+    stopLook(1, io);
+    stopLook(Number.NaN, io);
+    expect(io.calls.map((c) => [c.cmd, ...c.args])).toEqual([
+      ["sudo", "-n", "-u", "shipify-look", "--", "kill", "-KILL", "4242"],
+    ]);
   });
 });
 

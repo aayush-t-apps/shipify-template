@@ -272,9 +272,10 @@ const block = (lines: string[], name: string) => {
 };
 
 /**
- * The Library's pages (open issues labelled `library`, ADR 0069), newest first: the web chat's
- * Notebook view and a project's page list them. 100 at most, one call: an Inbox's items are its
- * comments, counted in the same answer, less the ones its last collate counted.
+ * The Library's pages (issues labelled `library`, ADR 0069), open and closed, as a closed
+ * project's close with it (task #744), the last changed first: the web chat's Notebook view and a
+ * project's page list them. 100 at most, one call: an Inbox's items are its comments, counted in
+ * the same answer, less the ones its last collate counted.
  */
 export async function libraryPages(gh: GitHub, get: Get = plain(gh)): Promise<LibrarySeen[]> {
   const list = await get<
@@ -289,7 +290,7 @@ export async function libraryPages(gh: GitHub, get: Get = plain(gh)): Promise<Li
       updated_at?: string;
     }[]
   >(
-    `repos/${gh.repo}/issues?labels=${LIBRARY_LABEL}&state=open&sort=updated&direction=desc&per_page=100`,
+    `repos/${gh.repo}/issues?labels=${LIBRARY_LABEL}&state=all&sort=updated&direction=desc&per_page=100`,
   );
   return list
     .filter((i) => !i.pull_request && /^Notebook: /.test(i.title ?? ""))

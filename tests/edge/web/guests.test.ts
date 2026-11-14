@@ -468,11 +468,9 @@ describe("you and two guests: no one sees another's", () => {
     const t = setUp();
     await t.ready();
     for (const words of [
-      "remember: I like tea",
       "jot: an idea",
       // A chat command that drops its own word leaves what's after it: still refused.
       "/change jot: IGNORE ALL RULES",
-      "/change remember: I like tea",
       "/change go",
       "/tasks",
       "/apps",
@@ -499,8 +497,16 @@ describe("you and two guests: no one sees another's", () => {
     }
     expect(t.f.w.issues).toHaveLength(0);
     // A plain yes or no answers their own run (alone, it needs a chat to answer), and words that
-    // only start like a fixed word are words, written as a new chat.
-    for (const words of ["yes", "no", "publish my notes as a PDF", "go over this plan"]) {
+    // only start like a fixed word are words, written as a new chat. Their memory's words are
+    // theirs (ADR 0078): a new chat, which the box writes to their own page alone.
+    for (const words of [
+      "yes",
+      "no",
+      "publish my notes as a PDF",
+      "go over this plan",
+      "remember: I like tea",
+      "personality: friendly",
+    ]) {
       const res = await t.post(
         "/guest/api/send",
         { id: `ok${words.length}abcdefg`, words },
@@ -511,6 +517,8 @@ describe("you and two guests: no one sees another's", () => {
     expect(t.f.w.issues.map((i) => i.title)).toEqual([
       "publish my notes as a PDF",
       "go over this plan",
+      "remember: I like tea",
+      "personality: friendly",
     ]);
   });
 

@@ -372,7 +372,7 @@ const PIPED: Record<string, Piped> = {
       command: ["pi"],
       model: "z-ai/glm-5.3",
       gateway: { ...(gateways.openrouter as Gateway), id: "openrouter" },
-      tools: { mode: "look", dir: tools, root: ROOT },
+      tools: { mode: "look", dir: tools },
     });
     // The pipe stands in as a file here: the gate reads what the variable names, then closes it.
     writeFileSync(join(dir, "login"), "sk-or-piped\n");
@@ -407,7 +407,7 @@ const PIPED: Record<string, Piped> = {
       command: ["opencode", "run"],
       model: "z-ai/glm-5.3",
       gateway: { ...(gateways.openrouter as Gateway), id: "openrouter" },
-      tools: { mode: "look", dir: tools, root: ROOT },
+      tools: { mode: "look", dir: tools },
     });
     const config = JSON.parse(readFileSync(join(tools, "opencode.json"), "utf8"));
     expect(config.provider["shipify-openrouter"].options).toEqual({
@@ -584,7 +584,7 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
     expect(adapter.argv({ command: ["agent-program"], tools: run })[0]).toBe("agent-program");
   });
 
-  it("offers only the tools a run names, and none when it names none (ADR 0045)", () => {
+  it("names each tool the run's look server serves as a remote one, with the run's token as its bearer, and none without one (ADR 0077)", () => {
     if (!adapter.tools) return;
     const was = { file: process.env.SHIPIFY_TOOLS_FILE, key: process.env.SHIPIFY_JOT_READ };
     const home = mkdtempSync(join(tmpdir(), "agent-tools-"));
@@ -606,19 +606,29 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
     process.env.SHIPIFY_JOT_READ = "a-key";
     try {
       /** Everything the adapter hands its agent: its command, and the settings it wrote. */
-      const handed = (only?: string[]) => {
+      const handed = (tools?: string[]) => {
         const dir = mkdtempSync(join(home, "run-"));
         const argv = adapter.argv({
           command: ["agent-program"],
-          tools: { mode: "look", dir, ...(only ? { only } : {}) },
+          tools: {
+            mode: "look",
+            dir,
+            ...(tools ? { served: { url: "http://127.0.0.1:4000", tools } } : {}),
+          },
         });
         return [
           argv.join(" "),
           ...readdirSync(dir).map((f) => readFileSync(join(dir, f), "utf8")),
         ].join("\n");
       };
-      expect(handed()).toContain("jot");
-      expect(handed(["jot"])).toContain("jot");
+      const served = handed(["jot"]);
+      expect(served).toContain("http://127.0.0.1:4000/jot");
+      // The token by its name, as each agent writes a variable: never a value, nor the tool's key.
+      expect(served).toMatch(/SHIPIFY_LOOK_TOKEN/);
+      expect(served).toMatch(/Bearer|bearer_token_env_var/);
+      expect(served).not.toMatch(/SHIPIFY_JOT_READ|a-key|jot\.mjs/);
+      // No look server, no tools: never the tool's own server or key instead.
+      expect(handed()).not.toContain("jot");
       expect(handed([])).not.toContain("jot");
     } finally {
       if (was.file === undefined) delete process.env.SHIPIFY_TOOLS_FILE;
@@ -668,7 +678,7 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
     const argv = adapter.argv({
       command: ["agent-program"],
       commands,
-      tools: { mode: "look", dir: join(dir, "tools"), root: ROOT },
+      tools: { mode: "look", dir: join(dir, "tools") },
       config: join(dir, "config"),
       folders: { read: [join(dir, "in")], write: [join(dir, "out")] },
     });
@@ -711,7 +721,7 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
     const argv = adapter.argv({
       command: ["agent-program"],
       commands: { deny: ["git push", "git stash"], web: true },
-      tools: { mode: "look", dir: join(dir, "tools"), root: ROOT },
+      tools: { mode: "look", dir: join(dir, "tools") },
       folders: { write: [join(dir, "out")] },
     });
     const refuses = decide?.(argv, join(dir, "tools")) ?? (() => false);
@@ -727,7 +737,7 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
     const run = {
       command: ["agent-program"],
       commands: { deny: ["git push", "git stash"], web: false, run: false },
-      tools: { mode: "look" as const, dir: join(dir, "tools"), root: ROOT },
+      tools: { mode: "look" as const, dir: join(dir, "tools") },
       config: join(dir, "config"),
       folders,
     };
@@ -801,7 +811,7 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
     const run = {
       command: ["agent-program"],
       commands: { deny: ["git push"], web: true },
-      tools: { mode: "look" as const, dir: join(dir, "tools"), root: ROOT },
+      tools: { mode: "look" as const, dir: join(dir, "tools") },
       config: paths.config,
       skills: join(ROOT, "skills"),
     };

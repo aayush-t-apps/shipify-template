@@ -3,7 +3,7 @@
 // (tests/fixtures/pi-stream.jsonl, a real run against a stand-in model). What it gets, all in the
 // run's own folders:
 // - its settings folder (PI_CODING_AGENT_DIR: the run's in/tools): the gateway as a provider of
-//   its own (models.json), the look tools' MCP servers, local or remote (mcp.json), and Shipify's
+//   its own (models.json), the look tools at the run's look server (mcp.json, ADR 0077), and Shipify's
 //   gate (gate.mjs and its rules, gate.json), which holds it to the rules every agent gets: the
 //   commands it must never run, the folders it may write, look calls only (ADR 0043);
 // - its gateway's key on a pipe (LOGIN_FD), which the gate reads and hands to that provider: never
@@ -21,7 +21,6 @@ import {
   type AgentRun,
   agentFile,
   asResult,
-  command,
   fetchesOutside,
   type Gateway,
   gatewayModelName,
@@ -76,42 +75,32 @@ function settings(run: AgentRun): { provider?: string } {
       },
     });
   }
-  // The look tools' servers, local (`run`) or remote (`url`): look calls only (the act calls are
-  // left out, and the gate refuses them), their keys named as ${VAR}, never their values.
+  // The look tools, each a remote one at the run's look server (`offered`, ADR 0077): look calls
+  // only (the act calls are left out, and the gate refuses them), the run's token named as
+  // ${VAR}, never its value.
   const mode = run.tools?.mode ?? "look";
-  // The read profile has no tool's calls: it holds none of their keys (ADR 0044).
+  // The read profile has no tool's calls: it holds no look token (ADR 0044).
   const reading = run.commands?.run === false;
-  const all = offered(loadTools(), run.tools?.only);
+  const all = offered(loadTools(), run.tools?.served);
   const ready: Record<string, string[]> = reading ? {} : runTools(all, mode, process.env).ready;
   const servers: Record<string, unknown> = {};
-  // Tools left out, and why: the gate names them at the end, never silently.
-  const left: string[] = [];
   for (const [name, calls] of Object.entries(ready)) {
     const t = all[name];
-    if (!t) continue;
+    if (!t?.url) continue;
     const vars = Object.fromEntries(
       Object.entries(t.keys).map(([v, k]) => [v, `\${${secretFor(k, mode)}}`]),
     );
-    // pi runs a header value that starts with `!` as a command: never one of tools.json's.
-    const bad = Object.entries(t.headers ?? {}).find(([, v]) => v.trimStart().startsWith("!"));
-    if (t.url && bad) {
-      left.push(`${name} (its ${bad[0]} header starts with !, which pi would run as a command)`);
-      continue;
-    }
-    const where = t.url
-      ? {
-          url: t.url,
-          headers: Object.fromEntries(
-            Object.entries(t.headers ?? {}).map(([h, v]) => [
-              h,
-              v.replace(/\$\{(\w+)\}/g, (_, x: string) => vars[x] ?? `\${${x}}`),
-            ]),
-          ),
-        }
-      : { ...command(t.run as string[], run.tools?.root), env: vars };
-    // Its look calls offered to the model as they are, every other call hidden.
+    // Its look calls offered to the model as they are, every other call hidden. Its one header is
+    // `offered`'s, the run's token by name: never one of tools.json's, so never a value starting
+    // with `!`, which pi would run as a command.
     servers[name] = {
-      ...where,
+      url: t.url,
+      headers: Object.fromEntries(
+        Object.entries(t.headers ?? {}).map(([h, v]) => [
+          h,
+          v.replace(/\$\{(\w+)\}/g, (_, x: string) => vars[x] ?? `\${${x}}`),
+        ]),
+      ),
       exposure: "hidden",
       toolExposure: Object.fromEntries(calls.map((c) => [c, "direct"])),
     };
@@ -122,7 +111,7 @@ function settings(run: AgentRun): { provider?: string } {
   if (Object.keys(servers).length)
     write("mcp.json", { autoEnableCodemode: false, mcpServers: servers });
   // The gate and its rules: the commands every agent must never run, the folders it may write,
-  // the look calls, the tools left out, for it to name, and the provider it hands the key to.
+  // the look calls, and the provider it hands the key to.
   // The gate is found through the contract's `agentFile` (ADR 0051 B1), never next to this file: the
   // built CLI is one file in `cli/dist/`, not beside its own sources.
   writeFileSync(join(dir, "gate.mjs"), readFileSync(agentFile("pi-gate.mjs")));
@@ -130,7 +119,6 @@ function settings(run: AgentRun): { provider?: string } {
     deny: run.commands?.deny ?? [],
     write: run.folders?.write ?? [],
     look,
-    left,
     ...(provider ? { provider } : {}),
     // The read profile (ADR 0044): no command, and reads only inside these and its working folder.
     ...(reading ? { run: false, read: run.folders?.read ?? [] } : {}),
@@ -230,19 +218,19 @@ function reader(): OutputReader {
         report.session = e.id as string | undefined;
         return undefined;
       }
-      // The tools pi didn't get, named by Shipify's gate at the end: those its adapter left out,
-      // and the look calls whose server didn't connect.
+      // The tools pi didn't get, named by Shipify's gate at the end: the look calls whose server
+      // didn't connect.
       if (e.type === "entry_appended") {
         const x = (e.entry ?? {}) as { customType?: string; data?: Record<string, unknown> };
         if (x.customType !== "shipify-gate") return undefined;
-        const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : []);
-        const missing = list(x.data?.missing).map(toolName);
-        const said = [
-          ...list(x.data?.left),
-          ...(missing.length ? [`${missing.join(", ")} (not connected)`] : []),
-        ];
-        if (said.length)
-          report.notes = [...(report.notes ?? []), `Tools pi didn't get: ${said.join("; ")}.`];
+        const missing = (Array.isArray(x.data?.missing) ? x.data.missing.map(String) : []).map(
+          toolName,
+        );
+        if (missing.length)
+          report.notes = [
+            ...(report.notes ?? []),
+            `Tools pi didn't get: ${missing.join(", ")} (not connected).`,
+          ];
         return undefined;
       }
       if (e.type === "message_end") {

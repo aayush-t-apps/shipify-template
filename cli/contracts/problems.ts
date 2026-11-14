@@ -46,6 +46,16 @@ export const CATALOGUE = {
     what: "{model} answered: {error}",
     fix: "Reply `continue` to try again, or pick another model with /use.",
   },
+  // A run on an agent whose login isn't set stops before the agent starts (ADR 0074): one that
+  // signs in with a code from a chat, and one set by its step in `pnpm ship setup`.
+  "agent-not-signed-in": {
+    what: "{agent} isn't signed in ({secret} isn't set), so the run stopped before it started.",
+    fix: "Say `{id} sign in`, and use the link and the code its reply gives. Then say `continue`, or pick another agent with /use.",
+  },
+  "agent-login-missing": {
+    what: "{agent} has no login ({secret} isn't set), so the run stopped before it started.",
+    fix: "Run `pnpm ship setup agent {id}` on a PC. Then say `continue`, or pick another agent with /use.",
+  },
   "result-wrong": {
     what: "The agent's answer didn't fit Shipify's shape ({fields}).",
     fix: "Reply `continue`, or pick another model with /use.",

@@ -237,7 +237,7 @@ describe("writing your words as the door App", () => {
     expect(readFrom(f.w.comments[0]?.body ?? "")?.setting).toBeUndefined();
   });
 
-  it("writes a project's `close` as words too, so its run closes the project's open chats", async () => {
+  it("writes a project's `close` and `reopen` as words too, so their run closes its open chats and its pages, and opens its pages again (task #744)", async () => {
     const f = world(k);
     const project = f.issue({ title: "project: hacker", labels: ["project"] });
     expect(await said(await post(f, update({ text: `#${project.number} close` })))).toBe(
@@ -245,10 +245,12 @@ describe("writing your words as the door App", () => {
     );
     expect(project.state).toBe("closed");
     expect(readFrom(f.w.comments[0]?.body ?? "")?.setting).toBeUndefined();
-    // Reopened, it says what stays as it was: its chats, closed with it.
+    // Reopened, it says what opens with it, what stays as it was, and how to go on.
     expect(await said(await post(f, update({ text: `#${project.number} reopen` })))).toBe(
-      `Reopened · #${project.number}. Its chats stay closed: write on one (its Chats tab) to open it, or start a new chat in it.`,
+      `Reopened · #${project.number}. Its docs open with it; its chats stay closed: write on one (its Chats tab) to open it, or start a new chat in it.`,
     );
+    expect(project.state).toBe("open");
+    expect(readFrom(f.w.comments[1]?.body ?? "")?.setting).toBeUndefined();
   });
 
   it("says a task is already open or closed, and writes nothing: no run starts for it", async () => {
@@ -383,6 +385,29 @@ describe("saved with no run: a project, an Inbox item, a Journal line (ADR 0069)
     expect(lines).toHaveLength(2);
     expect(lines[0]).toMatch(/^- #games try a pico-8 port\? \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\)$/);
     expect(f.w.issues).toHaveLength(1);
+  });
+
+  it("writes on a closed page, never a second one: it opens as it's written (task #744)", async () => {
+    const f = world(k);
+    await post(f, update({ text: "jot: a first thought" }));
+    await post(f, update({ text: "project: games" }));
+    await post(f, update({ text: "add games: a first find" }));
+    // This month's Journal closed by hand, and the Inbox of a project reopened on GitHub's own
+    // button, which leaves its pages closed.
+    for (const i of f.w.issues.filter((x) => x.title.startsWith("Notebook: Journal")))
+      i.state = "closed";
+    const inbox = f.w.issues.find((i) => i.title === "Notebook: games-inbox");
+    if (inbox) inbox.state = "closed";
+    await post(f, update({ text: "jot: a second thought" }));
+    await post(f, update({ text: "add games: a second find" }));
+    const pages = f.w.issues.filter((i) => i.title.startsWith("Notebook:"));
+    expect(pages.map((i) => [i.title.replace(/\d{4}-\d{2}/, "<month>"), i.state])).toEqual([
+      ["Notebook: Journal <month>", "open"],
+      ["Notebook: games", "open"],
+      ["Notebook: games-inbox", "open"],
+    ]);
+    expect(f.w.comments.filter((c) => c.issue === inbox?.number)).toHaveLength(2);
+    expect(pages[0]?.body).toContain("a second thought");
   });
 
   it("opens a new chat under a project, `Part of #n` first, and moves a chat in with a label", async () => {

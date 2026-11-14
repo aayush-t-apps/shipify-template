@@ -32,8 +32,17 @@ sw.addEventListener("install", (e) => {
     const urlPattern = new URLPattern({ pathname: `${new URL(IN).pathname}api/*` });
     r = e.addRoutes?.({ condition: { urlPattern }, source: "network" });
   } catch {}
-  // The page's files, kept now (the page that installed it came before it).
-  const files = ["", "app.js", "compose.js", "app.css", "manifest.json", "icon.svg"];
+  // The page's files, kept now (the page that installed it came before it), the Desk's too.
+  const files = [
+    "",
+    "app.js",
+    "compose.js",
+    "app.css",
+    "desk.js",
+    "desk.css",
+    "manifest.json",
+    "icon.svg",
+  ];
   const kept = files.map((f) => fetch(IN + f).then((res) => save(IN + f, res), no));
   e.waitUntil(Promise.all([r?.catch(no), ...kept]));
   sw.skipWaiting();

@@ -21,10 +21,6 @@ pipeline (ADR 0048).
    - **Token minting off the box:** the run's mint steps hold the bot App's key on the box while
      they run (never in the agent's step). Minting on GitHub's machines and handing the box only
      the narrow tokens closes that.
-   - **A list of allowed hosts for the agents' users** (talk and work runs; a read run has no
-     command or web to reach out with, ADR 0044): since box setup 9 they reach no private network
-     (your home network, the tailnet, a metadata address), and the rest of the internet is open
-     (npm, the agent's API, GitHub, any site).
    - **`ship task <n>` on the PC:** a task's status and its last runs, with links to their logs.
    - **The copy of the web chat's files from KV to R2 goes** (ADR 0069), a week after the edge
      with it deploys: KV kept a file 7 days, so nothing is left to copy. In `edge/src/store.ts`
@@ -43,7 +39,7 @@ pipeline (ADR 0048).
      Notion page others can read; a recipe's `share: replace` keeps one current.
    - **A read token right before the agent:** a `ready` step for the clone and `make setup`, so the
      agent's own GitHub reads get their whole hour (`stop` already works to the end: ADR 0059).
-   - **Channels in step:** a reply's next words as buttons (Telegram too), `pause` for repeats (the
+   - **Channels in step:** `pause` for repeats (the
      web chat's Pause ends one today), Operate from a chat as a pre-filled form, a run's progress
      in the web chat.
    - **Each agent's numbers side by side:** tokens, cost and time per agent from the runs' details.
@@ -109,14 +105,12 @@ Found walking [getting-started.md](getting-started.md) from nothing. Each is sma
 Each only if you ask, and each its own design:
 1. **A `lab` repo** for experiments that keep running for days (one Compose folder each), run by
    you on the box; today nothing an agent starts outlives its turn.
-2. **The agents' list of allowed hosts** (above), which then covers their containers too, as the
-   private-network wall of setup 9 does.
-3. **A shared, read-only image store,** filled by the runner, if each slot's own copy fills the disk.
-4. **A registry login or a mirror,** if Docker Hub's limit (100 pulls in 6 hours per address) is
+2. **A shared, read-only image store,** filled by the runner, if each slot's own copy fills the disk.
+3. **A registry login or a mirror,** if Docker Hub's limit (100 pulls in 6 hours per address) is
    reached.
-5. **A stronger wall for a run:** gVisor as Podman's runtime, or a VM per run (where KVM is).
-6. **docker-compose v2 over Podman's socket,** if real compose files need more than podman-compose.
-7. **A tool that reaches homelab** (its status, a photo), read-only, over Tailscale. Its calls run
+4. **A stronger wall for a run:** gVisor as Podman's runtime, or a VM per run (where KVM is).
+5. **docker-compose v2 over Podman's socket,** if real compose files need more than podman-compose.
+6. **A tool that reaches homelab** (its status, a photo), read-only, over Tailscale. Its calls run
    outside the agent's user: since setup 9 no agent reaches the tailnet.
 
 ## From the #662 audit (2026-11-05)

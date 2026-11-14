@@ -2,7 +2,7 @@
 // proposes; decide keeps what the task's intent allows and drops the rest, saying so. The agent
 // never pushes, opens a PR or calls an act tool itself.
 import { z } from "zod";
-import { MAX_FILES_OUT, ToolCall } from "../contracts/index.ts";
+import { MAX_FILES_OUT, PERSONALITY_MAX, ToolCall } from "../contracts/index.ts";
 import { limitName } from "../lib/runs.ts";
 import { FirstEntry, SplitEntry } from "../lib/task.ts";
 import type { Stop } from "./types.ts";
@@ -15,7 +15,10 @@ export const Result = z.object({
   /** The reply, in GitHub markdown: its first paragraph stands alone. */
   text: z.string().min(1),
   question: z.string().optional(),
-  /** Up to three short answers to its question, which a chat shows as buttons. */
+  /**
+   * Up to three short answers to its question, which a chat shows as buttons; with no question,
+   * up to three next steps you can tap (ADR 0078), never `yes` or `no`.
+   */
   choices: z.array(z.string().min(1).max(60)).max(3).optional(),
   /** Files it made, in its out folder: shown or linked on the reply. */
   files: z.array(z.string()).max(MAX_FILES_OUT).optional(),
@@ -51,6 +54,16 @@ export const Result = z.object({
     .array(z.object({ topic: z.string().max(60), line: z.string().max(500) }))
     .max(5)
     .optional(),
+  /**
+   * Lines your newer words undo (ADR 0078), each by its words as `forget:` takes them: taken off
+   * under the same rule as a note.
+   */
+  forget: z.array(z.string().min(1).max(500)).max(5).optional(),
+  /**
+   * Your Personality page's new words, whole (ADR 0078), when you said how it should talk to you
+   * from now on: written under the same rule as a note.
+   */
+  personality: z.string().min(1).max(PERSONALITY_MAX).optional(),
   /**
    * Library pages rewritten (ADR 0069): each page's whole new text in a file in its out folder,
    * which the box writes after the run: its project's pages, or the Library's own.

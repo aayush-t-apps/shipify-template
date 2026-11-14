@@ -8,7 +8,10 @@
 setup:
 	pnpm install --frozen-lockfile
 
+CONTRACT_TESTS = tests/architecture.test.ts tests/core.test.ts tests/recipes.test.ts tests/checks.test.ts tests/plugins
+
+# The tests a change reaches leave out the contract tests, which ran just before: none runs twice.
 verify:
 	pnpm format:check && pnpm lint && pnpm typecheck
-	pnpm exec vitest run tests/architecture.test.ts tests/core.test.ts tests/recipes.test.ts tests/checks.test.ts tests/plugins
-	pnpm exec vitest run --changed origin/main --passWithNoTests
+	pnpm exec vitest run $(CONTRACT_TESTS)
+	pnpm exec vitest run --changed origin/main --passWithNoTests $(foreach t,$(CONTRACT_TESTS),--exclude '$(t)$(if $(filter %.ts,$(t)),,/**)')

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { claudeTools } from "../cli/lib/agents/claude.ts";
+import { offered } from "../cli/lib/plugins/agent.ts";
 import {
   command,
   listServerTools,
@@ -30,8 +31,9 @@ const notionTool = TOOLS.notion as Tools[string];
 describe("tools: tools.json and the agent's settings (ADR 0015)", () => {
   const env = { SHIPIFY_NOTION_READ: "test-read", SHIPIFY_NOTION_WRITE: "test-write" };
 
-  it("gives a look run the look calls, denies the act calls, and names keys, never their values", () => {
-    const t = claudeTools(TOOLS, "look", env);
+  it("gives a look run the look calls at the run's look server, denies the act calls, and names only the run's token (ADR 0077)", () => {
+    const served = offered(TOOLS, { url: "http://127.0.0.1:4000", tools: ["notion"] });
+    const t = claudeTools(served, "look", env);
     expect(t.allow).toEqual([
       "mcp__notion__search",
       "mcp__notion__read_page",
@@ -39,17 +41,24 @@ describe("tools: tools.json and the agent's settings (ADR 0015)", () => {
       "mcp__notion__query_database",
     ]);
     expect(t.deny).toEqual(["mcp__notion__update_page", "mcp__notion__create_page"]);
-    const config = JSON.stringify(t.config);
-    expect(config).toContain(`"NOTION_TOKEN":"${ref("SHIPIFY_NOTION_READ")}"`);
-    expect(config).not.toContain("test-read");
-    expect(config).not.toContain("SHIPIFY_NOTION_WRITE");
+    expect(t.config).toEqual({
+      mcpServers: {
+        notion: {
+          type: "http",
+          url: "http://127.0.0.1:4000/notion",
+          headers: { Authorization: `Bearer ${ref("SHIPIFY_LOOK_TOKEN")}` },
+        },
+      },
+    });
+    // No tool's key, nor its server: the look server holds them.
+    expect(JSON.stringify(t.config)).not.toMatch(
+      /NOTION_TOKEN|SHIPIFY_NOTION|test-read|server\.ts/,
+    );
+    // Without a look server, nothing.
+    expect(claudeTools(offered(TOOLS), "look", env).config).toEqual({ mcpServers: {} });
   });
 
-  it("gives an act run the act calls too, with the write key, and leaves out a tool whose key isn't set", () => {
-    const act = claudeTools(TOOLS, "act", env);
-    expect(act.allow).toContain("mcp__notion__update_page");
-    expect(act.deny).toEqual([]);
-    expect(JSON.stringify(act.config)).toContain(`"NOTION_TOKEN":"${ref("SHIPIFY_NOTION_WRITE")}"`);
+  it("knows which tools a run's job holds the keys for, and leaves out a tool whose key isn't set", () => {
     // A look run's job never has the write key, so an act run without it has no tool.
     expect(runTools({ notion: notionTool }, "act", { SHIPIFY_NOTION_READ: "test-read" })).toEqual({
       ready: {},

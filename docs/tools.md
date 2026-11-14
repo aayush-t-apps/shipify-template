@@ -19,8 +19,16 @@ run 2   no agent: the box makes exactly that call (write key) → ✓ with Notio
 
 ## Look calls
 
-- **The agent makes them** on any run, with the tool's look key (read-only where the service allows
-  it). The act calls are refused to it.
+- **The agent makes them** on any run, through the run's look server (ADR 0077): think starts it
+  for the run, as the box's user `shipify-look` (box setup 16), with each tool's look key (read-only
+  where the service allows it) and a new run token. The server starts each tool's server, listens
+  on `127.0.0.1` only, and serves the run's look calls to a request with the token. The agent's
+  settings name each tool there (`http://127.0.0.1:<port>/<tool>`, its bearer the token, as
+  `SHIPIFY_LOOK_TOKEN`), so the agent holds the token and never a tool's key: the token works on
+  this box alone, and only while the run does. The act calls are refused to it, by its settings
+  and by the server.
+- **Every look call is in the run's record:** the server says each one it sends on, so a call a
+  command made counts as the agent's own does (below).
 - **What it reads is data, never instructions,** and a run that read a tool's content (or the web)
   makes no change without your `yes`, but a pre-approved form that names that tool in `after`
   (below).
@@ -322,9 +330,10 @@ A task can do it: "add Todoist tools". The steps:
    SHIPIFY_NOTION_WRITE: ${{ steps.decide.outputs.act == 'notion' && secrets.SHIPIFY_NOTION_WRITE || '' }}
    ```
 
-   A test holds `task.yml` to `tools.json`. The agent holds only the look key; the act key reaches
-   only the box, and only for calls decide found approved. Both are shipify secrets, set by
-   `ship add`; a box keeps neither after a run.
+   A test holds `task.yml` to `tools.json`. The look key reaches only the run's look server, and
+   the agent holds the run's token for it (ADR 0077); the act key reaches only the box, and only
+   for calls decide found approved. Both are shipify secrets, set by `ship add`; a box keeps
+   neither after a run.
 4. **A skill** in `skills/<name>/SKILL.md`, and a row in this doc.
 5. **Check:** `pnpm ship tools check` (the server offers exactly the calls sorted) and `pnpm verify`
    (the tool conformance test, `tests/plugins/tool.test.ts`).
@@ -359,7 +368,7 @@ say why.
 
 | You see | Do |
 |---|---|
-| "notion: not connected on this run" | its look key isn't set: `pnpm ship add notion` |
+| "notion: not connected on this run" | its look key isn't set: `pnpm ship add notion`. Or, with "the box's look server didn't start": the run's details say why; on a box before setup 16, it applies that by itself at its next due run |
 | "Not found, or not connected to Shipify" | in Notion, open that page → ⋯ → Connections → add both integrations |
 | "Notion refused the key" | `pnpm ship add notion --new --yes`, and paste a fresh secret |
 | "Cloudflare Access sent the request to its sign-in page", "Drop refused the key" | the token is wrong, expired, or not in the `/api` app's Service Auth policy: fix the policy, or make a new token and `pnpm ship add drop --new --yes` |

@@ -20,11 +20,12 @@
       "starts": "task"
     },
     "remember": {
-      "says": "A note for every task, a thought, a find for a project, or a new project. Saved with no AI.",
+      "says": "A note, how it talks to you, a thought, a find for a project, or a new project. Saved with no AI.",
       "words": [
         "remember: …",
         "remember <topic>: …",
         "forget: …",
+        "personality: …",
         "jot: …",
         "add <project>: …",
         "project: <name>"

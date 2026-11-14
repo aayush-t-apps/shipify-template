@@ -28,7 +28,7 @@ which steps hold it. The list of every key, when each expires and how to replace
 | `CODEX_AUTH` | Codex's login: your ChatGPT session (ADR 0074): it can use Codex on your plan | shipify secret; the think step (and a stay's) only when the run's agent is Codex, written as a file in its run's own home, which its commands can read, so never in a read run or a guest's; written back by `ship run renew` with a token for that alone, only as the same account's newer session | until OpenAI ends the session (sign out of all sessions in ChatGPT's security settings to end it at once) |
 | `AI_GATEWAY_API_KEY` | pi's and OpenCode's models, through Vercel's AI Gateway (a gateway; the `-vercel` agents): it can spend your Vercel credits | shipify secret; the think step only when the run's agent is one of those, handed to the agent on a pipe it reads once, never in its environment; the PC's credentials file | until you delete it in Vercel. Set a spend limit there |
 | `OPENROUTER_API_KEY` | pi's and OpenCode's models, through OpenRouter (a gateway): it can spend your credits there | shipify secret; the think step only when the run's agent is pi or OpenCode, handed to the agent on a pipe it reads once, never in its environment; the PC's credentials file | until you delete it on OpenRouter. Set a spend limit there |
-| `SHIPIFY_NOTION_READ`; Drop's read token (`SHIPIFY_DROP_READ_ID`, `SHIPIFY_DROP_READ_SECRET`) | read the Notion pages you connect; list your drops (Drop refuses a change from it once its `ACCESS_READ_ID` names it: [tools.md](tools.md#drop-setting-it-up-once-about-10-minutes)) | shipify secret; the think step (a look key), never a guest run's (ADR 0071) | no expiry; Drop's, the duration you gave it |
+| `SHIPIFY_NOTION_READ`; Drop's read token (`SHIPIFY_DROP_READ_ID`, `SHIPIFY_DROP_READ_SECRET`) | read the Notion pages you connect; list your drops (Drop refuses a change from it once its `ACCESS_READ_ID` names it: [tools.md](tools.md#drop-setting-it-up-once-about-10-minutes)) | shipify secret; the think step (a look key), which hands it to the run's look server (`shipify-look`, ADR 0077) on its stdin, never to the agent; never a guest run's (ADR 0071) | no expiry; Drop's, the duration you gave it |
 | `SHIPIFY_NOTION_WRITE`; Drop's write token (`SHIPIFY_DROP_WRITE_ID`, `SHIPIFY_DROP_WRITE_SECRET`) | change those pages; make, change or revoke drops | shipify secret; the apply step only, and only for calls decide found approved | no expiry; Drop's, the duration you gave it |
 | `SHIPIFY_DOOR_APP_KEY` | the door App (below): write your words onto tasks, read runs, runners and variables, on shipify only | the edge Worker only, put there from the PC by `ship door setup` | doesn't expire; rotate yearly (the watch reminds you) |
 | `TELEGRAM_TOKEN` | the bot speaks and reads its own chats | the edge Worker; the PC's credentials file. Never on a box | until you revoke it in @BotFather |
@@ -43,6 +43,7 @@ which steps hold it. The list of every key, when each expires and how to replace
 |---|---|---|
 | the bot's read-only tokens (one hour each, minted right before each phase) | plan's; the finish's, decide's and apply's (ADR 0059: the finish fetches main with it, with no agent) | read every project: code, PRs, issues, statuses, runs |
 | the agent's read-only token (one hour, minted right before think, and not renewed: an agent working longer reads GitHub only in its first hour, ADR 0059) | think (the agent's copy) | read the same, but in a work run only its project or repo and Shipify; a talk run reads every project, as its profile says. A read run's agent gets none: the box keeps it, for the task and your repos it reads (ADR 0044). A guest run's agent gets no GitHub key at all: its secrets are empty but for its login, and a guest's stay hands its agent no token (ADR 0071, [below](#a-guests-run)) |
+| the run's look token (`SHIPIFY_LOOK_TOKEN`, 32 random bytes, made by think for each ask's look server: a stay's turn gets a new one) | think (the agent's copy), when the run offers tools (ADR 0077) | the run's look calls, through its look server on `127.0.0.1`: on this box alone (nothing comes in), and only until the run ends, when the server ends with it |
 | `GITHUB_TOKEN` (the workflow's own) | the task step, plan, decide, apply; the runner of think and of a stay, never their agent (below) | write shipify's issues and comments, start runs |
 | the write token | apply, minted after decide | contents and PRs on the one repo decide named; workflows write whenever the run's commits touch a workflow file, and for the push of a workflow change you approved (below) |
 | the files token | apply, when the run made files | write shipify's `shipify-files` branch |
@@ -57,9 +58,19 @@ which steps hold it. The list of every key, when each expires and how to replace
 On a Pi or VPS ([box-setup.md](box-setup.md#the-agents-own-user)), slot k's agent
 runs as `shipify-agent-<k>`, a system user with no password and no login shell.
 
-- **Started through one sudo rule:** `shipify ALL=(shipify-agent-1,…) NOPASSWD: ALL`, in
-  `/etc/sudoers.d/shipify-agents`, installed only once `visudo` accepts it. The runner can become
-  an agent; an agent can't become the runner or anyone else.
+- **Started through one sudo rule:** `shipify ALL=(shipify-agent-1,…,shipify-look) NOPASSWD:
+  ALL`, in `/etc/sudoers.d/shipify-agents`, installed only once `visudo` accepts it. The runner can
+  become an agent or the look server's user (below); neither can become the runner or anyone else.
+- **The tools' look keys stay with the run's look server** (ADR 0077, box setup 16): for a run that
+  offers tools, think starts it as `shipify-look`, a user of its own with no home, shell or range
+  of IDs, and hands it the look keys and a new run token on its stdin. It starts each tool's server
+  with that tool's keys, listens on `127.0.0.1` only, and answers only a request with the run's
+  token, for the run's look calls: an act call, or one the run doesn't offer, is refused and sent
+  nowhere. The agent holds the token alone, so a command it runs, or a package a project's tests
+  load (the npm worms of 2025 took every token in reach), finds no look key: the token reaches
+  nothing off the box, and stops when the run does. The server records each call it sends on,
+  so a look call a command made counts as the run's read too. Its user reads none of the runner's
+  folders nor a slot's runs (the sandbox check proves it), and the agents' network rules cover it.
 - **As root, the runner may only start the box's own update** (setup 14):
   `shipify ALL=(root) NOPASSWD: /usr/local/sbin/shipify-box-update`, root's own file. It reads a
   read token on stdin, and root downloads `box/setup.sh` from your copy's default branch itself,
@@ -90,9 +101,10 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
 - **An empty environment:** every command starts with `env -i` and only the names it needs.
   Secrets come on stdin, never on a command line.
 - **What it holds:** its login (only the run's agent's: its own, or its gateway's key, which
-  reaches it because it calls the model), a read-only GitHub token, the tools' look keys. A read
-  run's agent holds its login alone (below), and so does a guest run's: no GitHub key, no tool's
-  key, no notebook ([A guest's run](#a-guests-run)).
+  reaches it because it calls the model), a read-only GitHub token, and the run's look token (not
+  a tool's key: the look server holds those, above). A read run's agent holds its login alone
+  (below), and so does a guest run's: no GitHub key, no tool, no notebook
+  ([A guest's run](#a-guests-run)).
 - **Its login on a pipe, never in its environment:** the wrapper puts it on fd 3, a pipe the agent
   reads once at its start. Claude Code reads it with its own setting, and pi and OpenCode through
   Shipify's gate, which hands it to the gateway's provider alone (OpenCode's config holds no key, so
@@ -101,7 +113,7 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
   (`/proc/<pid>/environ`), not in a file, and the pipe is empty by then. Nor in the agent's memory:
   the kernel lets a process read only its own children's (`kernel.yama.ptrace_scope` 1, Ubuntu's
   own). The sandbox check proves both with a dummy login. The read-only GitHub token and the look
-  keys stay in its environment, since `gh` and the tools' servers read them there.
+  token stay in its environment, since `gh` and the agent's tools' settings read them there.
 - **Codex's login is a file its commands can read** (ADR 0074, accepted with its merge): Codex
   takes your ChatGPT session only from its home, so the run writes it there (the run's own
   `config/codex/auth.json`, mode 600). A page that tricks it into running a command could send
@@ -274,8 +286,17 @@ of its own. The walls keep your things yours:
   (Podman's images and containers) is its run's alone, and an image it pulls or builds never
   reaches a run of yours.
 - **Its own playbook** (`playbooks/guest.md`) and a prompt with nothing of yours: no notebook,
-  tools, Shipify CLI, clone command or earlier files of yours, and the answer fields it may use
-  only (words, a question, files, its own project's pages, and its tools' guest calls).
+  Personality, tools, Shipify CLI, clone command or earlier files of yours, and the answer fields
+  it may use only (words, a question, files, its own project's pages, its own memory, and its
+  tools' guest calls).
+- **Its own memory page** (ADR 0078): `Notebook: <their prefix> memory`, labelled `library`,
+  `guest` and `guest:<id>`, never `notebook`, so no run of yours reads it and your lists and Find
+  leave it out. Only their run reads it (by their label, and only when the box or the door wrote
+  it for them: a page someone else edited is left out), and only the box writes it: their
+  `remember:`, `forget:` and `personality:` (the door lets these three through for a guest), and
+  their run's notes only when it read nothing from outside, since a guest approves no list. A
+  `remember <topic>: …` from them goes on that page whatever the topic, never on a page of yours.
+  Removing a guest closes it with their chats.
 - **Its calls are a tool's guest forms alone** (ADR 0073): the box makes one at once when it fits
   a form in `tools.json` (your merge approved it), and leaves out every other. For Drop, that is a
   drop only the guest can open, or a new title or files on one made for them. The box asks the door
@@ -317,14 +338,17 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
     `after` (ADR 0049). Never after the web, a check, a repo outside your account, a run on another
     account, or the agent saying it read outside.
 - **"Read from outside"** counts every ask of the run (the first, each catch-up, the fix round).
-  Think records two things: the tools whose look calls it made (`looked`), and whether it read
-  anything else (`elsewhere`): each agent's adapter says when it used its web tools or ran a
-  command that fetches (a URL in it, or `curl` or `wget`; for pi and OpenCode, a bash command), a
-  check ran, or it read repos outside your account. `readOutside` is their sum. After any of it, a
-  tool's reads too, the notes the run proposes wait for your `yes` and its reply's images are
-  inert.
-  Its network is otherwise the internet's, with no private network (box setup 9), until a list of
-  allowed hosts ([roadmap.md](roadmap.md)).
+  Think records two things: the tools whose look calls it made (`looked`: as its agent says, and
+  as the run's look server recorded them, so a call a command made counts too, ADR 0077), and
+  whether it read anything else (`elsewhere`): each agent's adapter says when it used its web tools
+  or ran a command that fetches (a URL in it, or `curl` or `wget`; for pi and OpenCode, a bash
+  command), a check ran, or it read repos outside your account. `readOutside` is their sum. After
+  any of it, a tool's reads too, the notes the run proposes wait for your `yes` and its reply's
+  images are inert.
+  Its network is otherwise the internet's, with no private network (box setup 9). There's no list
+  of allowed hosts, by choice (ADR 0077): GitHub, npm and DNS must stay open, and each can carry
+  data out, so a list would stop only a naive leak, break the runs that read the web, and need a
+  change for each project, registry and site.
 - **A form fixes its target:** each act call names the argument that says what it changes
   (`args.<call>.target`: Notion's `parent` and `page`), and the tool contract refuses a form that
   doesn't fix it, so no form writes wherever a capped string points.
@@ -662,8 +686,9 @@ The chat at `/admin/chat/` (ADR 0036) is the edge's first page with scripts, so 
   - **Devices only on known push services:** an https address on Google's, Apple's, Mozilla's or
     Microsoft's, so nobody can point the Worker at another address. Turning one on is a chat
     `POST`, with the same locks. The edge shows a device as a short id, never its address.
-  - **The service worker** (`sw.js`) is the page's own file (`worker-src 'self'`), caches
-    nothing, and opens only addresses inside the chat.
+  - **The service worker** (`sw.js`) is the page's own file (`worker-src 'self'`), keeps only the
+    page's own files (the page, its scripts and styles, the Desk's too, its manifest and icon),
+    never what the page reads (`api/…`), and opens only addresses inside the chat.
   - **A share stays on the phone** until you tap Send: what Android shares is held in the
     worker's memory for New chat, then uploaded as 📎 does. A forged share can only make a draft.
   - **No button on a notification:** a Yes stays behind your sign-in.
@@ -691,14 +716,20 @@ Nothing secret:
   lets more in is listed, never hidden), no private network for the
   agents and their containers (setup 9), automatic security updates, main's newer setup applied
   by the box itself (setup 14), and a runner user (`shipify`) with no sudo but its two rules: its
-  agents, and that update ([box-setup.md](box-setup.md#its-own-updates)).
+  agents and the look server's user, and that update
+  ([box-setup.md](box-setup.md#its-own-updates)).
+- **No gateway in front of the box** (ADR 0077): nothing comes in (the runner only dials out, and
+  ufw lets in Tailscale alone), and every connection is TLS or WireGuard, so no token is readable
+  on the path. A gateway that could read one would have to break TLS, and would then hold every
+  token in one place.
 
 **Left for later, by choice:**
 - the run's mint steps hold the bot App's key on the box while they run (never in the agent's
   step); minting off the box would close that;
 - the agents reach the whole internet (npm, the agent's API or gateway, GitHub, and the rest),
-  though no private network (setup 9); a list of allowed hosts is for later, and would cover their
-  containers too;
+  though no private network (setup 9), and with no list of allowed hosts (above, and ADR 0077):
+  during a run, what its look calls read could still be sent out by a tricked agent or a bad
+  package; it's the run's reads, for the run's time, and the look server records each call;
 - an agent is root inside a user namespace of its own (its containers, ADR 0064): the kernel's
   updates defend it; gVisor as Podman's runtime, or a VM per run, would be a stronger wall;
 - shipify's own `main` isn't protected (free private repos can't be).

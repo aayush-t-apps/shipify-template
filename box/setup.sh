@@ -49,6 +49,11 @@
 # Setup 15: shellcheck 0.11.0, the one Shipify's CI checks with, so a PR that passes this box's
 # checks passes CI too (Ubuntu 24.04's is 0.9.0). Its own release, checked against its checksum, in
 # /usr/local/bin; Ubuntu's package, which setup 7 to 14 installed, stays in /usr/bin, unused.
+# Setup 16 (ADR 0077): the look server's user, shipify-look, a system user with no home, shell or
+# ID range, never in the runner's group, which the runner's sudo rule names beside the agents: a
+# run's look server holds the tools' look keys as that user, so no agent holds them. The agents'
+# network rules cover it too, and the check at the end proves the runner starts it and it can't
+# read the runner's folders.
 # Running it again updates Node to the newest 22.x, and adds or removes slots to match
 # RUNNER_SLOTS.
 # SSH takes keys only, never passwords, once the account running this has a key; with
@@ -66,7 +71,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=15
+SETUP_VERSION=16
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -424,6 +429,19 @@ for dir in "$AGENT_ROOT"/shipify-agent-*; do
     [ ! -f "$deny" ] || sed -i "/^$u\$/d" "$deny"
   done
 done
+# The look server's user (setup 16, ADR 0077): each run that offers tools starts its look server
+# as this user, which holds the tools' look keys for the run and nothing else, so no agent holds
+# them. One for every slot, as each slot's server holds the same keys. A system user with no home,
+# no shell and no range of IDs; never in the runner's group, and no cron or at jobs.
+LOOK_USER=shipify-look
+say "The look server's user: it holds the tools' look keys, so no agent does"
+id "$LOOK_USER" >/dev/null 2>&1 ||
+  useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$LOOK_USER"
+gpasswd -d "$LOOK_USER" shipify >/dev/null 2>&1 || true
+for deny in /etc/cron.deny /etc/at.deny; do
+  grep -qx "$LOOK_USER" "$deny" 2>/dev/null || echo "$LOOK_USER" >> "$deny"
+done
+echo "  $LOOK_USER: no home, no shell"
 
 # The lab (setup 8, ADR 0064): containers for each slot's agent. Rootless Podman as the agent's own
 # user, in a user namespace it owns, with a range of 65,536 IDs of its own; a `docker` command and
@@ -532,18 +550,18 @@ if [ -z "$CONTAINER" ] && [ -f "$UPDATE_FILE" ]; then
   echo "  on: when main's setup is newer and no other slot runs a job, the due run starts $UPDATER"
 fi
 
-# The sudo rules: the runner (shipify) may run commands as its slots' agents, without a password,
-# and as no one else; an agent can't become the runner. As root, only the box's own update (setup
-# 14), which runs nothing the runner gives it but the word to start. sudo starts from no terminal
-# (the runner has none), so no pseudo-terminal either. The rules go in only once visudo accepts
-# them, and come out again if the whole configuration then fails visudo's check, so sudo always
-# keeps working.
-say "The sudo rules: the runner starts its slots' agents and the box's own update, nothing else"
+# The sudo rules: the runner (shipify) may run commands as its slots' agents and the look server's
+# user (setup 16), without a password, and as no one else; neither can become the runner. As root,
+# only the box's own update (setup 14), which runs nothing the runner gives it but the word to
+# start. sudo starts from no terminal (the runner has none), so no pseudo-terminal either. The rules
+# go in only once visudo accepts them, and come out again if the whole configuration then fails
+# visudo's check, so sudo always keeps working.
+say "The sudo rules: the runner starts its slots' agents, the look server and the box's own update, nothing else"
 SUDOERS=/etc/sudoers.d/shipify-agents
 agents=$(for k in $(seq 1 "$RUNNER_SLOTS"); do agent_user "$k"; done | paste -sd, -)
-rule="shipify ALL=($agents) NOPASSWD: ALL"
+rule="shipify ALL=($agents,$LOOK_USER) NOPASSWD: ALL"
 rules=$rule${update_rule:+$'\n'$update_rule}
-head="# Written by Shipify box setup (docs/box-setup.md): the runner starts the agents of its slots, and the box's own update."
+head="# Written by Shipify box setup (docs/box-setup.md): the runner starts the agents of its slots, the look server, and the box's own update."
 printf '%s\nDefaults:shipify !use_pty\n%s\n' "$head" "$rules" > "$WORK/shipify-agents"
 if ! visudo -cqf "$WORK/shipify-agents" >/dev/null 2>&1; then
   # A sudo without the use_pty setting (sudo-rs, an old sudo): the rules alone.
@@ -888,7 +906,8 @@ firewall() {
 # The agents' network (setup 9): out to the internet, as the work needs (GitHub, npm, the agent's
 # API), never to a private network: your home network (its router, cameras, other machines), the
 # tailnet, nor a cloud's metadata address. A table of its own in nftables, for each agent's user
-# and the IDs of its range (its containers' users), loaded at every start by a service of its own,
+# and the IDs of its range (its containers' users), and the look server's user (setup 16), which
+# reaches the tools' services and nothing private either, loaded at every start by a service of its own,
 # before the network is up. DNS stays open, as a resolver on your network may answer it. Your own
 # rules, ufw's and Tailscale's stay as they are. On the machine itself (setup 10), its SSH (22) and
 # Cockpit (9090) are closed to them: each asks for your password, which an agent could keep
@@ -901,7 +920,8 @@ firewall() {
 # them, and they fell through to a reject.
 AGENTS_NET=/etc/shipify/agents-net.nft
 AGENTS_NET_UNIT=shipify-agents-net.service
-# agent_ids: each agent's user ID and the range of IDs its containers use, as nft reads them.
+# agent_ids: each agent's user ID and the range of IDs its containers use, and the look server's
+# user's ID (setup 16), as nft reads them.
 agent_ids() {
   local k u ids=""
   for k in $(seq 1 "$RUNNER_SLOTS"); do
@@ -909,7 +929,7 @@ agent_ids() {
     ids="$ids${ids:+, }$(id -u "$u")"
     ids="$ids$(awk -F: -v n="$u" '$1 == n && $3 > 0 { printf ", %d-%d", $2, $2 + $3 - 1 }' /etc/subuid 2>/dev/null)"
   done
-  echo "$ids"
+  echo "$ids, $(id -u "$LOOK_USER")"
 }
 # agents_net <ids>: the table, for these users. Made again whole each time (an empty one first, so
 # the delete always finds one), in one go.
@@ -954,7 +974,7 @@ else
   if put_file "$WORK/$AGENTS_NET_UNIT" "/etc/systemd/system/$AGENTS_NET_UNIT"; then systemctl daemon-reload; fi
   systemctl enable -q "$AGENTS_NET_UNIT"
   if systemctl restart "$AGENTS_NET_UNIT"; then
-    echo "  on: no agent, nor its containers, reaches your network, the tailnet, a metadata address, an IPv6 address, or this machine's SSH and Cockpit"
+    echo "  on: no agent, nor its containers, nor the look server, reaches your network, the tailnet, a metadata address, an IPv6 address, or this machine's SSH and Cockpit"
   else
     echo "  ✗ the agents' network rules didn't load (above: sudo systemctl status $AGENTS_NET_UNIT)"
   fi
@@ -1096,6 +1116,18 @@ for k in $(seq 1 "$RUNNER_SLOTS"); do
     fi
   done
 done
+# The look server's user (setup 16): the runner starts it (else a run has no tools, and says so),
+# and it reads none of the runner's folders nor a slot's runs: a bug in a tool's server, which runs
+# as it, reaches no further.
+if ! sudo -u shipify sudo -n -u "$LOOK_USER" true; then
+  echo "  ✗ the runner can't start $LOOK_USER without a password, so runs have no tools: run this setup again"
+fi
+wall "$LOOK_USER" /home/shipify
+wall "$LOOK_USER" "$RUNNER_HOME/_work"
+[ -z "$listener" ] || wall "$LOOK_USER" "/proc/$listener/environ"
+for k in $(seq 1 "$RUNNER_SLOTS"); do
+  wall "$LOOK_USER" "$AGENT_ROOT/$(agent_user "$k")"
+done
 # The lab, where Podman is: each agent's range works, and slot 1 the whole way (lab_check). Each
 # slot is left as a run start leaves it: nothing of its agent's running, runtime/ empty.
 # lab_ok: ok, unproven (no container ran: the image didn't pull), "" (they don't work), or none
@@ -1230,7 +1262,7 @@ if [ -z "$walls" ]; then
   exit 1
 fi
 rm -f "$SANDBOX_OPEN"
-echo "  done: $RUNNER_SLOTS agent(s), each walled off"
+echo "  done: $RUNNER_SLOTS agent(s) and the look server's user, each walled off"
 
 # Which setup this box has, for ship doctor. With --manage, noted as not finished until that part
 # ends (Tailscale's sign-in missed, Cockpit not served, a Ctrl-C), so doctor names the box until its

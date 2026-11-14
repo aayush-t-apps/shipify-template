@@ -181,7 +181,25 @@ describe("a reply's buttons, one list for every chat", () => {
     expect(named.rows.flat()).toHaveLength(1);
   });
 
-  it("shows no quick answers without their question", () => {
-    expect(replyButtons(reply({ choices: ["a"] }), "").rows).toEqual([]);
+  it("shows a reply's next steps with no question as buttons, never `yes`, `no` or a long one (ADR 0078)", () => {
+    const next = replyButtons(
+      reply({ choices: ["Make it a task", "yes", "Remind me Monday at 9"] }),
+      "",
+    );
+    expect(next.rows).toEqual([
+      [
+        { label: "Make it a task", words: "Make it a task" },
+        { label: "Remind me Monday at 9", words: "Remind me Monday at 9" },
+      ],
+    ]);
+    // A next step opens no reply box: only a question does.
+    expect(next.asks).toBe(false);
+    expect(replyButtons(reply({ choices: ["x".repeat(61)] }), "").rows).toEqual([]);
+  });
+
+  it("offers Change it back under a Personality change (ADR 0078)", () => {
+    expect(replyButtons(reply({ undo: true }), "Personality: Friendly.").rows).toEqual([
+      [{ label: "Change it back", words: "personality: undo" }],
+    ]);
   });
 });

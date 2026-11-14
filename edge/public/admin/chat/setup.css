@@ -77,7 +77,8 @@
   gap: 0.5rem;
   align-items: center;
 }
-.card p.row input {
+.card p.row input,
+.card p.row textarea {
   flex: 1 1 10rem;
   min-width: 0;
 }

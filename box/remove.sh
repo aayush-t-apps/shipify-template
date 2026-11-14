@@ -2,8 +2,8 @@
 # Take Shipify off this machine (docs/box-setup.md, "Taking Shipify off a machine"): what
 # box/setup.sh made for the box, and nothing of the machine's own. `pnpm ship box remove <name>
 # --purge` runs it with sudo (here.sh --remove --purge too), once GitHub has forgotten the slots.
-# Goes: the slots' services; the users shipify and shipify-agent-<k>, with their ID ranges, folders
-# and processes (the containers' images too); the sudo rules; the update rule for the slots; the
+# Goes: the slots' services; the users shipify, shipify-agent-<k> and shipify-look (setup 16), with
+# their ID ranges, folders and processes (the containers' images too); the sudo rules; the update rule for the slots; the
 # agents' network rules; the containers' settings for the agents; /opt/shipify; the box's own
 # update (setup 14), with its settings, its folder and its log.
 # Stays, as the machine's own: security updates (with the restart at 04:30), Ubuntu's normal updates
@@ -32,8 +32,8 @@ nft delete table inet shipify_agents 2>/dev/null || true
 systemctl daemon-reload
 echo "  gone"
 
-say "The runner's and the agents' users, with their ID ranges, folders and processes"
-for u in $(getent passwd | cut -d: -f1 | grep -E '^shipify(-agent-[0-9]+)?$' || true); do
+say "The runner's, the agents' and the look server's users, with their ID ranges, folders and processes"
+for u in $(getent passwd | cut -d: -f1 | grep -E '^shipify(-agent-[0-9]+|-look)?$' || true); do
   # As the user first: that reaches its containers too, which run as IDs of its range.
   sudo -u "$u" kill -KILL -1 2>/dev/null || true
   pkill -KILL -u "$u" 2>/dev/null || true
@@ -42,7 +42,7 @@ for u in $(getent passwd | cut -d: -f1 | grep -E '^shipify(-agent-[0-9]+)?$' || 
 done
 rm -rf /home/shipify /srv/shipify-agent-* /opt/shipify /var/log/shipify-box-updates.log
 for deny in /etc/cron.deny /etc/at.deny; do
-  [ ! -f "$deny" ] || sed -i '/^shipify-agent-[0-9]*$/d' "$deny"
+  [ ! -f "$deny" ] || sed -i -e '/^shipify-agent-[0-9]*$/d' -e '/^shipify-look$/d' "$deny"
 done
 
 say "Its rules"

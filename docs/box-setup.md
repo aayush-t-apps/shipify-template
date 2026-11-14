@@ -55,7 +55,8 @@ curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/
 what `ship doctor` names. It carries on from what's done, and mends what an older setup left
 (setup 10: the agents' folders that kept containers from starting; setup 11: the slot folders a
 container changed, and the agents' IPv6; setup 12: containers' network on Ubuntu 26.04; setup 13:
-`--manage` boxes take connections through Tailscale only). Run it while no task runs: `box add` refuses while a
+`--manage` boxes take connections through Tailscale only; setup 16: the look server's user, which
+holds the tools' look keys so no agent does). Run it while no task runs: `box add` refuses while a
 slot is busy. A new disk or a fresh OS: [A new disk (an SSD), or a fresh OS](#a-new-disk-an-ssd-or-a-fresh-os).
 
 **It never says done when something isn't:** the setup ends with a line that says what's left
@@ -404,15 +405,15 @@ reaches the runner's keys or changes what the runner runs next.
 |---|---|---|
 | Its folders | `/home/shipify` (0700): the runners, jobs' folders, logins, caches | `/srv/shipify-agent-<k>` (2711): its runs; the runner may only pass through to a run's `out/`, and other users can pass through but never list it or enter a folder in it |
 | What it writes | for itself alone (`UMask=0077`) | in its run's folder |
-| Its keys | the job's tokens, in processes the agent can't read | only what a run hands it on stdin: a read-only token and the tools' look keys, and its login, which goes on a pipe (fd 3), never in its environment |
-| sudo | run commands as its slots' agents; as root, only the box's own update | none |
+| Its keys | the job's tokens, in processes the agent can't read | only what a run hands it on stdin: a read-only token and the run's look token (the look server holds the tools' look keys, below), and its login, which goes on a pipe (fd 3), never in its environment |
+| sudo | run commands as its slots' agents and the look server's user; as root, only the box's own update | none |
 | Tools | `/opt/shipify`, its own | the same, to read and run, never to change |
 
 - **The sudo rules,** `/etc/sudoers.d/shipify-agents`:
 
   ```
   Defaults:shipify !use_pty
-  shipify ALL=(shipify-agent-1,shipify-agent-2) NOPASSWD: ALL
+  shipify ALL=(shipify-agent-1,shipify-agent-2,shipify-look) NOPASSWD: ALL
   shipify ALL=(root) NOPASSWD: /usr/local/sbin/shipify-box-update
   ```
 
@@ -423,6 +424,14 @@ reaches the runner's keys or changes what the runner runs next.
   only: a new image is its update.
 - **The agents' users:** system users with no password and no login shell, never in the runner's
   group, refused cron and at.
+- **The look server's user, `shipify-look`** (setup 16, ADR 0077): for a run that offers tools,
+  the runner starts the run's look server as this user. It holds the tools' look keys for that run
+  and nothing else, starts each tool's server, and serves the run's look calls on `127.0.0.1` to a
+  request with the run's token, which the agent holds in place of the keys. It ends with the run.
+  One user for every slot, as each slot's server holds the same keys: a system user with no home,
+  shell or range of IDs, never in the runner's group, refused cron and at, and in the agents'
+  network rules (below). A box before setup 16 runs without tools until it applies it, and the
+  run says why: the keys never go to the agent instead.
 - **The machine's tools,** outside the runner's home so agents can use them and change none:
 
   | Folder | Holds |
@@ -452,7 +461,8 @@ reaches the runner's keys or changes what the runner runs next.
   agent can read the runner's home, its jobs' folder (`_work`), a runner process's environment or
   another slot's runs, nor write to a root container socket, nor, on WSL, open a Windows drive or
   start a Windows program ([This PC](#this-pc)). At setup, also: no agent reaches a private
-  network (below). `box add` adds the `sandbox` label only after it passes. `ship doctor` (so each
+  network (below), and the runner starts the look server's user, which reads none of the
+  runner's folders, a runner process's environment or a slot's runs (setup 16). `box add` adds the `sandbox` label only after it passes. `ship doctor` (so each
   weekly clean-up) checks it again, plus the home's 0700, the jobs' umask 0077, and that
   `shipify-agents-net.service` loaded the network rule (below). A setup whose check fails (setup
   14) leaves `/etc/shipify/sandbox-open`: until a setup passes and takes it away, no task's agent
@@ -468,14 +478,16 @@ reaches the runner's keys or changes what the runner runs next.
     IPv4 with no wait; anything else gets an ICMP error.
   - **DNS stays open,** since a resolver on your network may answer it.
   - **Only the agents' own packets:** it's a table of its own in nftables
-    (`/etc/shipify/agents-net.nft`), for each agent's user and the IDs of its range, loaded at
-    every start by `shipify-agents-net.service`, before the network is up. The machine's own
+    (`/etc/shipify/agents-net.nft`), for each agent's user and the IDs of its range, and the look
+    server's user (setup 16), loaded at every start by `shipify-agents-net.service`, before the
+    network is up. The machine's own
     packets have no user (a ping's reply, IPv6's neighbour discovery) and never go through it:
     setups 9 and 10 rejected those too. Your own rules, ufw's and Tailscale's stay as they are.
   - **Proved at setup:** a listener on the box's own addresses (its private IPv4 one, and an IPv6
     one), which root reaches and no agent does.
-  - The rest of the internet stays open: a list of allowed hosts is for later
-    ([roadmap.md](roadmap.md)).
+  - The rest of the internet stays open, with no list of allowed hosts, by choice (ADR 0077):
+    GitHub, npm and DNS must stay open, and each can carry data out. What the box closes instead
+    is the keys in an agent's reach: the tools' look keys stay with the look server (above).
 - **Nor the box's own SSH and Cockpit** (setup 10): ports 22 and 9090 on `127.0.0.1` and `::1`
   are closed to the agents, in the same table. Each asks for your password, which an agent could
   keep guessing. A port a container publishes on `127.0.0.1` stays the agent's to reach. Another
@@ -583,7 +595,11 @@ needrestart rule for `shipify-box-*`): a slot takes a new library at its next st
 ### Its own updates
 
 From setup 14 on, a box applies main's newer `box/setup.sh` by itself: you never run its setup again
-for a new version.
+for a new version. A box set up before setup 14 has no updater, so it can't: set it up once more
+(when no task runs: its here.sh command again on the box, or from a PC the `pnpm ship box add`
+command it was set up with), and from then on it updates itself. Until then, doctor's "box setup
+is the repo's" says so, and a run that offers tools says so in place of a sudo error (setup 16's
+look server user, ADR 0077).
 
 1. **When:** the due run (at least once a day) and the weekly clean-up see that the box's setup is
    older than main's, and no other slot runs a job.

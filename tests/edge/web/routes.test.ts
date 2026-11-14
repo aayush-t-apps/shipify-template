@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   fileRefOf,
   fromLine,
+  PRESETS,
   readFrom,
   replyLine,
   STATUS_MARK,
@@ -1738,37 +1739,77 @@ describe("what the page reads", () => {
     expect(th.task.project.step).toContain("Keep on page");
     // Open, its Close asks first: the chats it closes too, and what stays and goes.
     expect(th.task.project.ask).toMatch(
-      /^Close games and its 1 open chat\? Its docs stay in the Library, read-only\. Its files go from \d{1,2} \w{3}, unless you reopen it before\.$/,
+      /^Close games and its 1 open chat\? Its docs close with it and stay in the Library, read-only\. Its files go from \d{1,2} \w{3}, unless you reopen it before\.$/,
     );
     // A doc of it names the project's number, so it opens over the project's Docs.
     const doc = await (await t.call(`/admin/chat/api/task/${page.number}`)).json();
     expect(doc.task.doc).toMatchObject({ name: "Overview", project: "games", of: p.number });
   });
 
-  it("a closed project: in the index, its step says when and what stays, its Close asks nothing; its doc still finds it (ADR 0069)", async () => {
+  it("a closed project: in the index, its step says when and what stays, its Close asks nothing; its docs, closed with it, still show, read-only (ADR 0069, task #744)", async () => {
     const t = setUp();
     const p = t.f.issue({ title: "Project: hacker", body: "x", labels: ["project"] });
     const page = t.f.issue({
       title: "Notebook: hacker",
       body: "## Map",
       labels: ["library", "project:hacker"],
+      user: RUN,
     });
     t.f.issue({ title: "Project: g3f9a2c-trip", labels: ["project", "guest"] });
     p.state = "closed";
     p.closed_at = new Date().toISOString();
+    page.state = "closed";
     const th = await (await t.call(`/admin/chat/api/task/${p.number}`)).json();
     expect(th.task.open).toBe(false);
     expect(th.task.project.ask).toBeUndefined();
     expect(th.task.project.step).toMatch(
-      /^Closed \d{1,2} \w{3}\. Its docs stay in the Library, read-only\. Its files go from \d{1,2} \w{3}, unless you reopen it before\. Reopen it to ask or add again\.$/,
+      /^Closed \d{1,2} \w{3}\. Its docs close with it and stay in the Library, read-only\. Its files go from \d{1,2} \w{3}, unless you reopen it before\. Reopen it to ask or add again\.$/,
     );
+    // Its Docs tab still has its pages, closed with it.
+    expect(th.task.project.pages).toMatchObject([{ n: page.number, topic: "hacker" }]);
+    // Its doc finds it, and has no Edit while it's closed: a save is refused too.
     const doc = await (await t.call(`/admin/chat/api/task/${page.number}`)).json();
-    expect(doc.task.doc.of).toBe(p.number);
-    // The Library's read: your projects, open and closed; a guest's left out.
+    expect(doc.task.doc).toMatchObject({ of: p.number, shut: true });
+    const save = await t.post("/admin/chat/api/edit", {
+      n: page.number,
+      words: "mine",
+      updated: doc.task.doc.updated,
+    });
+    expect(save.status).toBe(409);
+    expect(await save.json()).toEqual({
+      error: "Its project is closed.",
+      fix: "Reopen the project to edit it.",
+    });
+    expect(page.body).toBe("## Map");
+    // The Library's read: your projects, open and closed, a guest's left out; and the closed
+    // project's docs, under it.
     const nb = await (await t.call("/admin/chat/api/notebook")).json();
     expect(nb.projects).toEqual([
       { n: p.number, name: "hacker", open: false, closed: p.closed_at },
     ]);
+    expect(nb.library).toMatchObject([{ n: page.number, project: "hacker" }]);
+  });
+
+  it("a doc closed while its project is open (reopened on GitHub's own button) opens as it's saved (task #744)", async () => {
+    const t = setUp();
+    t.f.issue({ title: "Project: games", body: "x", labels: ["project"] });
+    const page = t.f.issue({
+      title: "Notebook: games",
+      body: "## Map",
+      labels: ["library", "project:games"],
+      user: RUN,
+    });
+    page.state = "closed";
+    const doc = await (await t.call(`/admin/chat/api/task/${page.number}`)).json();
+    expect(doc.task.doc.shut).toBeUndefined();
+    const save = await t.post("/admin/chat/api/edit", {
+      n: page.number,
+      words: "## Map\n\n- engines",
+      updated: doc.task.doc.updated,
+    });
+    expect(save.status).toBe(200);
+    expect(page.state).toBe("open");
+    expect(withoutLine(page.body)).toBe("## Map\n\n- engines\n");
   });
 
   it("a project's page shows its Now first, and one next step from counts it read already (ADR 0070)", async () => {
@@ -2173,6 +2214,23 @@ describe("what the page reads", () => {
     t.f.w.variables.SHIPIFY_GATEWAYS = JSON.stringify({ openrouter: "2026-10-06" });
     const after = await (await t.call("/admin/chat/api/setup")).json();
     expect(after.gateways[0]).toMatchObject({ id: "openrouter", since: "2026-10-06" });
+  });
+
+  it("setup: your Personality, its preset or your words, and the presets for its menu (ADR 0078)", async () => {
+    const t = setUp();
+    const none = (await (await t.call("/admin/chat/api/setup")).json()).personality;
+    expect(none).toMatchObject({ preset: "default", words: "" });
+    expect(none.presets.map((p: { name: string }) => p.name)).toEqual(PRESETS.map((p) => p.name));
+    clearCaches();
+    clearSeen();
+    const words = PRESETS[2]?.words ?? "";
+    const before = "\n\n<details><summary>Before</summary>\n\nShort.\n\n</details>\n";
+    // A guest's page is never yours, whatever its title.
+    t.f.issue({ title: "Notebook: Personality", body: "Sing it.", labels: ["notebook", "guest"] });
+    t.f.issue({ title: "Notebook: Personality", body: `${words}${before}`, labels: ["notebook"] });
+    const set = (await (await t.call("/admin/chat/api/setup")).json()).personality;
+    expect(set).toMatchObject({ preset: "candid", words });
+    expect(set.url).toMatch(/\/issues\/\d+$/);
   });
 
   it("setup: the watch's view and each box's health and console, from reads it already makes", async () => {

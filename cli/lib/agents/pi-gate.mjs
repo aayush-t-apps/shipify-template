@@ -12,8 +12,7 @@
 //   (an act call, a tool Shipify doesn't know) is refused, the safe default with no one watching;
 // - in the read profile (`run: false`, ADR 0044): no command and no tool's call, files read only
 //   inside its working folder and its read folders (links resolved first), and nothing written.
-//   A tool it didn't get (left out by its adapter, or its server not connected) is named at the
-//   end, never silently.
+//   A look call it didn't get (its server not connected) is named at the end, never silently.
 // - its gateway's key: read once from the pipe SHIPIFY_LOGIN_FD names, which is then closed, and
 //   handed to the provider its rules name, so it's never in pi's environment, which every command
 //   it runs inherits.
@@ -307,16 +306,15 @@ export default function gate(pi) {
     const why = refused(rules, event.toolName, event.input ?? {}, process.cwd(), own);
     return why ? { block: true, reason: `${REFUSED}: ${why}` } : undefined;
   });
-  // The tools it didn't get, named once at the end in pi's output (an entry, which pi.ts's reader
-  // puts in the run's details): those its adapter left out (`left`, with why), and each look call
-  // pi never got, its server not connected, which pi says only on its own screen.
+  // The look calls it didn't get, named once at the end in pi's output (an entry, which pi.ts's
+  // reader puts in the run's details): each one pi never got, its server not connected, which pi
+  // says only on its own screen.
   let told = false;
   pi.on("agent_end", () => {
     if (told) return;
     told = true;
     const have = new Set(pi.getAllTools().map((t) => t.name));
     const missing = rules.look.filter((c) => !have.has(c));
-    const left = rules.left ?? [];
-    if (missing.length || left.length) pi.appendEntry("shipify-gate", { left, missing });
+    if (missing.length) pi.appendEntry("shipify-gate", { missing });
   });
 }

@@ -17,13 +17,49 @@ export const agentFile = (name: string) => join(PLATFORM_ROOT, "cli", "lib", "ag
 
 /** What an adapter may use to hand its agent the run's look tools: the tools library, through here
  * only, so an adapter imports nothing of the core but its contract (tests/architecture.test.ts). */
-export { command, loadTools, type Mode, runTools, secretFor, type Tools } from "../tools.ts";
+export { loadTools, type Mode, runTools, secretFor, type Tools } from "../tools.ts";
 
 import type { Tools } from "../tools.ts";
 
-/** The tools a run offers its agent (AgentRun.tools.only): those named, or all when it names none. */
-export const offered = (all: Tools, only?: string[]): Tools =>
-  only ? Object.fromEntries(Object.entries(all).filter(([name]) => only.includes(name))) : all;
+/**
+ * The variable that holds the run's token for its look server (ADR 0077): the one key of the tools'
+ * the agent holds, which works only on its box and only during its run.
+ */
+export const LOOK_TOKEN = "SHIPIFY_LOOK_TOKEN";
+
+/** The run's look server (ADR 0077): its address, and the tools it serves there. */
+export interface Served {
+  /** `http://127.0.0.1:<port>`: each tool's is `<url>/<tool>`. */
+  url: string;
+  tools: string[];
+}
+
+/**
+ * The tools a run offers its agent (AgentRun.tools.served): each one its look server serves, as a
+ * remote tool at the server's address, with the run's token as its bearer and no key of its own
+ * (ADR 0077). None without a look server: an agent never starts a tool's server, nor holds its key.
+ */
+export function offered(all: Tools, served?: Served): Tools {
+  if (!served) return {};
+  return Object.fromEntries(
+    served.tools.flatMap((name) => {
+      const t = all[name];
+      if (!t) return [];
+      const { run: _, ...rest } = t;
+      return [
+        [
+          name,
+          {
+            ...rest,
+            url: `${served.url}/${name}`,
+            headers: { Authorization: `Bearer \${${LOOK_TOKEN}}` },
+            keys: {},
+          },
+        ],
+      ];
+    }),
+  );
+}
 
 /**
  * Where an agent reads its login (its own, or its gateway's key): file descriptor 3, a pipe it reads
@@ -258,13 +294,13 @@ export interface AgentRun {
   tools?: {
     mode: Mode;
     dir: string;
-    /** Where the tools' servers are: a read-only copy of Shipify in the agent's sandbox. */
-    root?: string;
     /**
-     * Only these tools (tools.json's names), none when empty: a run on another of your accounts
-     * holds none of your tools (ADR 0045). Without it, every tool whose keys the run holds.
+     * The run's look server (ADR 0077), which holds the tools' look keys: each tool it serves is a
+     * remote one for the agent (`offered`), reached with the run's token (LOOK_TOKEN). Without one,
+     * no tools: a read run, a guest's, one on another of your accounts (ADR 0045), or a box whose
+     * look server didn't start.
      */
-    only?: string[];
+    served?: Served;
   };
   /** A session the report named, to carry on in it rather than start again. */
   resume?: string;

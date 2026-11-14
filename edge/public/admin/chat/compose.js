@@ -165,6 +165,19 @@ export function pop(at, items, cls = "") {
   return item;
 }
 
+/** ↻ (ADR 0049), or a pull down (pull.js, loaded on the first touch): `f` reads, one at a time. */
+export function refresher(f) {
+  const b = document.body.classList;
+  const go = async () => {
+    if (b.contains("spin")) return;
+    b.add("spin");
+    await f().finally(() => b.remove("spin"));
+  };
+  const pull = (e) => import("./pull.js").then((m) => m.start(e, go), Boolean);
+  addEventListener("touchstart", pull, { passive: true });
+  return go;
+}
+
 // A key's shape: a PEM header, word_ and 20+, or a long mixed-case run with digits.
 export const secret = (s) =>
   /-{5}BEGIN [A-Z ]*PRIVATE KEY-{5}|\b[A-Za-z]+_[A-Za-z0-9]{20,}\b/.test(s) ||
@@ -280,7 +293,7 @@ export function composer(o) {
       { type: "button", "aria-label": `Remove ${it.name}`, onclick: () => drop(it) },
       icon("x"),
     );
-    const retry = it.err && h("button", { type: "button", onclick: () => put(it) }, "Retry");
+    const retry = it.err && h("button", { type: "button", onclick: () => put(it, "put") }, "Retry");
     const bar = !it.ref && !it.err && h("progress", { max: 1, value: it.p });
     it.bar = bar;
     const name = h("span", it.name, h("small", it.err || size(it.size)));
@@ -294,44 +307,35 @@ export function composer(o) {
     );
   };
   const draw = () => set(tray, files.map(att)) || state();
-  // A file added is made smaller if a photo, then sent up: attach.js, loaded the first time.
-  const put = async (it) => {
-    const { upload } = await import("./attach.js");
-    if (!files.includes(it)) return;
-    // Its bar moves where it is: the tray isn't drawn again for each step.
-    const u = upload(it.file, o.task, (p) => {
-      it.p = p;
-      if (it.bar) it.bar.value = p;
-    });
-    Object.assign(it, { err: "", p: 0, abort: u.abort });
-    const no = (e) => Object.assign(it, { err: `${e.message}: ${e.fix}` });
-    u.p.then((r) => Object.assign(it, r), no).finally(draw);
-    draw();
+  // A file added is in the box at once, so Send waits ("Uploading…") while a photo is made smaller
+  // and sent up: attach.js, loaded the first time, does both (`add`), and Retry (`put`).
+  const box = {
+    task: o.task,
+    m,
+    draw,
+    drop,
+    say: (t) => (msg = t),
+    has: (it) => tray.isConnected && files.includes(it),
+    signin: () => o.signin?.(),
   };
-  const add = async (list) => {
-    msg = "";
-    const shrink = await import("./attach.js").then(
-      (a) => a.shrink,
-      () => 0,
+  const put = (it, k) =>
+    import("./attach.js").then(
+      (a) => a[k](it, box),
+      () => {
+        msg = "Files didn't load: try again once you're online.";
+        drop(it);
+      },
     );
-    if (!shrink) {
-      msg = "Files didn't load: try again once you're online.";
-      return draw();
-    }
-    for (const f0 of list) {
+  const add = (list) => {
+    msg = "";
+    for (const file of list) {
       if (files.length >= m().files.most) {
         msg = `At most ${m().files.most} files a message.`;
         break;
       }
-      const f = await shrink(f0);
-      if (f.size > m().files.bytes) msg = `${f.name} is over ${size(m().files.bytes)}.`;
-      else {
-        if (/^(audio|video)\//.test(f.type)) msg = "A run can't listen to or watch this.";
-        const url = /^image\//.test(f.type) && URL.createObjectURL(f);
-        const it = { file: f, name: f.name, type: f.type, size: f.size, url, u: 1, abort() {} };
-        files.push(it);
-        put(it);
-      }
+      const it = { file, name: file.name, type: file.type, size: file.size, u: 1, abort() {} };
+      files.push(it);
+      put(it, "add");
     }
     draw();
   };
@@ -427,7 +431,10 @@ export function composer(o) {
   };
   // Files shared from another app (sw.js), as if picked, once the menu says files are on.
   o.add = (l) => held.push(...l) && state();
-  pick.onchange = () => add([...pick.files]) && Object.assign(pick, { value: "" });
+  pick.onchange = () => {
+    add([...pick.files]);
+    pick.value = "";
+  };
   clip.onclick = () => pick.click();
   o.label();
   draw();

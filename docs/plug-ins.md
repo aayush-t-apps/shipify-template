@@ -31,7 +31,8 @@ new one is a plug-in, not a change to the core:
 
 A `tools.json` entry, checked on its own (a broken one is left out, and `ship tools list` and
 `ship doctor` say why):
-- **`look`:** calls the agent makes on any run, with the look key.
+- **`look`:** calls the agent makes on any run, through the run's look server (ADR 0077), which
+  starts the tool's server with the look key: the agent holds only the run's token for it.
 - **`act`:** calls that change something, proposed by the agent and made by the box after your
   `yes` (or pre-approved under `pre`), with the act key.
 - **`keys`, `args`, `pre`, `check`, `setup`:** its keys by verb, its act calls' argument checks and
@@ -81,9 +82,12 @@ imports the list, never an adapter.
   conformance test holds every adapter to the same decisions: the refused commands in any form,
   and anything else runs. In the read profile (`commands.run: false`, ADR 0044), nothing runs, no
   page is fetched, and files are read only inside its folders.
-- **The tools a run offers:** every tool whose look key the run holds, or only those it names
-  (`tools.only`; none for a run on another of your accounts, ADR 0045). An adapter that takes
-  tools filters them with the contract's `offered`, and the conformance test checks it.
+- **The tools a run offers:** each one the run's look server serves (`tools.served`, ADR 0077;
+  none for a read run, a guest's, or one on another of your accounts, ADR 0045). An adapter that
+  takes tools gets them from the contract's `offered`, each a remote MCP server at the look server
+  with `Authorization: Bearer ${SHIPIFY_LOOK_TOKEN}` (the token by its name, never its value), and
+  writes them as its agent takes a remote tool: an agent must take one with a bearer header. The
+  conformance test checks each adapter names the served tools so, and none without a look server.
 - **On a box:** installed from its entry's `install` the first time a run picks it; its login is
   its own `login`, or its gateway's key, handed over on fd 3, a pipe it reads once, never in its
   environment. Its adapter says how it reads it there (`loginFromPipe`), and the conformance test
