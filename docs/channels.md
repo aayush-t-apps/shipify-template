@@ -352,8 +352,10 @@ as **Change a repo** writes it); a task with none is **General**.
   open parts"), and each still shows in its own project's group. A part blocked by a task that's
   still open is **Waiting**: a grey dash, not a dot (not the `waiting` label of an errand). A split
   task's thread has a **Plan card** under its header: each part with its state, project, PR and
-  "waits for #C". **Start** on a ready part sends `go #n`, **Start all ready** sends `go`, **Stop**
-  (after `go`, with a confirm) sends `stop`, as a reply's buttons send words. The plan is one GitHub read when the thread opens,
+  "waits for #C". Your Yes on the split starts its ready parts (ADR 0080). **Start** on a ready
+  part sends `go #n`, **Start all ready** sends `go` (after a `stop`, or when a part is ready that
+  didn't start), **Stop** (while it's started, with a confirm) sends `stop`, as a reply's buttons
+  send words. The plan is one GitHub read when the thread opens,
   kept 60 s, so a tap shows in it within a minute; `plan.js` loads only for a split task. On a phone
   the card is full width, rows 44 px, and folded until you tap it. A part's thread says "Part of
   #N" under its title, a link to its parent, and "Waiting" when it waits.
@@ -392,9 +394,10 @@ as **Change a repo** writes it); a task with none is **General**.
   it. **⋯**: On GitHub, Stop (`stop`,
   while a run works), Run again (`again`), Stop repeating or Resume. A button that sends a word
   says so while it does, and a failed send keeps a Retry.
-- **A PR to review:** one of shipify's PRs (from For review, or a PR chip on its task) opens as a
-  thread too: its description and comments, rendered, and the task it's for. It takes no words; **⋯
-  The changes** and the merge are on GitHub, which shows the diff (the door App can't read files).
+- **A PR opens on GitHub:** its link in a reply, and its chip on a task or a Plan card (with its
+  state as the task's runs last saw it), open it there, with its changes and its merge. The door
+  App reads issues only, and GitHub keeps a PR from an App with no Pull requests permission
+  ([door.md](door.md)). A link to a task opens its chat here.
 - **A question's answers are buttons:** when the run gave short answers to its question, each is a
   button that sends it as your words ("Yes, match it").
 - **Next steps are buttons too** (ADR 0078): a reply with no question may end with up to 3 next

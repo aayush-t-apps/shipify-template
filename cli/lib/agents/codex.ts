@@ -29,6 +29,7 @@ import {
   type AgentRun,
   agentFile,
   asResult,
+  type CommandSeen,
   fetchesOutside,
   loadTools,
   type OutputReader,
@@ -171,10 +172,21 @@ type Item = {
   status?: string;
 };
 
+/**
+ * A command as the model wrote it: Codex runs each in its login shell (`/usr/bin/bash -lc '…'`),
+ * and names it so.
+ */
+const asWritten = (command: string) => {
+  const inner = /^(?:\S*\/)?(?:ba)?sh -lc '((?:[^']|'\\'')*)'$/.exec(command)?.[1];
+  return inner === undefined ? command : inner.replaceAll("'\\''", "'");
+};
+
 function reader(run?: Pick<AgentRun, "model">): OutputReader {
   const report: AgentReport = {};
   const tools: Record<string, number> = {};
   const skills: string[] = [];
+  // Each command, as written: one its PreToolUse hook (Shipify's gate) refused is `declined`.
+  const commands: CommandSeen[] = [];
   const notes: string[] = [];
   let usage:
     | { input: number; cacheRead: number; cacheWrite: number; output: number; thinking?: number }
@@ -259,6 +271,7 @@ function reader(run?: Pick<AgentRun, "model">): OutputReader {
       if (item.type === "command_execution") {
         const c = String(item.command ?? "");
         if (fetchesOutside(c)) report.readOutside = true;
+        commands.push({ command: asWritten(c), refused: item.status === "declined" });
         for (const p of c.match(/[^\s'"]*skills\/[a-z0-9-]+\/SKILL\.md/g) ?? []) {
           const s = skillRead(p);
           if (s) skills.push(s);
@@ -269,6 +282,7 @@ function reader(run?: Pick<AgentRun, "model">): OutputReader {
     report() {
       if (Object.keys(tools).length) report.tools = tools;
       report.skills = skillsSeen(skills);
+      if (commands.length) report.commands = commands;
       if (notes.length) report.notes = [...new Set(notes)];
       // The stream doesn't name its model: it's the one the run chose.
       if (run?.model) report.model = run.model;
@@ -339,6 +353,18 @@ const claims = (jwt: unknown): Record<string, unknown> => {
     return {};
   }
 };
+
+/**
+ * The ChatGPT plan a session names ("plus", "go"), from its id_token's claims, unchecked: never
+ * trusted, only to say it and to pick Auto's model on it (executors.json's `auto.plans`).
+ */
+export function plan(text: string): string | undefined {
+  const auth = claims(session(text)?.tokens?.id_token)["https://api.openai.com/auth"] as
+    | { chatgpt_plan_type?: unknown }
+    | undefined;
+  const p = auth?.chatgpt_plan_type;
+  return typeof p === "string" && p ? p.toLowerCase() : undefined;
+}
 
 /** The plans OpenAI lists Codex's CLI for (its plans page, 2026-11-06): Go's card shows the app. */
 const CLI_PLANS = ["plus", "pro", "business", "team", "enterprise", "edu"];
@@ -477,21 +503,18 @@ async function signIn(o: {
           "That isn't a ChatGPT sign-in (an API key, or a Business token), so nothing was set.",
         ],
       };
-    const auth = claims(s.tokens?.id_token)["https://api.openai.com/auth"] as
-      | { chatgpt_plan_type?: unknown }
-      | undefined;
-    const plan = String(auth?.chatgpt_plan_type ?? "unknown").toLowerCase();
+    const on = plan(text) ?? "unknown";
     const exp = Number(claims(s.tokens?.access_token).exp);
     const said = [
-      `Signed in with ChatGPT, on the ${plan} plan.`,
+      `Signed in with ChatGPT, on the ${on} plan.`,
       ...(exp
         ? [
             `Its access token lasts until ${new Date(exp * 1000).toUTCString()}; Codex renews it in a run, and the box keeps the renewed one.`,
           ]
         : []),
     ];
-    if (!CLI_PLANS.includes(plan)) {
-      const warning = `OpenAI lists Codex's CLI for Plus, Pro, Business and Enterprise, not for ${plan}: its runs may be refused.`;
+    if (!CLI_PLANS.includes(on)) {
+      const warning = `OpenAI lists Codex's CLI for Plus, Pro, Business and Enterprise, not for ${on}: its runs may be refused.`;
       if (!o.ask) return { login: text, said: [...said, warning] };
       const a = await o.ask(`${warning} Go on anyway? (y/N) `);
       if (!/^y(es)?$/i.test(a.trim())) return { said: [...said, "Stopped: nothing was set."] };
@@ -516,6 +539,7 @@ export const codex: Adapter = {
   env: (p) => ({ CODEX_HOME: home(p) }),
   loginFile: (p) => join(home(p), "auth.json"),
   renewed,
+  plan,
   signIn,
   // Shipify's skills, where Codex reads a user's: its bundled ones are off.
   skillsLink: (p) => join(p.home, ".agents", "skills"),

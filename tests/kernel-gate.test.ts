@@ -388,6 +388,11 @@ describe("the box's checks on a task's work", () => {
     expect(JSON.parse(readFileSync(placeOut("fix-argv.json"), "utf8"))).toEqual(
       expect.arrayContaining(["--resume", "s-1"]),
     );
+    // Each ask follows its clone's instructions (its AGENTS.md, through Claude Code's CLAUDE.md).
+    for (const ask of ["first", "fix"])
+      expect(JSON.parse(readFileSync(placeOut(`${ask}-argv.json`), "utf8")).join(" ")).toContain(
+        `--add-dir ${join(dir, "place", "work")} --settings`,
+      );
     // The fix round starts with the rules the first ask had: what it wrote there is gone, and
     // Shipify's skills are where its agent reads them.
     const fixEnv = JSON.parse(readFileSync(placeOut("fix-env.json"), "utf8"));
@@ -1046,6 +1051,8 @@ describe("the run's look server (ADR 0077)", () => {
     const env = JSON.parse(readFileSync(placeOut("env.json"), "utf8"));
     expect(env.keys).not.toContain("SHIPIFY_LOOK_TOKEN");
     expect(readFileSync(placeOut("argv.json"), "utf8")).not.toContain("--mcp-config");
+    // A talk run has no repo of its own: it follows no repo's instructions.
+    expect(readFileSync(placeOut("argv.json"), "utf8")).not.toContain("--settings");
     const prompt = readFileSync(placeOut("prompt.md"), "utf8");
     expect(prompt).toMatch(/- jot: not connected on this run \(the box's look server didn't start/);
     expect(out.details?.notes?.join("\n")).toMatch(/look server didn't start.*without tools/);

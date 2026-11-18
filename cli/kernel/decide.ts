@@ -74,13 +74,20 @@ import {
 } from "../lib/task.ts";
 import { fingerprint, listCode } from "./keys.ts";
 import {
+  carriesText,
+  carryOn,
   firstLine,
+  flowLines,
   firstPart,
   goParts,
   isPart,
   openParts,
+  openTitled,
   partClosed,
   partsOf,
+  readyNew,
+  related,
+  separatePart,
   skipped,
   splitLines,
   splitParts,
@@ -205,8 +212,11 @@ export function guestsProject(s: Pick<Snapshot, "issue" | "project">) {
   return guest && s.project?.name.startsWith(`${guestPrefix(guest)}-`) ? s.project : undefined;
 }
 const isYou = (c: Said) => c.author === "owner" || c.author === "door";
-/** Words that ask a run something: yours, or a guest's on their own task (ADR 0071). */
-const asking = (c: Said) => isYou(c) || c.author === "guest";
+/**
+ * Words that ask a run something: yours, a guest's on their own task (ADR 0071), or yours passed
+ * here from a related task (ADR 0080), which are words, never a fixed word.
+ */
+const asking = (c: Said) => isYou(c) || c.author === "guest" || c.author === "passed";
 const viaGithub = (c: Said) => c.author === "owner" && c.channel === "github";
 /** Your words this run hasn't read: after the cursor, from you on GitHub or through the door. */
 export const freshOf = (s: Snapshot) => s.said.filter((c) => asking(c) && c.id > s.state.seen);
@@ -416,6 +426,18 @@ const quietDay = (s: Snapshot) =>
 /** The state labels a closed task drops. */
 const GONE: string[] = [...STATE_LABELS];
 /** What `close` does to the task's status, wherever it's closed: done, read, its repeat paused (`resume` carries it on). */
+/**
+ * The list waiting for your yes, taken off the state to put back (ADR 0080): a run's new list
+ * replaces it whole, and its `drop_list` drops it. None when nothing waits.
+ */
+function takeList(st: TaskState) {
+  const { calls, notes, split, clean, workflow, first, atOnce, list } = st.pending;
+  dropList(st);
+  return calls || notes || split || clean || workflow || first || atOnce
+    ? { calls, notes, split, clean, workflow, first, atOnce, list }
+    : undefined;
+}
+
 /** The list waiting for your yes, gone: its calls, its notes and its time. */
 function dropList(st: TaskState) {
   st.pending.calls = undefined;
@@ -465,6 +487,24 @@ export function heldLines(h: HeldList, pr?: string): string[] {
     ].join("\n   ");
   });
 }
+
+/**
+ * The list that waits for your yes, for the run's prompt (ADR 0080): its lines as listed, its code
+ * and when. None when nothing waits, or only a clean start or an operation, which no run lists.
+ */
+export function waitingList(st: TaskState, timeZone: string): { waiting?: PromptWaiting } {
+  const p = st.pending;
+  if (!p.calls && !p.notes && !p.split && !p.workflow && !p.first) return {};
+  const held = heldListLines(st);
+  return {
+    waiting: {
+      lines: listLines({}, p.calls?.calls, p.notes, p.split, held).join("\n"),
+      code: listCode(p.calls?.calls, p.notes, p.split, [], heldKinds(p)),
+      ...(p.list?.at ? { at: formatWhen(p.list.at, timeZone) } : {}),
+    },
+  };
+}
+type PromptWaiting = { lines: string; code: string; at?: string };
 
 /** What else a list holds besides calls, notes and a split (ADR 0075): its lines. */
 const heldListLines = (st: TaskState) => [
@@ -834,11 +874,13 @@ function planned(s: Snapshot, ctx: Context): Plan {
   // stands after the ones before (`use sonnet`, then `use high`, is Sonnet at high).
   let picked = st.use;
   const said = fresh.map((c) => {
-    const use = ctx.use(c.text, picked);
+    // Your words passed from a related task (ADR 0080) are words only: no pick, word or note.
+    const passed = c.author === "passed";
+    const use = passed ? undefined : ctx.use(c.text, picked);
     if (use?.use) picked = use.use;
     // A guest's words (ADR 0071): a `use` picks, but no approval, command or note is theirs.
     const guest = c.author === "guest";
-    const fixed = wordOf(c.text);
+    const fixed = passed ? undefined : wordOf(c.text);
     // A `sign in` that names no agent signing in ("please sign in") is words for the agent.
     const word =
       (guest && fixed && NOT_A_GUESTS.has(fixed)) ||
@@ -847,13 +889,14 @@ function planned(s: Snapshot, ctx: Context): Plan {
         : fixed;
     // A `use` line in a longer message: this run thinks with it. One that tries a pick it can't
     // take is told (below); one that names no agent or model stays words for the agent.
-    const line = use
-      ? undefined
-      : c.text
-          .split(/\r?\n/)
-          .map((l) => ctx.use(l, picked))
-          .filter((u) => u?.use || u?.tried)
-          .at(-1);
+    const line =
+      use || passed
+        ? undefined
+        : c.text
+            .split(/\r?\n/)
+            .map((l) => ctx.use(l, picked))
+            .filter((u) => u?.use || u?.tried)
+            .at(-1);
     if (line?.use) picked = line.use;
     return {
       c,
@@ -861,9 +904,9 @@ function planned(s: Snapshot, ctx: Context): Plan {
       use,
       choice: line?.use,
       refused: line && !line.use ? line.reply : undefined,
-      instant: guest ? undefined : instantOf(c.text),
+      instant: guest || passed ? undefined : instantOf(c.text),
       // A guest's `remember:`, `forget:` and `personality:` write their own page (ADR 0078).
-      note: noteOf(c.text),
+      note: passed ? undefined : noteOf(c.text),
     };
   });
   // A list's Yes with no list waiting (made, dropped, expired): said, with no agent.
@@ -946,27 +989,10 @@ function planned(s: Snapshot, ctx: Context): Plan {
   )
     return answered("a thanks", ...thumbsUp(fresh));
 
-  // Calls, a split or a clean start listed for your yes: the newest of yes and no decides;
-  // anything else plans again.
-  if (
-    (st.pending.calls ||
-      st.pending.split ||
-      st.pending.clean ||
-      st.pending.workflow ||
-      st.pending.first) &&
-    rest.length
-  ) {
-    if (rest.every((x) => x.word === "yes" || x.word === "no"))
-      return yesOrNo(
-        s,
-        st,
-        rest.map((x) => x.c),
-        ctx,
-        writes,
-      );
-    dropList(st);
-  }
-  if (st.pending.notes && rest.length && rest.every((x) => x.word === "yes" || x.word === "no"))
+  // A list for your yes (calls, notes, a split, a clean start, a task first…): the newest of yes
+  // and no decides. Other words keep it (ADR 0080): the run sees it, and lists it no more, and a
+  // newer list replaces it, or the run drops it as your words say.
+  if (listed && rest.length && rest.every((x) => x.word === "yes" || x.word === "no"))
     return yesOrNo(
       s,
       st,
@@ -1172,9 +1198,15 @@ function planned(s: Snapshot, ctx: Context): Plan {
       return { ...due, think: { ...due.think, fresh: fresh.map((c) => c.id) } };
   }
 
+  // A task that waits for its tasks first (ADR 0080): a first's close starts its run, and it
+  // carries on once each has closed and one merged; else it waits on, with no agent.
+  const carry = !fresh.length && !edited ? carryOn(s, st) : undefined;
+  if (carry) st.waits = carry.left.length ? carry.left : undefined;
+  const carrying = Boolean(carry?.carry);
+
   // Nothing new: a second job for one event, or a run asked for with nothing to do. A run that
   // ended before it finished waits for your `continue` (ADR 0040), never for the watch (ADR 0042).
-  if (!first && !fresh.length && !edited && !starting) {
+  if (!first && !fresh.length && !edited && !starting && !carrying) {
     return writes.length
       ? box(st, "its recipe kept in step", ...writes)
       : nothing("nothing new", st);
@@ -1262,27 +1294,40 @@ function planned(s: Snapshot, ctx: Context): Plan {
       reply("answer", "Waiting", waitingText(s, part), `part-waits-${fresh.at(-1)?.id ?? 0}`),
     );
 
+  // `continue` on a task that waits for its tasks first (ADR 0080): it carries on by itself when
+  // they merge, so the box says so, with no agent and no run.
+  const waits = !plain.length && words.every((w) => w === "continue") ? carryOn(s, st) : undefined;
+  if (words.length && waits?.left.length) {
+    st.waits = waits.left;
+    return answered(
+      "continue while it waits",
+      reply("answer", "Waiting", carriesText(s.n, waits.left), `waits-${fresh.at(-1)?.id ?? 0}`),
+    );
+  }
+
   // The agent thinks: on a project's checkout (work), or reading every project (talk).
   const why: ThinkWhy =
     starting || goHere
       ? "sub-task"
-      : words.includes("start over")
-        ? "start-over"
-        : words.includes("go")
-          ? "go"
-          : words.includes("continue")
-            ? "continue"
-            : first
-              ? "new"
-              : edited && !fresh.length
-                ? "edited"
-                : "comment";
+      : carrying
+        ? "carry-on"
+        : words.includes("start over")
+          ? "start-over"
+          : words.includes("go")
+            ? "go"
+            : words.includes("continue")
+              ? "continue"
+              : first
+                ? "new"
+                : edited && !fresh.length
+                  ? "edited"
+                  : "comment";
   if (words.includes("go") && !goHere && !docMerged(st))
     return answered(
       "go before the doc merged",
       reply("answer", "Done", "Merge the change doc's PR first; then say `go`.", "go-early"),
     );
-  if (why === "continue") {
+  if (why === "continue" || why === "carry-on") {
     st.failed = undefined;
     // You checked what an earlier run left unfinished: it may run again.
     if (st.journal) st.journal = st.journal.filter((j) => j.done);
@@ -1298,6 +1343,11 @@ function planned(s: Snapshot, ctx: Context): Plan {
   if (goHere && part?.length)
     think.notes.push(
       `${skipped(part)}: the owner's \`go\` here started it anyway. Say so in your reply.`,
+    );
+  // What it waited for, in the box's words (ADR 0080): it carries on with no word of the owner's.
+  if (carrying && carry)
+    think.notes.push(
+      `${carry.merged.map((p) => `#${p.number}${p.pr ? ` (PR #${p.pr.split("/").pop()})` : ""}`).join(", ")} merged, the task first this task waited for, so the box started this run: carry on from where the last run stopped (the handoff says where), with main's fix in. Say so in your reply.`,
     );
   if (starting && s.said.some((c) => isYou(c) && c.id <= s.state.seen))
     think.notes.push(
@@ -1774,23 +1824,38 @@ function closing(s: Snapshot, st: TaskState, ctx: Context): Plan {
   const told = unread.length
     ? `\n\n${unread.length === 1 ? "A message of yours" : `${unread.length} of your messages`} came in before the merge, and no run read ${unread.length === 1 ? "it" : "them"}. Write here again and the task carries on with ${unread.length === 1 ? "it" : "them"}.`
     : "";
+  // A big change's doc merged (ADR 0080): your merge accepts it, and its build starts in this close
+  // run, as `go` did. A part's and a split's doc say "Part of", so their merges close nothing.
+  const pr =
+    ctx.mergedPr?.url ??
+    (ctx.merged
+      ? [...(st.prs ?? [])].reverse().find((u) => st.prInfo?.[u]?.state === "merged")
+      : undefined);
+  const builds =
+    Boolean(pr) && st.prInfo?.[pr ?? ""]?.kind === "change" && !isPart(s) && !splitParts(s).length;
+  // The flow's end, said once (ADR 0080): with this merge, the rest of its PRs and tasks.
+  const flow = builds || !pr ? "" : flowLines(s, st, pr);
+  st.waits = undefined;
   // A merged PR's deploy, followed to the end by this run (runPlan): told now. A PR opened outside
   // a run names its project only here.
   if (ctx.merged) st.project = ctx.merged.app;
   if (ctx.merged) {
     const d =
       ctx.deploy && ctx.deploy.state !== "waiting" ? ctx.deploy : { state: "gone" as const };
-    return errandOnMerge(
+    const p = errandOnMerge(
       s,
       st,
       ctx,
-      deployTold(st, d, ctx.merged, "closed by its merge", [], GONE, false, told),
+      deployTold(st, d, ctx.merged, "closed by its merge", [], GONE, false, `${told}${flow}`),
       // Held for your approval: an errand waits on, as the deploy is followed on.
       d.state === "held" ? undefined : d,
     );
+    return builds ? buildsNow(s, st, p, pr) : p;
   }
   // Merged with nothing to deploy (Shipify itself, a package, a recipe): said once, now. A change
-  // doc's merge closes the task too (its PR may say "Closes"), so it names the word that builds it.
+  // doc's merge from before (its PR said "Part of", closed by hand since) names the word that
+  // builds it.
+  if (ctx.mergedPr && builds) return buildsNow(s, st, box(st, "a doc merged"), pr);
   if (ctx.mergedPr) {
     const doc =
       st.prInfo?.[ctx.mergedPr.url]?.kind === "change"
@@ -1803,14 +1868,42 @@ function closing(s: Snapshot, st: TaskState, ctx: Context): Plan {
       box(
         st,
         "closed by its merge",
-        reply("live", "Merged", `**Merged:** ${ctx.mergedPr.title}.${doc}${told}`, "merged", {
-          links: [["The PR", ctx.mergedPr.url]],
-          occasion: ctx.mergedPr.url,
-        }),
+        reply(
+          "live",
+          "Merged",
+          `**Merged:** ${ctx.mergedPr.title}.${doc}${told}${flow}`,
+          "merged",
+          {
+            links: [["The PR", ctx.mergedPr.url]],
+            occasion: ctx.mergedPr.url,
+          },
+        ),
       ),
     );
   }
   return box(st, "closed", ...off);
+}
+
+/**
+ * A big change's doc merged (ADR 0080): the task opens again and its build starts in this run, as
+ * `go` does (a fresh clone), after what the close says anyway (a deploy's end). No Merged reply:
+ * the build's comes next. An errand the merge fired runs first; `go` builds after it.
+ */
+function buildsNow(s: Snapshot, st: TaskState, p: Plan, pr?: string): Plan {
+  if (p.do !== "box") return p;
+  st.phase = "working";
+  // Your words no run read yet (written before the merge) are this build's too.
+  const think = thinkFor(s, st, "go", freshOf(s));
+  think.notes.push(
+    `The owner merged the doc's PR${pr ? ` (${pr})` : ""}, which accepts it as written, its choices as recommended: build it now, in one PR. Say in your reply that the merge started this build, and that \`stop\` stops it.`,
+  );
+  return {
+    do: "think",
+    think,
+    state: withWriting(st, s),
+    why: "a doc merged: its build",
+    writes: [...p.writes.filter((w) => w.w !== "close"), { w: "reopen" }],
+  };
 }
 
 /**
@@ -2251,14 +2344,17 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
   // A held workflow change (ADR 0075 §5.5): exactly its patch, pushed by apply with workflows write.
   if (st.pending.workflow) out.push({ w: "workflow", change: st.pending.workflow, code });
   // A task first (ADR 0075 §6), with the words you approved: opened, linked and started. This task
-  // waits for it, and goes on with your `continue`.
+  // waits for it, and carries on by itself when it merges (ADR 0080). Separate work opens where it
+  // belongs, started, and nothing waits for it.
   const first = st.pending.first;
-  if (first) out.push({ w: "first", ...firstPart(s, first, st.use) });
-  // A split's parts (ADR 0066), opened with the words you approved; nothing starts. The task then
-  // waits for your `go`, never closed for quiet.
+  const separate = first?.separate ? first : undefined;
+  if (separate) out.push({ w: "separate", ...separatePart(s, separate, st.use) });
+  else if (first) out.push({ w: "first", ...firstPart(s, first, st.use) });
+  // A split's parts (ADR 0066), opened with the words you approved, and the ready ones started
+  // (ADR 0080). The task then waits for its parts, never closed for quiet.
   const split = st.pending.split;
   dropList(st);
-  if (first) {
+  if (first && !separate) {
     st.phase = "needs-you";
     st.closes = undefined;
     out.push(reply("needs-you", "Needs you", "", `yes-${last.id}`));
@@ -2276,14 +2372,14 @@ function yesOrNo(s: Snapshot, st: TaskState, said: Said[], ctx: Context, writes:
           `yes-split-${last.id}`,
         ),
       );
-    out.push({ w: "split", parts: parts.parts });
-    st.phase = "needs-you";
+    out.push({ w: "split", parts: parts.parts, start: readyNew(s, parts.parts) });
+    st.phase = "answered";
     st.closes = undefined;
-    out.push(reply("needs-you", "Needs you", "", `yes-${last.id}`));
+    out.push(reply("answer", "Done", "", `yes-${last.id}`));
     return box(st, "yes to a split", ...out);
   }
-  // A workflow change pushed to a PR: the PR waits for your merge.
-  const pr = out.some((w) => w.w === "workflow");
+  // A workflow change pushed to a PR, or one still open: the PR waits for your merge.
+  const pr = out.some((w) => w.w === "workflow") || (Boolean(separate) && Boolean(openPr(st)));
   st.phase = pr ? "needs-you" : "answered";
   st.closes = pr ? undefined : quietDay(s);
   out.push(reply(pr ? "needs-you" : "answer", pr ? "Needs you" : "Done", "", `yes-${last.id}`));
@@ -2821,8 +2917,14 @@ function decideAfter(
     });
   if (alone && (r.work || r.pr || r.calls?.length))
     text += `\n\nA split comes alone, so what else this answer asked for wasn't made${r.pr ? " (its commits are kept on the task's branch)" : ""}: ask for it again once the parts are open.`;
-  // A task first (ADR 0075 §6): listed for your yes, and alone, as a split is; never from a read
-  // run (a guest's has none left), nor on a project's own thread.
+  // The list that waits for your yes (ADR 0080): kept, unless this run lists a new one, which
+  // replaces it whole, or your words drop it (`drop_list`).
+  const waited = takeList(st);
+  // A task first (ADR 0075 §6): listed for your yes, and alone, as a split is. Separate work (ADR
+  // 0080): beside the rest, as nothing waits for it. Neither from a read run (a guest's has none
+  // left), nor on a project's own thread; one open already isn't listed again, and a task first
+  // that is open is waited for.
+  const already = r.first ? openTitled(s, r.first.title) : undefined;
   const notFirst = !r.first
     ? undefined
     : r.split
@@ -2832,12 +2934,17 @@ function decideAfter(
         : s.project?.number === s.n
           ? "a project's own thread opens none: ask in a chat in it"
           : undefined;
-  if (notFirst) left.push(`a task first (${notFirst})`);
-  const first = Boolean(r.first) && !alone && !notFirst;
-  if (first && (r.work || r.pr || r.calls?.length))
+  if (notFirst) left.push(`${r.first?.separate ? "separate work" : "a task first"} (${notFirst})`);
+  else if (already) {
+    if (!r.first?.separate) st.waits = [...new Set([...(st.waits ?? []), already])];
+    text += `\n\n#${already} is open already, so it isn't listed again${r.first?.separate ? "" : ": this task carries on by itself when it merges"}.`;
+  }
+  const first = Boolean(r.first) && !alone && !notFirst && !already;
+  const blocks = first && !r.first?.separate;
+  if (blocks && (r.work || r.pr || r.calls?.length))
     text += `\n\nA task first comes alone, so what else this answer asked for wasn't made${r.pr ? " (its commits are kept on the task's branch)" : ""}: ask for it again once it's merged.`;
-  const work = alone || first ? undefined : r.work;
-  const pr = alone || first ? undefined : r.pr;
+  const work = alone || blocks ? undefined : r.work;
+  const pr = alone || blocks ? undefined : r.pr;
 
   // What your yes approves: calls, notes, a split, a held workflow change or a task first.
   let listed = false;
@@ -2934,6 +3041,12 @@ function decideAfter(
     const parent = pr.kind === "closes" && splitParts(s).length > 0;
     if (parent) text += "\n\nIts PR is `part-of`: this task closes with its sub-tasks.";
     const kind = parent ? "part-of" : pr.kind;
+    // A big change's doc (ADR 0080): its PR closes the task, and its merge starts the build. Not a
+    // new project's plan (its merge builds it already), a split's, nor a part's (its close would
+    // start the parts that wait for it): those stay `Part of`, and `go` builds.
+    const doc = kind === "part-of" && !parent && !st.plan && !isPart(s);
+    // Your words carried it on, with no wait for its tasks first: it waits for them no more.
+    st.waits = undefined;
     // A PR always says what it is: the agent's description, or its reply when it gave none.
     const body = pr.body.trim() ? pr.body : r.text;
     // Its workflow change all it changed: nothing to push before your yes, which opens the PR.
@@ -2945,6 +3058,7 @@ function decideAfter(
         kind,
         title: pr.title,
         body,
+        ...(doc ? { doc: true as const } : {}),
         ...(think.base ? { base: think.base } : {}),
         // A preview is an app's (its pipeline makes it); a repo that keeps its own rules has none.
         ...((pr.preview || st.preview) && !think.ownRules ? { preview: true } : {}),
@@ -2968,8 +3082,8 @@ function decideAfter(
   // reply reads as it would without them: a guard that keeps them out says nothing new. So are a
   // split's, whose PR waits (ADR 0066), and a task first's, whatever its state (ADR 0075). A
   // question's workflow change waits beside it on the list.
-  else if ((r.state === "needs-you" && !r.pr) || (alone && r.pr) || first) {
-    const asks = !alone && !first;
+  else if ((r.state === "needs-you" && !r.pr) || (alone && r.pr) || blocks) {
+    const asks = !alone && !blocks;
     const before = writes.length;
     if (!(asks && onlyHeld)) keepWork(s, st, think, meta, { writes, needs }, undefined, true);
     if (asks && (onlyHeld || writes.length > before) && think.project)
@@ -2984,7 +3098,7 @@ function decideAfter(
     const arg = ctx.tools[c.tool]?.files?.[c.name];
     return arg && arg in c.args ? c.args[arg] : [];
   };
-  const calls = (alone || first ? [] : (r.calls ?? [])).filter((c) => {
+  const calls = (alone || blocks ? [] : (r.calls ?? [])).filter((c) => {
     const ok = ctx.tools[c.tool]?.calls[c.name]?.(c.args) ?? false;
     if (!ok) left.push(`${c.tool}.${c.name} (not a call it may make, or its arguments don't fit)`);
     const files = filesOf(c);
@@ -3036,7 +3150,7 @@ function decideAfter(
     left.push("pages (a run that reads a repo outside your account writes none)");
   else if (r.pages?.length && shut)
     left.push(`pages (${shownProject(shut.name)} is closed · #${shut.number}: reopen it first)`);
-  else if (r.pages?.length && !think.account && !alone && !first)
+  else if (r.pages?.length && !think.account && !alone && !blocks)
     writes.push({
       w: "pages",
       pages: r.pages,
@@ -3104,6 +3218,33 @@ function decideAfter(
     if (set.ok) writes.push(...set.labels, { w: "coming-up" });
   }
 
+  // Your words about a related task (ADR 0080): the box copies them there as you wrote them, and
+  // starts its run. Only yours, this run's, to a task the record relates to this one; never from a
+  // read run, a guest's or a project's own thread.
+  const yours = s.said.filter(
+    (c) => isYou(c) && (think.fresh.includes(c.id) || (meta.caughtUp ?? []).includes(c.id)),
+  );
+  const near = r.pass?.length ? related(s, st) : new Set<number>();
+  for (const n of new Set(r.pass ?? [])) {
+    const why =
+      think.profile === "read" || think.profile === "guest"
+        ? "only a run on your own words passes them"
+        : s.project?.number === s.n
+          ? "a project's own thread passes none"
+          : !near.has(n)
+            ? "it isn't related to this task"
+            : !yours.length
+              ? "this run read no new words of yours"
+              : undefined;
+    if (why) left.push(`your words passed to #${n} (${why})`);
+    else
+      writes.push({
+        w: "pass",
+        n,
+        words: yours.map((c) => ({ id: c.id, at: c.at, text: c.text })),
+      });
+  }
+
   if (left.length) text += `\n\n(Left out: ${left.join("; ")}.)`;
   // The list, once and last: all your yes approves, and its code, which its Yes names (ADR 0049).
   const pend = st.pending;
@@ -3119,6 +3260,14 @@ function decideAfter(
 ${callList(ctx.tools, pend.calls?.calls, pend.notes, pend.split, more)}`;
     // Its time starts now; apply names the reply that shows it.
     pend.list = { post: 0, at: s.now };
+  } else if (waited) {
+    // No new list: the one that waits stays, said in a line, or goes as your words said (ADR 0080).
+    const of = waited.list?.at ? ` of ${formatWhen(waited.list.at, ctx.timeZone)}` : "";
+    if (r.drop_list) text += `\n\nDropped your list${of}, as you said: nothing on it was made.`;
+    else {
+      Object.assign(st.pending, waited);
+      text += `\n\nYour list${of} still waits for your \`yes\`.`;
+    }
   }
 
   // The reply: what needs you (a question, a list, a PR to merge, one this run opened or one still

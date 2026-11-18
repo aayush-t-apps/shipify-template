@@ -156,6 +156,25 @@ if (process.env.FAKE_WORK === "slow" && !catchUp) {
       mkdirSync(".github/workflows", { recursive: true });
       appendFileSync(".github/workflows/x.yml", `${process.env.FAKE_WORKFLOW}\n`);
     }
+    // FAKE_PIN: its change moves an agent's pin in executors.json, as an update's does (ADR 0079):
+    // {agent, version, words}, the words its install gains besides. FAKE_RECORD names an agent
+    // whose record it writes itself, which only the box may; FAKE_FIX_RECORD, in its fix round.
+    if (process.env.FAKE_PIN && !resumed) {
+      const pin = JSON.parse(process.env.FAKE_PIN);
+      const all = JSON.parse(readFileSync("executors.json", "utf8"));
+      const install = all[pin.agent].install;
+      install.run = [
+        ...install.run.map((w) => w.replace(`@${install.version}`, `@${pin.version}`)),
+        ...(pin.words ?? []),
+      ];
+      install.version = pin.version;
+      writeFileSync("executors.json", `${JSON.stringify(all, null, 2)}\n`);
+    }
+    const forged = resumed ? process.env.FAKE_FIX_RECORD : process.env.FAKE_RECORD;
+    if (forged) {
+      mkdirSync("tests/fixtures/checked", { recursive: true });
+      writeFileSync(`tests/fixtures/checked/${forged}.json`, '{ "forged": true }\n');
+    }
     execFileSync("git", ["add", "-A"]);
     execFileSync("git", [
       "commit",

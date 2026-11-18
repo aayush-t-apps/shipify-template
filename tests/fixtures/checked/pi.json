@@ -1,0 +1,12 @@
+{
+  "about": "pi's record, made on a PC before the box's check (ADR 0079), from what was checked live on 1.0.2: it listed every skill it was given. Its decisions and its read profile are Shipify's gate's, which tests/plugins/agent.test.ts checks itself. Its next version's record is the box's.",
+  "agent": "pi",
+  "version": "1.0.2",
+  "day": "2026-10-10",
+  "on": "pc",
+  "checks": {
+    "skills": {
+      "ok": true
+    }
+  }
+}

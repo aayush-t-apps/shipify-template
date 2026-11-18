@@ -42,7 +42,7 @@ export const WORDS = {
   },
   go: {
     re: /^\s*go(\s+#\d+)?[.!]?\s*$/i,
-    does: "build a big change after its doc merged, or a new project after its plan merged; on a split task, start its ready sub-tasks (`go #n`: that one now)",
+    does: "build again after you stopped it, or a doc merged before its merge built it; on a split task, start its ready sub-tasks after `stop` (`go #n`: that one now)",
   },
   "stop repeating": {
     re: /^\s*stop\s+repeating[.!]?\s*$/i,

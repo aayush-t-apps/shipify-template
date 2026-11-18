@@ -53,8 +53,9 @@ week, it goes on a project's page.
 - **Make one:** `project: games` from any chat, or **New project** in the web chat. A line after
   the name, or lines below it, are its brief: the goal, done when, not doing. It needs no repo; one
   that builds code names them: `project: shop repos: shop-api, shop-web`.
-- **Its chats** are its sub-issues: **New chat here** on its page, or **Move to project** on a chat
-  you have. Each chat's run gets the project's brief, its chats by title and state, and its pages
+- **Its chats** are its sub-issues: **New chat here** on its page, **Move to project** on a chat
+  you have, or separate work your yes opened from a chat in it (ADR 0080, [tasks.md](tasks.md#sub-tasks-one-task-a-few-prs)).
+  Each chat's run gets the project's brief, its chats by title and state, and its pages
   ([What a run gets](#what-a-run-gets)), and reads the chats that bear on the ask before it
   answers. A change in a project with one repo goes to that repo; with more, the chat's title
   names one (`shop-web: …`).

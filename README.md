@@ -74,7 +74,7 @@ Paste screenshots or files, up to 5 a message. A few **fixed words** do one thin
 | | For | Start it | Stop it |
 |---|---|---|---|
 | **Task** | one job, now | words, or an issue | it closes when done |
-| **Sub-tasks** | one job of a few PRs, in order (across repos, an ADR's build) | "split it" on the task, your `yes`, then `go` ([tasks.md](docs/tasks.md#sub-tasks-one-task-a-few-prs)) | `stop`; it closes when every part is closed |
+| **Sub-tasks** | one job of a few PRs, in order (across repos, an ADR's build) | "split it" on the task, then your `yes`: the ready parts start, and each merge starts the next ([tasks.md](docs/tasks.md#sub-tasks-one-task-a-few-prs)) | `stop`; it closes when every part is closed |
 | **Repeat** | a job on a schedule, or once later | `repeat: …`, or a time in your words | `stop repeating`, or close the task |
 | **Errand** | one job when a PR's checks end, it merges, or it's live | "when #12 …" on the task | it ends when it fires |
 | **Recipe** | a repeat kept as a reviewed file | `recipes/<name>.md` in a PR ([recipes.md](docs/recipes.md)) | remove the file |

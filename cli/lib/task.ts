@@ -266,8 +266,13 @@ export const SplitEntry = z.object({
 });
 export type SplitEntry = z.infer<typeof SplitEntry>;
 
-/** A task first (ADR 0075 §6): one task, a fix on main this task waits for. */
-export const FirstEntry = SplitEntry.omit({ after: true });
+/**
+ * A task first (ADR 0075 §6): one task, a fix on main this task waits for. `separate` (ADR 0080):
+ * work this task doesn't need, which nothing waits for.
+ */
+export const FirstEntry = SplitEntry.omit({ after: true }).extend({
+  separate: z.boolean().optional(),
+});
 export type FirstEntry = z.infer<typeof FirstEntry>;
 
 /** A run's workflow change, held for your yes (ADR 0075 §5.3): what that yes pushes, exactly. */
@@ -422,6 +427,13 @@ export const TaskState = z.object({
     .optional(),
   /** The last failure, with what to do: only `continue` runs it again. */
   failed: z.object({ at: z.string(), problem: Problem }).optional(),
+  /**
+   * The tasks first it waits for (ADR 0080), by number, opened on your yes: when each has closed
+   * and one merged, the task carries on by itself. Empty once a run asks for a PR, or it closes.
+   */
+  waits: z.array(z.number().int().positive()).max(20).optional(),
+  /** The separate work your yes opened from it (ADR 0080), by number: its report names each. */
+  separate: z.array(z.number().int().positive()).max(50).optional(),
   /** The merged plan whose repo and keys were made, so a replay doesn't make them again. */
   built: z.string().optional(),
   /** The merged plan whose repo and keys were tried: a run starts a merged plan's build by itself
@@ -682,7 +694,7 @@ export function renderStatus(s: TaskState, view: StatusView = {}): string {
     view.question ? quoted("Question", view.question) : undefined,
     [...prLines(s), ...links.map(([l, u]) => `- ${l}: ${u}`)].join("\n") || undefined,
     s.runs?.length ? renderRuns(s.runs, s.ran ?? s.runs.length, tz, s.last) : undefined,
-    `<sub>${s.pending?.calls || s.pending?.notes || s.pending?.split || s.pending?.workflow || s.pending?.first ? "Say “yes” (exactly that, here or in your chat, where Yes is a tap) to make exactly the listed changes, or “no” to cancel them. Anything else you say plans again." : (view.help ?? `${HELP[s.phase]}${s.phase === "needs-you" && s.plan ? PUBLISH : ""}`)}</sub>`,
+    `<sub>${s.pending?.calls || s.pending?.notes || s.pending?.split || s.pending?.workflow || s.pending?.first ? "Say “yes” (exactly that, here or in your chat, where Yes is a tap) to make exactly the listed changes, or “no” to cancel them. Anything else you say keeps the list: the next run sees it." : (view.help ?? `${HELP[s.phase]}${s.phase === "needs-you" && s.plan ? PUBLISH : ""}`)}</sub>`,
   ]
     .filter(Boolean)
     .join("\n\n");

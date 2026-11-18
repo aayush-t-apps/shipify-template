@@ -18,8 +18,10 @@ import type { Result } from "./result.ts";
 /**
  * Who wrote a comment, as the record proves it (never as its text claims). `guest`: a guest's words
  * through the door (ADR 0071), never yours: they ask on their own task, and approve nothing.
+ * `passed`: your words copied here by the box from a related task (ADR 0080), unedited: yours to
+ * read, never a fixed word.
  */
-export type Author = "owner" | "door" | "guest" | "run" | "other";
+export type Author = "owner" | "door" | "guest" | "run" | "passed" | "other";
 
 export interface Said {
   id: number;
@@ -152,7 +154,9 @@ export type ThinkWhy =
   | "scheduled"
   | "edited"
   /** A part's start (ADR 0066): your `go` on its parent or on it, or the part before it merged. */
-  | "sub-task";
+  | "sub-task"
+  /** The tasks first it waited for closed, and one merged (ADR 0080): it carries on by itself. */
+  | "carry-on";
 
 export interface Think {
   profile: Profile;
@@ -352,6 +356,11 @@ export type Write =
       kind: "closes" | "part-of" | "publish";
       title: string;
       body: string;
+      /**
+       * A big change's doc (ADR 0080): its PR closes the task, and its merge starts the build. The
+       * PR is recorded as a doc (`change`) all the same.
+       */
+      doc?: true;
       preview?: boolean;
       /** A repo's default branch, when it isn't `main` (ADR 0045): the PR's base. */
       base?: string;
@@ -375,11 +384,24 @@ export type Write =
   | { w: "workflow"; change: HeldList; code: string }
   /** A task first (ADR 0075 §6), on your yes: opened as a sub-task this task waits for, and started. */
   | { w: "first"; part: NewPart; parent: number }
+  /**
+   * Separate work (ADR 0080), on your yes: opened as a chat of the project this task is in
+   * (`project`), or of its own, and started; nothing waits for it.
+   */
+  | { w: "separate"; part: NewPart; project?: number }
   | { w: "dispatch"; job: "run" | "github" }
-  /** A split's parts opened as sub-issues of the task, on your `yes` (ADR 0066); nothing starts. */
-  | { w: "split"; parts: NewPart[] }
-  /** A run of one of the task's family: a part your `go` or a merge starts (ADR 0066). */
-  | { w: "start"; n: number }
+  /**
+   * A split's parts opened as sub-issues of the task, on your `yes` (ADR 0066), and the ready ones,
+   * by their place in `parts`, started (ADR 0080).
+   */
+  | { w: "split"; parts: NewPart[]; start: number[] }
+  /**
+   * A run of one of the task's family: a part your `go` or a merge starts (ADR 0066), or a task
+   * that carries on (ADR 0080). `unstay`: its `staying` off first, so its stay leaves at once.
+   */
+  | { w: "start"; n: number; unstay?: true }
+  /** Your words copied onto a related task, and its run started (ADR 0080). */
+  | { w: "pass"; n: number; words: { id: number; at: string; text: string }[] }
   /**
    * A reply on the parent of the task this run is on (ADR 0066): a part dropped, or every part
    * closed, which closes it (`close`) and takes `started` off.

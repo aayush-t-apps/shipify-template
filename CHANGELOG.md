@@ -7,6 +7,84 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-11-18
+
+### Added
+
+- **Approved flows carry on by themselves (ADR 0080, task #772).** A run starts when you ask, at a
+  time you set, or as the next step of a flow you approved: your Yes on its list, or your merge of
+  its PR. Each start says why. Merges, tool calls and workflow changes stay yours.
+  - **A task first's merge carries its task on:** no `continue`. Its close run starts the task's
+    run (its stay leaves first), which goes on from where it stopped. `continue` while the first
+    is still open gets the box's answer, with no agent and no run. A task first opened before
+    this still says "say `continue`".
+  - **A big change's doc merge starts its build:** no `go`. The doc's PR says "Closes" and that
+    merging it starts the build; the task's close run opens it again and builds. A part's doc,
+    and a doc merged before this, keep `go`.
+  - **A split's Yes starts its ready parts:** no `go`; `stop` pauses, `go` carries on after it.
+  - **A list waits for your `yes` or `no`:** your other words keep it, so a run never lists it
+    again; it says the list still waits, a newer list replaces it, and words that drop it drop it.
+  - **Separate work** (`first` with `"separate": true`): a run opens it beside its PR, on your Yes,
+    as a chat of its own or of its task's project, never a split's part; nothing waits for it.
+  - **Your words reach the task they're about:** a run names the related task (`pass`), and the
+    box copies your words there and starts its run. A passed word is never a fixed word.
+  - **One report at the end:** a merge's reply names the rest of its flow, and a split's last
+    reply each part with its title and PR.
+- **An agent's new version is checked on a box, so an update is one task (ADR 0079, task #766).**
+  Start `shipify: update claude to <version>` (the weekly digest names it for each agent behind
+  its newest): the agent moves the pin, and before the box's checks the box installs that version
+  as the agent's own user in the run's `check/` folder, asks it a few fixed questions with the
+  login as think holds it (it answers, its login stays on fd 3, its skills, the repo's
+  instructions, its helpers, its decisions on the one list of commands, the read profile), and
+  commits what it found as the agent's record, `tests/fixtures/checked/<agent>.json`. Only main's
+  code runs while the login is out: the branch gives one value, the version. The tests hold each
+  record to its pin, in place of `claude-decisions.json` and the version numbers in the test. Still
+  on your PC: an install that changes more than its version, a version that needs its adapter
+  changed, and Codex. Pi or OpenCode: add `use pi` or `use opencode`.
+
+### Changed
+
+- **Claude Code 2.1.327 (2.1.284 before), and its helpers think at medium effort (task #767).**
+  The pin moves through the box's check (ADR 0079), whose record it carries. GitHub lists no
+  advisory against either version. A helper agent that a run starts (to search code, say) now
+  thinks at medium effort, not at the run's (`CLAUDE_CODE_SUBAGENT_EFFORT=medium`, 2.1.316 on),
+  unless its call names one: fewer tokens and quicker searches, the main agent unchanged. Its own
+  rules now refuse `/usr/bin/git push` too (2.1.284 ran it), as its record says. A run isn't
+  offered `ScheduleWakeup`: since 2.1.292 a `-p` run waits for a wakeup it scheduled (up to an
+  hour), then asks itself again, where 2.1.284 dropped it. When background work still starts
+  another turn, its last result says whether the run ended in an error. The new
+  `credential_expires_at` in its result is for a stored claude.ai sign-in only, and absent for a
+  login on fd 3, so the login's date stays the one `ship doctor --yes` records.
+  [agents.md](docs/agents.md).
+- **A stay waits 30 quiet minutes by default (20 before; task #764).** `SHIPIFY_STAY` still sets
+  it, and a stay still gives its slot to a run that waits. [tasks.md](docs/tasks.md).
+
+### Fixed
+
+- **A PR's link in the web chat opens it on GitHub (task #772).** It opened the PR as a thread in
+  the chat, which failed: the door App reads issues only, and GitHub keeps a PR out of the reads
+  of an App with no Pull requests permission. Links now go where they open: a task's chat in the
+  window, a PR on GitHub, with its changes and its merge. A PR chip shows its state from the task's
+  status, with no read. **For review** and the PR thread, which could never show, are gone. No new
+  permission. [door.md](docs/door.md).
+- **Every agent follows its work repo's `AGENTS.md`, never a read repo's (task #771).** Claude
+  Code read no repo's instructions in a work run (its settings leave out the project's own), so
+  the box's check of its new version failed `instructions` (task #767). A work run now hands its
+  agent its clone (`AgentRun.work`; the check, its scratch repo): Claude Code reads the clone's
+  `CLAUDE.md` (a Shipify project's says `@AGENTS.md`) as an added folder's, never one in a folder
+  it writes, checked live on 2.1.284; OpenCode, whose project config is off, loads the clone's
+  `AGENTS.md` by its path, and its gate drops the instructions its read tool adds from any other
+  folder, such as a repo a read or talk run reads. pi and Codex read their working folder's
+  already. A talk run and a read run follow no repo's. [agents.md](docs/agents.md),
+  [security.md](docs/security.md).
+- **Codex's Auto runs GPT-6 Luna on ChatGPT Go or Free (task #751).** OpenAI offers those plans
+  GPT-6 Luna alone, so Auto's GPT-6.1 Sol failed at once: "The 'gpt-6.1-sol' model is not
+  supported when using Codex with a ChatGPT account". A run now reads the plan from your session
+  (the adapter's new `plan`), and Codex's entry names the model for it (`auto.plans`, in
+  `executors.json`), so Auto runs Luna there and the run details say why. A model you pick runs as
+  you picked it. OpenAI lists Codex's CLI from Plus, so a Go plan's runs may still be refused.
+  [agents.md](docs/agents.md), [troubleshooting.md](docs/troubleshooting.md).
+
 ## [0.1.23] - 2026-11-14
 
 ### Fixed

@@ -95,6 +95,64 @@ export const Commands = z.object({
 export type Commands = z.infer<typeof Commands>;
 
 /**
+ * The one list every agent is held to (ADR 0043), with executors.json's `deny` as its rules: the
+ * refused commands in any form an agent writes them, and anything else, pipes, loops and reads
+ * outside its folders included. `differ`: the four where the agents decide differently (Claude Code
+ * by the words, Shipify's gate by the command; docs/agents.md). The conformance test holds each
+ * adapter to it, and the box's check asks each new version of an agent (ADR 0079).
+ */
+export const DECISIONS = {
+  refused: [
+    "git push",
+    "git push origin main",
+    "git -C ../x push",
+    "make test && git push",
+    'echo "$(git stash)"',
+    "for r in x; do git push; done",
+    "git stash pop",
+    "(git push)",
+    "{ git push; }",
+    "if true; then git push; fi",
+    "git --no-pager push",
+    "git -c push.default=current push",
+    "A=1 git push",
+    "timeout -s KILL 9 git push",
+    "nice -n 5 git push",
+    "env -i git push",
+    "echo x | xargs git push",
+    // The shell's own variable, as an agent writes it.
+    `git -C \${PWD} push`,
+  ],
+  ran: [
+    "make verify",
+    "find . -name '*.ts' | xargs grep -n TODO",
+    "jq .version shipify.json",
+    "for f in a b; do echo $f; done",
+    "cat /etc/os-release",
+    "ls /opt/shipify/tool",
+    "sed -n 1,20p README.md",
+    "git log --oneline -5",
+    'echo scratch > "$TMPDIR/msg.txt"',
+    'git commit --allow-empty -F "$TMPDIR/msg.txt"',
+    'grep -rn "git push" README.md',
+    "timeout 60 make verify",
+    "find . -name '*.md' -exec grep -l TODO {} +",
+  ],
+  differ: [
+    'git commit --allow-empty -m "add push notifications"',
+    "git log --oneline --grep push",
+    "/usr/bin/git push",
+    'sh -c "git push"',
+  ],
+} as const;
+
+/** A command its agent ran or was refused, as it wrote it (AgentReport.commands). */
+export interface CommandSeen {
+  command: string;
+  refused: boolean;
+}
+
+/**
  * Where models are served (ADR 0038, "Gateways"): its address, how it's spoken to, and the secret
  * that holds its key, also the variable the agent reads it from. `check`, on the address, answers
  * 200 for a good key (`ship add <gateway>`).
@@ -219,8 +277,18 @@ export const ExecutorEntry = z.object({
    * to read what it did. Without one it runs as a plain program.
    */
   adapter: z.string().optional(),
-  /** Auto: the model and effort a run gets when no `use` line chooses (the agent's own names). */
-  auto: z.object({ model: z.string().optional(), effort: z.string().optional() }).optional(),
+  /**
+   * Auto: the model and effort a run gets when no `use` line chooses (the agent's own names).
+   * `plans`: the model Auto runs instead on a plan of its login that doesn't offer `model`, by the
+   * plan's name as its adapter reads it (`plan`): Codex on ChatGPT Go or Free (ADR 0074).
+   */
+  auto: z
+    .object({
+      model: z.string().optional(),
+      effort: z.string().optional(),
+      plans: z.record(z.string(), z.string()).optional(),
+    })
+    .optional(),
   /** The models it takes by name ("use opus"), as the agent itself names them. */
   models: z.array(z.string()).optional(),
   /** Model ids it takes besides those (a regex): a new model works without an edit. */
@@ -322,6 +390,14 @@ export interface AgentRun {
    */
   folders?: { read?: string[]; write?: string[] };
   /**
+   * The repo it works in, its working folder (a work run's clone; the box's check's scratch repo):
+   * its agent follows that repo's `AGENTS.md` and no other folder's, never a repo it reads. None for
+   * a run with no repo of its own (a talk run, a read run), which follows no repo's. An adapter
+   * whose agent doesn't load it by itself (its settings shut out the project's own) loads it from
+   * here.
+   */
+  work?: string;
+  /**
    * Shipify's skills (ADR 0038): a folder of skill folders, each a SKILL.md, in its read-only copy
    * of Shipify. An adapter whose agent takes a skills folder as a flag adds it here; one whose
    * agent reads them only from its own settings says where (Adapter.skillsLink). None in the read
@@ -349,6 +425,16 @@ export interface AgentReport {
   skills?: string[];
   /** Calls its permissions refused. */
   denied?: string[];
+  /**
+   * Each command it ran or was refused, as it wrote it, in order: its own command tool's, and its
+   * helpers' when its output says them (ADR 0079: the box's check of a new version reads it).
+   */
+  commands?: CommandSeen[];
+  /**
+   * What it was offered, when its output says it (Claude Code's first event): its tools, its
+   * helpers and its skills, by name. None when its output doesn't say.
+   */
+  offered?: { tools?: string[]; helpers?: string[]; skills?: string[] };
   /**
    * It read content from outside the run: a web page or a search, or a command that fetched one.
    * Each adapter knows its own agent's ways (tools.json's look calls, tool.call, count without
@@ -434,6 +520,11 @@ export interface Adapter {
    * account. Only then does the box write it back to the login's secret (`ship run renew`).
    */
   renewed?(given: string, found: string): boolean;
+  /**
+   * The plan its login is on (Codex: the ChatGPT plan its session names, "go"), read unchecked and
+   * never printed, or undefined. A plan its entry's `auto.plans` names runs that model for Auto.
+   */
+  plan?(login: string): string | undefined;
   /**
    * For an agent whose login is a sign-in, not a key you paste (Codex's ChatGPT session, ADR 0074):
    * signs in as a session of Shipify's own, and gives back the login to set as its secret and what

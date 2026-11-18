@@ -52,7 +52,9 @@ run 2   no agent: the box makes exactly that call (write key) → ✓ with Notio
    act key and makes each call once. The reply has a ✓ or ✗ line per call, with the tool's own
    answer.
 
-- **`no`** drops the list. **Any other words** after it plan again, and the list is dropped.
+- **`no`** drops the list. **Any other words** after it keep it (ADR 0080): the run they start sees
+  it, lists it no more, and says it still waits; a newer list replaces it whole, and words that
+  drop it ("don't make that page") drop it.
 - **One tool per list:** a run gets one tool's act key. Calls for a second tool are left out; ask
   for them after.
 - **A crash mid-call** is reported, never repeated: check it, then `continue`.

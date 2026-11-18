@@ -21,6 +21,7 @@ import {
   type AgentRun,
   agentFile,
   asResult,
+  type CommandSeen,
   fetchesOutside,
   type Gateway,
   gatewayModelName,
@@ -201,6 +202,8 @@ function reader(): OutputReader {
   // The skills it read: pi lists them with their paths, and its model reads one's SKILL.md.
   const skills: string[] = [];
   const models: Record<string, Tokens> = {};
+  // Each command, by its call's id: its end says when Shipify's gate refused it.
+  const commands: (CommandSeen & { id?: unknown })[] = [];
   let usd = 0;
   let last = "";
   // The newest answer's error: a later answer (pi retries by itself) clears it.
@@ -266,8 +269,10 @@ function reader(): OutputReader {
         const name = String(e.toolName ?? "?");
         const args = (e.args ?? {}) as Record<string, unknown>;
         tools[toolName(name)] = (tools[toolName(name)] ?? 0) + 1;
-        if (name === "bash" && typeof args.command === "string" && fetchesOutside(args.command))
-          report.readOutside = true;
+        if (name === "bash" && typeof args.command === "string") {
+          if (fetchesOutside(args.command)) report.readOutside = true;
+          commands.push({ command: args.command, refused: false, id: e.toolCallId });
+        }
         const skill = name === "read" && typeof args.path === "string" && skillRead(args.path);
         if (skill) skills.push(skill);
         return `  → ${toolName(name)}${Object.keys(args).length ? `: ${brief(args)}` : ""}`;
@@ -275,11 +280,14 @@ function reader(): OutputReader {
       if (e.type === "tool_execution_end" && e.isError) {
         const r = (e.result ?? {}) as { content?: { text?: string }[] };
         const said = (r.content ?? []).map((c) => c.text ?? "").join(" ");
-        if (said.startsWith("Refused by Shipify's rules"))
+        if (said.startsWith("Refused by Shipify's rules")) {
           report.denied = [
             ...(report.denied ?? []),
             `${toolName(String(e.toolName))}: ${oneLine(said, 160)}`,
           ];
+          const seen = commands.find((c) => c.id !== undefined && c.id === e.toolCallId);
+          if (seen) seen.refused = true;
+        }
         return `  ✗ ${oneLine(said, 200)}`;
       }
       if (e.type === "auto_retry_start")
@@ -296,6 +304,8 @@ function reader(): OutputReader {
       if (failed && !report.error) report.error = failed;
       if (Object.keys(tools).length) report.tools = tools;
       report.skills = skillsSeen(skills);
+      if (commands.length)
+        report.commands = commands.map(({ command, refused }) => ({ command, refused }));
       if (Object.keys(models).length) {
         report.models = models;
         report.tokens = Object.values(models).reduce((a, b) => ({

@@ -241,15 +241,18 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
   answers on the phone (a share that reaches the edge before it's installed opens New chat).
 - **Reads** are GitHub's record, read-only, as the door App. A thread asks for
   `application/vnd.github.full+json` (GitHub renders the Markdown to `body_html`, which the edge
-  cleans again); a listing (the list, repeats, a PR's state) asks for the plain JSON, which has no
-  rendering. Each carries an ETag (an unchanged read is a 304, with no quota) and is kept 5
-  seconds in the edge; a message is cleaned once, and again only when its comment's edit time or
-  👀 count changes. Hidden lines never reach the page. The list is 100 open tasks and PRs (one
-  read, guests' chats left out, ADR 0071), with shipify's open PRs as **For review**;
-  `list?closed=1` the closed ones, and `&page=` an older 100 of either. A task's model is its status comment's choice, or a `use` you said since. A thread is its newest 100
-  comments; `task/<n>?page=` reads an earlier page, for **Earlier messages**. A PR reads as a
-  thread too, to review (the issues API has its description and comments; the door App has no
-  Pull requests or Contents permission, so the diff is on GitHub).
+  cleans again); a listing (the list, repeats) asks for the plain JSON, which has no rendering.
+  Each carries an ETag (an unchanged read is a 304, with no quota) and is kept 5 seconds in the
+  edge; a message is cleaned once, and again only when its comment's edit time or 👀 count
+  changes. Hidden lines never reach the page. The list is 100 open tasks (one read, guests' chats
+  left out, ADR 0071); `list?closed=1` the closed ones, and `&page=` an older 100 of either. A
+  task's model is its status comment's choice, or a `use` you said since. A thread is its newest
+  100 comments; `task/<n>?page=` reads an earlier page, for **Earlier messages**.
+- **A PR opens on GitHub.** The door App has no Pull requests permission, and GitHub keeps a PR
+  out of the reads of an App that has only Issues: a PR's number reads as not found, and a list
+  holds no PRs. So a PR's link in a reply, and its chip on a task or a Plan card, open it on
+  GitHub, which has its changes and its merge. A chip's state (open, merged) is the one the
+  task's status comment last recorded (`prInfo`): no read.
 - **Writes** go through the door's own code (`doorIn`) as the `web` channel, called directly inside
   the Worker, with no webhook: the person check, the closed door, commands, `#12`, dedupe and albums
   are the door's. The web adapter (`edge/src/channels/web.ts`) proves those calls with an HMAC of

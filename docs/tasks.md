@@ -27,6 +27,7 @@ anything that isn't a reply to one of its messages becomes a new task, titled fr
 | `repeat: …`, or the Repeat form | repeat | a reminder, a job or a check on a schedule ([Repeats](#repeats)) |
 | the Operate form, or its title from any channel (`<app>: release`, `take it down`, `bring it back`, `roll back production`) | operate | a release, take-down, bring-back or rollback, run once on GitHub's machines with no agent |
 | `shipify: release`, `shipify: release minor` or `major` | operate | a release of Shipify itself: checked, versioned (patch by default) and published to the template, which offers it to every copy as a PR ([releases.md](releases.md)) |
+| `shipify: update <agent> to <version>` (the weekly digest names it) | change | an agent's new version in one PR: its agent moves the pin, and the box checks the version live and commits its record before its checks ([agents.md](agents.md#a-new-version), ADR 0079). The run thinks with the agent it updates: add `use pi` or `use opencode` for theirs |
 
 - **The body is optional:** details, links, screenshots.
 - **A first word that names no project or repo of yours** ("Bug: the login is blank") is read as
@@ -141,7 +142,7 @@ A run reads its task when it starts, and the agent can't take a message mid-step
 
 ### A run that stays
 
-After a run answers your words, it stays (ADR 0057): for `SHIPIFY_STAY` quiet minutes (20 unless
+After a run answers your words, it stays (ADR 0057): for `SHIPIFY_STAY` quiet minutes (30 unless
 you set it; `0` turns it off) it reads the task every 2 seconds: an ETag read on one kept
 connection (Node's `fetch`, not a `gh` process a read), free when nothing changed. **One rule**
 (ADR 0063): it does
@@ -352,13 +353,13 @@ changes the live app at once (taking an app down, bringing it back, a rollback) 
 
 | Word | What it does | When it counts |
 |---|---|---|
-| `yes` | makes exactly the listed tool calls (and notes), once each; pushes a listed workflow change to the task's branch ([PRs and Live](#prs-and-live)); opens and starts a listed task first ([Sub-tasks](#sub-tasks-one-task-a-few-prs)). A list's **Yes** in a chat sends `yes <its code>` | your whole, unedited message, after the list, within a day. A list over 3,000 characters can't be shown whole in a chat, so it's approved on GitHub, where you see it all |
+| `yes` | makes exactly the listed tool calls (and notes), once each; pushes a listed workflow change to the task's branch ([PRs and Live](#prs-and-live)); opens a split's parts and starts the ready ones, and opens and starts a listed task first or separate work ([Sub-tasks](#sub-tasks-one-task-a-few-prs)). A list's **Yes** in a chat sends `yes <its code>` | your whole, unedited message, after the list, within a day. A list over 3,000 characters can't be shown whole in a chat, so it's approved on GitHub, where you see it all |
 | `no` | drops the list (its calls, a workflow change, a task first): nothing changes. A list's **No** in a chat sends `no <its code>` | a list waits |
-| `continue` (or `again`) | tries again after a failure; on an operation, runs it again. `again` on a repeat or a recipe runs its job now | always; taking an app down, bringing it back or a rollback runs again only from GitHub |
+| `continue` (or `again`) | tries again after a failure; on an operation, runs it again. `again` on a repeat or a recipe runs its job now. On a task that waits for its tasks first, the box says so, with no agent: it carries on by itself when they merge (ADR 0080) | always; taking an app down, bringing it back or a rollback runs again only from GitHub |
 | `start over` | closes the open PR and begins again from the repo's default branch | a PR is open, or not |
 | `preview` | a live preview of the open PR, with its checks run against it | a PR is open |
 | `publish` | a merged plan's repo, keys and build, or again after they stopped | the plan is merged |
-| `go` | builds a big change once its doc PR is merged; on a new project's task until it's built, the same as `publish`. On a split task, starts its ready sub-tasks; `go #n` starts that one now; on a sub-task that hasn't started, starts it now ([Sub-tasks](#sub-tasks-one-task-a-few-prs)) | the doc (or plan) is merged; the task has open sub-tasks; the sub-task never ran |
+| `go` | builds a big change again after you stopped it, or one whose doc merged before ADR 0080 or is a part's (a doc's merge starts its build by itself); on a new project's task until it's built, the same as `publish`. On a split task, starts its ready sub-tasks after a `stop` (your yes started them); `go #n` starts that one now; on a sub-task that hasn't started, starts it now ([Sub-tasks](#sub-tasks-one-task-a-few-prs)) | the doc (or plan) is merged; the task has open sub-tasks; the sub-task never ran |
 | `stop repeating` | ends a repeat and closes the task | it repeats |
 | `resume` | starts a paused repeat again | it's paused |
 | `close` | closes the task: its PRs stay, a repeat pauses (`resume` carries it on); write again to reopen it. From a chat, the door closes it at once with its state labels, the chat answers "Closed · #12", and no run starts: the next run that reads the task notes it (ADR 0040). A split's part and a project are the exceptions: a run with no agent sees to the close, as it starts what waited for the part (ADR 0066), or closes the project's open chats and its pages ([knowledge.md](knowledge.md#open-or-closed)). On GitHub, a run closes it and says so | always |
@@ -382,8 +383,11 @@ Anything else is plain words: the next run reads them, and the agent answers.
   waiting is answered with no agent: nothing was changed.
 - **A list over 3,000 characters** can't be shown whole in a chat: it gets no Yes there, and is
   approved on GitHub only.
-- **Other words after the list** plan again, and the list is dropped: the next run lists again
-  whatever still stands.
+- **Other words after the list keep it** (ADR 0080): yours, `continue`, `go`, `stop`, a guest's.
+  The run they start sees the list and lists it no more; its reply ends "Your list of 11:20 still
+  waits for your `yes`." When your words change it, the run lists the new one, which replaces it
+  whole (the old one's Yes then approves nothing); when they drop it ("don't make that page"), the
+  run drops it, and says so. A list also goes with a close, `start over`, or after a day.
 - **With nothing listed,** `yes` and `no` are plain words: the agent reads them (an answer to its
   own question).
 
@@ -583,13 +587,17 @@ as a feature".
 |---|---|---|---|
 | **tweak** | a margin, a colour, a wording, a bug | one PR: the code, a patch bump | look, merge |
 | **feature** | dark mode, a new filter | one PR: the change doc, the code, the spec, a minor bump | read the doc, look, merge |
-| **big** | a database, sign-in, a new service | a doc PR first (a change doc, and an ADR when it's hard to undo) | merge it, then say `go`: the build comes as a second PR |
+| **big** | a database, sign-in, a new service | a doc PR first (a change doc, and an ADR when it's hard to undo) | merge it: your merge starts the build, which comes as a second PR (ADR 0080) |
 
 - **Why a feature is one PR:** the agent's time is cheap and your review isn't. One PR is one
   review.
 - **A new app** is always big: its plan is the doc.
-- **A doc PR's merge may close the task** (its PR said "Closes"). Its "Merged" reply says so:
-  `go` on the closed task opens it again, and the build starts from `main`.
+- **A doc PR's merge builds it** (ADR 0080): the doc's PR says "Closes" and "Merging this accepts it
+  and starts its build". The merge closes the task, and its close run opens it again and builds,
+  from `main` (a fresh clone), with no `go`: the build's reply comes next, and `stop` stops it.
+  Your merge accepts the doc as written, its choices as recommended; comment before you merge to
+  change it. A part's doc, a split's PR and a doc merged before ADR 0080 say "Part of": `go`
+  builds those after the merge, as before.
 - **Apps with staging** get no version bump in PRs. Merging deploys staging; the Operate form's
   "Release to production" (or `<app>: release`) opens the release PR.
 - **More than one PR's work:** split it into sub-tasks ([below](#sub-tasks-one-task-a-few-prs)).
@@ -615,22 +623,22 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
 2. **Open.** On your `yes`, the box opens the parts as sub-issues (label `sub-task`, first line
    `Part of #12`) with their blocked-by links. Each part thinks with the task's model and effort:
    its last line is the task's `use` pick (when it has one), unless its brief names its own; a
-   `use` on the part changes it. **Nothing starts**: "Opened #13 and #14. Say `go` to
-   start #13. #14 waits for #13."
-3. **Start.** `go` on the task starts every **ready** part (open, never run, and every part it
-   waits for merged or closed as done), each on a free slot; GitHub's queue holds what has none.
-   The task gets the label `started`. `go #14` starts that part now, whatever it waits for, and
-   says what it skipped. `stop` takes `started` off: no new part starts, and the ones that run
-   finish. `go` again carries on.
-4. **Next.** After your `go`, when a part's PR merges, its close run (no agent) starts each part
-   that waited only for it. No polling: nothing starts before your `go`. A part the box closes
+   `use` on the part changes it.
+3. **Start.** The same `yes` starts every **ready** part (open, never run, and every part it
+   waits for merged or closed as done), each on a free slot; GitHub's queue holds what has none
+   (ADR 0080): "Opened #13 and #14 as sub-tasks of this task, and started #13. #14 starts when #13
+   merges. `stop` starts no more." The task gets the label `started`. `go #14` starts that part
+   now, whatever it waits for, and says what it skipped. `stop` takes `started` off: no new part
+   starts, and the ones that run finish. `go` carries on after it.
+4. **Next.** When a part's PR merges, its close run (no agent) starts each part that waited only
+   for it, unless you said `stop`. No polling. A part the box closes
    itself does the same: a new project's part when its first deploy is live, and an answered
    part a day after its answer (the due run then starts its run, with no agent). So does your `close`
    on a part: from a chat, the door writes that word as words, not a setting, so a run sees to
    it even when a run was under way (GitHub keeps one waiting run per task, and the newest takes
    its place).
-5. **End.** When every part is closed, the task says so ("All 3 sub-tasks are closed: #13 merged
-   (PR #20), …") and closes.
+5. **End.** When every part is closed, the task says so once, a line for each part with its title
+   and PR ("- #13 `shipify: a new field`: merged (PR #20)"), and closes.
 
 - **One level:** a part can't split; say it as a task of its own.
 - **Its own repo, one PR:** a part's PR is `closes`, so its merge closes the part. The parent's own
@@ -640,9 +648,9 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
   says why they touch different files: each then starts from a `main` that has the part before it.
 - **A split comes alone:** a PR, a change or calls in the same answer aren't made (a PR's commits
   are kept on the task's branch); ask again once the parts are open. Other words after the list
-  drop it, as any list.
+  keep it, as any list.
 - **A part's run** gets its parent's title and description, and one line for each part, in one
-  read. When the box started it (`go`, or a merge), it doesn't stay after its answer: its slot is
+  read. When the box started it (your yes, `go`, or a merge), it doesn't stay after its answer: its slot is
   free for the next part. Your words on a part later work as on any task.
 - **Your words on a part that waits** (it never ran, and what it waits for isn't done) start
   nothing. The box answers once, with no agent: "#14 waits for #13, so it hasn't started. It
@@ -666,13 +674,41 @@ order, so Shipify stores nothing, and GitHub's app shows the tree and its progre
 It comes alone: a PR, work or calls in the same answer aren't made (the run's commits are kept on
 the task's branch), and with a split, the split is listed and the task first left out. Never from
 a read run, a guest's run or a project's own thread. The list says "Open and start `<title>`
-first; this task waits for it: <brief>". On your `yes`, the box opens it as a sub-task (labels
-`sub-task` and `first`) of this task, or of this task's parent when this task is a part, marks
-this task blocked by it, and starts it at once. When it merges, its close run tells this task: "#N
-merged, so this task can go on: say `continue`." ("was closed as done" when you closed it so by
-hand). Closed as not planned: "#N was closed without a merge, and this task still needs its fix."
-Nothing starts by itself. It never turns this task's PR into `part-of`: a parent with only tasks
+first; this task waits for it, and carries on by itself when it merges: <brief>". On your `yes`,
+the box opens it as a sub-task (labels `sub-task` and `first`) of this task, or of this task's
+parent when this task is a part, marks this task blocked by it, keeps its number in this task's
+status (`waits`), and starts it at once. One with the same title that's open already isn't listed
+again: the task waits for that one. **When it merges, this task carries on by itself** (ADR
+0080): its close run (no agent) starts this task's run (a stay there leaves first), which carries
+on from where it stopped with the reason `carry-on`, once each task first it waits for has closed
+and one merged. Closed as done by hand counts as done. Closed as not planned: "#N was closed
+without a merge, and this task still needs its fix", and your words decide. `continue` while one
+is still open gets the box's answer, with no agent: "#12 waits for #30, which is still open. It
+carries on by itself when it merges." A task first opened before ADR 0080 still says "say
+`continue`" when it merges. It never turns this task's PR into `part-of`: a parent with only tasks
 first closes with its own PR, and a split's parent closes with its parts, as before.
+
+**Separate work** (`first` with `"separate": true`, ADR 0080): work a run found that its task
+doesn't need, or a new task you asked for in its thread. It may come with the run's PR, calls and
+notes. The list says "Open and start `<title>` as a task of its own; this task doesn't wait for
+it: <brief>". On your `yes`, the box opens it where its work belongs: as a chat of the project
+this task is in (or this task's split is in), else as a chat of its own, which **Move to
+project** can file later. Never a split's part: no parent waits for it, and its runs read no other
+task's goal. Its body starts "From #12: opened there; that task doesn't wait for this one", its
+label is `first` alone, and it starts at once. This task's status keeps its number (`separate`),
+so this task's last merge names it.
+
+**Your words about another task** (ADR 0080): when your words on one task are about a related one
+(its parent, a part, a sibling, a task it opened, or the one that opened it), the run names it in
+`pass`. The box copies your words there, as you wrote them, each with its time and "Your words on
+#12, passed here by the box", and starts that task's run; the reply here ends "Passed to #13.". There
+they're yours to read, never a fixed word: a passed `yes`, `go` or `close` does nothing. Only your
+words pass, never a guest's or an agent's, and a task that isn't related gets none.
+
+**One report at the end** (ADR 0080): a flow says nothing while it carries on, and tells you when
+it needs you (a PR to merge, a question, a failure) and at its end: a split's parent in its "All N
+sub-tasks are closed" reply, and a task with no split in its merge's Merged or Live reply, which
+names the rest of its flow (its doc, its tasks first, its separate work).
 
 ## Projects, and long threads (ADR 0069)
 

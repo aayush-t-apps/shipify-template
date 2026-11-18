@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #582; the owner's `go` on 2026-10-28 took the three decisions as recommended) and built in one PR (task #581); see [As built](#as-built-2026-10-28). From the owner's words of 2026-10-27 and 2026-10-28. Amended by 0069 (a project is a parent that never closes with its chats and is no split parent; the family read takes both levels and 100 sub-issues)
+status: accepted (merged #582; the owner's `go` on 2026-10-28 took the three decisions as recommended) and built in one PR (task #581); see [As built](#as-built-2026-10-28). From the owner's words of 2026-10-27 and 2026-10-28. Amended by 0069 (a project is a parent that never closes with its chats and is no split parent; the family read takes both levels and 100 sub-issues). Amended by 0080 (your Yes on a split starts its ready parts: `go` only after `stop`; the last close names each part and its PR)
 date: 2026-10-28
 amends: 0040 and 0046 (a sub-task's merge may start the next sub-task, only after your `go`), 0053 (§1: the close of a sub-task starts a run with no agent), 0060 (a sub-task's run that the box started does not stay), 0039 and 0065 (the web chat: a Waiting state, sub-tasks under their parent, a Plan card)
 ---

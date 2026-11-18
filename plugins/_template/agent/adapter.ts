@@ -1,9 +1,18 @@
 // An example agent's adapter (copy to cli/lib/agents/<name>.ts, ADR 0017): its flags for a model,
 // an effort and a resume, and a reader for its output. List it in cli/lib/agents/index.ts.
-import { type Adapter, type AgentReport, LOGIN_FD, type OutputReader } from "../plugins/agent.ts";
+import {
+  type Adapter,
+  type AgentReport,
+  type CommandSeen,
+  LOGIN_FD,
+  type OutputReader,
+} from "../plugins/agent.ts";
 
 function reader(): OutputReader {
   const report: AgentReport = {};
+  // Each command it ran or was refused, as written (AgentReport.commands): the box's check of a new
+  // version reads them, against the one list every agent is held to (DECISIONS, ADR 0079).
+  const commands: CommandSeen[] = [];
   return {
     line(text) {
       // One line of the agent's output: what the live log shows for it, and what it adds to the
@@ -17,7 +26,11 @@ function reader(): OutputReader {
       if (e.type === "start") {
         report.version = e.version as string | undefined;
         report.model = e.model as string | undefined;
+        // What it was offered, when its output says it (AgentReport.offered).
+        if (Array.isArray(e.tools)) report.offered = { tools: e.tools.map(String) };
       }
+      if (e.type === "command" && typeof e.command === "string")
+        commands.push({ command: e.command, refused: e.refused === true });
       // It read a web page, or ran a command that fetched one: notes and calls then wait for
       // your `yes` (AgentReport.readOutside).
       if (e.type === "fetch") report.readOutside = true;
@@ -32,7 +45,7 @@ function reader(): OutputReader {
         };
       return typeof e.text === "string" ? e.text : undefined;
     },
-    report: () => report,
+    report: () => ({ ...report, ...(commands.length ? { commands } : {}) }),
   };
 }
 
@@ -60,8 +73,12 @@ export const example: Adapter = {
     // An agent with no rules of its own loads pi's gate instead (cli/lib/agents/pi-gate.mjs).
     // tests/plugins/agent.test.ts's "one setup" test holds it to the same as every adapter.
     if (run.commands) out.push("--deny", run.commands.deny.join(","));
-    // The read profile (ADR 0044): reading tools only, inside its folders, nothing run or written.
+    // The read profile (ADR 0044): reading tools only, inside its folders, nothing run or written,
+    // and no repo's instructions.
     if (run.commands?.run === false) out.push("--read-only", ...(run.folders?.read ?? []));
+    // The repo it works in (a work run's clone), whose AGENTS.md it follows: only for an agent that
+    // doesn't read its working folder's by itself.
+    else if (run.work) out.push("--instructions", `${run.work}/AGENTS.md`);
     if (run.model) out.push("--model", run.model);
     if (run.effort) out.push("--effort", run.effort);
     if (run.resume) out.push("--resume", run.resume);

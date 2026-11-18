@@ -192,19 +192,16 @@ as its agent starts, and a box checks the labels once a day. What's left:
 
 What's automatic: Ubuntu's security updates on a box, and its normal ones since box setup 17
 (daily, a restart at 04:30 when one needs it), the runner's own updates, Dependabot's security alerts and its quarterly PRs, and since #673
-the weekly digest's line on the agents behind their newest, with any advisory against a pin first.
-What's left:
+the weekly digest's line on the agents behind their newest, with any advisory against a pin first,
+and since ADR 0079 the task that moves one (`shipify: update claude to <version>`), which a box
+checks live. What's left:
 
-1. **An agent's new version checked on a box:** today its PR is made on your PC, as its live checks
-   (its login on fd 3, its skills, Claude Code's recorded permissions) need the agent signed in. A
-   step that runs those checks on a box, with the agent's own login as the think step has it,
-   would make `shipify: update claude to <version>` one task.
-2. **Shipify's own audit each week:** `pnpm audit` runs in `ci.yml` only on a merge. A schedule
+1. **Shipify's own audit each week:** `pnpm audit` runs in `ci.yml` only on a merge. A schedule
    in a small workflow of its own (only you can add one) finds a new advisory within the week.
-3. **The box's own Node:** a box takes the newest 22.x only when `box add` runs again or a new
+2. **The box's own Node:** a box takes the newest 22.x only when `box add` runs again or a new
    image comes. A doctor check that compares it with nodejs.org's newest 22.x names the fix.
    Node 22's support ends 2027-04-30: the move to 24 is a planned PR before then.
-4. **Ubuntu 26.04 in CI:** `box/Dockerfile` built from `ubuntu:26.04` as well (an `ARG`, and a job
+3. **Ubuntu 26.04 in CI:** `box/Dockerfile` built from `ubuntu:26.04` as well (an `ARG`, and a job
    in `ci.yml`, which only you can change), so each release proves the install half on both LTSs.
 
 ## Later

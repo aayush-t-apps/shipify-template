@@ -10,6 +10,8 @@
 //   file (its to-dos, skills and helpers, whose calls come through here too);
 // - anything else is refused: an act call, a tool Shipify doesn't know;
 // - in the read profile (`run: false`, ADR 0044): reading its folders only, as pi's gate.
+// After a read, it drops the instructions OpenCode adds from a folder's AGENTS.md near the file,
+// unless they're all its work repo's: a repo it reads is data, never instructions.
 // Its gateway's key, as pi's gate does: read once from the pipe SHIPIFY_LOGIN_FD names, which is then
 // closed, and put on each call to the provider its rules name (OpenCode's `chat.headers`), so it's
 // in neither OpenCode's config nor its environment; and an OpenCode without this gate has no key.
@@ -106,6 +108,24 @@ function changed(cfg, own, provider) {
   return `where ${provider}'s calls go`;
 }
 
+/** Where OpenCode's read tool adds the instructions it found near the file (1.18.34's source). */
+const ADDED = "\n\n<system-reminder>\nInstructions from: ";
+
+/**
+ * A read's output without the instructions OpenCode added from outside the work folder: its read
+ * tool adds, once, each AGENTS.md between the file and its working folder, after the file's
+ * numbered lines (so nothing in the file looks like it), as one `<system-reminder>` whose entries
+ * each start `Instructions from: <path>`, their paths in its metadata's `loaded`. Kept only when
+ * each is in the work folder (its own); a run with none (a read or a talk run) keeps none.
+ */
+function ownInstructions(output, loaded, work) {
+  const at = typeof output === "string" ? output.indexOf(ADDED) : -1;
+  if (at < 0) return output;
+  const own = (p) =>
+    typeof p === "string" && Boolean(work) && (p === work || p.startsWith(`${work}/`));
+  return Array.isArray(loaded) && loaded.length && loaded.every(own) ? output : output.slice(0, at);
+}
+
 /** The XDG folders a command gets: the run's own, its HOME's (as the box sets them), not OpenCode's. */
 const runFolders = (home) =>
   home
@@ -166,6 +186,10 @@ export const ShipifyGate = async () => {
       });
       if (why) throw new Error(`${REFUSED}: ${why}`);
     },
+    "tool.execute.after": async (input, output) => {
+      if (input.tool === "read")
+        output.output = ownInstructions(output.output, output.metadata?.loaded, rules.work);
+    },
     "chat.headers": async (input, output) => {
       if (key && rules.provider && input.model?.providerID === rules.provider)
         output.headers.Authorization = `Bearer ${key}`;
@@ -176,3 +200,4 @@ export const ShipifyGate = async () => {
   };
 };
 ShipifyGate.refused = refusedCall;
+ShipifyGate.ownInstructions = ownInstructions;

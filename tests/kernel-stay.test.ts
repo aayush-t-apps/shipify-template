@@ -186,14 +186,14 @@ describe("when a run stays", () => {
     expect(paged).toMatchObject({ pages: [{ page: "games-inbox", file: "inbox.md" }] });
   });
 
-  it("reads SHIPIFY_STAY as whole minutes, 20 by default, 0 for off, with no cap of its own", () => {
-    expect(stayMinutes(undefined)).toBe(20);
-    expect(stayMinutes("")).toBe(20);
+  it("reads SHIPIFY_STAY as whole minutes, 30 by default, 0 for off, with no cap of its own", () => {
+    expect(stayMinutes(undefined)).toBe(30);
+    expect(stayMinutes("")).toBe(30);
     expect(stayMinutes("0")).toBe(0);
     expect(stayMinutes("10")).toBe(10);
     // Its job's time bounds it, not a cap (ADR 0057, 2026-10-18).
     expect(stayMinutes("90")).toBe(90);
-    expect(stayMinutes("soon")).toBe(20);
+    expect(stayMinutes("soon")).toBe(30);
   });
 });
 

@@ -39,11 +39,8 @@ export function plan(v, t) {
     e.currentTarget.disabled = true;
     A.say(T.n, w);
   };
-  // Shipify's own PRs open here, to review; others on GitHub.
-  const pr = (p) =>
-    p.url.startsWith(T.url.replace(/issues\/\d+$/, "pull/"))
-      ? h("a.chip", { href: `#/t/${p.n}` }, `PR #${p.n}`)
-      : A.ext(p.url, `PR #${p.n}`, ".chip");
+  // A PR opens on GitHub, where its changes and its merge are: the door App reads issues only.
+  const pr = (p) => A.ext(p.url, `PR #${p.n}`, ".chip");
   const part = (x) => {
     const P = A.projOf(x);
     const st = x.dropped ? "Dropped" : WORD[x.state];

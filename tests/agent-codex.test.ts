@@ -167,6 +167,30 @@ describe("a run with Codex", () => {
     expect(mockCallsLogged().filter((c) => c.call === "setSecret")).toHaveLength(1);
   });
 
+  it("on ChatGPT Go or Free, Auto runs GPT-6 Luna, the one model OpenAI offers there, and says so", async () => {
+    process.env.SHIPIFY_AGENT_LOGIN = sessionOf({ plan: "go" });
+    const task = join(sb.dir, ".tasks", "7");
+    const auto = { ...snap, state: { ...snap.state, use: { agent: "codex", label: "Codex" } } };
+    const out = await think(auto, talk, {
+      files: join(dir, "files"),
+      keep: join(task, "out"),
+      local: join(task, "agent"),
+    });
+    const given = JSON.parse(readFileSync(join(task, "agent", "out", "given.json"), "utf8"));
+    expect(given.argv).toEqual(expect.arrayContaining(["-m", "gpt-6-luna"]));
+    expect(given.argv).not.toContain("gpt-6.1-sol");
+    expect(out.details?.model).toBe("gpt-6-luna");
+    expect(out.details?.auto).toEqual({ model: true, effort: true });
+    expect(out.details?.notes).toContain(
+      "codex's login is on the go plan: Auto runs gpt-6-luna there.",
+    );
+    // The plan, read from the session's own claims: never from anything else.
+    expect(codex.plan?.(sessionOf({ plan: "Go" }))).toBe("go");
+    expect(codex.plan?.(sessionOf())).toBe("plus");
+    expect(codex.plan?.("not json")).toBeUndefined();
+    expect(codex.plan?.(JSON.stringify({ OPENAI_API_KEY: "sk-x" }))).toBeUndefined();
+  });
+
   it("hands a file login over as a file alone", () => {
     const h = handOver({ CODEX_AUTH: "{…}", GH_TOKEN: "ghs" }, "CODEX_AUTH", codex);
     expect(h).toEqual({ secrets: { GH_TOKEN: "ghs" }, file: "{…}", env: {} });

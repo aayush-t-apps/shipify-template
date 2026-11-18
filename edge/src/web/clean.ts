@@ -124,9 +124,11 @@ export interface Cleaned {
 export type Inside = (url: string) => string | undefined;
 
 /**
- * The window's links on shipify's repo (`owner/shipify`): an issue or a PR opens its thread
- * (`#/t/<n>`, a chat, a project or a doc); a file on `shipify-files` opens its kept copy when the
- * message names that file (`files`, each with the edge's address for it). Anything else: a new tab.
+ * The window's links on shipify's repo (`owner/shipify`): an issue opens its thread (`#/t/<n>`, a
+ * chat, a project or a doc); a file on `shipify-files` opens its kept copy when the message names
+ * that file (`files`, each with the edge's address for it). Anything else, a PR too: a new tab. The
+ * door App reads issues only, and GitHub hides a PR from an App with no Pull requests permission,
+ * so a PR opens on GitHub, where its changes and its merge are.
  */
 export function insideOf(
   repo: string,
@@ -136,7 +138,7 @@ export function insideOf(
   return (u: string) => {
     if (!repo || !u.toLowerCase().startsWith(own)) return undefined;
     const rest = u.slice(own.length);
-    const n = /^(?:issues|pull)\/(\d{1,9})(?:[/?#].*)?$/.exec(rest)?.[1];
+    const n = /^issues\/(\d{1,9})(?:[/?#].*)?$/.exec(rest)?.[1];
     if (n) return `#/t/${n}`;
     const path = /^blob\/shipify-files\/([^?#]+)/.exec(rest)?.[1];
     if (!path) return undefined;

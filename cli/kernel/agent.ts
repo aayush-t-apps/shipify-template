@@ -62,9 +62,15 @@ export function agentForRun(agent: string, profile: string, all = executors()): 
   return all[fallback]?.login?.file ? undefined : fallback;
 }
 
-/** The model and effort for this agent, from the task's `use` lines, or the agent's Auto. */
-export const choiceFor = (executorId: string, use: { model?: string; effort?: string }): Choice =>
-  choose(executorId, executors()[executorId], use);
+/**
+ * The model and effort for this agent, from the task's `use` lines, or the agent's Auto (on its
+ * login's `plan`, that plan's).
+ */
+export const choiceFor = (
+  executorId: string,
+  use: { model?: string; effort?: string },
+  plan?: string,
+): Choice => choose(executorId, executors()[executorId], use, plan);
 
 /**
  * The prompt's Tools section (ADR 0031: the agent only looks): each tool the run's look server

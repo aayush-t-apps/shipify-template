@@ -9,6 +9,7 @@ import {
   type AgentReport,
   type AgentRun,
   type Commands,
+  type CommandSeen,
   fetchesOutside,
   LOGIN_FD,
   loadTools,
@@ -87,6 +88,14 @@ export const WHOLE_TOOLS = ["Bash", "Read", "Glob", "Grep"];
 export const READ_TOOLS = ["Read", "Grep", "Glob"];
 
 /**
+ * Its tools that would keep a run going after its answer: since 2.1.292 a one-shot `-p` run waits
+ * for a wakeup it scheduled (up to an hour), then asks itself again (checked against a stand-in
+ * API on 2.1.327; 2.1.284 dropped it). A run ends with its answer, and Shipify's repeats bring a
+ * task back (ADR 0054).
+ */
+export const LATER_TOOLS = ["ScheduleWakeup"];
+
+/**
  * What every agent must never run (executors.json's `commands`, ADR 0043), as Claude Code's rules:
  * its command and look tools allowed whole, the web as its own tools, and each refused command as
  * a deny rule, after git's own options too (`git -C x push`). In Claude Code 2.1.284 a deny rule is
@@ -107,7 +116,7 @@ function withCommands(cmd: string[], c: Commands): string[] {
     const git = /^git (\S+)$/.exec(p)?.[1];
     return git ? [`Bash(${p}:*)`, `Bash(git * ${git})`, `Bash(git * ${git} *)`] : [`Bash(${p}:*)`];
   });
-  after("--disallowedTools", deny);
+  after("--disallowedTools", [...deny, ...LATER_TOOLS]);
   after("--allowedTools", [...WHOLE_TOOLS, ...(c.web ? ["WebFetch", "WebSearch"] : [])]);
   return out;
 }
@@ -177,10 +186,19 @@ const add = (a: Tokens, b: Tokens): Tokens => ({
 
 type Event = Record<string, unknown> & { type?: string; subtype?: string };
 
+/** Its tools that start a helper of its own (named `Task` in 2.1.284). */
+const HELPER_TOOLS = ["Task", "Agent"];
+
+/** A list of names from its output, or none when it isn't one. */
+const names = (v: unknown) =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : undefined;
+
 function reader(): OutputReader {
   const report: AgentReport = {};
   const tools: Record<string, number> = {};
   const skills: string[] = [];
+  // Each command, by its call's id: a permission denial in its result event names that id.
+  const commands: (CommandSeen & { id?: string })[] = [];
   let keySource: string | undefined;
   return {
     line(text) {
@@ -196,6 +214,16 @@ function reader(): OutputReader {
         report.model = e.model as string | undefined;
         report.session = e.session_id as string | undefined;
         keySource = e.apiKeySource as string | undefined;
+        // What it was offered: its tools, its helpers (when it has their tool) and its skills.
+        const offered = names(e.tools);
+        if (offered)
+          report.offered = {
+            tools: offered,
+            ...(offered.some((t) => HELPER_TOOLS.includes(t)) && names(e.agents)
+              ? { helpers: names(e.agents) }
+              : {}),
+            ...(names(e.skills) ? { skills: names(e.skills) } : {}),
+          };
         const failed = ((e.mcp_servers as { name: string; status: string }[] | undefined) ?? [])
           .filter((s) => s.status !== "connected")
           .map((s) => `${s.name} (${s.status})`);
@@ -211,6 +239,7 @@ function reader(): OutputReader {
       if (e.type === "assistant") {
         const content = ((e.message as { content?: unknown[] })?.content ?? []) as {
           type: string;
+          id?: string;
           name?: string;
           input?: Record<string, unknown>;
           text?: string;
@@ -220,6 +249,8 @@ function reader(): OutputReader {
           if (c.type === "tool_use" && c.name) {
             const name = toolName(c.name);
             tools[name] = (tools[name] ?? 0) + 1;
+            if (c.name === "Bash" && typeof c.input?.command === "string")
+              commands.push({ command: c.input.command, refused: false, id: c.id });
             if (fetches(c.name, c.input)) report.readOutside = true;
             const skill = skillOf(c.name, c.input);
             if (skill) skills.push(skill);
@@ -299,6 +330,7 @@ function reader(): OutputReader {
           };
         const denials = (e.permission_denials ?? []) as {
           tool_name?: string;
+          tool_use_id?: string;
           tool_input?: Record<string, unknown>;
         }[];
         if (denials.length)
@@ -306,14 +338,30 @@ function reader(): OutputReader {
             (d) =>
               `${toolName(d.tool_name ?? "?")}${d.tool_input ? `: ${brief(d.tool_input)}` : ""}`,
           );
-        // Its own words for the error ("Prompt is too long") say the most, then the API's status.
-        if (e.is_error)
-          report.error = oneLine(
-            (typeof e.result === "string" && e.result.trim() ? e.result : undefined) ??
-              (e.api_error_status as string | undefined) ??
-              (e.subtype === "success" ? "the agent reported an error" : e.subtype),
-            200,
+        // A refused command: its call's id, else its words.
+        for (const d of denials) {
+          if (d.tool_name !== "Bash") continue;
+          const seen = commands.find((c) =>
+            d.tool_use_id ? c.id === d.tool_use_id : c.command === d.tool_input?.command,
           );
+          if (seen) seen.refused = true;
+        }
+        // A run can end with more than one result (background work starts another turn, 2.1.292
+        // on): the last one says how it ended. Its last words, when it answered in words and not
+        // in the result's schema.
+        report.said =
+          !e.is_error && e.structured_output == null && typeof e.result === "string"
+            ? e.result.trim() || undefined
+            : undefined;
+        // Its own words for the error ("Prompt is too long") say the most, then the API's status.
+        report.error = e.is_error
+          ? oneLine(
+              (typeof e.result === "string" && e.result.trim() ? e.result : undefined) ??
+                (e.api_error_status as string | undefined) ??
+                (e.subtype === "success" ? "the agent reported an error" : e.subtype),
+              200,
+            )
+          : undefined;
         return `  · finished: ${e.subtype ?? "?"}${report.turns ? `, ${report.turns} turns` : ""}`;
       }
       return undefined;
@@ -321,6 +369,8 @@ function reader(): OutputReader {
     report() {
       if (Object.keys(tools).length) report.tools = tools;
       report.skills = skillsSeen(skills);
+      if (commands.length)
+        report.commands = commands.map(({ command, refused }) => ({ command, refused }));
       return report;
     },
   };
@@ -356,12 +406,16 @@ export const claude: Adapter = {
   workspace,
   // The pinned version stays the version: no update in the middle of a task. Its settings and
   // sessions live in the run's own folder. Its own bundled skills and workflows (loop, schedule,
-  // claude-api, init…) are off, so its list is Shipify's skills alone: they're a user's skills
-  // folder, which the switch leaves (its setting's own words in 2.1.284).
+  // claude-api, init…) are off, so its list is Shipify's skills, a user's skills folder, which the
+  // switch leaves (its setting's own words in 2.1.284), and two of its own it leaves too (doctor,
+  // and plugin-authoring since 2.1.326). Its helpers think at medium effort when their call names
+  // none, not at the run's, and a model that takes no effort gets none (2.1.316 on; checked
+  // against a stand-in API on 2.1.327, with Haiku 4.5 too).
   env: (p) => ({
     DISABLE_AUTOUPDATER: "1",
     CLAUDE_CONFIG_DIR: p.config,
     CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1",
+    CLAUDE_CODE_SUBAGENT_EFFORT: "medium",
   }),
   // Its subscription login from the pipe: its own setting, not in its public docs; checked live
   // on 2.1.284, it reads the pipe once and keeps the login in memory, never in a file.
@@ -408,8 +462,24 @@ export const claude: Adapter = {
     // The folders it writes are working folders too: without that, a command may write a log into
     // out/ but not list it or read it back (`ls out`, `grep … out/verify.log` were refused). In
     // the read profile its read folders are too, since `--restricted` keeps its reads inside them.
-    for (const d of [...(reading ? (run.folders?.read ?? []) : []), ...(run.folders?.write ?? [])])
+    const write = run.folders?.write ?? [];
+    for (const d of [...(reading ? (run.folders?.read ?? []) : []), ...write])
       out.push("--add-dir", d);
+    // The repo it works in, whose instructions it follows: `--setting-sources user` leaves out the
+    // project's own CLAUDE.md, so its folder is added and Claude Code told to read an added folder's
+    // (a Shipify project's says `@AGENTS.md`), but never one in a folder it writes, which a command
+    // could fill. None in the read profile: no repo's. Checked live on 2.1.284 and 2.1.327 (a
+    // stand-in API).
+    if (run.work && !reading)
+      out.push(
+        "--add-dir",
+        run.work,
+        "--settings",
+        JSON.stringify({
+          env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" },
+          ...(write.length ? { claudeMdExcludes: write.map((d) => `${d}/**`) } : {}),
+        }),
+      );
     return out;
   },
   reader,

@@ -19,11 +19,15 @@ export const STAYING_LABEL = "staying";
  */
 export const SUB_TASK_LABEL = "sub-task";
 /**
- * On a task first (ADR 0075), with `sub-task`: a fix on main another task waits for, started on your
- * yes. It never makes that task's PR `part-of`; its merge tells that task, and `continue` goes on.
+ * On a task a run opened on your yes, not a split's part (ADR 0080). With `sub-task`, a task first
+ * (ADR 0075): a fix on main another task waits for. It never makes that task's PR `part-of`; its
+ * merge carries that task on. Alone, separate work: nothing waits for it.
  */
 export const FIRST_LABEL = "first";
-/** On a split task after your `go` (ADR 0066): a part's merge starts the next. `stop` takes it off. */
+/**
+ * On a split task once your yes opened its parts, or your `go` (ADR 0066, 0080): a part's merge
+ * starts the next. `stop` takes it off.
+ */
 export const STARTED_LABEL = "started";
 /** On a task while its merged PR's deploy is followed by the due run. */
 export const DEPLOYING_LABEL = "deploying";

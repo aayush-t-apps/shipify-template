@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #699; the owner's `go` on 2026-11-06) and built in one PR (task #692); see [As built](#as-built-2026-11-06)
+status: accepted (merged #699; the owner's `go` on 2026-11-06) and built in one PR (task #692); see [As built](#as-built-2026-11-06). Amended by 0080 (a task first's merge carries its task on, with no `continue`; `first` may be separate work that nothing waits for)
 date: 2026-11-06
 amends: 0031 and 0044 (a workflow change the owner approves in a chat may be pushed to a task's branch), 0049 (a list may hold a workflow change, or a task to do first), 0066 (a task to do first: one part, started on your Yes, that never closes its parent)
 ---

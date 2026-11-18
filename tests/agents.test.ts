@@ -97,6 +97,36 @@ describe("agents: the model and effort a run gets", () => {
     expect(choose("claude", executors.claude, { model: "Haiku" }).notes).toEqual([]);
   });
 
+  it("on a plan of its login that Auto's model isn't on, Auto runs the plan's own; a use line still wins", () => {
+    // Codex on ChatGPT Go or Free: OpenAI offers GPT-6 Luna alone there (ADR 0074).
+    expect(executors.codex?.auto?.plans).toMatchObject({ go: "gpt-6-luna", free: "gpt-6-luna" });
+    expect(choose("codex", executors.codex, {}, "go")).toMatchObject({
+      model: "gpt-6-luna",
+      effort: "medium",
+      auto: { model: true, effort: true },
+      notes: ["codex's login is on the go plan: Auto runs gpt-6-luna there."],
+    });
+    expect(choose("codex", executors.codex, {}, "plus")).toMatchObject({
+      model: "gpt-6.1-sol",
+      notes: [],
+    });
+    expect(choose("codex", executors.codex, {})).toMatchObject({ model: "gpt-6.1-sol" });
+    // Your own pick runs as you picked it, whatever the plan.
+    expect(choose("codex", executors.codex, { model: "gpt-6.1-sol" }, "go")).toMatchObject({
+      model: "gpt-6.1-sol",
+      notes: [],
+    });
+    // An effort the plan's model doesn't take is said, as for any model.
+    expect(choose("codex", executors.codex, { effort: "ultra" }, "go")).toMatchObject({
+      model: "gpt-6-luna",
+      effort: undefined,
+      notes: [
+        "codex's login is on the go plan: Auto runs gpt-6-luna there.",
+        "Gpt-6-luna takes no “ultra” effort (low, medium, high, xhigh, max).",
+      ],
+    });
+  });
+
   it("reads a choice (ADR 0025): an agent, a model, an effort, or auto; each from the last", () => {
     /** Choices one after another, as `use` comments come: one that names nothing changes nothing. */
     const use = (...said: string[]) => {
@@ -192,6 +222,25 @@ describe("agents: Claude Code's adapter", () => {
     expect(claude.argv({ command: ["claude", "-p"] })).not.toContain("--model");
   });
 
+  it("runs its helpers at medium effort, not at the run's", () => {
+    const env = claude.env?.({ home: "/h", config: "/c", tools: "/t" });
+    expect(env?.CLAUDE_CODE_SUBAGENT_EFFORT).toBe("medium");
+  });
+
+  it("schedules no wakeup: a run would wait for it after its answer, then ask again (2.1.292 on)", () => {
+    const argv = claude.argv({
+      command: ["claude", "-p"],
+      commands: { deny: ["git push"], web: true },
+    });
+    const at = argv.indexOf("--disallowedTools");
+    const next = argv.findIndex((a, k) => k > at && a.startsWith("--"));
+    expect(argv.slice(at + 1, next)).toContain("ScheduleWakeup");
+    // The read profile is offered only the tools it names.
+    expect(
+      claude.argv({ command: ["claude", "-p"], commands: { deny: [], web: false, run: false } }),
+    ).not.toContain("ScheduleWakeup");
+  });
+
   it("may read your files and its copy of Shipify, and write its out/, outside its working folder", () => {
     const root = "/opt/shipify/tool/shipify-app/abc";
     const argv = claude.argv({
@@ -262,6 +311,21 @@ describe("agents: Claude Code's adapter", () => {
       }),
     );
     expect(t.report().error).toBe("Prompt is too long");
+  });
+
+  it("ends as its last result says: background work can start another turn (2.1.292 on)", () => {
+    const r = claude.reader();
+    const result = (more: Record<string, unknown>) =>
+      r.line(JSON.stringify({ type: "result", subtype: "success", ...more }));
+    result({ is_error: true, result: "API Error: 500" });
+    result({ is_error: false, result: "Done: the word is w1." });
+    expect(r.report()).toMatchObject({ said: "Done: the word is w1." });
+    expect(r.report().error).toBeUndefined();
+    // An answer in the result's shape stays, whatever a later turn ends on.
+    result({ is_error: false, structured_output: { v: 2 }, result: "" });
+    result({ is_error: true, result: "API Error: 529" });
+    expect(r.report()).toMatchObject({ result: { v: 2 }, error: "API Error: 529" });
+    expect(r.report().said).toBeUndefined();
   });
 
   it("says it read outside the run for its web tools and a command that fetches, never a local one", () => {

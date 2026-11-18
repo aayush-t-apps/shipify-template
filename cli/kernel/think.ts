@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { z } from "zod";
-import { rec, tryOr } from "../commands/task/context.ts";
+import { rec, timeZone, tryOr } from "../commands/task/context.ts";
 import { readGuestMemory, readNotebook, readProjectPages } from "../commands/task/notebook.ts";
 import {
   canonicalJson,
@@ -43,6 +43,7 @@ import { repoFor } from "../lib/projects-on-github.ts";
 import type { RunDetails } from "../lib/runs.ts";
 import { onBox } from "../lib/sandbox.ts";
 import { loadTools } from "../lib/tools.ts";
+import { type CheckOut, checkPins, RECORDS } from "./agent-check.ts";
 import {
   agentForRun,
   choiceFor,
@@ -53,7 +54,7 @@ import {
   Stopwatch,
   taskChoice,
 } from "./agent.ts";
-import { guestOf, guestsProject, laterWords, openPr } from "./decide.ts";
+import { guestOf, guestsProject, laterWords, openPr, waitingList } from "./decide.ts";
 import { hash8 } from "./keys.ts";
 import { type Look, lookTools, startLook } from "./look.ts";
 import { familyLines } from "./parts.ts";
@@ -401,7 +402,10 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
     if (!ex || !base?.length || !adapter)
       throw new Error(`the agent "${executor}" can't run unattended here (executors.json)`);
     // The model and effort, held to what the model takes as its gateway's catalog says, read now.
-    const chosen = choiceFor(executor, executor === picked ? taskChoice(s.state) : {});
+    // Auto on the plan its login is on, as its adapter reads it (Codex's ChatGPT plan, ADR 0074).
+    const loginValue = login ? agentSecrets(login, {})[login] : undefined;
+    const loginPlan = loginValue ? adapter.plan?.(loginValue) : undefined;
+    const chosen = choiceFor(executor, executor === picked ? taskChoice(s.state) : {}, loginPlan);
     if (executor !== picked)
       chosen.notes.push(
         `${executors()[picked]?.name ?? picked} reads its login from a file its commands can read, so it never thinks for ${guest ? "a guest's run" : "a run that reads a repo outside your account"}: ${adapter?.name ?? executor} did, on its Auto (ADR 0074).`,
@@ -524,7 +528,14 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       .filter((c) => c.author !== "other")
       .map((c) => ({
         id: c.id,
-        who: c.author === "run" ? "Shipify" : c.author === "guest" ? "the guest" : "the owner",
+        who:
+          c.author === "run"
+            ? "Shipify"
+            : c.author === "guest"
+              ? "the guest"
+              : c.author === "passed"
+                ? "the owner (on a related task; the box passed it here)"
+                : "the owner",
         at: c.at,
         text: c.text,
         isNew: t.fresh.includes(c.id) || caughtUp.includes(c.id),
@@ -653,6 +664,8 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
       ...((s.family || s.project) && !reading && (!guest || inProject)
         ? { family: [...projectLines(s, platformRepo()), ...familyLines(s)] }
         : {}),
+      // The list that waits for your yes (ADR 0080): the run sees it, and lists it no more.
+      ...(guest ? {} : waitingList(s.state, timeZone())),
       thinksWith: [adapter.name, choice.model ?? "its default model", choice.effort]
         .filter(Boolean)
         .join(" · ")
@@ -700,6 +713,8 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
           folders: reading
             ? { read: sentFiles() ? [join(place.in, "files")] : [] }
             : { read: [copy.root, place.in], write: [place.out] },
+          // A work run follows its clone's AGENTS.md; a talk, read or guest run, no repo's.
+          ...(t.profile === "work" ? { work: place.work } : {}),
           ...(skills ? { skills } : {}),
           ...(resume ? { resume } : {}),
         })
@@ -951,14 +966,46 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
 
     // A repo that keeps its own rules has no project checks (ADR 0044): its own CI checks the PR.
     if (t.profile === "work" && !t.ownRules && !("error" in result) && result.pr) {
+      // An agent's new version, checked live before the box's checks (ADR 0079): on Shipify's own
+      // repo, whose executors.json pins each agent, when the branch moves a pin.
+      let pins: CheckOut | undefined;
+      if (!away && t.project === platformRepo().split("/")[1])
+        try {
+          pins = await checkPins({
+            place,
+            agent: {
+              id: executor,
+              entry: ex,
+              adapter,
+              ...(gateway && ex.gateway ? { gateway: { ...gateway, id: ex.gateway } } : {}),
+            },
+            main: harness,
+            records: join(copy.root, RECORDS),
+            ...(held.login !== undefined ? { login: { value: held.login, env: held.env } } : {}),
+            ...(existsSync(skillsDir) ? { skills: skillsDir } : {}),
+            scratch: join(io.keep, "..", "check-tools"),
+            minutes: agentMinutes - (performance.now() - began) / 60_000,
+            ...(io.look ? { look: io.look } : {}),
+            by: () => committer(t),
+            task: s.n,
+            run: s.run.url,
+          });
+          checkNotes.push(...pins.notes);
+        } catch (e) {
+          const said = `The box's check of a new version stopped: ${maskSecrets(errorLine(e))}.`;
+          checkNotes.push(said);
+          pins = { notes: [said], told: said, again: async () => {} };
+        }
       // The box's checks before its commits go anywhere, the same `ship pr` makes (ADR 0018). When
       // they fail, the agent gets one round, in the same session, to fix what they found.
       let g = await gate(place, copy.cli, env);
       if (!g.ok && !g.timedOut && session && !stopBy) {
-        const fixed = await ask(argvFor(session), fixPrompt(g.tail), FIX_MINUTES);
+        const fixed = await ask(argvFor(session), fixPrompt(g.tail, pins?.told), FIX_MINUTES);
         // Its new answer, when it gave one; the PR it asked for stands either way.
         const next = readResult(finalOr(fixed.report, place.take("result.json")?.toString("utf8")));
         if (!("error" in next)) result = { ...next, pr: next.pr ?? result.pr };
+        // The box's records as it wrote them: the fix round never changes one.
+        await pins?.again();
         g = await gate(place, copy.cli, env);
         checkNotes.push(
           g.ok
@@ -1455,9 +1502,13 @@ export async function gate(
   return { ok: v.code === 0, timedOut: v.timedOut, tail: tail() };
 }
 
-/** What the agent is told when the box's checks failed on its work. */
-export const fixPrompt = (tail: string) =>
+/**
+ * What the agent is told when the box's checks failed on its work: first, what the box's check of
+ * a new version found (`told`, ADR 0079), when it has something to say.
+ */
+export const fixPrompt = (tail: string, told?: string) =>
   [
+    ...(told ? [told, ""] : []),
     "The box's checks failed on your work, so nothing has been pushed yet. The end of their output:",
     "",
     "```",

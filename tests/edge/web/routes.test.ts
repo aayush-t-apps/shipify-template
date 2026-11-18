@@ -1515,7 +1515,8 @@ describe("what the page reads", () => {
     expect([await yours(), await yours(at)]).toEqual(before.map((k) => k + 1));
   });
 
-  it("a thread's PRs: each one's state read once a minute, not on every poll", async () => {
+  it("a thread's PRs: each one's state as the task's status saw it, with no read of the PR", async () => {
+    // The door App has no Pull requests permission, so GitHub keeps a PR from its reads.
     const t = setUp();
     t.f.issue({ title: "a task", user: { login: "owner" } });
     const pr = t.f.issue({
@@ -1525,6 +1526,10 @@ describe("what the page reads", () => {
       pull_request: { merged_at: null },
     });
     const url = `https://github.com/${REPO}/pull/${pr.number}`;
+    const other = "https://github.com/o/app/pull/7";
+    const status = (state: string) =>
+      `<!-- shipify-task ${JSON.stringify({ v: 2, prInfo: { [url]: { kind: "code", state } } })} -->\nNeeds you.`;
+    const s = t.f.comment(1, status("open"), RUN);
     t.f.reply(
       1,
       replyLine({
@@ -1532,7 +1537,10 @@ describe("what the page reads", () => {
         kind: "answer",
         state: "Done",
         title: "x",
-        links: [["PR", url]],
+        links: [
+          ["PR", url],
+          ["PR", other],
+        ],
         to: ["web:me"],
         key: "k",
       }),
@@ -1541,17 +1549,18 @@ describe("what the page reads", () => {
       t.f.later(10_000);
       return (await (await t.call("/admin/chat/api/task/1")).json()).task.prs;
     };
-    const reads = () => t.f.gh().filter((c) => c.endsWith(`issues/${pr.number}`)).length;
-    expect(await prs()).toEqual([{ n: pr.number, url, state: "open" }]);
-    Object.assign(pr, { state: "closed", pull_request: { merged_at: "2026-10-04T12:00:30Z" } });
-    expect((await prs())[0].state).toBe("open");
-    expect(reads()).toBe(1);
-    t.f.later(60_000);
+    expect(await prs()).toEqual([
+      { n: pr.number, url, state: "open" },
+      { n: 7, url: other, state: "" },
+    ]);
+    // A run that saw it merged says so on the status: the chip follows, still with no read.
+    s.body = status("merged");
+    s.updated_at = new Date(t.f.w.at + 1000).toISOString();
     expect((await prs())[0].state).toBe("merged");
-    expect(reads()).toBe(2);
+    expect(t.f.gh().filter((c) => c.includes(`issues/${pr.number}`))).toEqual([]);
   });
 
-  it("the list: shipify's open PRs for review, with their task; 100 at a time, without rendered bodies", async () => {
+  it("the list: 100 at a time, without rendered bodies, and no PR (a PR opens on GitHub)", async () => {
     const t = setUp();
     for (let i = 0; i < 105; i++) t.f.issue({ title: `task ${i}`, user: { login: "owner" } });
     t.f.issue({
@@ -1571,12 +1580,10 @@ describe("what the page reads", () => {
     // The listing asks for no rendered bodies: it shows none.
     const listing = asked.find(([u]) => u.includes("/issues?state=open"));
     expect(listing?.[1]).toBe("application/vnd.github+json");
-    expect(first.review).toEqual([
-      expect.objectContaining({ n: 106, title: "The chat as a cockpit", task: 3 }),
-    ]);
+    expect(first).not.toHaveProperty("review");
     expect(first.tasks.some((x: { n: number }) => x.n === 106)).toBe(false);
     const older = await (await t.call("/admin/chat/api/list?page=2")).json();
-    expect(older).toMatchObject({ page: 2, more: false, review: [], running: [], boxes: [] });
+    expect(older).toMatchObject({ page: 2, more: false, running: [], boxes: [] });
     expect(older.tasks.map((x: { n: number }) => x.n)).toEqual([6, 5, 4, 3, 2, 1]);
     expect((await t.call("/admin/chat/api/list?page=0")).status).toBe(400);
   });
@@ -1589,7 +1596,7 @@ describe("what the page reads", () => {
     expect(open).toMatchObject({ closed: false });
     expect(open.tasks.map((x: { title: string }) => x.title)).toEqual(["still going"]);
     const shut = await (await t.call("/admin/chat/api/list?closed=1")).json();
-    expect(shut).toMatchObject({ closed: true, page: 1, review: [], running: [], boxes: [] });
+    expect(shut).toMatchObject({ closed: true, page: 1, running: [], boxes: [] });
     expect(shut.tasks.map((x: { title: string; state: string }) => [x.title, x.state])).toEqual([
       ["done with", "closed"],
     ]);
@@ -1681,21 +1688,6 @@ describe("what the page reads", () => {
     for (const ref of ["web%3Aup-abc", "nope%3Ax", "AgACAgQ", "telegram%3Anot%20a%20ref!"])
       expect((await t.call(`/admin/chat/api/sent/${ref}`)).status).toBeGreaterThanOrEqual(400);
     expect((await t.call(`/admin/chat/${photo.src}`, {}, false)).status).toBe(403);
-  });
-
-  it("a PR reads as a thread to review: its description, its task, and no words from here", async () => {
-    const t = setUp();
-    t.f.issue({ title: "a task", user: { login: "owner" } });
-    t.f.issue({
-      title: "The chat as a cockpit",
-      body: "## What changed\n\nReopen from the chat.\n\nCloses o/shipify#1",
-      user: { login: "shipify-bot[bot]", type: "Bot" },
-      pull_request: { merged_at: null },
-    });
-    const pr = await (await t.call("/admin/chat/api/task/2")).json();
-    expect(pr.task).toMatchObject({ n: 2, pr: "open", for: 1, open: true });
-    expect(pr.writable).toBe(false);
-    expect(pr.messages[0].md).toContain("Reopen from the chat.");
   });
 
   it("lists a project with its name and chats, folds a chat under it, and hides Library pages (ADR 0069)", async () => {

@@ -46,9 +46,18 @@ export const Result = z.object({
   split: z.array(SplitEntry).min(2).max(8).optional(),
   /**
    * A task first (ADR 0075): a fix on main this task needs before it can go on, as the box runs
-   * main's code. Listed for your yes, alone; on it, opened and started, and this task waits for it.
+   * main's code. Listed for your yes, alone; on it, opened and started, and this task waits for it
+   * and carries on by itself when it merges (ADR 0080). With `separate`, work this task doesn't
+   * need: it may come with a PR, calls and notes, and nothing waits for it.
    */
   first: FirstEntry.optional(),
+  /** Your words drop the list that waits for your yes (ADR 0080): the box drops it. */
+  drop_list: z.boolean().optional(),
+  /**
+   * Related tasks your newest words are about (ADR 0080): the box copies your words there, as
+   * they are, and starts each one's run.
+   */
+  pass: z.array(z.number().int().positive()).max(5).optional(),
   /** Notes for the notebook: your own words to keep. */
   notes: z
     .array(z.object({ topic: z.string().max(60), line: z.string().max(500) }))

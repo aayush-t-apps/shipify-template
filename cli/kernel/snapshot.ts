@@ -25,6 +25,7 @@ import {
   pickedLine,
   pickerAsked,
   readFrom,
+  readPass,
   readReply,
   RUN_WRITER,
   withoutLine,
@@ -87,7 +88,8 @@ function authorOf(
 ): { author: Author; from?: ReturnType<typeof readFrom> } {
   const owner = ownerLogin();
   if (owner && login === owner) return { author: "owner" };
-  if (login === RUN_WRITER) return { author: "run" };
+  // Your words a run passed here from a related task (ADR 0080): yours to read, only unedited.
+  if (login === RUN_WRITER) return { author: never && readPass(body) ? "passed" : "run" };
   const door = doorLogin();
   if (door && login === door && never) {
     const from = readFrom(body);
@@ -373,8 +375,13 @@ export async function snapshot(
   const looked = opts.look ? lookedUp(s, process.env.SHIPIFY_READ_TOKEN || undefined) : undefined;
   if (looked) s.looked = looked;
   // A split task's family (ADR 0066) and its project (ADR 0069): one read by plan, only for a part,
-  // a task with parts, a project, or a chat in one.
-  if (opts.look && readsFamily(labels, words, issue.sub_issues_summary?.total ?? 0))
+  // a task with parts, a project, or a chat in one; and a task that waits for its tasks first
+  // (ADR 0080), whose family says when they've closed.
+  if (
+    opts.look &&
+    (readsFamily(labels, words, issue.sub_issues_summary?.total ?? 0) ||
+      Boolean(s.state.waits?.length))
+  )
     try {
       const me = {
         number: n,

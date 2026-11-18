@@ -32,7 +32,10 @@ and writes `result.json`; the box makes every change. Its contract:
    <id>`), and with a one-time code when it's given `code` (`<id> sign in` from a chat, on
    GitHub's machine, or `--device`). It hands its agent Shipify's
    skills (`run.skills`, a folder): its flag for a folder of skills, or, when it reads them only
-   from its own settings, `skillsLink`, where the run links them (add how to `SKILLS_HANDED`). A
+   from its own settings, `skillsLink`, where the run links them (add how to `SKILLS_HANDED`). Its
+   agent follows the repo it works in (`run.work`, a work run's clone): that repo's `AGENTS.md`,
+   never a repo it reads, and no repo's in the read profile; an agent that reads its working
+   folder's by itself needs nothing more (add how to `FOLLOWS`). A
    folder its agent would write in when it can (OpenCode installs a package from npm into its own
    config folder) goes in `readOnly`: the run makes it again, empty and read-only, before every ask.
    What its agent reads its rules or code from that a command could write, besides its settings
@@ -40,12 +43,17 @@ and writes `result.json`; the box makes every change. Its contract:
    The report says `readOutside` whenever the agent read
    the web, or ran a command that fetches: that's what makes its notes and calls wait for your
    `yes`. When the agent answers in words, not the result's shape, the report's `said` carries
-   them, and a question takes them as its reply. A run on a box needs one.
+   them, and a question takes them as its reply. It names each command its agent ran or was
+   refused, as written (`commands`; add how its output shows them to `COMMANDS_SEEN`), and its
+   tools, helpers and skills when its output says them (`offered`): the box's check of a new
+   version reads them (ADR 0079). A run on a box needs one.
 3. **A recorded run** of the agent (its real output, with its version) in
    `tests/fixtures/<name>-stream.jsonl`, named in `RECORDED` in `tests/plugins/agent.test.ts`. It
    can be made against a stand-in model, as pi's, OpenCode's and Codex's were. Then check it live the way a
    box runs it: the prompt on stdin, the login on fd 3 and its output read through a pipe (sending
-   its output to a file can hide a break).
+   its output to a file can hide a break), and write what you checked as its first record,
+   `tests/fixtures/checked/<id>.json` (`"on": "pc"`; the test holds it to the pin). Each new
+   version after it is one task, which a box checks (docs/agents.md, "A new version").
 4. **Its install and login on a box** come from its entry: a box installs it the first time a run
    picks it, and the think step gets its login. Nothing in `task.yml` names it.
 5. **Docs:** its row in `docs/agents.md`, and its login (or its gateway's key) in `docs/setup.md`.

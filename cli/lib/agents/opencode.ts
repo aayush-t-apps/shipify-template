@@ -3,7 +3,8 @@
 // (tests/fixtures/opencode-stream.jsonl, a real run against a stand-in model). What it gets, all in
 // the run's own folders:
 // - its config (OPENCODE_CONFIG: the run's in/tools/opencode.json) and nothing else's: no project's
-//   opencode.json, .opencode or plugins, no Claude Code files, no repo's skills, no logins of its
+//   opencode.json, .opencode or plugins, no Claude Code files, no repo's skills or instructions but
+//   its work repo's AGENTS.md (`instructions`; the gate drops any other a read adds), no logins of its
 //   own, nothing fetched in the background (models list, updates, LSP servers, default plugins,
 //   sharing, its plugin package: its own config folder is read-only), and no git snapshot of its
 //   folder; its own config folder, its cache and its home's .opencode, which a run could write,
@@ -28,6 +29,7 @@ import {
   type AgentRun,
   agentFile,
   asResult,
+  type CommandSeen,
   fetchesOutside,
   gatewayModelName,
   LOGIN_FD,
@@ -148,6 +150,9 @@ function settings(run: AgentRun): { provider?: string } {
     plugin: ["./gate.mjs"],
     // Shipify's skills, listed for the model; never in the read profile.
     ...(run.skills && !reading ? { skills: { paths: [run.skills] } } : {}),
+    // The repo it works in, whose AGENTS.md it follows: with the project's config off, it loads one
+    // only by its path here. None in the read profile: no repo's.
+    ...(run.work && !reading ? { instructions: [join(run.work, "AGENTS.md")] } : {}),
   });
   // The gate and its rules: pi's gate's checks, with OpenCode's names for its tools. Found through
   // the contract's `agentFile` (ADR 0051 B1), never next to this file: the built CLI is one file in
@@ -164,6 +169,8 @@ function settings(run: AgentRun): { provider?: string } {
     look,
     ...(reading ? { run: false, read: run.folders?.read ?? [] } : {}),
     ...(provider ? { provider } : {}),
+    // The folder whose instructions a read may bring (the gate drops any other's).
+    ...(run.work && !reading ? { work: run.work } : {}),
   });
   return provider ? { provider } : {};
 }
@@ -226,6 +233,8 @@ function reader(): OutputReader {
   // The skills it loaded, as its gate says them: its skill tool's, or a read's SKILL.md.
   const skills: string[] = [];
   const models: Record<string, Tokens> = {};
+  // Each command its gate checked, its own and its helpers', and whether the gate refused it.
+  const commands: CommandSeen[] = [];
   let model: string | undefined;
   let usd = 0;
   let last = "";
@@ -243,8 +252,10 @@ function reader(): OutputReader {
       const name = e.call;
       tools[name] = (tools[name] ?? 0) + 1;
       if (e.call === "webfetch" || e.call === "websearch") report.readOutside = true;
-      if (e.call === "bash" && typeof e.command === "string" && fetchesOutside(e.command))
-        report.readOutside = true;
+      if (e.call === "bash" && typeof e.command === "string") {
+        if (fetchesOutside(e.command)) report.readOutside = true;
+        commands.push({ command: e.command, refused: typeof e.refused === "string" });
+      }
       const skill =
         typeof e.skill === "string" ? e.skill : typeof e.path === "string" && skillRead(e.path);
       if (skill) skills.push(skill);
@@ -317,6 +328,7 @@ function reader(): OutputReader {
       if (keyless) report.error = keyless;
       if (Object.keys(tools).length) report.tools = tools;
       report.skills = skillsSeen(skills);
+      if (commands.length) report.commands = commands;
       if (Object.keys(models).length) {
         report.models = models;
         report.tokens = Object.values(models).reduce((a, b) => ({

@@ -172,8 +172,8 @@ You write `acme-site: bigger margins`.
    are labelled `deploying`, the watch rings `watch:due`, and `ship watch due`
    (`cli/commands/task/due.ts`) starts the task's run once the pipeline has said.
 
-**A big change** gets a doc PR first (kind `part-of`, no `Closes`). After your merge, `go` on
-GitHub starts the build. **In a terminal,** the same change is a branch, `make verify`,
+**A big change** gets a doc PR first (kind `part-of`, whose PR says `Closes`). Your merge starts
+the build, in the task's close run (ADR 0080). **In a terminal,** the same change is a branch, `make verify`,
 `ship version <p>` and `ship pr <p> --yes` ([process.md](process.md)).
 
 ## 3. A new app

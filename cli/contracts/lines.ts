@@ -121,12 +121,22 @@ export function splitList(md: string): { words: string; list?: string } {
   return { words, list };
 }
 
+/**
+ * Your words a run copied onto a related task (ADR 0080): the task they came from. They count as
+ * yours there only when a run wrote the comment and no one edited it (the caller checks both).
+ */
+export const PassLine = z.object({ v: z.literal(1), from: z.number().int().positive() });
+export type PassLine = z.infer<typeof PassLine>;
+
 const FROM = /^<!-- shipify-from (\{[^\n]*\}) -->/;
 const REPLY = /^<!-- shipify-reply (\{[^\n]*\}) -->/;
+const PASS = /^<!-- shipify-pass (\{[^\n]*\}) -->/;
 
 export const fromLine = (f: From) => `<!-- shipify-from ${canonicalJson(From.parse(f))} -->`;
 export const replyLine = (r: ReplyLine) =>
   `<!-- shipify-reply ${canonicalJson(ReplyLine.parse(r))} -->`;
+export const passLine = (p: PassLine) =>
+  `<!-- shipify-pass ${canonicalJson(PassLine.parse(p))} -->`;
 
 function read<T>(re: RegExp, schema: z.ZodType<T>, body: string | null | undefined): T | undefined {
   const m = re.exec(body ?? "");
@@ -143,7 +153,9 @@ function read<T>(re: RegExp, schema: z.ZodType<T>, body: string | null | undefin
 export const readFrom = (body: string | null | undefined) => read(FROM, From, body);
 /** The `reply` line of a body a run wrote, when it has a good one. */
 export const readReply = (body: string | null | undefined) => read(REPLY, ReplyLine, body);
+/** The `pass` line of a comment a run wrote, when it has a good one (ADR 0080). */
+export const readPass = (body: string | null | undefined) => read(PASS, PassLine, body);
 
 /** The body without its hidden first line: the words people read. */
 export const withoutLine = (body: string | null | undefined) =>
-  (body ?? "").replace(FROM, "").replace(REPLY, "").replace(/^\n+/, "");
+  (body ?? "").replace(FROM, "").replace(REPLY, "").replace(PASS, "").replace(/^\n+/, "");

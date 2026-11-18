@@ -520,10 +520,6 @@ function drawList() {
     b.ariaPressed = String(!R.shut === !closed && !R.need === !mine);
     return b;
   };
-  // A PR waiting for you: read it here; the task it's for beside it.
-  const rev = (p) =>
-    h("p", to(p.n, `#${p.n} ${p.title}`), p.task && to(p.task, `Task #${p.task}`), ago(p.updated));
-  const review = R.shut ? [] : L.review || [];
   const more = R.shut ? C?.more : R.old ? R.old.more : L.more;
   // A split task's parts done of all, as a thin bar (its width set from script, ADR 0066).
   const bar = ({ done, total }, i = h("i")) => {
@@ -627,7 +623,6 @@ function drawList() {
     ),
     keys.length > 1 &&
       h("div.filters", { role: "group", "aria-label": "Filter" }, ["", ...keys].map(filter)),
-    review.length > 0 && h("section.run", h("h2", "For review"), review.map(rev)),
     R.shut && !C
       ? ph()
       : [
@@ -764,7 +759,7 @@ const threadMenu = (t) => {
   const md = t.messages.map((x) => `**${x.name}** · ${x.at}\n\n${x.md}`).join("\n\n---\n\n");
   const i = (k, l) => [icon(k), l];
   const gh = (u) => () => open(u, "_blank", "noopener");
-  const task = !T.pr && t.writable;
+  const task = t.writable;
   const phone = !WIDE.matches;
   return [
     phone && [i("search", "Find in this chat"), () => R.v.fb.click()],
@@ -773,7 +768,6 @@ const threadMenu = (t) => {
       !T.repeats && [i(T.open ? "check" : "undo", T.open ? "Close" : "Reopen"), () => turn(T)],
     !GUEST && [i("open", "On GitHub"), gh(T.url)],
     task && runOf(T) && [i("x", "Stop the run"), () => stop(n)],
-    T.pr && [i("code", "The changes"), gh(`${T.url}/files`)],
     [
       i("save", "Download the thread"),
       () => save(`#${n}-${slug.slice(0, 40)}.md`, `${top}${md}\n`),
@@ -795,14 +789,14 @@ function drawThread(t) {
   const real = n && !t.ph;
   const was = near(v.msgs);
   const you = t.messages.filter((x) => x.who === "you").length;
-  // Shipify's own PRs (their state is known) open here, to review; others on GitHub.
-  const pr = (p, l = [`PR #${p.n}`, p.state].filter(Boolean).join(" · ")) =>
-    p.state ? h("a.chip", { href: `#/t/${p.n}` }, l) : ext(p.url, l, ".chip");
+  // A PR opens on GitHub, where its changes and its merge are (the door App reads issues only),
+  // with its state as the task's status last saw it.
+  const pr = (p) => ext(p.url, [`PR #${p.n}`, p.state].filter(Boolean).join(" · "), ".chip");
   // The model once: on the box you write in, else here.
   const model = !t.writable && h("span.tag", said(S.menu, T.model));
   const run = real && runOf(T);
   const start = real && !run && starting(T, t);
-  const k = !T.pr && kindOf(T);
+  const k = kindOf(T);
   const all = totals(t);
   // The chat's files (ADR 0071): yours and its runs', newest first, each to open in the pane.
   const fl = t.messages.flatMap((x) => x.files.filter((f) => f.src)).reverse();
@@ -812,22 +806,20 @@ function drawThread(t) {
       fl.map((f) => [f.name, () => see(f)]),
     );
   // Its state, number and kind, its runs added up (each reply's line has its own), its PRs.
-  const kind = T.pr
-    ? [h("span.tag", `PR · ${T.pr}`), T.for && to(T.for, `Task #${T.for}`)]
-    : [
-        status(T, run, true),
-        h("span", `#${n}`),
-        T.parent && to(T.parent, `Part of #${T.parent}`),
-        // A project's name goes to its page (ADR 0069: no tab row).
-        k &&
-          (k === projOf(T)
-            ? h("a", { href: `#/p/${encodeURIComponent(k)}` }, named(k))
-            : h("span", named(k))),
-        model,
-        all.runs.length > 0 && h("span.sum", summary(all)),
-        T.prs.map((p) => pr(p)),
-        fl.length > 0 && btn(`Files ${fl.length}`, fs, ".chip"),
-      ];
+  const kind = [
+    status(T, run, true),
+    h("span", `#${n}`),
+    T.parent && to(T.parent, `Part of #${T.parent}`),
+    // A project's name goes to its page (ADR 0069: no tab row).
+    k &&
+      (k === projOf(T)
+        ? h("a", { href: `#/p/${encodeURIComponent(k)}` }, named(k))
+        : h("span", named(k))),
+    model,
+    all.runs.length > 0 && h("span.sum", summary(all)),
+    T.prs.map((p) => pr(p)),
+    fl.length > 0 && btn(`Files ${fl.length}`, fs, ".chip"),
+  ];
   const tags = real && h("p.tags", kind);
   const more = real && moreBtn((e) => pop(e.currentTarget, threadMenu(t)));
   if (more) more.ariaLabel = "Task menu";
@@ -835,7 +827,6 @@ function drawThread(t) {
   const flip =
     real &&
     t.writable &&
-    !T.pr &&
     !T.repeats &&
     btn(
       [icon(T.open ? "check" : "undo"), h("span", T.open ? "Close" : "Reopen")],
@@ -843,13 +834,7 @@ function drawThread(t) {
       ".btn.flip",
     );
   if (flip) flip.ariaLabel = T.open ? "Close" : "Reopen";
-  const title = n
-    ? T.pr
-      ? `#${n} ${T.title}`
-      : bare(T.title)
-    : R.home
-      ? "Desk"
-      : `New chat${v.u ? ` in ${v.u.name}` : ""}`;
+  const title = n ? bare(T.title) : R.home ? "Desk" : `New chat${v.u ? ` in ${v.u.name}` : ""}`;
   set(v.head, back(), h("div.title", h("h2", title), tags), real && v.fb, refreshBtn(), flip, more);
   // A split task: its Plan card under the header.
   if (real && T.plan) lazy("plan")((m) => R.v === v && m.plan(v, t));
@@ -966,16 +951,13 @@ function drawThread(t) {
       signin,
     };
     R.draft = "";
-    const changes = ext(`${T.url}/files`, "The changes");
-    const note = T.pr
-      ? h("p.note", "Read it here. ", changes, " and the merge are on GitHub.")
-      : T.doc
-        ? h(
-            "p.note",
-            "A doc: ",
-            btn("Edit it", () => ws((w) => w.page(n)), ".btn"),
-          )
-        : h("p.note", "This task doesn't take words from here: ", ext(T.url, "open it on GitHub"));
+    const note = T.doc
+      ? h(
+          "p.note",
+          "A doc: ",
+          btn("Edit it", () => ws((w) => w.page(n)), ".btn"),
+        )
+      : h("p.note", "This task doesn't take words from here: ", ext(T.url, "open it on GitHub"));
     set(v.foot, v.pill, t.writable ? composer(v.co) : note);
     if (R.ask && v.co.attach) R.ask(v.co);
     R.ask = 0;

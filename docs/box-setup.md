@@ -673,7 +673,9 @@ When it can't:
 - **A box in Docker** gets none: a new image is its update.
 
 **Time limits:** the agent works up to 200 minutes in one session (ADR 0059), its fix round 20,
-`make verify` 25, a check one; the run's job stops after 460 minutes. A run cut off anyway is
+`make verify` 25, a check one; the run's job stops after 460 minutes. The box's check of an
+agent's new version (ADR 0079) takes at most 10 minutes of what's left of the session's 200, so
+it needs no limit of its own: a session that used them all leaves it to your `continue`. A run cut off anyway is
 marked Stopped by the watch, and your `continue` carries it on from where it got to. A box that
 restarts or loses power mid-run loses that run's work since its start: the agent's commits leave
 the box when the run ends.

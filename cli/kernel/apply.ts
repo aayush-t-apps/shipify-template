@@ -38,6 +38,7 @@ import {
   replyLine,
   RUN_WRITER,
   STARTED_LABEL,
+  STAYING_LABEL,
   type ToolResult,
 } from "../contracts/index.ts";
 import { accountOf } from "../lib/accounts.ts";
@@ -55,7 +56,7 @@ import { cursorOf, guestOf, sentRefs, sharedNow } from "./decide.ts";
 import { doorGuest, typeOf } from "./door.ts";
 import { replyKey } from "./keys.ts";
 import { callFiles, makeCalls } from "./mcp-client.ts";
-import { openedText, SUB_TASK } from "./parts.ts";
+import { FIRST, openedText, passBody, SUB_TASK } from "./parts.ts";
 import { saidAs } from "./result.ts";
 import { type Person, replyTo, scheduledReply } from "./route.ts";
 import { taskReadOf } from "./snapshot.ts";
@@ -385,13 +386,22 @@ export async function apply(
           );
           break;
         case "split":
-          // On your yes (ADR 0066): the parts opened as sub-issues, with their links; none starts.
+          // On your yes (ADR 0066): the parts opened as sub-issues, with their links, and the ready
+          // ones started, the task `started`, so each merge starts the next (ADR 0080).
           await journal(
             `split:${s.state.seen}:${s.run.id}`,
             `opening the ${w.parts.length} sub-tasks`,
             () => {
               const made = rec().openParts(s.n, w.parts, SUB_TASK);
-              outcomes.push(openedText(w.parts, made));
+              rec().addLabels(s.n, [STARTED_LABEL]);
+              const started = w.start.filter((i) => {
+                const n = made[i];
+                return (
+                  n !== undefined &&
+                  queue().dispatch("task.yml", { issue: String(n), job: "run" }).ok
+                );
+              });
+              outcomes.push(openedText(w.parts, made, started));
             },
           );
           break;
@@ -407,25 +417,75 @@ export async function apply(
           break;
         case "first":
           // A task first, on your yes (ADR 0075 §6): opened under the parent, with the task that
-          // waits for it blocked by it, and started at once, as `go #n` starts a part.
+          // waits for it blocked by it, and started at once, as `go #n` starts a part. This task
+          // keeps its number, and carries on by itself when it merges (ADR 0080).
           await journal(`first:${s.state.seen}:${s.run.id}`, `opening ${w.part.title}`, () => {
             const [n] = rec().openParts(w.parent, [w.part], SUB_TASK);
             if (!n) throw new Error("GitHub didn't open the task first");
             rec().addLabels(n, [FIRST_LABEL]);
+            st.waits = [...new Set([...(st.waits ?? []), n])];
             const r = queue().dispatch("task.yml", { issue: String(n), job: "run" });
             outcomes.push(
               r.ok
-                ? `Opened #${n} and started it. When it merges, I'll say so here, and \`continue\` carries on.`
+                ? `Opened #${n} and started it. This task carries on by itself when it merges.`
                 : `Opened #${n}, but it couldn't start: ${r.error}. Say \`continue\` on #${n} to start it.`,
             );
           });
           break;
+        case "separate":
+          // Separate work, on your yes (ADR 0080): a chat of this task's project, or of its own
+          // when it has none (or that one is full), never a split's part; started at once.
+          await journal(`separate:${s.state.seen}:${s.run.id}`, `opening ${w.part.title}`, () => {
+            let n: number | undefined;
+            let note = "";
+            if (w.project !== undefined)
+              try {
+                n = rec().openParts(w.project, [w.part], FIRST)[0];
+              } catch (e) {
+                note = ` It isn't in #${w.project}: ${errorLine(e)}.`;
+              }
+            if (!n) {
+              rec().makeLabel(FIRST);
+              const body = w.part.body.replace(/^Part of #\d+\s*\n+/, "");
+              n = rec().createIssue({ title: w.part.title, body, labels: [FIRST_LABEL] }).number;
+            }
+            st.separate = [...new Set([...(st.separate ?? []), n])];
+            const r = queue().dispatch("task.yml", { issue: String(n), job: "run" });
+            outcomes.push(
+              r.ok
+                ? `Opened #${n} as a task of its own${w.project !== undefined && !note ? `, in #${w.project}` : ""}, and started it. This task doesn't wait for it.${note}`
+                : `Opened #${n}, but it couldn't start: ${r.error}. Say \`continue\` on #${n} to start it.${note}`,
+            );
+          });
+          break;
         case "start":
-          // A part's run (ADR 0066): your `go` on its parent, or the part it waited for merged.
+          // A part's run (ADR 0066): your `go` on its parent, or the part it waited for merged; or
+          // a task that carries on (ADR 0080), its stay let go first, so it leaves at once.
           await journal(`start:${w.n}:${s.run.id}`, `starting #${w.n}`, () => {
+            if (w.unstay)
+              try {
+                rec().removeLabel(w.n, STAYING_LABEL);
+              } catch {}
             const r = queue().dispatch("task.yml", { issue: String(w.n), job: "run" });
             if (!r.ok) throw new Error(`#${w.n} couldn't start: ${r.error}`);
           });
+          break;
+        case "pass":
+          // Your words, copied as they are onto a related task (ADR 0080), in one comment its run
+          // reads as yours (never a fixed word), and its run started: a stay there answers them.
+          await journal(
+            `pass:${w.n}:${s.state.seen}:${s.run.id}`,
+            `passing your words to #${w.n}`,
+            () => {
+              rec().comment(w.n, passBody(s.n, w.words, timeZone()));
+              const r = queue().dispatch("task.yml", { issue: String(w.n), job: "run" });
+              outcomes.push(
+                r.ok
+                  ? `Passed to #${w.n}.`
+                  : `Passed to #${w.n}, but its run couldn't start: ${r.error}. Say \`continue\` there.`,
+              );
+            },
+          );
           break;
         case "tell": {
           // On the parent (ADR 0066): to your default channels, as no chat asked for it. Its key
@@ -1289,15 +1349,17 @@ export function onBranch(dir: string, token: string, branch: string, base = "mai
  */
 export function prBody(
   s: Snapshot,
-  w: { kind: "closes" | "part-of" | "publish"; body: string },
+  w: { kind: "closes" | "part-of" | "publish"; body: string; doc?: true },
   details: RunDetails | undefined,
   ownAccount: boolean,
 ): string {
   const by = details?.name
     ? `${details.name}${details.model ? ` (${modelLabel(details.model)})` : ""}`
     : undefined;
+  // A big change's doc (ADR 0080) closes its task, whose close run then builds it.
   const footer = [
-    taskLine(s.n, w.kind === "part-of"),
+    taskLine(s.n, w.kind === "part-of" && !w.doc),
+    w.doc && taskLine(s.n, false) ? "Merging this accepts it and starts its build." : "",
     madeWith(by, ownAccount ? s.run.url : undefined),
   ].filter(Boolean);
   // Masked as every reply is: a PR on another account is read by other people too.

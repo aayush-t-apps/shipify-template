@@ -111,7 +111,7 @@
     ],
     "task": ["claude", "-p", "--permission-mode", "acceptEdits"],
     "install": {
-      "version": "2.1.284",
+      "version": "2.1.327",
       "dir": "claude-code",
       "bin": "bin/claude",
       "run": [
@@ -123,7 +123,7 @@
         "--no-fund",
         "--prefix",
         "{prefix}",
-        "@anthropic-ai/claude-code@2.1.284"
+        "@anthropic-ai/claude-code@2.1.327"
       ],
       "newest": "https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/latest",
       "advisories": "https://api.github.com/advisories?ecosystem=npm&affects=%40anthropic-ai%2Fclaude-code%40{version}&per_page=100"
@@ -199,14 +199,18 @@
     },
     "auto": {
       "model": "gpt-6.1-sol",
-      "effort": "medium"
+      "effort": "medium",
+      "plans": {
+        "free": "gpt-6-luna",
+        "go": "gpt-6-luna"
+      }
     },
     "models": ["gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-luna"],
     "about": {
       "gpt-6.1-sol": "Codex's default: coding and everyday work",
       "gpt-6-astra": "Frontier: the hardest work, the heaviest on your plan",
       "gpt-6.1-terra": "GPT-6.1 Terra, a Codex model",
-      "gpt-6-luna": "Fast and light, for easier tasks"
+      "gpt-6-luna": "Fast and light, for easier tasks; Auto's on ChatGPT Go and Free"
     },
     "modelPattern": "^gpt-[0-9][a-z0-9.-]*$",
     "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],

@@ -160,6 +160,20 @@ type Advisory = {
   withdrawn_at?: string | null;
 };
 
+/** Where GitHub lists the advisories against one version of an install's package, or none. */
+export const advisoriesAt = (i: Install, version: string) =>
+  i.advisories?.replace("{version}", encodeURIComponent(version));
+
+/** The advisories in GitHub's answer that stand: a withdrawn one was a mistake, so it's not said. */
+export const standing = (list: unknown): AgentNews["advisories"] =>
+  (Array.isArray(list) ? (list as Advisory[]) : [])
+    .filter((a) => a && !a.withdrawn_at)
+    .map((a) => ({
+      title: a.summary ?? "an advisory",
+      severity: a.severity ?? "unknown",
+      url: a.html_url ?? "",
+    }));
+
 /** One answer as JSON, or why not. */
 const answer = async <T>(r: Response): Promise<T> => {
   if (!r.ok) throw new Error(`${r.url} answered ${r.status}`);
@@ -189,25 +203,17 @@ export async function agentNews(
   try {
     return await Promise.all(
       looked.map(async ({ id, install: i }) => {
+        const at = advisoriesAt(i, i.version);
         const [newest, advised] = await Promise.all([
           i.newest ? read<{ version?: string }>(i.newest) : undefined,
-          i.advisories
-            ? read<Advisory[]>(i.advisories.replace("{version}", encodeURIComponent(i.version)))
-            : undefined,
+          at ? read<Advisory[]>(at) : undefined,
         ]);
         const v = newest?.version;
         return {
           id,
           pinned: i.version,
           ...(v && newer(v, i.version) ? { newer: v } : {}),
-          // A withdrawn advisory was a mistake: it's not said.
-          advisories: (advised ?? [])
-            .filter((a) => !a.withdrawn_at)
-            .map((a) => ({
-              title: a.summary ?? "an advisory",
-              severity: a.severity ?? "unknown",
-              url: a.html_url ?? "",
-            })),
+          advisories: standing(advised),
         };
       }),
     );

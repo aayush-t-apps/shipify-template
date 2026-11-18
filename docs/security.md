@@ -114,6 +114,17 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
   the kernel lets a process read only its own children's (`kernel.yama.ptrace_scope` 1, Ubuntu's
   own). The sandbox check proves both with a dummy login. The read-only GitHub token and the look
   token stay in its environment, since `gh` and the agent's tools' settings read them there.
+- **A new version under check** (ADR 0079): when a work run on Shipify moves its agent's pin, the
+  think step installs that version and asks it a few fixed questions with the login, before you
+  review its PR (before, a version got the login only after your merge). The walls are think's:
+  the agent's own user, in the run's own `check/` folder, its own HOME and settings, the login on
+  fd 3 and no other key (no GitHub token, look token or tool), the network as think's. Nothing the
+  agent wrote runs then: the install's words, the adapter, the prompts and the reader are main's,
+  and from the branch the box takes one value, a plain version, with the install otherwise main's
+  and no advisory listed against it; the branch's code runs only in `make verify`, after, with no
+  login. So a bad release reaches what it would after your merge, only sooner. Its record
+  (`tests/fixtures/checked/<agent>.json`) holds fixed fields only: never the login, a key or the
+  agent's words; the secret scan checks its commit, as every commit.
 - **Codex's login is a file its commands can read** (ADR 0074, accepted with its merge): Codex
   takes your ChatGPT session only from its home, so the run writes it there (the run's own
   `config/codex/auth.json`, mode 600). A page that tricks it into running a command could send
@@ -144,6 +155,11 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
   plugins, Claude Code files, repo's skills or logins of its own, and its own config folder
   read-only, so nothing in a project's files adds hooks or tools, and nothing is installed when it
   starts.
+- **One repo's instructions:** a work run's agent follows its clone's `AGENTS.md` alone, never a
+  repo it reads, your files or Shipify's copy: Claude Code reads the clone's `CLAUDE.md` as an
+  added folder's, never one in a folder it writes (`claudeMdExcludes`), and OpenCode gets the file
+  by its path, its gate dropping the instructions its read tool adds from any other folder. A talk
+  run and a read run follow no repo's ([agents.md](agents.md#where-it-runs-and-what-it-holds)).
 - **The same rules at every ask:** before each one (the first, a catch-up, the fix round), what its
   agent reads its rules or code from that a command could write is made fresh, as the agent: its
   settings folder (`in/tools`, pi's whole settings folder) emptied and given again, Claude Code's
@@ -221,10 +237,11 @@ things: your private data, the untrusted text, and a way out. The **read** profi
 text, and a command list never could (`cat /proc/self/environ` and the web reach past one).
 
 - **Reading tools only:** Claude Code runs with `--restricted --tools Read,Grep,Glob` (no command or
-  code tool, no WebFetch, file tools kept inside its folders; recorded live in
-  `tests/fixtures/claude-decisions.json`), pi with `--tools read,grep,find,ls
+  code tool, no WebFetch, file tools kept inside its folders; checked live on each version, its
+  record's `read`, ADR 0079), pi with `--tools read,grep,find,ls
   --no-context-files` and OpenCode with every tool but `read`, `list`, `glob` and `grep` denied,
-  their gate keeping reads inside its folders, links resolved. Its folders are
+  their gate keeping reads inside its folders, links resolved, and OpenCode's dropping the
+  `AGENTS.md` its read tool adds from a repo it reads (no repo's instructions). Its folders are
   `read/`, your files and Shipify's copy; it writes nothing.
 - **No key:** its agent gets its login and nothing else: no GitHub token, no tool's look key. Its
   login stays out of its reach too: it runs no command, its login is on a pipe and not in its
@@ -424,8 +441,10 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
 - **your events,** from the account in the variable `SHIPIFY_OWNER`;
 - **the door App's comments** for you, each with a hidden `from` line (who, which chat);
 - **a dispatch from `main`** carrying only a task number (and which job). It does only what the
-  task's status already has pending, or a part's first run, which your `go` on its parent started
-  (or, after it, the merge of the part it waited for: ADR 0066);
+  task's status already has pending; a part's first run, which your yes on its split or your `go`
+  started (or the merge of the part it waited for: ADR 0066, 0080); a task's carry-on, once the
+  tasks first its status waits for closed and one merged (ADR 0080); or your words a run passed
+  there (below);
 - **a push of merged plans** to `main`.
 
 And never:
@@ -461,6 +480,8 @@ pages, a tool's answers and anyone else's text are data, never a command
   sign-in (and its two-factor) says it's you: code reaches `main`, and production, only through
   it. What a chat can start, and why that's enough:
   - `go` and `publish` start only what you merged (a change doc, a plan): the merge approved it.
+    A big change's doc merge starts its build by itself (ADR 0080), for the same reason, and the
+    build is a PR you merge.
   - `preview` deploys an open PR to its own preview, with no runtime keys; `start over` closes a
     PR (its commits stay on GitHub) and starts a new branch. Neither reaches `main`.
   - A release opens a PR that only your merge deploys.
@@ -484,8 +505,9 @@ pages, a tool's answers and anyone else's text are data, never a command
 - **A split's `yes`** (ADR 0066) approves its parts' words: each title and brief shows in full on
   the list, the list's code is their fingerprint (an edit to the task voids it), and the box opens
   exactly those words as each part's description, which its run then follows as yours. A part's
-  title names its repo, so you see each repo a part may change before your `yes`. Opening parts
-  starts nothing: only your `go` does, and after it a part's merge. The parts and their links are
+  title names its repo, so you see each repo a part may change before your `yes`. Your `yes` opens
+  the parts and starts the ready ones (ADR 0080), and after it a part's merge starts the next;
+  `stop` starts no more. The parts and their links are
   written with the workflow's own token (`issues: write`), and a part's run reads its parent and
   siblings as data, but for the parent's description, which is yours.
 - **A workflow change's `yes`** (ADR 0075): a list may hold a run's held workflow change
@@ -504,7 +526,19 @@ pages, a tool's answers and anyone else's text are data, never a command
   pushes one commit of the bot's to the task's branch only, once (a journal entry). A refusal
   replies ✗ and why. The repos App still never gets workflows write.
 - **A task first's `yes`** (ADR 0075): approves its title and brief as your words, as a split's
-  does, opens it as a sub-task this task is blocked by, and starts its run. No key.
+  does, opens it as a sub-task this task is blocked by, and starts its run. No key. Its merge
+  starts this task's run again (ADR 0080): your Yes and your merge are at its root, and it runs
+  with the task's own profile, clone and keys.
+- **Separate work's `yes`** (ADR 0080): the same, for a task of its own that nothing waits for,
+  opened in the project its task is in or on its own (label `first`), never a split's part.
+- **A list that waits** (ADR 0080) is approved only by your `yes`, whole, by its code, within a
+  day, as before. Other words keep it, and a guest's words no longer drop your list; a run can
+  drop it (`drop_list`), never approve it.
+- **Passed words** (ADR 0080): a run only names a related task (`pass`); the box checks the
+  relation (the family, the status's `waits` and `separate`, or the line the box wrote in the
+  task's body) and copies your own words, never a guest's or the agent's, in a comment of the
+  workflow's token with a hidden `pass` line. They count as yours only while nobody has edited
+  that comment, and never as a fixed word: a passed `yes`, `go` or `close` does nothing.
 - **A routine's form:** a page someone else wrote that a routine reads (a shared page, a web clip)
   could steer what it writes, but only within its form: its one target, its caps, its `max`. Keep
   the target private. What it writes is text blocks only, so the form isn't a way out.

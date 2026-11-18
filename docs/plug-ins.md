@@ -99,6 +99,13 @@ imports the list, never an adapter.
   `config/skills`). The conformance test checks it, and that its report names the skills its agent
   loaded (`AgentReport.skills`): its own skill tool's, or a read of a `SKILL.md` (the contract's
   `skillRead`).
+- **The repo's instructions:** a work run hands its agent its clone (`AgentRun.work`; the box's
+  check, its scratch repo), and the agent follows that repo's `AGENTS.md` and no other folder's,
+  never a repo it reads. A talk, read or guest run follows no repo's. An agent that reads its
+  working folder's by itself (pi, Codex) needs nothing more; an adapter whose settings shut out the
+  project's own loads it from there (Claude Code's added folder, OpenCode's `instructions`). The
+  conformance test checks it, and the box's check asks each new version for the word in its
+  scratch repo's `AGENTS.md` (ADR 0079).
 - **Its counts:** each ask's own tokens and cost. An agent whose counts are its session's from the
   start, as Claude Code's are when it carries on in a session (a catch-up round, a stay's turn),
   says so (`AgentReport.sessionTotals`), and the core counts only what each ask adds.
@@ -110,6 +117,15 @@ imports the list, never an adapter.
   write (`cleared`: Claude Code's `settings.json`, OpenCode's `~/.opencode` and cache), so a run
   can't change the rules a later ask starts with. The conformance test checks they're the run's
   own.
+- **What it ran, and what it was offered:** its report names each command its agent ran or was
+  refused, as written (`AgentReport.commands`), and its tools, helpers and skills when its output
+  says them (`AgentReport.offered`). The box's check of a new version reads them (ADR 0079): the
+  one list every agent is held to is the contract's (`DECISIONS`), and the conformance test checks
+  each reader with its agent's own way of saying them.
+- **Its record:** `tests/fixtures/checked/<agent>.json`, what its pinned version did when it was
+  checked live, written by the box's check for each new version (a first one, on a PC). The
+  conformance test holds it to the pin, each of its checks to passed, and its decisions to what
+  its adapter decides ([agents.md](agents.md#a-new-version)).
 
 Models, efforts, gateways and adding one: [agents.md](agents.md).
 

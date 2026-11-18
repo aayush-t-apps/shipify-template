@@ -147,12 +147,15 @@ function skillLines(s?: SkillsWeek): string[] {
 
 /**
  * The agents (task #673): an advisory against a pin first, as its own line, then the pins behind
- * their newest, in one. A version moves only in a PR checked live (docs/agents.md).
+ * their newest, in one, each with the task that moves it: one task, which a box checks live
+ * (ADR 0079, docs/agents.md).
  */
 function agentLines(a?: AgentNews[] | null): string[] {
   if (a === undefined) return [];
   if (a === null) return ["- **Agents:** their newest versions couldn't be read this week"];
-  const behind = a.flatMap((x) => (x.newer ? [`${x.id} ${x.pinned} → ${x.newer}`] : []));
+  const behind = a.flatMap((x) =>
+    x.newer ? [`${x.id} ${x.pinned} → ${x.newer} (\`shipify: update ${x.id} to ${x.newer}\`)`] : [],
+  );
   return [
     ...a
       .filter((x) => x.advisories.length)
@@ -161,7 +164,9 @@ function agentLines(a?: AgentNews[] | null): string[] {
           `- **Advisory:** ${x.id} ${x.pinned}: ${list(x.advisories.map((v) => `${v.title} (${v.severity}${v.url ? `, ${v.url}` : ""})`))}. Take a fixed version soon (docs/agents.md, "A new version")`,
       ),
     ...(behind.length
-      ? [`- **Agents behind:** ${list(behind)} (each moves in a PR checked live: docs/agents.md)`]
+      ? [
+          `- **Agents behind:** ${list(behind)}: start its task, and a box checks the new version live (docs/agents.md)`,
+        ]
       : []),
   ];
 }

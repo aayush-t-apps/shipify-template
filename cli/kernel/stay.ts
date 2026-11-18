@@ -8,23 +8,27 @@ import { taskAgent } from "./agent.ts";
 import type { Decided, Plan, Said, Snapshot, ThinkMeta, ThinkWhy } from "./types.ts";
 
 /**
- * The words a stay answers, after comment `after`: yours, and a guest's on their own chat (ADR
- * 0071), never a setting the door wrote (a `use` or `close` from a chat starts nothing).
+ * The words a stay answers, after comment `after`: yours, a guest's on their own chat (ADR 0071),
+ * and yours passed here from a related task (ADR 0080), never a setting the door wrote (a `use` or
+ * `close` from a chat starts nothing).
  */
 export const newWords = (said: Said[], after: number): Said[] =>
   said.filter(
     (c) =>
-      (c.author === "owner" || c.author === "door" || c.author === "guest") &&
+      (c.author === "owner" ||
+        c.author === "door" ||
+        c.author === "guest" ||
+        c.author === "passed") &&
       c.id > after &&
       !c.from?.setting,
   );
 
 /**
- * How long a stay waits with nothing to answer, unless SHIPIFY_STAY says (minutes; 0: never): 20
- * covers a pause to read a reply and think (on #462 the longest was 6.5 minutes), as the owner
- * asked (ADR 0059).
+ * How long a stay waits with nothing to answer, unless SHIPIFY_STAY says (minutes; 0: never): 30
+ * covers a pause to read a reply and think (on #462 the longest was 6.5 minutes; ADR 0059), and
+ * the owner asked for 30 (task #764, 2026-11-17).
  */
-export const STAY_IDLE_MINUTES = 20;
+export const STAY_IDLE_MINUTES = 30;
 /**
  * task.yml's job limit (`timeout-minutes`; tests/workflows.test.ts holds them equal). A stay has no
  * cap of its own: it takes what its job has left (ADR 0057, 2026-10-18). Its record reads and
@@ -89,8 +93,9 @@ export function staysAfter(
 ): boolean {
   if (minutes <= 0 || p.do !== "think" || p.think.check) return false;
   // Your words, however its job started: a stay's handover is a dispatch too. A repeat's isn't,
-  // nor a part's start (ADR 0066): it frees its slot for the next part.
-  if (p.think.why === "scheduled" || p.think.why === "sub-task") return false;
+  // nor a part's start (ADR 0066), nor a task's carry-on (ADR 0080): each frees its slot.
+  if (p.think.why === "scheduled" || p.think.why === "sub-task" || p.think.why === "carry-on")
+    return false;
   // A task your words reopened is open: plan opened it, or apply does before the stay.
   const reopens = p.writes?.some((w) => w.w === "reopen");
   if ((s.issue.state !== "open" && !reopens) || !meta?.session) return false;

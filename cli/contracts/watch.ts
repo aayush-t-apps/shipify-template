@@ -36,6 +36,11 @@ export const TaskSeen = z.object({
   /** The last run's handoff (Goal, Done, Next, Decisions, Open), in Markdown: the chat shows it
    * as the task's Progress (ADR 0069). One past its size isn't read. */
   notes: z.string().max(20_000).optional().catch(undefined),
+  /** Each PR's state as its runs last saw it, by its URL: the chat's PR chips, with no read. */
+  prInfo: z
+    .record(z.string(), z.object({ state: z.enum(["open", "merged", "closed"]) }))
+    .optional()
+    .catch(undefined),
 });
 export type TaskSeen = z.infer<typeof TaskSeen>;
 

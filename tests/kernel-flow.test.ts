@@ -1036,7 +1036,7 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     // own checks: the clock leaves room for that.
   }, 300_000);
 
-  it("a PR asked for again while it's open gets this run's body: `closes`, then `part-of`, no longer closes the task", async () => {
+  it("a PR asked for again while it's open gets this run's body: `closes`, then a doc's `part-of`, whose merge builds it (ADR 0080)", async () => {
     const origin = await onProject();
     process.env.FAKE_WORK = "crash";
     await job("issues", "opened");
@@ -1054,8 +1054,11 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     Object.assign(process.env, { FAKE_WORK: "ok", FAKE_PR_KIND: "part-of" });
     await job("issue_comment", "created");
     expect(Object.keys(read().prs ?? {})).toEqual([url]);
-    expect(read().bodies?.[url]).toContain("Part of");
-    expect(read().bodies?.[url]).not.toContain("Closes");
+    // A big change's doc closes its task, whose close run builds it: the PR says so.
+    expect(read().bodies?.[url]).toContain(
+      "Closes o/shipify#12\nMerging this accepts it and starts its build.",
+    );
+    expect(status()?.prInfo?.[url]?.kind).toBe("change");
   }, 300_000);
 
   it("a question mid-change keeps its work on the branch, its reply as any question's (ADR 0041)", async () => {
@@ -1654,7 +1657,7 @@ describe("a run end to end", () => {
     expect(replies().at(-1)?.c.body).toContain("came before the list");
   });
 
-  it("opens a split's parts on your Yes, starting none, and `go` starts the ready one (ADR 0066)", async () => {
+  it("opens a split's parts on your Yes and starts the ready one, with no `go` (ADR 0066, 0080)", async () => {
     process.env.FAKE_RESULT = JSON.stringify({
       v: 2,
       state: "needs-you",
@@ -1671,7 +1674,7 @@ describe("a run end to end", () => {
     const yes = await job("issue_comment", "created");
     expect(yes.do).toBe("box");
     expect(replies().at(-1)?.c.body).toContain(
-      "Opened #200 and #201 as sub-tasks of this task. Nothing has started. Say `go` to start #200. #201 waits for #200.",
+      "Opened #200 and #201 as sub-tasks of this task, and started #200. #201 starts when #200 merges. `stop` starts no more.",
     );
     const parts = Object.values(read().others) as { issue: Record<string, unknown> }[];
     expect(
@@ -1680,49 +1683,78 @@ describe("a run end to end", () => {
       ["shipify: a new field", "Part of #12\n\nAdd the field.", 12, []],
       ["links: use it", "Part of #12\n\nTurn it on.", 12, [200]],
     ]);
-    expect(read().calls.filter((c) => c.startsWith("workflow run"))).toEqual([]);
-    expect(status().phase).toBe("needs-you");
-    // `go`: the parent is read with its parts (GitHub counts them on the issue), and the ready one starts.
+    // The ready one starts with your yes, and the task is `started`, so each merge starts the next.
+    expect(read().calls.filter((c) => c.startsWith("workflow run"))).toEqual([
+      "workflow run task.yml -R o/shipify -f issue=200 -f job=run",
+    ]);
+    expect(read().issue.labels.map((l) => l.name)).toContain("started");
+    expect(status().phase).toBe("answered");
+    // `go` still starts what is ready: nothing more is.
     set((f) => {
       Object.assign(f.issue, { sub_issues_summary: { total: 2, completed: 0 } });
     });
     say("go");
     await job("issue_comment", "created");
-    expect(read().calls.filter((c) => c.startsWith("workflow run"))).toEqual([
-      "workflow run task.yml -R o/shipify -f issue=200 -f job=run",
-    ]);
-    expect(read().issue.labels.map((l) => l.name)).toContain("started");
-    expect(replies().at(-1)?.c.body).toContain("Started #200. #201 waits for #200.");
+    expect(replies().at(-1)?.c.body).toContain("#201 waits for #200.");
   });
 
-  it("opens and starts a task first on your Yes, this task blocked by it (ADR 0075)", async () => {
+  it("a task first, #767's flow: listed once, your words keep it, one Yes, and its merge carries the task on (ADR 0075, 0080)", async () => {
+    const first = { title: "shipify: let the check through", brief: "Fix the check on main." };
     process.env.FAKE_RESULT = JSON.stringify({
       v: 2,
       state: "needs-you",
       text: "Main's code blocks this: one fix first.",
-      first: { title: "shipify: let the check through", brief: "Fix the check on main." },
+      first,
     });
     await job("issues", "opened");
     const list = replies().at(-1);
     expect(list?.c.body).toContain(
-      "1. Open and start `shipify: let the check through` first; this task waits for it: Fix the check on main.",
+      "1. Open and start `shipify: let the check through` first; this task waits for it, and carries on by itself when it merges: Fix the check on main.",
     );
+    // Your words before your yes keep the list: the run sees it, lists nothing, and says it waits.
+    process.env.FAKE_RESULT = JSON.stringify({ v: 2, state: "done", text: "Yes, that's planned." });
+    say("and will it check every agent?");
+    await job("issue_comment", "created");
+    expect(replies().at(-1)?.c.body).toContain("still waits for your `yes`.");
+    expect(replies().at(-1)?.line?.list).toBeUndefined();
+    expect(status().pending?.first).toEqual(first);
     say(`yes ${list?.line?.list}`);
     const yes = await job("issue_comment", "created");
     expect(yes.do).toBe("box");
     expect(replies().at(-1)?.c.body).toContain(
-      "Opened #200 and started it. When it merges, I'll say so here, and `continue` carries on.",
+      "Opened #200 and started it. This task carries on by itself when it merges.",
     );
+    expect(status().waits).toEqual([200]);
     const made = (read().others["200"] as { issue: Record<string, unknown> }).issue;
     expect([
       made.title,
       made.parent,
       (made.labels as { name: string }[]).map((l) => l.name),
     ]).toEqual(["shipify: let the check through", 12, ["sub-task", "first"]]);
-    expect(made.body).toContain("First for #12:");
+    expect(made.body).toContain(
+      "First for #12: that task carries on by itself when this one merges.",
+    );
     expect((read().issue as unknown as { blockedBy?: number[] }).blockedBy).toEqual([200]);
     expect(read().calls).toContain("workflow run task.yml -R o/shipify -f issue=200 -f job=run");
     expect(status().phase).toBe("needs-you");
+    // `continue` while #200 works: the box answers, with no agent.
+    say("continue");
+    const waits = await job("issue_comment", "created");
+    expect(waits.do).toBe("box");
+    expect(replies().at(-1)?.c.body).toContain(
+      "#12 waits for #200, which is still open. It carries on by itself when it merges",
+    );
+    // #200 merged: its close run starts #12's run, which carries on with no word of yours.
+    set((f) => {
+      Object.assign((f.others["200"] as { issue: Record<string, unknown> }).issue, {
+        state: "closed",
+        state_reason: "completed",
+      });
+    });
+    const carried = await job("workflow_dispatch");
+    expect(carried.do).toBe("think");
+    expect(status().waits).toBeUndefined();
+    expect(replies().at(-1)?.c.body).toContain("Yes, that's planned.");
   });
 
   it("says the agent couldn't start (the box's setup), never that it stopped early", async () => {

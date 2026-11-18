@@ -3,6 +3,7 @@
 // reads its agent's real output into a report. A new adapter adds a recorded run of its agent to
 // RECORDED, and passes the same tests.
 import {
+  existsSync,
   fstatSync,
   mkdirSync,
   mkdtempSync,
@@ -12,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error: plain JavaScript, as Codex runs it
@@ -21,6 +22,7 @@ import { decide as codexDecides } from "../../cli/lib/agents/codex-gate.mjs";
 import { ShipifyGate } from "../../cli/lib/agents/opencode-gate.mjs";
 // @ts-expect-error: plain JavaScript, as pi loads it
 import { refused, refusedCommand } from "../../cli/lib/agents/pi-gate.mjs";
+import { AgentRecord, failedOf, formatted, RECORDS } from "../../cli/kernel/agent-check.ts";
 import {
   ADAPTERS,
   defaultAgent,
@@ -28,7 +30,7 @@ import {
   loginOf,
   readExecutors,
 } from "../../cli/lib/agents.ts";
-import { type Gateway, LOGIN_FD } from "../../cli/lib/plugins/agent.ts";
+import { DECISIONS, type Gateway, LOGIN_FD } from "../../cli/lib/plugins/agent.ts";
 import { ROOT } from "../helpers.ts";
 
 /** Each adapter's agent, recorded in a real run (with its version), for its reader. */
@@ -175,50 +177,75 @@ const SKILL_LOADS: Record<string, unknown[]> = {
 };
 
 /**
- * The same decisions for every agent (ADR 0043): the refused commands in any form an agent writes
- * them, and anything else, pipes, loops and reads outside its folders included.
+ * Each command its agent ran and one its rules refused, as its output says them: Claude Code's
+ * tool call and its result's denial, pi's call and the gate's refusal at its end, OpenCode's gate's
+ * own lines, Codex's command in its login shell and one its hook declined.
  */
-const SAME = {
-  refused: [
-    "git push",
-    "git push origin main",
-    "git -C ../x push",
-    "make test && git push",
-    'echo "$(git stash)"',
-    "for r in x; do git push; done",
-    "git stash pop",
-    "(git push)",
-    "{ git push; }",
-    "if true; then git push; fi",
-    "git --no-pager push",
-    "git -c push.default=current push",
-    "A=1 git push",
-    "timeout -s KILL 9 git push",
-    "nice -n 5 git push",
-    "env -i git push",
-    "echo x | xargs git push",
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's own variable, as an agent writes it
-    "git -C ${PWD} push",
+const COMMANDS_SEEN: Record<string, unknown[]> = {
+  claude: [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "t1", name: "Bash", input: { command: "make verify" } },
+          { type: "tool_use", id: "t2", name: "Bash", input: { command: "git push" } },
+          { type: "tool_use", id: "t3", name: "Read", input: { file_path: "/work/a.ts" } },
+        ],
+      },
+    },
+    {
+      type: "result",
+      subtype: "success",
+      permission_denials: [
+        { tool_name: "Bash", tool_use_id: "t2", tool_input: { command: "git push" } },
+      ],
+    },
   ],
-  allowed: [
-    "make verify",
-    "find . -name '*.ts' | xargs grep -n TODO",
-    "jq .version package.json",
-    "for f in a b; do echo $f; done",
-    "cat /etc/os-release",
-    "ls /opt/shipify/tool",
-    "sed -n 1,20p README.md",
-    "git log --oneline -5",
-    'echo scratch > "$TMPDIR/msg.txt"',
-    'git commit --allow-empty -F "$TMPDIR/msg.txt"',
-    'grep -rn "git push" README.md',
-    "timeout 60 make verify",
-    "find . -name '*.md' -exec grep -l TODO {} +",
+  pi: [
+    {
+      type: "tool_execution_start",
+      toolCallId: "c1",
+      toolName: "bash",
+      args: { command: "make verify" },
+    },
+    { type: "tool_execution_end", toolCallId: "c1", toolName: "bash", isError: false, result: {} },
+    {
+      type: "tool_execution_start",
+      toolCallId: "c2",
+      toolName: "bash",
+      args: { command: "git push" },
+    },
+    {
+      type: "tool_execution_end",
+      toolCallId: "c2",
+      toolName: "bash",
+      isError: true,
+      result: {
+        content: [
+          { type: "text", text: "Refused by Shipify's rules: `git push` isn't for an agent" },
+        ],
+      },
+    },
   ],
+  opencode: [
+    { type: "shipify", call: "bash", command: "make verify" },
+    { type: "shipify", call: "bash", command: "git push", refused: "Refused by Shipify's rules" },
+  ],
+  codex: [
+    { cmd: "/usr/bin/bash -lc 'make verify'", status: "completed" },
+    { cmd: "/usr/bin/bash -lc 'git push'", status: "declined" },
+  ].map(({ cmd, status }, i) => ({
+    type: "item.completed",
+    item: { id: `item_${i}`, type: "command_execution", command: cmd, status },
+  })),
 };
 
-/** Claude Code's own decisions, recorded live with the rules its adapter writes (ADR 0043). */
-const CLAUDE = JSON.parse(readFileSync(join(ROOT, "tests/fixtures/claude-decisions.json"), "utf8"));
+/** Each agent's record (ADR 0079): what its pinned version did when it was checked live. */
+const recordOf = (agent: string): AgentRecord | undefined => {
+  const file = join(ROOT, RECORDS, `${agent}.json`);
+  return existsSync(file) ? AgentRecord.parse(JSON.parse(readFileSync(file, "utf8"))) : undefined;
+};
+const CLAUDE = recordOf("claude") as AgentRecord;
 
 /** The rules after a flag, up to the next flag. */
 const after = (argv: string[], flag: string) => {
@@ -234,19 +261,22 @@ const commandRule = (r: string) => /^(Bash|Read|Glob|Grep|WebFetch|WebSearch)(\(
 
 /**
  * How each adapter's agent decides, from the rules its adapter wrote: whether a command is refused.
- * Claude Code: its own answers, recorded live (tests/fixtures/claude-decisions.json) for exactly
- * the rules its adapter writes now; record them again when the rules or its version change.
+ * Claude Code: its own answers, as its record says (checked live, ADR 0079), for exactly the rules
+ * its adapter writes now: a change of the rules is checked live again, as its version is.
  * pi: its gate's own answer, with the rules pi's adapter wrote beside it.
  */
 const DECIDES: Record<string, (argv: string[], tools: string) => (command: string) => boolean> = {
   claude(argv) {
-    expect(after(argv, "--allowedTools").filter(commandRule)).toEqual(CLAUDE.rules.allowedTools);
-    expect(after(argv, "--disallowedTools").filter(commandRule)).toEqual(
-      CLAUDE.rules.disallowedTools,
-    );
+    const recorded = CLAUDE.argv ?? [];
+    for (const flag of ["--allowedTools", "--disallowedTools"])
+      expect(after(argv, flag).filter(commandRule), flag).toEqual(
+        after(recorded, flag).filter(commandRule),
+      );
     return (command) => {
-      const refused = CLAUDE.refused.includes(command);
-      expect(refused || CLAUDE.ran.includes(command), `record its answer to ${command}`).toBe(true);
+      const refused = Boolean(CLAUDE.refused?.includes(command));
+      expect(refused || CLAUDE.ran?.includes(command), `its record's answer to ${command}`).toBe(
+        true,
+      );
       return refused;
     };
   },
@@ -264,9 +294,9 @@ const DECIDES: Record<string, (argv: string[], tools: string) => (command: strin
     const refuses = openCodeGate(tools);
     return (command) => Boolean(refuses("bash", { command }, tools));
   },
-  // Codex: its gate's own answer, as its PreToolUse hook for every call (checked live on 0.167.0:
-  // Codex names its exec_command `Bash`, and a refusal stops the command), with its own rules
-  // files not read at all.
+  // Codex: its gate's own answer, as its PreToolUse hook for every call (checked live, as its
+  // record says: Codex names its exec_command `Bash`, and a refusal stops the command), with its
+  // own rules files not read at all.
   codex(argv, tools) {
     expect(argv).toEqual(expect.arrayContaining(["--ignore-rules", "--ignore-user-config"]));
     expect(argv.join("\n")).toContain(`command="node ${join(tools, "gate.mjs")}"`);
@@ -285,20 +315,23 @@ const NO_READS = (name: string) => Boolean(ADAPTERS[name]?.loginFile);
 /**
  * How each adapter's agent decides in the read profile (ADR 0044), from what its adapter wrote:
  * whether it may run a command, fetch a web page, and read a file. Claude Code: its own answers,
- * recorded live (claude-decisions.json's `read`) for exactly the flags its adapter writes, which
- * offer no command or web tool, and keep reads inside its working folder and its read folders.
- * pi: its gate's own answers, with the rules pi's adapter wrote beside it.
+ * as its record's `read` says (the tools it was offered, checked live) for exactly the flags its
+ * adapter writes, which offer no command or web tool, and keep reads inside its working folder and
+ * its read folders. pi: its gate's own answers, with the rules pi's adapter wrote beside it.
  */
 type Reads = { run: (c: string) => boolean; fetch: () => boolean; read: (f: string) => boolean };
 const READS: Record<string, (argv: string[], tools: string, cwd: string, read: string[]) => Reads> =
   {
     claude(argv, _tools, cwd, read) {
-      const at = argv.indexOf("--restricted");
-      expect(argv.slice(at, at + CLAUDE.read.flags.length)).toEqual(CLAUDE.read.flags);
-      expect(CLAUDE.read.permissionMode).toBe("acceptEdits");
+      const recorded = CLAUDE.read?.argv ?? [];
+      const flags = (a: string[]) =>
+        a.slice(a.indexOf("--restricted"), a.indexOf("--restricted") + 3);
+      expect(recorded).toContain("--restricted");
+      expect(flags(argv)).toEqual(flags(recorded));
+      expect(after(recorded, "--permission-mode")).toEqual(["acceptEdits"]);
       expect(argv).not.toContain("bypassPermissions");
       for (const d of read) expect(argv.join(" ")).toContain(`--add-dir ${d}`);
-      const tools: string[] = CLAUDE.read.tools;
+      const tools = CLAUDE.read?.tools ?? [];
       const inside = (f: string) => [cwd, ...read].some((d) => f === d || f.startsWith(`${d}/`));
       return {
         run: () => tools.includes("Bash"),
@@ -350,18 +383,16 @@ const loginName = (adapter: string) => {
 
 /**
  * How each adapter's agent reads its login from the pipe, given the variables its adapter names.
- * Claude Code: its own setting, checked live on the version executors.json pins (a dummy login on
- * fd 3 reached a stand-in API, and was in neither its environment nor its files); check it again
- * when the version moves. pi: Shipify's gate reads it, closes the pipe and hands the key to the
- * gateway's provider, which its adapter names in the gate's rules.
+ * Claude Code: its own setting, checked live on each version (its record's `login`: it answered
+ * with the login on fd 3, which was in neither its environment nor its files). pi: Shipify's gate
+ * reads it, closes the pipe and hands the key to the gateway's provider, which its adapter names
+ * in the gate's rules.
  */
 type Piped = (vars: Record<string, string>) => Promise<void> | void;
 const PIPED: Record<string, Piped> = {
   claude(vars) {
     expect(vars).toEqual({ CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: String(LOGIN_FD) });
-    expect(pinned("claude"), "check live that Claude Code reads its login from fd 3").toBe(
-      "2.1.284",
-    );
+    expect(CLAUDE.checks.login?.ok, "its record: it read its login from fd 3").toBe(true);
   },
   async pi(vars) {
     expect(vars).toEqual({ SHIPIFY_LOGIN_FD: String(LOGIN_FD) });
@@ -395,9 +426,9 @@ const PIPED: Record<string, Piped> = {
     }
   },
   // OpenCode: as pi's, its gate reads the key, closes the pipe, and puts it on each call to the
-  // gateway's provider alone (OpenCode's `chat.headers`); its config holds none. Checked live on the
-  // version executors.json pins: a dummy key on fd 3 (a pipe, or a socket off a box) reached a
-  // stand-in gateway, and a command it ran had no fd 3 and no key in its environment.
+  // gateway's provider alone (OpenCode's `chat.headers`); its config holds none. Checked live, as
+  // its record says: a dummy key on fd 3 (a pipe, or a socket off a box) reached a stand-in
+  // gateway, and a command it ran had no fd 3 and no key in its environment.
   async opencode(vars) {
     expect(vars).toEqual({ SHIPIFY_LOGIN_FD: String(LOGIN_FD) });
     const dir = mkdtempSync(join(tmpdir(), "piped-"));
@@ -446,28 +477,26 @@ const PIPED: Record<string, Piped> = {
       if (was === undefined) delete process.env.SHIPIFY_LOGIN_FD;
       else process.env.SHIPIFY_LOGIN_FD = was;
     }
-    expect(pinned("opencode"), "check live that OpenCode reads its key from fd 3").toBe("1.18.34");
+    expect(recordOf("opencode")?.checks.login?.ok, "its record: its gate read the key").toBe(true);
   },
 };
 
 /**
  * How each adapter's agent finds Shipify's skills (ADR 0038), from what its adapter does with the
- * run's skills folder: a flag, or a link where it reads its own. Each was checked live on the
- * version executors.json pins: every skill in skills/ listed by the agent itself (Claude Code's
- * init event, pi's skill list); check it again when the version moves.
+ * run's skills folder: a flag, or a link where it reads its own. Each version is checked live
+ * (its record's `skills`): every skill in skills/ listed by the agent itself (Claude Code's init
+ * event, pi's skill list), or one it was asked to load, loaded.
  */
 type Handed = (argv: string[], link: string | undefined, paths: { config: string }) => void;
 const SKILLS_HANDED: Record<string, Handed> = {
   claude(argv, link, paths) {
     expect(link).toBe(join(paths.config, "skills"));
     expect(argv).not.toContain("--disable-slash-commands");
-    expect(pinned("claude"), "check live that Claude Code lists the linked skills").toBe("2.1.284");
   },
   pi(argv, link) {
     expect(link).toBeUndefined();
     expect(after(argv, "--skill")).toEqual([join(ROOT, "skills")]);
     expect(argv).not.toContain("--no-skills");
-    expect(pinned("pi"), "check live that pi lists the skills it's given").toBe("1.0.2");
   },
   // OpenCode: its config's skills.paths (the run's tools folder, beside its config folder).
   opencode(argv, link, paths) {
@@ -477,16 +506,79 @@ const SKILLS_HANDED: Record<string, Handed> = {
       readFileSync(join(paths.config, "..", "tools", "opencode.json"), "utf8"),
     );
     expect(config.skills).toEqual({ paths: [join(ROOT, "skills")] });
-    expect(pinned("opencode"), "check live that OpenCode lists the skills it's given").toBe(
-      "1.18.34",
-    );
   },
   // Codex: a link where it reads a user's ($HOME/.agents/skills, still read with its own config
   // ignored), and its own bundled ones off.
   codex(argv, link) {
     expect(link?.endsWith("/home/.agents/skills")).toBe(true);
     expect(argv).toContain("skills.bundled.enabled=false");
-    expect(pinned("codex"), "check live that Codex lists the linked skills").toBe("0.167.0");
+  },
+};
+
+/**
+ * How each adapter's agent follows the repo it works in (`work`, its working folder): that repo's
+ * AGENTS.md and no other folder's; in the read profile, no repo's (ADR 0044). Each version is checked
+ * live (its record's `instructions`: the word in the scratch repo's AGENTS.md).
+ */
+type Follows = (
+  argv: string[],
+  run: { tools: string; work: string; write: string[]; reading: boolean },
+) => Promise<void> | void;
+const FOLLOWS: Record<string, Follows> = {
+  // Claude Code: `--setting-sources user` leaves out the project's CLAUDE.md, so the repo is an
+  // added folder whose CLAUDE.md it reads (a Shipify project's says `@AGENTS.md`), and none in a
+  // folder it writes. Checked live on 2.1.284 against a stand-in API: without these, no word of the
+  // repo's reached it; without the exclude, an out/ CLAUDE.md did.
+  claude(argv, { work, write, reading }) {
+    const settings = after(argv, "--settings");
+    if (reading) {
+      expect(settings).toEqual([]);
+      expect(argv).not.toContain(work);
+      return;
+    }
+    expect(argv.join(" ")).toContain(`--add-dir ${work}`);
+    expect(JSON.parse(settings[0] ?? "{}")).toEqual({
+      env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" },
+      claudeMdExcludes: write.map((d) => `${d}/**`),
+    });
+  },
+  // pi: its working folder's (and its parents'), by itself; none with `--no-context-files`.
+  pi(argv, { reading }) {
+    expect(argv.includes("--no-context-files")).toBe(reading);
+  },
+  // OpenCode: with the project's config off, the repo's AGENTS.md by its path in `instructions`.
+  // Its read tool adds the AGENTS.md of each folder between a file and its working folder (1.18.34's
+  // source): the gate keeps them only when they're all the work repo's.
+  async opencode(_argv, { tools, work, reading }) {
+    const config = JSON.parse(readFileSync(join(tools, "opencode.json"), "utf8"));
+    expect(config.instructions).toEqual(reading ? undefined : [join(work, "AGENTS.md")]);
+    const { ShipifyGate: gate } = await import(join(tools, "gate.mjs"));
+    const hook = (await gate())["tool.execute.after"];
+    const read = async (tool: string, ...loaded: string[]) => {
+      const file = `<path>${work}/src/a.ts</path>\n<type>file</type>\n<content>\n1: x\n</content>`;
+      const added = loaded.map((p) => `Instructions from: ${p}\nSay the word.`).join("\n\n");
+      const output = {
+        title: "a.ts",
+        output: `${file}${loaded.length ? `\n\n<system-reminder>\n${added}\n</system-reminder>` : ""}`,
+        metadata: { loaded },
+      };
+      await hook({ tool, sessionID: "s", callID: "c", args: {} }, output);
+      return output.output.includes("Say the word.") ? "kept" : "dropped";
+    };
+    const own = join(work, "src", "AGENTS.md");
+    const other = join(dirname(work), "read", "acme", "AGENTS.md");
+    expect(await read("read", own)).toBe(reading ? "dropped" : "kept");
+    expect(await read("read", other)).toBe("dropped");
+    expect(await read("read", own, other)).toBe("dropped");
+    // A folder beside it whose name starts the same isn't its.
+    expect(await read("read", `${work}-other/AGENTS.md`)).toBe("dropped");
+    // Another tool's output is its own.
+    expect(await read("grep", other)).toBe("kept");
+  },
+  // Codex: its working folder's (from the repo's root), by itself; its home's own is cleared before
+  // every ask. It takes no read run.
+  codex(argv) {
+    expect(argv.join(" ")).not.toContain("project_doc");
   },
 };
 
@@ -508,6 +600,11 @@ describe("executors.json", () => {
   it("lists a gateway's models by ids its pattern takes, Auto among them, and searches with the word", () => {
     for (const [id, e] of Object.entries(executors)) {
       if (e.auto?.model) expect(e.models, `${id}: Auto`).toContain(e.auto.model);
+      // Auto on a plan of its login: a listed model, and an adapter that reads the plan.
+      for (const [plan, m] of Object.entries(e.auto?.plans ?? {})) {
+        expect(e.models, `${id}: Auto on ${plan}`).toContain(m);
+        expect(ADAPTERS[e.adapter ?? ""]?.plan, `${id}: a plan read`).toBeTypeOf("function");
+      }
       for (const name of Object.keys(e.modelEfforts ?? {}))
         expect(e.models, `${id}: ${name}`).toContain(name);
       for (const name of Object.keys(e.about ?? {}))
@@ -725,8 +822,59 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
       folders: { write: [join(dir, "out")] },
     });
     const refuses = decide?.(argv, join(dir, "tools")) ?? (() => false);
-    for (const c of SAME.refused) expect(refuses(c), `${name} refuses ${c}`).toBe(true);
-    for (const c of SAME.allowed) expect(refuses(c), `${name} runs ${c}`).toBe(false);
+    for (const c of DECISIONS.refused) expect(refuses(c), `${name} refuses ${c}`).toBe(true);
+    for (const c of DECISIONS.ran) expect(refuses(c), `${name} runs ${c}`).toBe(false);
+    // Its record's decisions, when it has some, are what it decides: the four where the agents
+    // differ too.
+    const record = recordOf(name);
+    for (const c of [...(record?.refused ?? []), ...(record?.ran ?? [])])
+      expect(refuses(c), `${name}'s record: ${c}`).toBe(Boolean(record?.refused?.includes(c)));
+  });
+
+  it("has a record of the version executors.json pins, each of its checks passed (ADR 0079)", () => {
+    const record = recordOf(name);
+    const version = pinned(name);
+    const start = `checked live on a box: start \`shipify: update ${name} to ${version}\``;
+    expect(record, start).toBeDefined();
+    expect(record?.agent).toBe(name);
+    expect(record?.version, start).toBe(version);
+    expect(failedOf(record as AgentRecord), start).toEqual([]);
+    // A box checks each of these (the read profile, for an agent that takes read runs).
+    if (record?.on === "box")
+      expect(Object.keys(record.checks)).toEqual(
+        expect.arrayContaining([
+          "answers",
+          "login",
+          "skills",
+          "instructions",
+          "decisions",
+          ...(NO_READS(name) ? [] : ["read"]),
+        ]),
+      );
+  });
+
+  it("reports each command its agent ran or was refused, as written, and what it was offered when its output says (ADR 0079)", () => {
+    const seen = COMMANDS_SEEN[name];
+    expect(
+      seen,
+      `add how ${name}'s agent runs and is refused a command to COMMANDS_SEEN`,
+    ).toBeTruthy();
+    const reader = adapter.reader();
+    for (const line of seen ?? []) reader.line(JSON.stringify(line));
+    expect(reader.report().commands).toEqual([
+      { command: "make verify", refused: false },
+      { command: "git push", refused: true },
+    ]);
+    // Its recorded run: what it was offered, as its output says it (Claude Code's init event).
+    const recorded = adapter.reader({ model: "the-runs-model" });
+    for (const line of readFileSync(join(ROOT, RECORDED[name] as string), "utf8").split("\n"))
+      if (line) recorded.line(line);
+    const offered = recorded.report().offered;
+    if (name === "claude") {
+      expect(offered?.tools).toEqual(expect.arrayContaining(["Bash", "Read", "Skill", "Task"]));
+      expect(offered?.helpers).toEqual(expect.arrayContaining(["general-purpose"]));
+      expect(offered?.skills?.length).toBeGreaterThan(0);
+    } else if (offered) expect(offered.tools?.length).toBeGreaterThan(0);
   });
 
   it("starts its agent in the read profile with reading tools only, inside its folders (ADR 0044)", () => {
@@ -828,6 +976,28 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
     if (!link) expect(reading.join(" ")).not.toContain(join(ROOT, "skills"));
   });
 
+  it("follows its work repo's AGENTS.md, never a read repo's, and no repo's in the read profile", async () => {
+    const follows = FOLLOWS[name];
+    expect(follows, `add how ${name}'s agent follows its work repo's to FOLLOWS`).toBeTruthy();
+    const dir = mkdtempSync(join(tmpdir(), "follows-"));
+    const work = join(dir, "work");
+    const write = [join(dir, "out")];
+    const tools = join(dir, "tools");
+    const run = {
+      command: ["agent-program"],
+      commands: { deny: ["git push"], web: true },
+      tools: { mode: "look" as const, dir: tools },
+      config: join(dir, "config"),
+      folders: { read: [join(dir, "in")], write },
+      work,
+    };
+    await follows?.(adapter.argv(run), { tools, work, write, reading: false });
+    if (NO_READS(name)) return;
+    // The core gives a read run no work folder; its adapter would add none of it anyway.
+    const reading = { ...run, commands: { ...run.commands, run: false }, folders: { read: [] } };
+    await follows?.(adapter.argv(reading), { tools, work, write: [], reading: true });
+  });
+
   it("asks for read-only and cleared paths only inside the run's own: where its agent reads its rules", () => {
     const dir = mkdtempSync(join(tmpdir(), "read-only-"));
     const paths = {
@@ -862,24 +1032,36 @@ describe.each(Object.entries(ADAPTERS))("the agent plug-in: %s's adapter", (name
 
 describe("where the agents decide differently (ADR 0043, docs/agents.md)", () => {
   const gate = { deny: ["git push", "git stash"] };
+  const [message, search, path, shell] = DECISIONS.differ;
 
-  it("holds Claude Code's recorded decisions to the version executors.json pins", () => {
-    expect(CLAUDE.version).toBe(pinned("claude"));
-  });
-
-  it("Claude Code matches the words: a message or a search with `push` is refused, a path isn't", () => {
-    for (const c of [
-      'git commit --allow-empty -m "add push notifications"',
-      "git log --oneline --grep push",
-    ]) {
+  it("Claude Code matches the words: a message or a search with `push` is refused, and a path", () => {
+    for (const c of [message, search]) {
       expect(CLAUDE.refused, c).toContain(c);
       expect(refusedCommand(gate, c), c).toBeUndefined();
     }
-    expect(CLAUDE.ran).toContain("/usr/bin/git push");
-    expect(refusedCommand(gate, "/usr/bin/git push")).toBeTruthy();
+    // Refused by both since Claude Code 2.1.326 (2.1.284 ran it).
+    expect(CLAUDE.refused).toContain(path);
+    expect(refusedCommand(gate, path)).toBeTruthy();
     // Claude Code doesn't look inside another shell (the read-only token and the box's own push are
     // the wall); Shipify's gate does.
-    expect(CLAUDE.ran).toContain('sh -c "git push"');
-    expect(refusedCommand(gate, 'sh -c "git push"')).toBeTruthy();
+    expect(CLAUDE.ran).toContain(shell);
+    expect(refusedCommand(gate, shell)).toBeTruthy();
+  });
+});
+
+describe("the agents' records (ADR 0079)", () => {
+  const { executors } = readExecutors(join(ROOT, "executors.json"));
+  const programs = Object.entries(executors).filter(([, e]) => e.install && !e.extends);
+
+  it("one for each agent the box installs, and none for another", () => {
+    const files = readdirSync(join(ROOT, RECORDS)).sort();
+    expect(files).toEqual(programs.map(([id]) => `${id}.json`).sort());
+  });
+
+  it("are written as the repo's formatter writes them, so a box's record passes its checks", () => {
+    for (const [id] of programs) {
+      const text = readFileSync(join(ROOT, RECORDS, `${id}.json`), "utf8");
+      expect(`${formatted(JSON.parse(text))}\n`, id).toBe(text);
+    }
   });
 });

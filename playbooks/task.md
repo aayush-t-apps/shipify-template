@@ -60,7 +60,8 @@ notes and repeats, and replies.
 - **Nothing by hand** (ADR 0075): never ask the owner to edit a file (in GitHub's editor or on a
   PC), apply or paste a patch, run a command on a PC that a chat word does, or copy words into a
   new chat. Every change is a PR they merge, a list they approve with Yes (calls, a workflow
-  change, a task first), or a word.
+  change, a task first, separate work), or a word. A flow they approved carries on by itself
+  (ADR 0080): what their Yes opens starts, and a merge starts what waited for it.
   <!-- work -->
   A workflow change (`.github/workflows/`, `.github/actions/`): commit it as any change, and say
   in plain words what it does and why. The box holds it out of the push and lists its exact lines
@@ -74,10 +75,18 @@ notes and repeats, and replies.
   notebook's issues.
 - **What only the owner does:** merge a PR, approve a list (its Yes in a chat, or `yes`), run an
   operation (the Operate form, or its Yes in a chat), ask for a preview (`preview`), start over (`start over`), publish a
-  plan again (`publish`), build a big change after its doc merged (`go`) and pick the model
+  plan again (`publish`), start a build again after they stopped it (`go`) and pick the model
   (`use <model>`). Name the word for it; never say it's done. What you ask for (a PR, a call, a
   note, a repeat), the box does after you and confirms in its own words: say what you asked for,
-  not that it happened.
+  not that it happened. Never ask for a word the flow doesn't need: their merge of a big change's
+  doc starts its build, and a task first's merge carries its task on.
+- **A list that waits** for their Yes (the prompt shows it, ADR 0080): only their `yes` or `no`
+  decides it, and their other words keep it. Don't list it again: the box says it still waits.
+  When their words change it, propose the new one whole (it replaces the old); when they drop
+  it, set `drop_list: true`.
+- **Their words about another task** (its parent, a part, a sibling, a task this one opened, or
+  the one that opened it): set `pass` to its number. The box copies their words there, as they
+  wrote them, and starts its run; answer here only what's about this task.
 - **How a reply reads** (ADR 0078): the answer first, as a person would say it, in the prompt's
   voice. A plain question gets a few sentences or bullets; headings, tables and "What I checked"
   are for work with parts (a PR, a plan). Offer up to 3 next steps as `choices` with no question
@@ -126,7 +135,7 @@ notes and repeats, and replies.
 |---|---|---|
 | tweak | a style, layout, wording or copy change; a bug fix | one PR, `kind: closes` |
 | feature | new behaviour inside one project, easy to undo | one PR with its change doc, `kind: closes` |
-| big | data, sign-in, a new service, host or dependency; anything hard to undo | a doc PR first (`kind: part-of`), then, after the owner merges it and says `go`, the build (`kind: closes`) |
+| big | data, sign-in, a new service, host or dependency; anything hard to undo | a doc PR first (`kind: part-of`), then, once the owner merges it (the merge starts the build), the build (`kind: closes`) |
 
 When in doubt, take the bigger lane.
 <!-- /work -->
@@ -144,10 +153,12 @@ changelog: skip both, here and for a feature.
 `docs/spec.md`; `<ship> version <clone>`. Commit, run its tests, ask for the PR.
 
 **Big change:** first run, the change doc (and an ADR when the choice is hard to reverse), committed,
-`kind: part-of`; your reply asks the owner to merge it and say `go`. The run after `go` builds it as a
-feature. While the design is still open, the ADR is `status: proposed` and holds the options and open
-questions; later runs change it on the same branch as the owner comments, and the owner's merge
-accepts it (ADR 0061).
+`kind: part-of`; your reply asks the owner to merge it: its PR closes the task, and the merge starts
+the build, in the task's close run (ADR 0080). That run builds it as a feature. While the design is
+still open, the ADR is `status: proposed` and holds the options and open questions; later runs
+change it on the same branch as the owner comments, and the owner's merge accepts it, its choices
+as recommended (ADR 0061). A part of a split, or a doc merged before ADR 0080, still waits for
+their `go` after the merge.
 <!-- /work -->
 
 **The rare cases have a skill each** (in `skills/`, in the prompt's Shipify folder): read it first
@@ -164,8 +175,14 @@ when the case comes up.
   `{"title": "<repo>: …", "brief": "…"}`, one task, its brief 600 characters at most, saying what
   to fix and how the owner knows it's done, as its run reads nothing else of this thread. It comes
   alone: no `pr`, `work`, `calls` or `split` (your commits are kept on the branch). The box lists
-  it; the owner's Yes opens and starts it, and this task waits. When it merges, this task is told,
-  and the owner's `continue` carries on. Not from a read run, and not on a project's own thread.
+  it; the owner's Yes opens and starts it, and this task waits. When it merges, this task carries
+  on by itself (ADR 0080): a run starts with no word of theirs, and the prompt says what merged.
+  One that's open already isn't listed again. Not from a read run, and not on a project's own
+  thread.
+- **Separate work** (ADR 0080): work you found that this task doesn't need, or a new task the owner
+  asked for here: `first` with `"separate": true`. It may come with your `pr`, `calls` and `notes`.
+  The owner's Yes opens it as a task of its own (in the project this task is in, else on its
+  own), never a part of a split, and starts it; nothing waits for it.
 - **A task that repeats, a check back once, or an errand** ("every Monday at 9", "in 15 minutes",
   "tell me when #12's checks finish"; ADR 0054): the `repeats` skill, which holds their rules, for
   the `repeat` to set.
@@ -176,7 +193,11 @@ when the case comes up.
 <!-- work -->
 **Shipify itself (`shipify: …`):** your clone is of shipify; read its `AGENTS.md` ("Changing Shipify
 itself") first. A fix gets a test and a changelog line; a stack change bumps `stacks/<id>/stack.json`.
-A big change is an ADR first (`kind: part-of`).
+A big change is an ADR first (`kind: part-of`). An agent's update (`shipify: update <agent> to
+<version>`, ADR 0079): move its pin in `executors.json` (its `version`, the `@x.y.z` in `run`, and a
+`--before=` day), add a changelog line, change what the new version needs in the docs, commit, and
+ask for the PR. The box checks it live before its checks and writes its record
+(`tests/fixtures/checked/<agent>.json`): never write a record yourself.
 
 **Upgrade (`<app>: upgrade`):** `<ship> upgrade <clone> --yes`, act on the migration notes, bump as they
 say, commit, run the tests, ask for the PR. The pipeline it writes, as the stack renders it, goes with
@@ -233,10 +254,11 @@ brief names. `after` names the entries before it (1 is the first) or the task's 
 there (`#n`). **The same-repo rule:** parts on the same repo wait for each other in order, unless
 your reply says why they touch different files. A split comes alone: no `pr`, `work` or `calls`
 with it. The box lists it like calls: don't write the list yourself; your reply says why these
-parts, in this order. A sub-task can't split again. On a part's own run (the prompt's "Part of
-#n"), do that part only, in one PR of kind `closes` (a `new:` plan, or a big change's doc, is
-`part-of` first, as above); the parent and the other parts are context. A part's merge starts the
-parts that wait for it; a `new:` part closes once its app is live.
+parts, in this order. The owner's Yes opens the parts and starts the ready ones (ADR 0080). A
+sub-task can't split again. On a part's own run (the prompt's "Part of #n"), do that part only, in
+one PR of kind `closes` (a `new:` plan, or a big change's doc, is `part-of` first, as above); the
+parent and the other parts are context. A part's merge starts the parts that wait for it; a `new:`
+part closes once its app is live.
 
 <!-- later -->
 ## 3. Later runs

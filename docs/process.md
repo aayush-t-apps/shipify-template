@@ -24,7 +24,7 @@ Write `<app>: what you want`. Changes come in three lanes (ADR 0003):
 |---|---|---|---|
 | Tweak or fix | a margin, a wording, a bug | one PR | look, **merge** |
 | Feature | new behaviour that's easy to undo | one PR with its change doc and the code | read, look, **merge** |
-| Big | data, sign-in, a new service or host | a docs-only PR first (a change doc, an ADR) | **merge** it, then say `go` (on GitHub or in your chat); then merge the build PR |
+| Big | data, sign-in, a new service or host | a docs-only PR first (a change doc, an ADR) | **merge** it (your merge starts the build, ADR 0080); then merge the build PR |
 
 The agent updates `docs/spec.md`, runs `ship version` (not for apps with staging) and `make verify`
 in its own clone, and asks for the PR; apply pushes and opens it (from a terminal: `ship pr`).

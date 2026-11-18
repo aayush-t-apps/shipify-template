@@ -24,6 +24,7 @@ Find what you see, check the middle column, then fix it. Three things cover most
 | the agent's login expired | the reply | `claude setup-token`, then `gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/shipify` |
 | a run with pi or OpenCode fails on its key (no key, or a 401) | the reply's error; Status & setup's Agents and models: "no <gateway> key"? | `pnpm ship add <its gateway> --yes` (`openrouter`, or `vercel-ai-gateway` for the `-vercel` agents; `--new` for a new key) |
 | a run with Codex fails on its sign-in (a refresh token used, signed out, a 401) | the reply's error, which names the fix | `codex sign in` in a chat (or on your PC: `pnpm ship setup agent codex --new`), then `continue` on the task |
+| a run with Codex fails: "The '<model>' model is not supported when using Codex with a ChatGPT account" | your plan, in the reply to `codex sign in` | your ChatGPT plan doesn't offer that model. On Go or Free, OpenAI offers GPT-6 Luna alone, and Auto runs it there: pick Auto or `gpt-6-luna` (`use codex gpt-6-luna`), then `continue`. If Luna is refused too, OpenAI refuses Codex's CLI on your plan: Plus or higher, or `use claude` |
 | `codex sign in` stops with no code, or the code doesn't work | the reply says Codex's own words | turn on sign-in with a device code in ChatGPT's security settings, then `codex sign in` again for a new code (each lasts 15 minutes, once) |
 | a run with pi or OpenCode fails on too many requests (a 429) | OpenRouter's free models allow 50 requests a day, 1,000 once you've bought $10 of credits | try again tomorrow, another free model (`/models free`), or `use claude` |
 | "Your plan's … limit is used up" | the reply says when it resets | `continue` after that time: the next run starts from the kept commits |
@@ -221,8 +222,11 @@ chat, the file store and the notifications' key ([channels.md](channels.md#the-w
   live), which is what ADR 0043 does. Its safety checks (writes to `.git` or `.claude`) still
   refuse.
 - A nested `claude -p` started from inside a run can't sign in: Claude Code doesn't pass its login
-  to the commands it runs. Check an adapter's rules from a PC that's signed in: the pinned version
-  in a scratch folder, run with the adapter's argv (how: `tests/fixtures/claude-decisions.json`).
+  to the commands it runs, by design. A new version is checked live by the box itself, before its
+  checks, with the login as think holds it (ADR 0079, docs/agents.md "A new version"): start
+  `shipify: update claude to <version>`. A change of the adapter's rules is checked from a PC
+  that's signed in: the pinned version in a scratch folder, run with the adapter's argv, the same
+  things the box checks, written into its record (`tests/fixtures/checked/claude.json`).
 - pi says a tool server that didn't connect (a 401, a timeout) only on its own screen, and its
   JSON output has nothing of it: Shipify's gate names such a look call at the end (ADR 0043).
 - gitleaks' generic-api-key rule flags long public ids (an Access AUD tag) in config: allow that

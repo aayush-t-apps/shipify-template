@@ -1,0 +1,15 @@
+{
+  "about": "Codex's record, made on a PC (ADR 0079: Codex stays on a PC, as it renews its ChatGPT session during a run), from what was checked live on 0.167.0: it listed the linked skills, and Shipify's gate, its PreToolUse hook, got every command (Codex names its exec_command Bash) and its refusal stopped the command. Its decisions themselves are the gate's, which tests/plugins/agent.test.ts checks itself.",
+  "agent": "codex",
+  "version": "0.167.0",
+  "day": "2026-11-06",
+  "on": "pc",
+  "checks": {
+    "skills": {
+      "ok": true
+    },
+    "decisions": {
+      "ok": true
+    }
+  }
+}

@@ -376,15 +376,11 @@ export const LIST_PAGE = 50;
  */
 export const OWNER_PAGE = 100;
 
-/** The task a PR's body names: "Closes owner/shipify#12", or "Part of …". */
-const taskOfPr = (body: string | null | undefined) =>
-  Number(/\b(?:Closes|Fixes|Part of)\s+(?:[\w.-]+\/[\w.-]+)?#(\d+)/i.exec(body ?? "")?.[1]) ||
-  undefined;
-
 /**
- * The list: what's running, the boxes, shipify's open PRs (for review), and the 100 open tasks
- * updated last, guests' left out. The closed ones (`closed`), and an older page (`page` 2 on), are
- * only their tasks: what's running, the boxes and the PRs come with the open list's first page.
+ * The list: what's running, the boxes, and the 100 open tasks updated last, guests' left out (no
+ * PR: GitHub keeps them from the door App, which has no Pull requests permission). The closed ones
+ * (`closed`), and an older page (`page` 2 on), are only their tasks: what's running and the boxes
+ * come with the open list's first page.
  * A guest's (ADR 0071): their own chats and projects, read by their label (an issue list, never a
  * search, so an unchanged answer is free), what of theirs is running, whether a box is online
  * (`unnamed`), and nothing else.
@@ -441,18 +437,6 @@ export async function list(
       ...(parent ? { parent } : {}),
     };
   });
-  const review = issues
-    .filter((i) => first && !guest && i.pull_request && i.state === "open")
-    .map((i) => {
-      const task = taskOfPr(i.body);
-      return {
-        n: i.number,
-        title: i.title,
-        updated: i.updated_at,
-        url: i.html_url,
-        ...(task ? { task } : {}),
-      };
-    });
   const titles = new Map(tasks.map((t) => [t.n, t.title]));
   // A guest sees only their own running, and no run's link (ADR 0071).
   const running = [...live.values()]
@@ -467,7 +451,6 @@ export async function list(
     version: build(env),
     boxes,
     running,
-    review,
     tasks,
     closed,
     page,
@@ -644,8 +627,6 @@ function writable(gh: GitHub, s: Settings, i: Issue) {
 
 /** A newest page with fewer comments has the one before it read too. */
 const FULL = 40;
-/** How long a PR's state, named in a thread, is kept. */
-const PR_MS = 60_000;
 
 /** How long a Progress, once rendered, is kept: by its words, so a changed one renders again. */
 const PROGRESS_MS = 86_400_000;
@@ -667,10 +648,6 @@ async function progressOf(env: Env, deps: Deps, notes: string) {
     deps.now(),
   ).catch(() => `<pre>${esc(notes)}</pre>`);
 }
-
-/** A PR's state, from its issue: open, merged or closed. */
-const prState = (i: Issue) =>
-  i.pull_request?.merged_at ? "merged" : i.state === "closed" ? "closed" : "open";
 
 /** How long one search's answer is kept: GitHub allows 10 by meaning a minute (ADR 0070). */
 const SEARCH_MS = 60_000;
@@ -779,8 +756,7 @@ export function nextStep(p: {
 /**
  * A thread: the task and its newest page of messages (and the page before, when the newest has
  * few), or only those after `since`, when given; or an older page (`page`, for "Earlier
- * messages"). A PR of shipify's reads the same way, to review in the chat: its description and
- * comments, and the task it's for; it takes no words from here.
+ * messages"). A PR is none: the door App can't read one, so it opens on GitHub.
  */
 export async function thread(
   env: Env,
@@ -913,31 +889,21 @@ export async function thread(
         queued: false,
       }
     : undefined;
-  // Its PRs, from the links in its replies: shipify's own say open or merged.
-  const prUrls = [
+  // Its PRs, from the links in its replies, each with its state as the task's status last saw it:
+  // no read, as the door App can't read a PR (it has no Pull requests permission).
+  const prs = [
     ...new Set(
       messages.flatMap((m) =>
         (m.reply?.links ?? []).map((l) => l[1]).filter((u) => /\/pull\/\d+$/.test(u)),
       ),
     ),
-  ];
-  // Each one's state kept a minute, not read again on every poll.
-  const prs = await Promise.all(
-    prUrls.slice(0, 6).map(async (url, i) => {
-      const pr = Number(/\/pull\/(\d+)$/.exec(url)?.[1]);
-      const ours = url.startsWith(`https://github.com/${gh.repo}/pull/`) && i < 3;
-      const look = async () => {
-        const it = await readOr<Issue>(env, deps, `repos/${gh.repo}/issues/${pr}`, {
-          html: false,
-        });
-        return it ? prState(it) : "";
-      };
-      const state = ours
-        ? await cached(`web:pr:${gh.repo}:${pr}`, PR_MS, look, deps.now()).catch(() => "")
-        : "";
-      return { n: pr, url, state };
-    }),
-  );
+  ]
+    .slice(0, 6)
+    .map((url) => ({
+      n: Number(/\/pull\/(\d+)$/.exec(url)?.[1]),
+      url,
+      state: seen?.prInfo?.[url]?.state ?? "",
+    }));
   const model = choiceOf(gh, owner, all, status);
   const labels = labelsOf(issue);
   // A doc (ADR 0071): its short name, and when it changed, for its Edit.
@@ -958,8 +924,7 @@ export async function thread(
         updated: issue.updated_at,
       }
     : undefined;
-  const forTask = issue.pull_request ? taskOfPr(issue.body) : undefined;
-  const parent = issue.pull_request ? undefined : (await parentsOf(gh, deps, [issue])).get(n);
+  const parent = (await parentsOf(gh, deps, [issue])).get(n);
   return {
     v: 1,
     task: {
@@ -976,8 +941,6 @@ export async function thread(
       ...(model ? { model } : {}),
       prs,
       ...(running ? { running } : {}),
-      ...(issue.pull_request ? { pr: prState(issue) } : {}),
-      ...(forTask ? { for: forTask } : {}),
       ...(parent ? { parent } : {}),
       ...(labels.includes(STARTED_LABEL) ? { started: true as const } : {}),
       ...(project ? { project } : plan ? { plan } : {}),

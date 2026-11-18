@@ -61,7 +61,9 @@ two blocks every agent shares (`version`, `commands` and `gateways` are never an
 A broken entry or block is left out, and `ship doctor` says why. An agent's fields:
 - `adapter`: its code in `cli/lib/agents/<name>.ts` (flags for a model, an effort, the commands and
   tools; how to read what it did). Adding an agent: an adapter and an entry ([agents.md](agents.md));
-- `default`, `auto` (the model and effort when a task picks none: Sonnet, medium for Claude Code);
+- `default`, `auto` (the model and effort when a task picks none: Sonnet, medium for Claude Code;
+  `auto.plans`: the model Auto runs instead on a plan of its login, as its adapter reads it:
+  GPT-6 Luna on ChatGPT Go or Free for Codex);
 - its login: `login` (`secret` and `how`), or `gateways` (the gateways its models come through, by
   their ids there: the first is its own id's, each other one `<id>-<word>`; its login is the
   gateway's key);
@@ -178,7 +180,7 @@ each slot's `.env` the box's own (`SHIPIFY_BOX`, `SHIPIFY_BOX_DIR`, `RUNNER_TOOL
 
 **What the agent gets:** its run's folders (`HOME`, `TMPDIR`), `PATH`, `SHIPIFY_TASK`, and its
 adapter's own variables (Claude Code: `CLAUDE_CONFIG_DIR`, `DISABLE_AUTOUPDATER=1`,
-`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`; pi: `PI_CODING_AGENT_DIR`, `PI_OFFLINE=1`,
+`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, `CLAUDE_CODE_SUBAGENT_EFFORT=medium`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`; pi: `PI_CODING_AGENT_DIR`, `PI_OFFLINE=1`,
 `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, `SHIPIFY_LOGIN_FD=3`; OpenCode: `OPENCODE_CONFIG`,
 its `XDG_*` folders, the `OPENCODE_DISABLE_*` switches, `SHIPIFY_LOGIN_FD=3`; Codex: `CODEX_HOME`); on stdin, a read-only
 `GH_TOKEN` and, when the run offers tools, the run's look token (`SHIPIFY_LOOK_TOKEN`: the

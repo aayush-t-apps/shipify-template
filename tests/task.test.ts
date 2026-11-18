@@ -2070,7 +2070,10 @@ describe("the weekly digest (ADR 0053)", () => {
     expect(asked).toContainEqual(expect.stringContaining(`claude-code%40${pinned}&`));
     const base = { boxes: [], apps: [], waiting: [], upcoming: { count: 0 }, keys: [] };
     const text = digestText({ ...base, agents: news }, (i) => i);
-    expect(text).toContain(`- **Agents behind:** claude ${pinned} → 99.0.0 (`);
+    // Each with the task that moves it (ADR 0079).
+    expect(text).toContain(
+      `- **Agents behind:** claude ${pinned} → 99.0.0 (\`shipify: update claude to 99.0.0\`)`,
+    );
     // A withdrawn advisory isn't said.
     expect(text).not.toContain("A mistake");
     expect(text).toMatch(

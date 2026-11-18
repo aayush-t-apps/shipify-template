@@ -111,7 +111,8 @@ Once, on this PC, about 10 minutes. `ship setup` walks the same.
    and set the secret `CODEX_AUTH`, a session for Shipify alone (Codex on your PC keeps its own).
    After that the box keeps it current. Sign in again only when a run says to (`codex sign in`, or
    `pnpm ship setup agent codex --new`). On Go or Free it warns: OpenAI lists Codex's CLI from
-   Plus (your PC asks first). Then `use codex` on a task.
+   Plus (your PC asks first). There, Auto runs GPT-6 Luna, the one model OpenAI offers Go and
+   Free. Then `use codex` on a task.
 3. **Publishing new projects from a task:** a merged plan's repo and keys are made on GitHub's
    machines, with shipify's secret `CF_DEPLOY_TOKEN` and your settings (`CLOUDFLARE_ACCOUNT_ID`,
    `CF_WORKERS_SUBDOMAIN`, variables on shipify). `pnpm ship setup apps` sets each. Without them (or the bot's Variables permission), the

@@ -19,8 +19,9 @@ const REPLY = `<p><strong>Done.</strong> See <a href="https://github.com/o/shipi
 
 describe("clean", () => {
   // ADR 0071: a link to a shipify issue (a chat, a project, a doc) or to a run's file the message
-  // names opens in the window; every other link, a new tab as before.
-  it("opens shipify's issues and a message's files in the window, the rest in a new tab", () => {
+  // names opens in the window; every other link, a new tab as before. A PR opens on GitHub: the
+  // door App reads issues only, and GitHub hides a PR from an App with no Pull requests permission.
+  it("opens shipify's issues and a message's files in the window, the rest (a PR too) in a new tab", () => {
     const files = [
       {
         name: "guide.pdf",
@@ -42,10 +43,10 @@ describe("clean", () => {
       inside,
     );
     expect(html).toContain('<a href="#/t/664">#664</a>');
-    expect(html).toContain('<a href="#/t/9">PR</a>');
     expect(html).toContain('<a href="api/file/f-1">guide</a>');
-    // A file the message doesn't name, another repo, the web: a new tab.
+    // A PR, a file the message doesn't name, another repo, the web: a new tab.
     for (const out of [
+      "https://github.com/O/Shipify/pull/9/files",
       "https://github.com/o/shipify/blob/shipify-files/task-4/1/other.pdf",
       "https://github.com/o/other/issues/3",
       "https://example.com/",

@@ -23,8 +23,15 @@ each agent's adapter writes them its own way (ADR 0038, ADR 0043).
   loads when one fits: pi takes the folder (`--skill`), OpenCode its config's `skills.paths`, and
   Claude Code finds it linked in its settings folder (`config/skills`, made as the agent), with
   its own bundled skills off (`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`), so its list is Shipify's
-  alone, and Codex finds them linked where it reads a user's (`$HOME/.agents/skills`), its own
+  and the two of its own that the switch leaves (`doctor`, and `plugin-authoring` since 2.1.326),
+  and Codex finds them linked where it reads a user's (`$HOME/.agents/skills`), its own
   bundled ones off. A read run gets none.
+- **Its repo's instructions:** a work run's agent follows its clone's `AGENTS.md` and no other
+  folder's: never a repo it reads, your files or Shipify's copy (`AgentRun.work`). pi and Codex
+  read their working folder's themselves. Claude Code, whose settings leave out the project's own,
+  gets the clone as an added folder whose `CLAUDE.md` it reads (a Shipify project's says
+  `@AGENTS.md`). OpenCode, with the project's config off, gets the file by its path, and its gate
+  drops what its read tool adds from any other folder's. A talk run and a read run follow no repo's.
 - **A fresh folder each run:** `/srv/shipify-agent-<k>/run-<id>/` (its home, config, temp, work,
   the repos it reads, files in, files out). The slot's next run, and the weekly clean-up, remove
   the old ones.
@@ -151,10 +158,13 @@ Codex's are OpenAI's, by their ids in its own catalog (checked on 0.167.0): GPT-
 plan), GPT-6.1 Terra and GPT-6 Luna (fast and light), with the efforts low, medium, high, xhigh, max
 and ultra (Luna none past max). Any other id its pattern takes (`gpt-…`) runs too: a new OpenAI
 model needs no edit. Your plan covers its runs, so they show no cost, and its plan's limits aren't
-in its output (a run refused at the limit says OpenAI's words).
+in its output (a run refused at the limit says OpenAI's words). On ChatGPT Go or Free, OpenAI
+offers Codex GPT-6 Luna alone (its plans page, 2026-11-14), so Auto runs Luna there: the run reads
+the plan from your session (the adapter's `plan`) and its entry's `auto.plans` names the model. A
+model you pick yourself runs as you picked it.
 
 - **Auto** is the agent's `auto` in `executors.json`, or its gateway's: Sonnet at medium effort for
-  Claude Code, GPT-6.1 Sol at medium for Codex, GLM 5.3 Flash at high for pi and OpenCode, through OpenRouter (`z-ai/glm-5.3-flash`)
+  Claude Code, GPT-6.1 Sol at medium for Codex (GPT-6 Luna on ChatGPT Go or Free), GLM 5.3 Flash at high for pi and OpenCode, through OpenRouter (`z-ai/glm-5.3-flash`)
   or Vercel (`zai/glm-5.3-flash`): a paid model that costs fractions of a cent an answer, since a
   free one's endpoint can be down for hours (2026-10-16). A model of
   theirs picked with no effort thinks at high too, never at the model's own default (GLM's is
@@ -212,7 +222,7 @@ in its output (a run refused at the limit says OpenAI's words).
   "efforts": ["low", "medium", "high", "xhigh", "max"],
   "modelEfforts": { "haiku": [] },
   "task": ["claude", "-p", "--permission-mode", "acceptEdits"],
-  "install": { "version": "2.1.284", "dir": "claude-code", "bin": "bin/claude", "run": ["npm", "install", "-g", "…", "--prefix", "{prefix}", "@anthropic-ai/claude-code@2.1.284"] }
+  "install": { "version": "x.y.z", "dir": "claude-code", "bin": "bin/claude", "run": ["npm", "install", "-g", "…", "--prefix", "{prefix}", "@anthropic-ai/claude-code@x.y.z"] }
 },
 "pi": {
   "adapter": "pi",
@@ -220,7 +230,7 @@ in its output (a run refused at the limit says OpenAI's words).
   "modelPattern": "^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*(:[a-z0-9]+)?$",
   "efforts": ["off", "low", "medium", "high", "max"],
   "task": ["pi"],
-  "install": { "version": "1.0.2", "bin": "bin/pi", "run": ["npm", "install", "-g", "…", "--ignore-scripts", "--before=2026-10-05", "--prefix", "{prefix}", "@earendil-works/pi-coding-agent@1.0.2"] }
+  "install": { "version": "x.y.z", "bin": "bin/pi", "run": ["npm", "install", "-g", "…", "--ignore-scripts", "--before=<its release day>", "--prefix", "{prefix}", "@earendil-works/pi-coding-agent@x.y.z"] }
 },
 "opencode": {
   "name": "OpenCode",
@@ -228,19 +238,19 @@ in its output (a run refused at the limit says OpenAI's words).
   "gateways": ["openrouter", "vercel-ai-gateway"],
   "…": "pi's modelPattern and efforts",
   "task": ["opencode", "run"],
-  "install": { "version": "1.18.34", "bin": "lib/node_modules/opencode-ai/node_modules/opencode-linux-{arch}/bin/opencode", "run": ["npm", "install", "-g", "…", "--ignore-scripts", "--before=2026-10-01", "--prefix", "{prefix}", "opencode-ai@1.18.34"] }
+  "install": { "version": "x.y.z", "bin": "lib/node_modules/opencode-ai/node_modules/opencode-linux-{arch}/bin/opencode", "run": ["npm", "install", "-g", "…", "--ignore-scripts", "--before=<its release day>", "--prefix", "{prefix}", "opencode-ai@x.y.z"] }
 },
 "codex": {
   "name": "Codex",
   "adapter": "codex",
   "login": { "secret": "CODEX_AUTH", "how": "pnpm ship setup agent codex (signs in with ChatGPT)", "file": true, "renews": true },
-  "auto": { "model": "gpt-6.1-sol", "effort": "medium" },
+  "auto": { "model": "gpt-6.1-sol", "effort": "medium", "plans": { "free": "gpt-6-luna", "go": "gpt-6-luna" } },
   "models": ["gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-luna"],
   "modelPattern": "^gpt-[0-9][a-z0-9.-]*$",
   "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
   "modelEfforts": { "gpt-6-luna": ["low", "medium", "high", "xhigh", "max"] },
   "task": ["codex", "exec"],
-  "install": { "version": "0.167.0", "bin": "bin/codex", "run": ["npm", "install", "-g", "…", "--ignore-scripts", "--before=2026-11-07", "--prefix", "{prefix}", "@openai/codex@0.167.0"] }
+  "install": { "version": "x.y.z", "bin": "bin/codex", "run": ["npm", "install", "-g", "…", "--ignore-scripts", "--before=<its release day>", "--prefix", "{prefix}", "@openai/codex@x.y.z"] }
 }
 ```
 
@@ -428,9 +438,8 @@ The listed models are a few of hundreds. The rest are found by a word, on any ch
 
 - **Installed once, the first time a run picks it:** plan names the run's agent, and the step "The
   agent's CLI" (`ship run agent`, `cli/lib/agent-install.ts`) runs its entry's `install.run` into
-  the box's shared tools, `<tools>/<dir>/<version>` (`claude-code/2.1.284`, `pi/1.0.2`,
-  `opencode/1.18.34`, `codex/0.167.0`), one slot
-  at a time (`flock`). Once the program starts (`--version`) it opens the folder to the agents'
+  the box's shared tools, `<tools>/<dir>/<version>` (`claude-code/<version>`, `pi/<version>`, and
+  so on), one slot at a time (`flock`). Once the program starts (`--version`) it opens the folder to the agents'
   users and marks the install done (`.installed` in its folder); the run puts it on its `PATH`. A
   run that finds the mark only puts it on the `PATH`: no lock, no walk of its files and no start
   (pi's `--version` alone takes 3–4 s on a Pi). One that finds an install without it (stopped
@@ -454,18 +463,50 @@ The listed models are a few of hundreds. The rest are found by a word, on any ch
   Claude Code's runs its install script, as before.
 - **Sizes on a Raspberry Pi:** Claude Code about 233 MB, pi about 166 MB, OpenCode about 177 MB
   (its install takes about 30 s), Codex about 393 MB (about a minute).
-- **A new version:** the weekly digest says which agents are behind their newest (each install's
-  `newest`), and before that any advisory GitHub lists against a pinned version (its
-  `advisories`: the agent's own package; pi's and OpenCode's dependencies are held by
-  `--before`). It installs nothing. A version moves in one
-  PR, made on your PC, because its checks need the agent signed in: in `executors.json`, its
-  `version`, the `@x.y.z` in `run` and (pi, OpenCode) `--before=` its release day; the live checks
-  `tests/plugins/agent.test.ts` names, which fail until they're done again; for Claude Code,
-  `tests/fixtures/claude-decisions.json` recorded again; then `pnpm ship selftest <name>`. An
-  advisory comes first.
+- <a id="a-new-version"></a>**A new version, as one task** (ADR 0079): the weekly digest says
+  which agents are behind their newest (each install's `newest`), each with the task that moves it
+  (`shipify: update claude to 2.1.326`), and before that any advisory GitHub lists against a
+  pinned version (its `advisories`: the agent's own package; pi's and OpenCode's dependencies are
+  held by `--before`). It installs nothing. The task's run thinks with the agent it updates: Claude
+  Code is the default, and an update of pi or OpenCode says `use pi` or `use opencode`, because a
+  run holds only its own agent's login. Its agent moves the pin in `executors.json` (its `version`,
+  the `@x.y.z` in `run`, and for pi and OpenCode `--before=` its release day), adds a changelog
+  line, and asks for the PR. Then, before the box's checks (`cli/kernel/agent-check.ts`):
+  - **What the box takes from the branch:** the version alone. The install must be main's with
+    only its version and its `--before=` day changed, and GitHub must list no advisory against the
+    new version; else the box doesn't check it, and the reply says why.
+  - **Where it runs:** as the agent's own user, in the run's own `check/` folder: the version
+    installed there by main's words (so its install script runs with no key in reach), a HOME and
+    settings folders of its own, and a scratch repo whose remote is a folder beside it. Main's
+    adapter, prompts and reader; the login on fd 3, as think holds it; no GitHub key, look token or
+    tool. At most 10 minutes of what's left of the session's clock: a session that used it all
+    leaves the check to `continue`.
+  - **What it checks,** in two asks on the agent's first listed model (Haiku for Claude Code): it
+    installs, answers and says the version under check; its login is in no file of its folder and
+    not in its environment (`env > env.txt`); it lists each of Shipify's skills (or loads the one
+    it's asked to, when its output doesn't list them); it says the word in the scratch repo's
+    `AGENTS.md`, its work folder as a work run's clone is (the `--bare` worry); its helpers are offered, when its output says them; it runs
+    or refuses each command of the one list (`DECISIONS`, `cli/lib/plugins/agent.ts`) as its rules
+    say, and one it skipped is asked again once; and, for an agent that takes read runs, the read
+    profile reads inside its folders and is refused outside them and in its own `config/`.
+  - **The record:** `tests/fixtures/checked/<agent>.json` (`pi-vercel` and `opencode-vercel` share
+    their program's), committed by the box: "check: Claude Code 2.1.326, checked live (task #n,
+    <run>)". It holds the version, the day, the run, each check's outcome with why one failed, the
+    decisions and the rules its adapter wrote (`argv`): never a login, a key or what the agent
+    said. `tests/plugins/agent.test.ts` holds each record to its pin, each of its checks to passed,
+    and its decisions to the one list; a pin with no record of it fails with "checked live on a box:
+    start `shipify: update <agent> to <version>`". A failed check fails the box's checks too: the
+    fix round is told why, no PR opens, and the reply says what failed.
+  - **Only the box writes a record:** when the branch moves a pin, that agent's record is the
+    box's own, or main's put back when it didn't check it (so the tests fail until it's checked),
+    and it's written again after the fix round.
+  - **Still on your PC:** an install that changes more than its version, a version that needs its
+    adapter changed first (the box checks with main's adapter), and Codex, which renews its
+    ChatGPT session during a run. There, check the same things by hand with the adapter's
+    arguments, write the record with `"on": "pc"`, and run `pnpm ship selftest <name>`.
 - **A new Claude Code version:** its docs say `--bare` will become the default for headless runs,
-  which skips CLAUDE.md, skills and helpers. The version's PR checks, with a recorded run, that a
-  run still loads them.
+  which skips CLAUDE.md, skills and helpers. The box's check asks for each: the word in the scratch
+  repo's `AGENTS.md`, every skill listed, and its helpers offered.
 - **Never installed on a PC or in CI.**
 - **Each step's time, in the run's log** (ADR 0051 B0): every `ship run <step>` ends with one line,
   `· plan 5.4 s · 3 gh calls, 2.1 s (pr view 0.8 s, …)`, in the job's log (which `gh run view
@@ -528,31 +569,40 @@ runs. A run that ends without a usable `result.json` fails, and the reply says w
 
 ## Claude Code's adapter
 
-`cli/lib/agents/claude.ts`, checked against the pinned version (2.1.284) with a recorded real run
+`cli/lib/agents/claude.ts`, checked live on the version its record names
+(`tests/fixtures/checked/claude.json`), and read against a recorded real run
 (`tests/fixtures/claude-stream.jsonl`):
-- **Model and effort:** `--model` and `--effort`.
+- **Model and effort:** `--model` and `--effort`. Its helpers think at medium effort, not at the
+  run's (`CLAUDE_CODE_SUBAGENT_EFFORT=medium`, from the adapter's `env`), unless a helper's call
+  names its own effort. A helper on a model that takes no effort (Haiku 4.5) gets none.
 - **Output:** `--output-format stream-json --verbose`: the model and version, each tool call, the
-  plan's limits, tokens and turns.
+  plan's limits, tokens and turns. A run can end with more than one result event (background work
+  starts another turn, 2.1.292 on): the last one says whether it ended in an error, and an answer
+  in the result's shape stays.
 - **Commands:** `executors.json`'s `commands` as its own rules (ADR 0043): `Bash`, `Read`, `Glob`
   and `Grep` allowed as whole tools in `--allowedTools`, `WebFetch` and `WebSearch` when `web` is
   on, and each refused `git X` as `Bash(git X:*)`, `Bash(git * X)` and `Bash(git * X *)` in
   `--disallowedTools`. It stays in `acceptEdits`, so edits stay in its clone and `out/` (also a
   working folder, `--add-dir`). Checked in 2.1.284's own permission code, and live: its own
-  answers to each command, for the rules the adapter writes, are
-  `tests/fixtures/claude-decisions.json` (record them again when its version or the rules change).
+  answers to each command, for the rules the adapter writes, are its record's `refused` and `ran`
+  (the box checks them again for each new version; a change of the rules is checked on a PC).
   A deny rule is checked on every part of a command (`&&`, pipes, `$(…)`, a loop's body, after a
   wrapper such as `timeout -s KILL 9` or `xargs`) before any allow, and a whole-tool allow lets
   through every other prompt but Claude Code's safety checks (writes to `.git` or `.claude`, say),
-  so pipes, loops and reads outside its folders run. Its deny rules match the words as written:
-  `/usr/bin/git push` isn't matched, and a commit message or a search with the word `push` in it
-  is (write the message to a file and commit with `-F <file>`); the read-only token and the box's
-  own push are the wall.
+  so pipes, loops and reads outside its folders run. Its deny rules match the words as written: a
+  commit message or a search with the word `push` in it is refused (write the message to a file
+  and commit with `-F <file>`), and `sh -c "git push"` isn't matched. `/usr/bin/git push` is
+  refused since 2.1.326 (2.1.284 ran it). The read-only token and the box's own push are the wall.
+- **A run ends with its answer:** `ScheduleWakeup` is in `--disallowedTools`, so it isn't offered.
+  Since 2.1.292 a `-p` run waits for a wakeup it scheduled (up to an hour), then asks itself
+  again; Shipify's repeats bring a task back (ADR 0054). It still waits for a background command
+  it started, which `-p` stops after 10 minutes.
 - **The read profile** (`commands.run: false`, ADR 0044): `--restricted --tools Read,Grep,Glob`,
   its read folders as `--add-dir`, and no MCP config. `--restricted` takes away every tool that
   runs a command or code and WebFetch, keeps the file tools inside its working folders, and
   ignores settings files; its answer still comes back in the result's shape (its StructuredOutput
-  tool). Recorded live on 2.1.284 in `tests/fixtures/claude-decisions.json`'s `read`: the tools it
-  was offered, and reads outside its folders refused.
+  tool). Its record's `read` says the tools it was offered, checked live with reads outside its
+  folders refused.
 - **Tools:** an MCP config with only the look calls allowed and the act calls refused, each tool at
   the run's look server (`type: http`), its token named as `${VAR}`, never its value.
   `notion.search` is its `mcp__notion__search`.
@@ -560,19 +610,32 @@ runs. A run that ends without a usable `result.json` fails, and the reply says w
   --strict-mcp-config`, which the adapter adds), so a project's files can't widen what it may do.
   Its settings and sessions live in the run's `config/` (`CLAUDE_CONFIG_DIR`), and it never updates
   itself mid-task (`DISABLE_AUTOUPDATER=1`), and lists none of its own bundled skills or
-  workflows (`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`; a user's skills folder, where Shipify's are,
-  stays): all from the adapter's `env`. Its user's
+  workflows but `doctor` and `plugin-authoring` (`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`; a user's
+  skills folder, where Shipify's are, stays): all from the adapter's `env`. Its user's
   `settings.json` there, which a command could write (hooks, `env`, a key helper), is removed before
   every ask (the adapter's `cleared`), and the skills link made again.
+- **Its repo's instructions:** `--setting-sources user` leaves out the clone's own `CLAUDE.md`, so a
+  work run adds the clone (`--add-dir <work>`) and tells Claude Code to read an added folder's
+  (`--settings` with `env` `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`), but none in a folder
+  it writes (`claudeMdExcludes`: `<out>/**`), which a command could fill for the next ask. Checked
+  live on 2.1.284 against a stand-in API: without these, nothing of the clone's reached the model;
+  with them, its `CLAUDE.md` and the `AGENTS.md` it imports did; without the exclude, a `CLAUDE.md`
+  in `out/` did too. It reads a `CLAUDE.md`, never an `AGENTS.md` alone: every Shipify project's
+  says `@AGENTS.md` (the base stack's), and in a repo that keeps its own rules, the
+  `own-rules-repo` skill reads its `AGENTS.md` first. None of this in the read profile.
 - **Its login:** from fd 3 (`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`), its own setting, which
   isn't in its public docs. Checked live on 2.1.284: it reads the pipe once and keeps the login in
   memory, never in a file (it would write one only in its remote mode, which Shipify doesn't use).
-  A new version's PR checks it again: `tests/plugins/agent.test.ts` holds it to the pinned version.
+  The box checks it again on each new version (its record's `login`). Its result's
+  `credential_expires_at` (2.1.318 on) is for a stored claude.ai sign-in only, never for a token
+  it's handed, so the login's date in `SHIPIFY_KEY_DATES` stays the one `ship doctor --yes` records:
+  a year after the secret was set.
 
 ## pi's adapter
 
-`cli/lib/agents/pi.ts`, checked against the pinned version (1.0.2) with a recorded run against a
-stand-in model (`tests/fixtures/pi-stream.jsonl`). pi (`@earendil-works/pi-coding-agent`, MIT) is a
+`cli/lib/agents/pi.ts`, checked live on the version its record names
+(`tests/fixtures/checked/pi.json`), and read against a recorded run against a stand-in model
+(`tests/fixtures/pi-stream.jsonl`). pi (`@earendil-works/pi-coding-agent`, MIT) is a
 small agent core that does the work its own way:
 - **How it starts:** `pi --mode json --no-approve -e <gate.mjs> --session-dir
   <config>/pi-sessions --provider shipify-<gateway> --model <id> --thinking <effort>`, with
@@ -588,8 +651,9 @@ small agent core that does the work its own way:
   a `settings.json`). At the end the gate names each look call pi didn't get, its server not
   connected, in one entry in pi's output that the run details show: pi says it only on its own
   screen.
-- **Nothing of the project's own** loads (`--no-approve`: no `.pi`), and nothing runs in the
-  background (`PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`).
+- **Nothing of the project's own** loads (`--no-approve`: no `.pi`) but its instructions: pi
+  reads the `AGENTS.md` (or `CLAUDE.md`) of its working folder itself, a work run's clone's. Nothing
+  runs in the background (`PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`).
 - **Its gateway's key:** pi passes its whole environment to every command it runs, so the key never
   goes there. The gate reads it once from the pipe `SHIPIFY_LOGIN_FD` names (fd 3), closes the
   pipe, and hands it to the gateway's provider (`pi.registerProvider`, the provider `gate.json`
@@ -629,8 +693,9 @@ small agent core that does the work its own way:
 
 ## OpenCode's adapter
 
-`cli/lib/agents/opencode.ts`, checked against the pinned version (1.18.34) with a recorded run
-against a stand-in model (`tests/fixtures/opencode-stream.jsonl`), and live on a Pi the way a box
+`cli/lib/agents/opencode.ts`, checked live on the version its record names
+(`tests/fixtures/checked/opencode.json`), read against a recorded run against a stand-in model
+(`tests/fixtures/opencode-stream.jsonl`), and live on a Pi the way a box
 runs it (the prompt on stdin, the key on fd 3, its output read through a pipe). OpenCode
 (`opencode-ai`, MIT) is an open agent with tools of its own (files, commands, web fetch, to-dos,
 helpers):
@@ -644,6 +709,12 @@ helpers):
   (`type: remote`), the run's token named as `{env:VAR}`; its own permissions all `allow` but the refused commands (an `ask`
   would end a run with no one to answer), the act calls `deny` (so the model never sees them);
   Shipify's skills (`skills.paths`); and the gate as its plugin.
+- **Its repo's instructions:** with the project's config off, OpenCode loads no repo's `AGENTS.md`
+  by itself, so a work run's config names the clone's by its path (`instructions`). Its read tool
+  adds, once, the `AGENTS.md` of each folder between the file and its working folder (1.18.34's
+  source), as a `<system-reminder>` of `Instructions from: <path>` after the file: the gate's
+  `tool.execute.after` drops it unless each is the clone's: a repo in `read/` is never
+  instructions, in a read run or a talk run.
 - **Nothing of the project's own** loads (no `opencode.json`, `.opencode` or plugins, no Claude Code
   files, no `.agents` or `.claude` skills of a repo's or its home's, which could shadow Shipify's),
   no logins of its own (`OPENCODE_AUTH_CONTENT={}`: an `auth.json` entry can fetch a config from
@@ -681,8 +752,9 @@ helpers):
 
 ## Codex's adapter
 
-`cli/lib/agents/codex.ts`, checked against the pinned version (0.167.0) with a recorded run against
-a stand-in model (`tests/fixtures/codex-stream.jsonl`, the adapter's own command line pointed at a
+`cli/lib/agents/codex.ts`, checked live on a PC on the version its record names
+(`tests/fixtures/checked/codex.json`: Codex stays on a PC, ADR 0079), and read against a recorded
+run against a stand-in model (`tests/fixtures/codex-stream.jsonl`, the adapter's own command line pointed at a
 local stand-in of OpenAI's Responses API). Codex (`@openai/codex`, Apache-2.0) is OpenAI's agent,
 here on your ChatGPT plan (ADR 0074):
 - **How it starts:** `codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules
@@ -699,7 +771,7 @@ here on your ChatGPT plan (ADR 0074):
 - **Its home** (`CODEX_HOME`) is the run's `config/codex`: its login, its sessions and its own
   files, kept for the whole run. Before every ask, what it reads from there that a command could
   write is removed (`cleared`: its own `AGENTS.md`, skills and plugins, and the files it isn't
-  told to read anyway).
+  told to read anyway). It reads its working folder's `AGENTS.md` itself, a work run's clone's.
 - **Shipify's gate** (`cli/lib/agents/codex-gate.mjs`, with pi's gate beside it, and the run's
   rules, `gate.json`) is its PreToolUse hook: Codex hands it every call, its helpers' too, and a
   refusal stops the call with the reason. A command (Codex's exec_command, which it names `Bash`)
@@ -741,7 +813,8 @@ here on your ChatGPT plan (ADR 0074):
     instead, printed there.
 
   It says the plan and how long its access token lasts. On a plan OpenAI lists no CLI for (Go,
-  Free), your PC asks before going on; from a chat, the reply says so and the session is set. It
+  Free), your PC asks before going on; from a chat, the reply says so and the session is set.
+  There, Auto runs GPT-6 Luna, the one model OpenAI offers those plans. It
   sets `CODEX_AUTH` and deletes the folder, and never prints the session.
 - **Its answer and report:** the result file, or its final message in the result's shape; from its
   events, its session (`thread_id`), tokens (input less what came from its cache, as OpenAI counts
@@ -766,12 +839,15 @@ Agents stay a plug-in kind: another one is data and an adapter, never a change t
    agent's own rules (only the refused ones; an agent with no
    rules of its own loads pi's gate; with `run: false`, reading tools only, inside its folders), and
    reads its output into a report
-   (`reader`), saying `readOutside` when the agent read the web or ran a command that fetches, and
-   `said` (its last words) when it answered in words rather than the result's shape. It says how
+   (`reader`), saying `readOutside` when the agent read the web or ran a command that fetches,
+   `said` (its last words) when it answered in words rather than the result's shape, `commands`
+   (each command it ran or was refused, as written) and `offered` (its tools, helpers and skills,
+   when its output says them), which the box's check of a new version reads. It says how
    its agent reads its login from fd 3 (`loginFromPipe`: its own setting for that, or a loader
    that reads it there, as pi's gate does), or, for an agent that takes it only from a file, where
    (`loginFile`, with `login.file` in its entry: then it takes no read run, and `renewed` and
-   `signIn` when its login is a sign-in it renews, as Codex's). It hands its agent Shipify's skills (`run.skills`: the
+   `signIn` when its login is a sign-in it renews, as Codex's). An agent whose login names a plan
+   says which (`plan`), for its entry's `auto.plans`. It hands its agent Shipify's skills (`run.skills`: the
    agent's flag for a folder of them, or `skillsLink`, where the run links them in its settings).
    A folder its agent would write in when it can (OpenCode's own config) it names in `readOnly`,
    and the run makes it again, empty and read-only, before every ask. What its agent reads its rules
@@ -782,16 +858,20 @@ Agents stay a plug-in kind: another one is data and an adapter, never a change t
    OpenCode's and Codex's are),
    named in `RECORDED` in `tests/plugins/agent.test.ts`, the agent conformance test every adapter
    passes. Its "one setup" test gives each adapter the same commands and folders, and checks each
-   writes them; its decisions test needs the agent's own answers in `DECIDES` (a gate's, or a recording
-   such as `claude-decisions.json`), and
-   checks it refuses and runs the same commands as every agent (ADR 0043); its read-profile test
+   writes them; its decisions test needs the agent's own answers in `DECIDES` (a gate's, or its
+   record's, as Claude Code's), and
+   checks it refuses and runs the same commands as every agent (`DECISIONS`, ADR 0043); its
+   commands test needs how its output shows a command run and one refused in `COMMANDS_SEEN`; its
+   read-profile test
    needs how it decides there in `READS`, and checks it runs nothing, fetches nothing and reads only
    inside its folders (ADR 0044), or, for an agent whose login is a file, that it takes none; its
    login test needs how its agent reads the pipe in `PIPED`, or that its login file is in the run's
    own folders.
    Then check it live the way a box
    runs it: the prompt on stdin, the login on fd 3 and its output read through a pipe (sending its
-   output to a file can hide a break).
+   output to a file can hide a break). Its first record, `tests/fixtures/checked/<id>.json`, says
+   what you checked (`"on": "pc"`); the test holds it to the pin, and from then on the box checks
+   each new version ([A new version](#a-new-version)).
 4. **Its install and login on boxes** come from its entry: a box installs it the first time a run
    picks it, and the think step gets its login. `task.yml` doesn't change. A new gateway is one
    more entry in `gateways`, set up with `pnpm ship add <gateway>`.

@@ -7,6 +7,7 @@
 
 import {
   DEPLOYING_LABEL,
+  FIRST_LABEL,
   RUN_WRITER,
   STATE_LABELS,
   SUB_TASK_LABEL,
@@ -65,14 +66,14 @@ export function taskDue(at = new Date()): Result<Due> {
   const who = owner();
   const door = doorLogin();
   // Yours, the door's for you, or a task the box opened: a recipe's (the due run opens those: ADR
-  // 0032), or a part of a split task (your `yes` opens those: ADR 0066).
+  // 0032), a part of a split task (your `yes` opens those: ADR 0066), or separate work (ADR 0080).
   const mine = (i: Issue) =>
     !i.pull_request &&
     !isStatusIssue(i) &&
     (i.user.login === who ||
       (door !== undefined && i.user.login === door) ||
       (i.user.login === RUN_WRITER &&
-        i.labels.some((l) => l.name === RECIPE_LABEL.name || l.name === SUB_TASK_LABEL)));
+        i.labels.some((l) => [RECIPE_LABEL.name, SUB_TASK_LABEL, FIRST_LABEL].includes(l.name))));
   const listed = new Map<number, Issue>();
   // An answered task is listed only when it's a split's part, the one that closes after a quiet
   // day (ADR 0069): the rest stay open, so these reads don't grow with them.

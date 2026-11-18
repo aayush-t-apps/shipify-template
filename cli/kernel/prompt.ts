@@ -28,13 +28,15 @@ const WHY: Record<ThinkWhy, string> = {
   continue: "you said `continue`: try again from where the last run stopped",
   "start-over":
     "you said `start over`: begin again from the repo's default branch (the old PR is closed)",
-  go: "you merged the change doc and said `go`: build it now, as a feature, in one PR",
+  go: "you merged the change doc (your merge, or then your `go`): build it now, as a feature, in one PR",
   publish: "you said `publish`: build and publish the merged plan",
   work: "a talk run found work for this project: do it",
   scheduled: "a repeat's time came: do its job",
   edited: "you edited the task: read it again",
   "sub-task":
-    "this task is a part of a split task, and it starts now (your `go` on its parent or on it, or the part it waited for merged): do this part",
+    "this task is a part of a split task, and it starts now (your yes on its split, your `go`, or the part it waited for merged): do this part",
+  "carry-on":
+    "the task first this task waited for merged: carry on from where the last run stopped, with main's fix in",
 };
 
 const KIND: Partial<Record<TaskTitle["kind"], string>> = {
@@ -99,7 +101,26 @@ export interface PromptInput {
    * the project it's in, when it's in one (ADR 0069).
    */
   family?: string[];
+  /**
+   * The list that waits for the owner's yes (ADR 0080): its lines, as they were listed, and its
+   * code. The run lists it no more, and drops it only with `drop_list`.
+   */
+  waiting?: { lines: string; code: string; at?: string };
 }
+
+/** The list that waits for the owner's yes, in the prompt (ADR 0080): what the run may do with it. */
+const waitingLines = (w: NonNullable<PromptInput["waiting"]>) => [
+  "## A list waits for the owner's Yes",
+  "",
+  `The box listed this${w.at ? ` at ${w.at}` : ""} (its code \`${w.code}\`), for the owner's \`yes\` or \`no\`: only`,
+  "those decide it, and their other words keep it. It isn't yours to approve, and it isn't made yet.",
+  "",
+  w.lines,
+  "",
+  "Don't list it again: the box says it still waits. When their newest words change it, propose the",
+  "new one whole (it replaces this one). When their words cancel it, set `drop_list: true`.",
+  "",
+];
 
 /**
  * Every ask a run covers: the task's own words on its first run (or once edited), then each NEW
@@ -290,6 +311,7 @@ export function buildPrompt(p: PromptInput): string {
         ]
       : ["## Description", "", p.body.trim() || "(empty: the title is the whole ask)", ""]),
     ...(p.family?.length ? [...p.family, ""] : []),
+    ...(p.waiting ? waitingLines(p.waiting) : []),
     "## Conversation (oldest first)",
     "",
     convo,
@@ -464,7 +486,13 @@ export function buildPrompt(p: PromptInput): string {
             "  opens as a sub-task, and nothing starts. It comes alone: no `pr`, `work` or `calls` with it.",
             '- `first`: `{"title": "<repo>: …", "brief": "…"}`: one task, a fix on `main` this task needs',
             "  before it can go on (the playbook's \"A task first\"): listed for the owner's `yes`, then opened",
-            "  and started, and this task waits. It comes alone: no `pr`, `work`, `calls` or `split` with it.",
+            "  and started; this task waits, and carries on by itself when it merges. It comes alone: no `pr`,",
+            '  `work`, `calls` or `split` with it. With `"separate": true`, work this task doesn\'t need: it',
+            "  opens as a task of its own, nothing waits for it, and it may come with `pr`, `calls` and `notes`.",
+            "- `drop_list`: true when the owner's words cancel the list that waits for their `yes`.",
+            "- `pass`: `[<n>]`: related tasks (this one's parent, parts, siblings, the tasks it opened, the one",
+            "  that opened it) the owner's newest words are about: the box copies their words there and starts",
+            "  each one's run. Words about this task stay here.",
             '- `notes`: `[{"topic": "Preferences", "line": "…"}]`: the owner\'s own words to keep; `forget`',
             "  and `personality`: as the notebook says.",
             ...(p.projectPages

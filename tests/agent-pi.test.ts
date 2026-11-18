@@ -504,7 +504,9 @@ describe("an agent on a box", () => {
     expect(calls).toHaveLength(1);
     // Claude Code keeps the folder it has today.
     const claude = h.executors.claude as NonNullable<typeof h.executors.claude>;
-    expect(installedAt("claude", claude, at)?.prefix).toBe(join(at, "claude-code", "2.1.284"));
+    expect(installedAt("claude", claude, at)?.prefix).toBe(
+      join(at, "claude-code", claude.install?.version ?? ""),
+    );
   });
 
   it("redoes an install whose program doesn't start, and keeps one that does, marking it", () => {
@@ -559,7 +561,7 @@ describe("an agent on a box", () => {
   it("keeps each agent's pinned version and the two newest Node versions, and nothing else", () => {
     const at = tools();
     for (const d of [
-      "claude-code/2.1.284",
+      `claude-code/${h.executors.claude?.install?.version}`,
       "claude-code/2.1.200",
       "pi/1.0.2",
       "pi/0.9.0",

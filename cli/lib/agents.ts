@@ -212,14 +212,15 @@ export const takesEffort = (entry: Executor | undefined, effort: string) =>
 
 /**
  * The model and effort for a run. A `use` line wins; without one, the agent's `auto` in
- * executors.json, and without that the agent's own default. All of it is executors.json's data:
- * adding a model or an agent is an edit there, never code. A choice the agent doesn't take falls
- * back the same way and says so.
+ * executors.json (on its login's `plan`, the model `auto.plans` names for it), and without that the
+ * agent's own default. All of it is executors.json's data: adding a model or an agent is an edit
+ * there, never code. A choice the agent doesn't take falls back the same way and says so.
  */
 export function choose(
   agent: string,
   entry: Executor | undefined,
   want: { model?: string; effort?: string },
+  plan?: string,
 ): Choice {
   const notes: string[] = [];
   let model = asked(want.model);
@@ -233,7 +234,10 @@ export function choose(
     effort = undefined;
   }
   const auto = { model: !model, effort: !effort };
-  model ??= asked(entry?.auto?.model);
+  const planned = plan ? asked(entry?.auto?.plans?.[plan]) : undefined;
+  if (!model && planned)
+    notes.push(`${agent}'s login is on the ${plan} plan: Auto runs ${planned} there.`);
+  model ??= planned ?? asked(entry?.auto?.model);
   effort ??= asked(entry?.auto?.effort);
   // What this model takes: Auto's effort or a kept one is dropped quietly; one asked for says so.
   const takes = effortsFor(entry, model);

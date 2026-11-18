@@ -67,21 +67,11 @@ export const Running = z.object({
   queued: z.boolean(),
 });
 
-/** A PR of shipify's waiting for review, and the task it's for. */
-export const Review = z.object({
-  n: z.number(),
-  title: z.string(),
-  updated: iso,
-  url,
-  task: z.number().optional(),
-});
-
 export const List = z.object({
   v: z.literal(1),
   version: z.string(),
   boxes: z.array(Box),
   running: z.array(Running),
-  review: z.array(Review),
   tasks: z.array(Row),
   /** Open tasks (the default), or the closed ones (`?closed=1`), which carry only their tasks. */
   closed: z.boolean(),
@@ -178,13 +168,10 @@ export const Thread = z.object({
     url,
     /** What its runs think with: its status comment's choice, or a `use …` said since. None is Auto. */
     model: z.string().optional(),
+    /** Its PRs, each opened on GitHub, with its state as its status last saw it ("" for none). */
     prs: z.array(z.object({ n: z.number(), url, state: z.string() })),
     /** A run going now: since when, and its log. */
     running: Running.optional(),
-    /** A PR, read here to review: its state. */
-    pr: z.enum(["open", "merged", "closed"]).optional(),
-    /** The task a PR is for. */
-    for: z.number().optional(),
     /** A part's parent (ADR 0066). */
     parent: z.number().optional(),
     /** A split task after your `go`: a part's merge starts the next. */

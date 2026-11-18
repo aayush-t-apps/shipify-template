@@ -1,0 +1,15 @@
+{
+  "about": "OpenCode's record, made on a PC before the box's check (ADR 0079), from what was checked live on 1.18.34: Shipify's gate read its key from fd 3 (a dummy key, a pipe or a socket off a box, reached a stand-in gateway, and a command it ran had no fd 3 and no key in its environment), and it listed every skill its config gave it. Its decisions and its read profile are Shipify's gate's, which tests/plugins/agent.test.ts checks itself. Its next version's record is the box's.",
+  "agent": "opencode",
+  "version": "1.18.34",
+  "day": "2026-10-10",
+  "on": "pc",
+  "checks": {
+    "login": {
+      "ok": true
+    },
+    "skills": {
+      "ok": true
+    }
+  }
+}
