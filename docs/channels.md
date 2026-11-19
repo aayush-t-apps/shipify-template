@@ -222,7 +222,8 @@ chat, where a doc or a file opens.
   file on `shipify-files` opens its kept copy in the pane when the message names that file. Every
   other link opens a new tab.
 - **A reply's files** show as chips under it, as yours do, and open in the pane. A chip whose kept
-  copy has gone (30 days after its chat closed, or Deleted) says **Archived** and links its backup
+  copy has gone (30 days after its chat closed, a run's in a repeat, a recipe or an open project
+  30 days after it was made, or Deleted) says **Archived** and links its backup
   on `shipify-files`; with no backup, **Gone**. A chat's header has a **Files** chip: its files,
   newest first.
 - **Find,** beside New chat, opens the same dialog as Ctrl+K, on any device.
@@ -554,8 +555,9 @@ edge's one Worker on Cloudflare's free plan, and GitHub is the record:
 - **R2 (`BUCKET`, the bucket `shipify-web-files`, ADR 0069):** the files you attach here and a
   copy of those a run sends back to this chat (at most 50 MB a reply; the rest stay linked from
   the branch), each with its chat's number. A file lives as long as its chat, or its project:
-  the weekly clean-up deletes a closed chat's files 30 days after it closes, so the bucket holds
-  open work and the last month's. 10 GB free (shared with Drop), then $0.015 per GB a month;
+  the weekly clean-up deletes a closed chat's files 30 days after it closes, and a run's files of
+  what never closes (a repeat, a recipe, an open project's chat) 30 days after it made them, so
+  the bucket holds open work and the last month's. 10 GB free (shared with Drop), then $0.015 per GB a month;
   nothing is refused for space. A file dragged into another chat is copied once for it, so one
   chat's clean-up never breaks another's message; a file you take off the box is deleted.
 - **Workers KV (`FILES`):** small settings only: your model, and the devices that get
@@ -769,7 +771,9 @@ no more calls; in Drop, their drops end within 30 days, or at once with **Revoke
 
 **What keeps your things yours:**
 - Each person sees only their own: the edge checks every read and write against the record (the
-  door's from-line naming the guest, their files' prefix), never against what the page sends.
+  door's from-line naming the guest, their files' prefix), never against what the page sends. One
+  check says whose each thing is, and one table says what a guest may do, for the edge and the box
+  alike ([security.md](security.md#a-guests-run)).
 - Their runs hold no GitHub key, notebook, Personality or tool of yours, and get caches of their
   own; their memory page never reaches a run of yours. Your
   login reaches their agent on a pipe, as for your runs, so no command finds it: never an agent

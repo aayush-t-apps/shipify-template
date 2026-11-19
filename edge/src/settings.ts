@@ -11,7 +11,6 @@ import {
   boxOf,
   holdsRecord,
   inboxTopic,
-  GUEST_LABEL,
   LIBRARY_LABEL,
   type PageSeen,
   parseAccounts,
@@ -23,6 +22,7 @@ import {
   useDefaultAgent,
   useTimeZone,
   waitingItems,
+  whose,
 } from "../../cli/contracts/index.ts";
 import { type AccessApp, parseAccess } from "./access.ts";
 import { cached, stale } from "./cache.ts";
@@ -322,7 +322,7 @@ export async function libraryPages(gh: GitHub, get: Get = plain(gh)): Promise<Li
         ...(project && topic === inboxTopic(project)
           ? { waiting: waitingItems(i.body ?? "", i.comments ?? 0) }
           : {}),
-        ...((i.labels ?? []).some((l) => l.name === GUEST_LABEL) ? { guest: true as const } : {}),
+        ...(whose(i) ? { guest: true as const } : {}),
       };
     });
 }

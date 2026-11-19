@@ -16,7 +16,7 @@ think if needed, and applies the changes; the edge carries your words in and the
 | **The record** | GitHub: tasks, comments, the status task, PRs, plans, the notebook | nothing: it keeps | nothing by itself |
 | **The queue** | GitHub Actions: runs waiting for a slot | which slot takes a run | nothing |
 | **The door** | the edge's way in and out ([door.md](door.md)) | only whether a sender is you | writes your words onto tasks as the door App; copies replies to your chats; answers the chat commands (`/tasks`, `/ping`, `/apps`, `/repos`, `/notebook`, `/recipes`, `/models`, `/help`, the `/use` picker) at once ([door.md](door.md#in-your-messages)); closes or reopens a task on your `close` or `reopen`, with no run (ADR 0040) |
-| **The watch** | the edge's check every 5 minutes ([watch.md](watch.md)) | only when to ring | adds a label: `run` on a task whose words waited with no box, `stuck` (Stopped) on one whose run ended early, `watch:due` or `watch:alert` on the status task |
+| **The watch** | the edge's check every 5 minutes ([watch.md](watch.md)) | only when to ring | adds a label: `stuck` (Stopped) on a task whose run ended early, or whose words no run answered even after it started one more; `watch:due` or `watch:alert` on the status task. For words no run answered, first one comment of the door App's, which starts their run once more (task #786) |
 | **A box** | a machine with one slot or more (as many as its memory and cores suggest, ADR 0061), one runner each | nothing | runs what the queue hands it, and keeps nothing between runs |
 | **The core** | `ship`, inside a run | what the run does next, from the task | replies, labels, notes, repeats, pushes to the task's branch, PRs, the calls you approved. Never a merge |
 | **The agent** | Claude Code, pi, OpenCode or Codex ([agents.md](agents.md)), as the slot's own Linux user | nothing: it proposes | only its own clone and `result.json` |
@@ -47,15 +47,17 @@ memory.
    rollback), are GitHub's.
 7. **Only you and the guests you add start work:** your comments, and the door's on your behalf;
    a guest's words (ADR 0071) start runs only on their own chats and projects, and only in the
-   guest profile, and approve nothing. The watch starts no run (ADR 0042): a stuck task is marked
-   Stopped and waits for your `continue`. A dispatch carries only a task number, and starts nothing
+   guest profile, and approve nothing. The watch starts a run only for your words no run answered,
+   once (task #786); a run that ended early is marked Stopped and waits for your `continue` (ADR
+   0042). A dispatch carries only a task number, and starts nothing
    the task's status doesn't already have pending.
 8. **The core names nothing at the edges:** tools, channels and stacks plug in with a manifest and
    a conformance test.
 9. **Grow by the ladder:** a prompt or a skill first, then a repeat or a pre-approved call, then a
    tool, then a new intent; the core last.
-10. **Supervised:** the watch marks a task Stopped when its run ended early or its words waited
-    with no run (your `continue` carries it on), resends an undelivered reply, and alerts once. A run starts only for what you asked or set (ADR 0040), or as the next step of a flow you approved: what your Yes opens, and what a merge carries on (ADR 0080).
+10. **Supervised:** the watch starts a run once more for words no run answered, and marks a task
+    Stopped when its run ended early or that run didn't answer either (your `continue` carries it
+    on), resends an undelivered reply, and alerts once. A run starts only for what you asked or set (ADR 0040), or as the next step of a flow you approved: what your Yes opens, and what a merge carries on (ADR 0080).
 11. **Trust is yours to give** (ADR 0044, ADR 0045): an App's install gives access, and only your
     list of accounts gives trust. One task works on one account, and its run holds only what that
     account may see; any other repo is only read, with no key and no command.
@@ -78,7 +80,7 @@ order.
 | **task** | `ship run task <n>` | the runner | `GITHUB_TOKEN` | reads the task once (its issue, comments and status) and saves it for plan. Outputs `account`: the other account of yours its repo is on, if any, so plan's token is minted for it (ADR 0045) |
 | **plan** | `ship run plan <n>` | the runner | `GITHUB_TOKEN`, a read-only token (the bot's), and the repos App's for the task's other account | carries on from the task's read, puts 👀 on what it read, fetches your files, and decides: fixed words first, then the intent. Each repo is read with its own account's token. Outputs `do` (nothing, box, think), `profile` (none, talk, work, check), `repos` (what a work run's agent may read), and `account` and `account_repos` (another account's repos it reads) |
 | **think** | `ship run think <n>` | the slot's agent user; the run's look server as `shipify-look` (ADR 0077) | the agent's login, its own read-only token (a work run's project and Shipify; every project for a talk run; on another account, that account's repos alone), the run's look token (on Shipify's own account only); the look server holds the tools' look keys | only when needed. The agent writes `result.json`; in a work run it commits in its clone and runs `make verify`. A check runs its script instead. Whatever stops the agent, its commits are bundled for apply |
-| **decide** | `ship run decide <n>` | the runner | `GITHUB_TOKEN`, a fresh read-only token, shared with apply | turns the result into writes. Outputs what to mint: `repo`, its `account`, `act`, `workflows`, `files` |
+| **decide** | `ship run decide <n>` | the runner | `GITHUB_TOKEN`, plan's read-only token, or a fresh one when think ran long (think's `long`), shared with apply | turns the result into writes. Outputs what to mint: `repo`, its `account`, `act`, `workflows`, `files` |
 | **mint** | workflow steps | | the bot App's key, or the repos App's | a write token for exactly the one repo decide named, from the App on its account; a token for shipify's files branch; an act key only for approved calls |
 | **apply** | `ship run apply <n>` | the runner | the minted tokens | makes the writes, tells the door of each reply as it's written, and saves the status comment last |
 | **stay** | `ship run stay <n>` | the runner; the agent as the slot's own user | `GITHUB_TOKEN`, its own read-only token (every project, as a talk run's; the repos App's on another account), the agent's login, the run's look token (each turn's look server holds the look keys); no write key | after every answer to your words, unless it started another run or closed the task (decide's `stay`, ADR 0060). For `SHIPIFY_STAY` quiet minutes (30) it reads the task every 2 s (a read that finds nothing costs nothing) and does with your words what a normal run would (ADR 0063): each turn is plan, think in the same session (a new model or effort too), decide and apply, as a run's are. Only what needs another agent, account or repo, a fresh clone (`start over`, `go`) or an edit goes to a normal run; an answer that needs a token (files, a call, a push) ends the stay, and the job's steps after it mint those keys and apply it (ADR 0062); on a project it makes a change it's asked for itself, and its job pushes it (ADR 0076); it gives way when a box job waits. `staying` is on the task meanwhile, and taken off however it ends (ADR 0057) |
@@ -102,16 +104,27 @@ only the comments written since (`comments(n, since)`), and apply takes those, w
 from the saved read. Writes that don't depend on each other (👀, labels, the status,
 telling the door) start together through the record's `together`; the status comes last.
 
-Each phase mints its read-only token right before it, since an App's token lasts one hour, so a
-long think never leaves decide reading with an expired one. The job's limit is the sum of its
-clocks (think's steps, plan's follow of a deploy, setup and apply), so a run never outgrows its own
-job (ADR 0035).
+Plan and think each mint their read-only token right before them, since an App's token lasts one
+hour. Decide and apply take plan's while it lasts: think says `long` when the rest of the run (the
+finish, when it can run, then 15 minutes for decide and apply) could outlast plan's hour, and only
+then is a fresh one minted, so a long think never leaves decide reading with an expired one. A
+stay's apply takes the stay's own token the same way. The job's limit is the sum of its clocks
+(think's steps, plan's follow of a deploy, setup and apply), so a run never outgrows its own job
+(ADR 0035).
+
+The secret scan runs on the box's side while `make verify` runs: the agent's user reads the
+change's files out of its clone (`git diff --raw`, `git cat-file`), and the runner scans them with
+gitleaks, which takes about 35 s to start on a Raspberry Pi 4. Its answer (`scanned.json`, beside
+the bundle) holds each file's sha256. Apply, and decide for a held workflow change, take it only
+for those same bytes; for any other file or byte, gitleaks runs there as before.
 
 **The `github` job, on GitHub's machines,** runs `ship run github <n>` with the bot's full token and
 no agent, after the task step. It does only what the task's status has pending, once: **prepare**
 (a merged plan's repo and keys), **operate** (release, down, up, rollback), or closing the PRs of a
 task closed as not planned or started over. On another of your accounts, it closes them with the
-repos App's token there. A push of merged plans runs `ship task plans`, which starts each plan's task.
+repos App's token there. On the status task, the weekly clean-up starts it to clear what closed
+tasks left: their open PRs and `task/…` branches, 7 days after each closed (task #779). A push of
+merged plans runs `ship task plans`, which starts each plan's task.
 
 **The profiles,** what the agent may touch:
 - **talk:** the web, the tools' look calls, and a project's or repo's code, cloned read-only by the
@@ -199,7 +212,9 @@ project, owned by its stack (ADR 0048). It calls no other repo and hands no secr
 ```
 before the PR → the same checks wherever it's made: `ship pr --check` (change docs, version,
           changelog), then make verify; on the box as the agent's user, with one round
-          for the agent to fix them; in a terminal, `ship pr` runs both
+          for the agent to fix them, one check at a time per 4 cores; in a terminal,
+          `ship pr` runs both. Main moved meanwhile: refreshed, then make verify again
+          only when main changed the branch's files, else make check; failed: a draft PR
 PR    → nothing on GitHub, unless it asks for a preview
 main  → every commit, docs too (each gets its mark): one check (secret scan, setup, audit,
           verify), then:

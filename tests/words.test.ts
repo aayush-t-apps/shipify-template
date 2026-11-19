@@ -12,7 +12,7 @@ import {
   WORDS,
   wordOf,
   listCodeOf,
-  NOT_A_GUESTS,
+  GUEST_RULES,
   signInOf,
 } from "../cli/contracts/index.ts";
 import { WORDS as BOX_WORDS } from "../cli/kernel/words.ts";
@@ -79,7 +79,7 @@ describe("the fixed words, defined once", () => {
     }
     for (const text of ["sign in to codex with my plan", "how do I sign in?", "sign in codex"])
       expect(signInOf(text), text).toBeUndefined();
-    expect(NOT_A_GUESTS.has("sign in")).toBe(true);
+    expect(GUEST_RULES.words).toContain("sign in");
   });
 
   it("the door acts on `close` and `reopen` alone, after a leading #n, as the box reads them", () => {

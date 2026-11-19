@@ -1,5 +1,5 @@
 ---
-status: accepted (merged #234) and built (one PR, the owner's go on 2026-10-07: "ok lets go i merged lets build cover everything"). Built as written, with three small differences found while building: a no-op `close` or `reopen` writes nothing (the doc said a setting), the logo is a JPG (Telegram takes only JPG for a bot's photo), and a picker's gateway models show their ids (`glm-5.3-flash`, "· free"), not prettier names. An independent review of each half found bugs, all fixed in the build (nothing told twice, a refused pick never runs, no busy-repeat loop; Auto goes back to the default, picks build in order, a tap out of reach is told). Proposed from (the owner's asks of 2026-10-07, after GitHub's outage left two Telegram questions with no answer and no word: "make the flows robust, we can't have this breaking"; Telegram "very robust", with model picking "as easy as the web chat"; "think simply from my angle: I don't know what's there, I just want to use a model, build something or ask a question"; "a clickable link to the task"; "pin ongoing tasks"; "list tasks and continue in the same or a new one, configure at the start or in the middle"; then "if we keep it pinned, switching can become a nightmare: can I still ask in another thread with #n or /ask?"; "no retries or band-aids: if it fails, just tell me and I'll continue"; "the agent's own retries are fine; our harness causing issues and not reporting them is the bigger deal"; effort in the picker; a sweep of every channel and flow; one logo. Merging its PR accepts the design and its build plan)
+status: accepted (merged #234) and built (one PR, the owner's go on 2026-10-07: "ok lets go i merged lets build cover everything"). Built as written, with three small differences found while building: a no-op `close` or `reopen` writes nothing (the doc said a setting), the logo is a JPG (Telegram takes only JPG for a bot's photo), and a picker's gateway models show their ids (`glm-5.3-flash`, "· free"), not prettier names. An independent review of each half found bugs, all fixed in the build (nothing told twice, a refused pick never runs, no busy-repeat loop; Auto goes back to the default, picks build in order, a tap out of reach is told). Proposed from (the owner's asks of 2026-10-07, after GitHub's outage left two Telegram questions with no answer and no word: "make the flows robust, we can't have this breaking"; Telegram "very robust", with model picking "as easy as the web chat"; "think simply from my angle: I don't know what's there, I just want to use a model, build something or ask a question"; "a clickable link to the task"; "pin ongoing tasks"; "list tasks and continue in the same or a new one, configure at the start or in the middle"; then "if we keep it pinned, switching can become a nightmare: can I still ask in another thread with #n or /ask?"; "no retries or band-aids: if it fails, just tell me and I'll continue"; "the agent's own retries are fine; our harness causing issues and not reporting them is the bigger deal"; effort in the picker; a sweep of every channel and flow; one logo. Merging its PR accepts the design and its build plan). Amended by its [addendum](#addendum-words-no-run-answered-start-once-more-by-themselves-2026-11-19-task-786) (task #786): words no run answered start once more by themselves, and wait for your `continue` only when that run doesn't answer either
 date: 2026-10-07
 amends: 0040 (words that wait are told, never started by the watch), 0030 and 0032 (Telegram: buttons, the reply box, a smaller menu), 0025 (one `use` grammar, where a model names its agent), 0027 (the channel contract: buttons that send words)
 ---
@@ -582,4 +582,19 @@ model menu works, and an agent's own Auto beside Claude's:
   Monthly, Every few hours, or your own words); every repeat runs in the owner's zone and every
   chat says it ("14:00 IST"); `stop repeating` takes the `repeats` label off, so a stopped repeat
   leaves every list; paused repeats and recipes fold under the running ones.
+
+## Addendum: words no run answered start once more by themselves (2026-11-19, task #786)
+
+- **Why:** the owner's list on #781 (approved with their Yes): "nothing waits on the owner by
+  hand". Words that waited 10 minutes with no reply (GitHub never started a run, or one broke
+  before it could say so) needed the owner's `continue` every time, though no agent had read them.
+- **Decided:** those words are the owner's ask, late (as ADR 0040 §4 already said of words that
+  waited for a box), not a restart. The watch starts their run once more, by one comment of the
+  door App's on the task, whose event starts `task.yml` as a chat's words do: nothing new to run,
+  and no new permission (the door App writes issues and has no Actions write). The comment's first
+  line is `<!-- shipify-again -->` and it has no `from` line, so it's never the owner's words: it
+  approves nothing, and the run reads only theirs. Only when that run doesn't answer in 10 minutes
+  either is the task Stopped, with the one alert that asks for `continue`.
+- **Unchanged:** a run that ended early (the box restarted mid-run) is a restart: it's still
+  Stopped at once and waits for `continue` (ADR 0040 §4). Our code still retries nothing else.
 

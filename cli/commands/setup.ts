@@ -20,6 +20,7 @@ import {
 } from "../lib/credentials.ts";
 import { ghRun, platformRepo } from "../lib/github.ts";
 import { sourceControl } from "../lib/providers.ts";
+import { NODE_MAJOR } from "../lib/node-support.ts";
 import { type Check, type Result, ShipError } from "../lib/output.ts";
 import { readPeople } from "../lib/people.ts";
 import { absent, allSettings } from "../lib/settings.ts";
@@ -226,7 +227,7 @@ export function steps(agentId?: string, device?: boolean): Step[] {
     // ------------------------------------------------ the core: four steps to a first answer
     {
       id: "tools",
-      title: "This PC has its tools: Node 22, pnpm, git and gh",
+      title: `This PC has its tools: Node ${NODE_MAJOR}, pnpm, git and gh`,
       check: () => {
         missing = machineChecks([]).filter((c) => !c.ok && c.blocking !== false);
         return {
@@ -236,7 +237,7 @@ export function steps(agentId?: string, device?: boolean): Step[] {
       },
       how: () => [
         ...missing.flatMap((c) => (c.fix ? [`${c.name}: ${c.fix}`] : [])),
-        "Each one's own site says how to install it. On Ubuntu, git: sudo apt install git; pnpm: corepack enable --install-directory ~/.local/bin.",
+        "Each one's own site says how to install it. On Ubuntu, git: sudo apt install git; pnpm (Node has no corepack from 25 on): docs/setup.md says how.",
         "On Windows, all of it goes inside WSL (Ubuntu), with systemd on: docs/getting-started.md.",
       ],
     },

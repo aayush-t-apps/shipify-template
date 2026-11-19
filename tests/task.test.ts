@@ -23,6 +23,7 @@ import {
   digestDue,
   digestNext,
   digestText,
+  lapsedLists,
   projectsWeek,
 } from "../cli/commands/task/digest.ts";
 import {
@@ -47,6 +48,7 @@ import {
 } from "../cli/lib/docs.ts";
 import { loadForms, readForm } from "../cli/lib/form-reader.ts";
 import { FORMS_DIR, setFormProjects } from "../cli/lib/forms.ts";
+import { NODE_ENDS, nodeEnding } from "../cli/lib/node-support.ts";
 import {
   describeSchedule,
   nextRun,
@@ -69,6 +71,7 @@ import {
   parseTitle,
   renderStatus,
   repeatForm,
+  type TaskState,
   taskForm,
 } from "../cli/lib/task.ts";
 import { cleanupsUnderWay, lastDueRun } from "../cli/lib/watch.ts";
@@ -798,6 +801,9 @@ describe("tasks: pr and refresh against a real git remote", () => {
     const r = ship(sb, "refresh", a);
     expect(r.status, r.summary).toBe("succeeded");
     expect(r.summary).toContain("merged main");
+    // Both bumped the version and wrote the changelog, which refresh settles itself: no file of
+    // theirs both changed, so the box's finish runs the quick checks, not the tests (task #791).
+    expect(r.data).toEqual({ both: [] });
     expect(json(join(a, "shipify.json")).version).toBe("0.2.1");
     expect(json(join(a, "package.json")).version).toBe("0.2.1");
     const changelog = read(join(a, "CHANGELOG.md"));
@@ -811,6 +817,32 @@ describe("tasks: pr and refresh against a real git remote", () => {
     expect(read(join(a, "docs/changes/0003-fix-notes.md"))).toContain("released: v0.2.1");
     expect(git(a, "status", "--porcelain")).toBe("");
     expect(ship(sb, "refresh", a).status).toBe("skipped");
+  });
+
+  it("refresh names a file main's new commits changed as the branch did, merged with no conflict (task #791)", () => {
+    // A file on main that both tasks start from, each changing its own end of it.
+    const lines = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`);
+    const seed = worktree("25-seed");
+    writeFileSync(join(seed, "NOTES.md"), `${lines.join("\n")}\n`);
+    git(seed, "add", "-A");
+    git(seed, "commit", "-q", "-m", "Notes");
+    git(seed, "push", "-q", "origin", "HEAD:main");
+    const a = worktree("26-notes");
+    const b = worktree("27-notes");
+    writeFileSync(join(a, "NOTES.md"), `${["a's first", ...lines.slice(1)].join("\n")}\n`);
+    writeFileSync(join(a, "A.md"), "only a\n");
+    git(a, "add", "-A");
+    git(a, "commit", "-q", "-m", "A: its first line");
+    writeFileSync(join(b, "NOTES.md"), `${[...lines.slice(0, 11), "b's last"].join("\n")}\n`);
+    writeFileSync(join(b, "B.md"), "only b\n");
+    git(b, "add", "-A");
+    git(b, "commit", "-q", "-m", "B: its last line");
+    git(b, "push", "-q", "origin", "HEAD:main");
+    const r = ship(sb, "refresh", a);
+    expect(r.status, r.summary).toBe("succeeded");
+    expect(r.data).toEqual({ both: ["NOTES.md"] });
+    expect(read(join(a, "NOTES.md"))).toContain("a's first");
+    expect(read(join(a, "NOTES.md"))).toContain("b's last");
   });
 
   it("refresh stops on a real conflict and finishes after the fix", () => {
@@ -2026,6 +2058,99 @@ describe("the weekly digest (ADR 0053)", () => {
       "- **Projects:** games: 12 finds to collate, 1 chat waiting on you, 1 chat quiet a week",
     );
     expect(digestText(base, (i) => i)).not.toContain("Projects");
+  });
+
+  it("names a list that lapsed unanswered once, under what waits on you (task #786)", () => {
+    const at = new Date("2026-11-23T09:00:00Z");
+    const state = (over: Partial<TaskState>): TaskState => ({ ...newState(), ...over });
+    const first = { title: "shipify: a stay's push after a held change", brief: "Fix it." };
+    const tasks = [
+      // Its merge closed the task while its list waited: the close kept it as lapsed.
+      {
+        n: 779,
+        title: "shipify: workflow clean-up",
+        state: state({ lapsed: { at: "2026-11-18T08:00:00Z", what: "separate work: x" } }),
+      },
+      // A list still on an open task, its day passed with no yes or no.
+      {
+        n: 781,
+        title: "flow runs",
+        state: state({
+          phase: "needs-you",
+          pending: {
+            first: { ...first, separate: true },
+            list: { post: 5, at: "2026-11-20T10:00:00Z" },
+          },
+        }),
+      },
+      // A list still within its day: it waits, not lapsed.
+      {
+        n: 790,
+        title: "a fresh list",
+        state: state({
+          pending: {
+            calls: { calls: [{ tool: "notion", name: "update_page", args: {} }], fingerprint: "f" },
+            list: { post: 6, at: "2026-11-23T08:00:00Z" },
+          },
+        }),
+      },
+      { n: 791, title: "nothing listed", state: state({}) },
+    ];
+    const found = lapsedLists(tasks, at, []);
+    expect(found).toEqual([
+      {
+        n: 779,
+        title: "shipify: workflow clean-up",
+        what: "separate work: x",
+        key: "lapsed:779:2026-11-18T08:00:00Z",
+      },
+      {
+        n: 781,
+        title: "flow runs",
+        what: `separate work: ${first.title}`,
+        key: "lapsed:781:2026-11-21T10:00:00.000Z",
+      },
+    ]);
+    // Named once: a key the record has said already isn't named again.
+    expect(
+      lapsedLists(
+        tasks,
+        at,
+        found.map((l) => l.key),
+      ),
+    ).toEqual([]);
+    const base = { boxes: [], apps: [], waiting: [], upcoming: { count: 0 }, keys: [] };
+    const text = digestText(
+      { ...base, waiting: [{ n: 12, title: "Bigger margins" }], lapsed: found },
+      (i) => i,
+    );
+    const lines = text.split("\n");
+    const waits = lines.findIndex((l) => l.startsWith("- **Waiting on you:**"));
+    expect(lines[waits + 1]).toBe(
+      `- **Lists that lapsed, unanswered:** #779 separate work: x, #781 separate work: ${first.title}. Write on its task to have it listed again`,
+    );
+    expect(text).not.toMatch(/all clear/);
+    expect(digestText(base, (i) => i)).not.toContain("lapsed");
+  });
+
+  it("warns from 90 days before the Node it runs on ends its support (task #786)", () => {
+    expect(NODE_ENDS[22]).toBe("2027-04-30");
+    expect(nodeEnding("v22.11.0", new Date("2027-01-29T09:00:00Z"))).toBeUndefined();
+    const soon = nodeEnding("v22.11.0", new Date("2027-02-01T09:00:00Z"));
+    expect(soon).toEqual({ major: 22, date: "2027-04-30", days: 88 });
+    // A major not listed, or a newer one far from its end: nothing to say.
+    expect(nodeEnding("23.1.0", new Date("2027-02-01T09:00:00Z"))).toBeUndefined();
+    expect(nodeEnding("26.13.1", new Date("2027-02-01T09:00:00Z"))).toBeUndefined();
+    const base = { boxes: [], apps: [], waiting: [], upcoming: { count: 0 }, keys: [] };
+    const text = digestText({ ...base, node: soon }, (i) => i);
+    expect(text).toContain(
+      "- **Node 22:** its support ends on 2027-04-30, in 88 days, and this box runs it: move Shipify and its boxes to a newer LTS before then (a `shipify:` task)",
+    );
+    expect(text).not.toMatch(/all clear/);
+    const ended = nodeEnding("22.20.0", new Date("2027-05-02T09:00:00Z"));
+    expect(digestText({ ...base, node: ended }, (i) => i)).toContain(
+      "- **Node 22:** its support ended on 2027-04-30, and this box runs it",
+    );
   });
 
   it("says what the last clean-up deleted, or why it failed (ADR 0069)", () => {

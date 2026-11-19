@@ -69,6 +69,9 @@ When designing an interface, ask:
 - **Trace the real path before you say "no code".** Follow the request through the code and the service, end to end, before you say the feature needs no code or can't be done.
 - **Read the service's code for the smallest correct step.** When you design on a service, read its code or docs for how it works. Do not guess from its name.
 - **One service path now, the rest later.** Build one path through the service well. Name the other paths as "later", not as part of this change.
+- **An existing job before a new one.** Before you add a workflow run, a key or a part, look for a job that already runs where the work must run and already holds the key it needs. A workflow change costs the owner one more approval and review.
+- **The smallest change doc.** When the owner asks for something lightweight, write one change doc for the smallest change that fixes the problem they named. List the rest as later options in a few lines, not as more docs. A change doc stays under 150 lines (`ship change check`): when the owner wants several stories that each build alone, write one doc for each from the start.
+- **Say what a cut costs.** When you cut a feature to keep a design lean, say what the owner must then do by hand for each case the cut drops, so the cut is a choice they can see.
 
 ## Designing for testability
 

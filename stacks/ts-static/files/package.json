@@ -6,7 +6,7 @@
   "description": "{{APP_DESCRIPTION}}",
   "packageManager": "pnpm@12.6.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=26"
   },
   "scripts": {
     "dev": "wrangler dev --port 8787 --var APP_ENV:local",

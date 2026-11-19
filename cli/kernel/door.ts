@@ -6,9 +6,10 @@
 //                                failed nudge isn't tried again: the watch tells you of the reply.
 //   GET  <door>/door/file/<ref>  a file you sent through a chat, for the agent (100 MB at most)
 //   GET  <door>/door/guest/<id>  a guest's email and name, for their calls (ADR 0073)
-//   POST <door>/door/files/forget  closed chats' files deleted from the web chat's store, and those
-//                                no chat used in 60 days: the weekly clean-up's, from watch.yml
-//                                (the door takes no other workflow's)
+//   POST <door>/door/files/forget  closed chats' files deleted from the web chat's store, those no
+//                                chat used in 60 days, and runs' files 30 days old of what never
+//                                closes: the weekly clean-up's, from watch.yml (the door takes no
+//                                other workflow's)
 // SHIPIFY_DOOR_URL is the edge's origin.
 import { readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
@@ -162,45 +163,62 @@ export async function doorGuest(id: string): Promise<GuestWho | undefined> {
   }).catch(() => undefined);
 }
 
-/** What the door's forget deleted: the closed chats' files, and the files no chat used, with bytes. */
+/**
+ * What the door's forget deleted: the closed chats' files, the files no chat used, and the old runs'
+ * files of what never closes, with bytes.
+ */
 export interface Forgotten {
   deleted: number;
   bytes: number;
   unclaimed: number;
   unclaimedBytes: number;
+  old: number;
+  oldBytes: number;
   /** The door didn't take them all (no door, no token here, or it refused): the rest next week. */
   failed?: true;
 }
 
-/** The most chats one forget names, as the door takes. */
+/** The most chats one forget names in each list, as the door takes. */
 const MOST_FORGOTTEN = 500;
 
 /**
  * The weekly clean-up's step (ADR 0069, section 15): these closed chats' files deleted from the web
- * chat's store, and the files no chat used in 60 days, proven by this job's OIDC token
- * (watch.yml's: the door takes no other). 500 chats a call, and one call with none: what each
- * deleted, added up. A call that fails stops the rest, and what went before it is still counted.
+ * chat's store, the files no chat used in 60 days, and the runs' files 30 days old of these open
+ * chats that never close (`old`, task #784), proven by this job's OIDC token (watch.yml's: the door
+ * takes no other). 500 chats of each list a call, and one call with none: what each deleted, added
+ * up. A call that fails stops the rest, and what went before it is still counted.
  */
-export async function forgetFiles(chats: number[]): Promise<Forgotten> {
-  const all = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0 };
+export async function forgetFiles(chats: number[], old: number[] = []): Promise<Forgotten> {
+  const all = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0, old: 0, oldBytes: 0 };
   const counts = Object.keys(all) as (keyof typeof all)[];
   const n = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
   // No door, no store of files: nothing to clean, and nothing failed.
   if (!process.env.SHIPIFY_DOOR_URL) return all;
   const d = await door();
   if (!d) return { ...all, failed: true };
-  for (let i = 0; i === 0 || i < chats.length; i += MOST_FORGOTTEN) {
+  const most = Math.max(chats.length, old.length);
+  for (let i = 0; i === 0 || i < most; i += MOST_FORGOTTEN) {
     const r = await within(60_000, (signal) =>
       fetch(`${d.origin}/door/files/forget`, {
         method: "POST",
         headers: { Authorization: `Bearer ${d.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ chats: chats.slice(i, i + MOST_FORGOTTEN) }),
+        body: JSON.stringify({
+          chats: chats.slice(i, i + MOST_FORGOTTEN),
+          old: old.slice(i, i + MOST_FORGOTTEN),
+        }),
         signal,
       }),
     ).catch(() => undefined);
     const said = (await r?.json().catch(() => null)) as Record<string, unknown> | null;
-    // An edge from before it deleted the files no chat used says nothing of them: none went.
-    const got: Record<string, unknown> = { unclaimed: 0, unclaimedBytes: 0, ...said };
+    // An edge from before it deleted the files no chat used, or old runs' files, says nothing of
+    // them: none went.
+    const got: Record<string, unknown> = {
+      unclaimed: 0,
+      unclaimedBytes: 0,
+      old: 0,
+      oldBytes: 0,
+      ...said,
+    };
     if (!r?.ok || !counts.every((k) => n(got[k]))) return { ...all, failed: true };
     for (const k of counts) all[k] += got[k] as number;
   }

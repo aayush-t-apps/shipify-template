@@ -2,7 +2,6 @@
 // cli/contracts/words.ts (ADR 0042), where the door and every chat read them too.
 export {
   type FixedWord,
-  NOT_A_GUESTS,
   WORDS,
   type Word,
   wordOf,

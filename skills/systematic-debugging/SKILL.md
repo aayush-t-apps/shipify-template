@@ -77,6 +77,8 @@ You MUST complete each phase before proceeding to the next.
    - An empty list on a page: watch the network calls. A GET that carries a body, or a call that never leaves, shows up there
    - A screenshot differs from the code: check that the client runs the current code (a cached build) before you change the code
    - A failure only in CI: compare the runner's image with yours, and reproduce it in a container of that image
+   - A lint or a test that passes here but fails in CI: compare the tool's version with CI's. CI may install a newer one: run that version too (its container or its release binary)
+   - A scroll position that jumps: log it on each scroll event before you change code. The browser can move it itself (scroll snap, scroll anchoring), and a re-snap ignores scrolls made by script
    - A generic OS error (permission denied, no such file): read the vendor's source for what raises it
    - A step that may not write its output: remove the old output file first, so a stale file can't pass as the result
 

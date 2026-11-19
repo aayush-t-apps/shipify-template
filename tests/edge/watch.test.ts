@@ -1,7 +1,17 @@
 // The watch (edge/src/watch.ts): each duty against a fake GitHub, and the budget that stops a tick
 // before Cloudflare's 50 subrequests, leaving the rest for the next one.
 import { beforeAll, describe, expect, it } from "vitest";
-import { chatMenu, fromLine, pinText, readFindings, replyLine } from "../../cli/contracts/index.ts";
+import {
+  againLine,
+  chatMenu,
+  fromLine,
+  isAgain,
+  pinText,
+  readFindings,
+  readFrom,
+  replyLine,
+  withoutLine,
+} from "../../cli/contracts/index.ts";
 import { clearCaches } from "../../edge/src/cache.ts";
 import { BUDGET, tick } from "../../edge/src/watch.ts";
 import { APP_ID, CHAT, DOOR, envFor, type Keys, keys, RUN, world } from "./fake.ts";
@@ -320,7 +330,7 @@ describe("stopped", () => {
     expect(t.labels).toEqual([]);
   });
 
-  it("takes a dead stay's label off as it says Stopped, so your `continue` starts a run (ADR 0057)", async () => {
+  it("takes a dead stay's label off before it starts a run for your words, so that run isn't skipped (ADR 0057)", async () => {
     const f = world(k);
     status(f);
     const t = f.issue({ created_at: new Date(f.w.at - 2 * HOUR).toISOString() });
@@ -333,7 +343,12 @@ describe("stopped", () => {
     f.comment(t.number, "and the swap?", { login: "owner" });
     f.later(11 * MIN);
     await run(f);
-    expect(t.labels).toEqual(["stuck"]);
+    expect(t.labels).toEqual([]);
+    const calls = f.gh().filter((c) => c.includes(`issues/${t.number}/`));
+    expect(calls).toEqual([
+      `DELETE repos/o/shipify/issues/${t.number}/labels/staying`,
+      `POST repos/o/shipify/issues/${t.number}/comments`,
+    ]);
   });
 
   it("takes a stay's label off when no run is going for it, and leaves a live stay's (ADR 0057)", async () => {
@@ -364,7 +379,7 @@ describe("stopped", () => {
     expect(t.labels).toEqual([]);
   });
 
-  it("says Stopped, once, when your words wait 10 minutes with no run: it never starts one (ADR 0042)", async () => {
+  it("starts a run once more for your words no run answered in 10 minutes, and says Stopped only when that fails too (task #786)", async () => {
     const f = world(k);
     const s = status(f);
     const t = f.issue({ created_at: new Date(f.w.at - 2 * HOUR).toISOString() });
@@ -376,24 +391,45 @@ describe("stopped", () => {
     f.comment(t.number, "and make it blue", { login: "owner" });
     await run(f);
     expect(t.labels).toEqual([]);
-    f.later(11 * MIN);
-    await run(f);
-    expect(t.labels).toEqual(["stuck"]);
+    const again = () => f.w.comments.filter((c) => c.issue === t.number && isAgain(c.body));
     const said = () =>
       f.w.comments
         .filter((c) => c.issue === s.number)
         .flatMap((c) => readFindings(c.body)?.notes ?? []);
+    // Ten minutes on: the door App's comment, whose event starts the task's run. Not your words (no
+    // `from` line), not Stopped, and nothing said.
+    f.later(11 * MIN);
+    await run(f);
+    expect(again()).toHaveLength(1);
+    expect(again()[0]?.performed_via_github_app?.id).toBe(APP_ID);
+    expect(readFrom(again()[0]?.body)).toBeUndefined();
+    expect(withoutLine(again()[0]?.body)).toBe(
+      "No run answered your words here for 10 minutes, so Shipify started one for them again.",
+    );
+    expect(t.labels).toEqual([]);
+    expect(said()).toEqual([]);
+    // Its run has 10 minutes too: nothing more meanwhile.
+    f.later(5 * MIN);
+    await run(f);
+    expect(again()).toHaveLength(1);
+    expect(t.labels).toEqual([]);
+    // No run answered that either: Stopped, and told once, with `continue`.
+    f.later(6 * MIN);
+    await run(f);
+    expect(again()).toHaveLength(1);
+    expect(t.labels).toEqual(["stuck"]);
     expect(said().map((n) => [n.problem.code, n.problem.what])).toEqual([
       [
         "words-unanswered",
-        `#${t.number} wasn't answered: no run replied to your words (none started, or one broke before it could say so).`,
+        `#${t.number} wasn't answered: no run replied to your words, nor to the one Shipify started for them once more (none started, or one broke before it could say so).`,
       ],
     ]);
     expect(said()[0]?.problem.fix).toBe("Reply `continue`.");
-    // Told once, and nothing started: no label rung, then or later.
+    // Told once, and started no more: no label rung, then or later.
     f.later(11 * MIN);
     await run(f);
     expect(said()).toHaveLength(1);
+    expect(again()).toHaveLength(1);
     expect(f.w.events[t.number]?.map((e) => (e.label as { name: string }).name)).toEqual(["stuck"]);
     // Someone else's words wait on nothing.
     const g = world(k);
@@ -408,6 +444,35 @@ describe("stopped", () => {
     g.later(11 * MIN);
     await run(g);
     expect(u.labels).toEqual([]);
+    expect(g.w.comments.filter((c) => c.issue === u.number && isAgain(c.body))).toEqual([]);
+  });
+
+  it("the run it started answers: nothing more is said, and your next words wait as any do", async () => {
+    const f = world(k);
+    status(f);
+    const t = f.issue({ created_at: new Date(f.w.at - 2 * HOUR).toISOString() });
+    f.comment(
+      t.number,
+      statusLine({ cursor: { id: 1, at: new Date(f.w.at - HOUR).toISOString() } }),
+      RUN,
+    );
+    f.comment(t.number, "and make it blue", { login: "owner" });
+    f.later(11 * MIN);
+    await run(f);
+    const again = () => f.w.comments.filter((c) => c.issue === t.number && isAgain(c.body));
+    expect(again()).toHaveLength(1);
+    f.later(3 * MIN);
+    f.reply(t.number, line(), "Blue it is.");
+    f.later(11 * MIN);
+    await run(f);
+    expect(t.labels).toEqual([]);
+    expect(again()).toHaveLength(1);
+    // Newer words of yours with no run: started once more for them, as before.
+    f.comment(t.number, "and bigger", { login: "owner" });
+    f.later(11 * MIN);
+    await run(f);
+    expect(again()).toHaveLength(2);
+    expect(t.labels).toEqual([]);
   });
 
   it("words a run already answered, even with a failure, aren't told again (2026-10-07: a key GitHub wouldn't mint)", async () => {
@@ -473,7 +538,8 @@ describe("stopped", () => {
     f.later(11 * MIN);
     await run(f);
     expect(t.labels).toEqual([]);
-    // Your words after it, with no run for them: Stopped.
+    expect(f.w.comments.filter((c) => c.issue === t.number && isAgain(c.body))).toEqual([]);
+    // Your words after it, with no run for them: a run started for them once more.
     f.comment(
       t.number,
       `${fromLine({ ...from, id: "10" })}\nand blue`,
@@ -482,7 +548,7 @@ describe("stopped", () => {
     );
     f.later(11 * MIN);
     await run(f);
-    expect(t.labels).toEqual(["stuck"]);
+    expect(f.w.comments.filter((c) => c.issue === t.number && isAgain(c.body))).toHaveLength(1);
   });
 
   it("leaves a task whose status is of another version alone: not this core's to read", async () => {
@@ -496,13 +562,20 @@ describe("stopped", () => {
     expect(t.labels).toEqual([]);
   });
 
-  it("says Stopped for a new task no run has answered, written by the door", async () => {
+  it("starts a new task no run has answered, written by the door, once more, then says Stopped", async () => {
     const f = world(k);
     status(f);
     const t = f.issue({
       user: { login: DOOR, type: "Bot" },
       performed_via_github_app: { id: APP_ID },
     });
+    f.later(11 * MIN);
+    await run(f);
+    expect(f.w.comments.filter((c) => c.issue === t.number).map((c) => isAgain(c.body))).toEqual([
+      true,
+    ]);
+    expect(t.labels).toEqual([]);
+    // Its only comment is the watch's: the task's own words still wait.
     f.later(11 * MIN);
     await run(f);
     expect(t.labels).toEqual(["stuck"]);
@@ -565,7 +638,10 @@ describe("stopped", () => {
     );
     f.later(11 * MIN);
     await run(f);
-    expect(project.labels).toEqual(["project", "stuck"]);
+    expect(f.w.comments.filter((c) => c.issue === project.number && isAgain(c.body))).toHaveLength(
+      1,
+    );
+    expect(f.w.comments.filter((c) => c.issue === inbox.number && isAgain(c.body))).toEqual([]);
   });
 });
 
@@ -959,7 +1035,8 @@ describe("the budget", () => {
         display_title: `task #${9000 + i}`,
         created_at: new Date(f.w.at - 30 * MIN).toISOString(),
       });
-    // And one whose words wait with no run, looked at first: Stopped, said before the budget runs out.
+    // And one whose words wait with no run, even after the run started once more for them, looked
+    // at first: Stopped, said before the budget runs out.
     const stuck = f.issue({ created_at: new Date(f.w.at - 3 * HOUR).toISOString() });
     f.comment(
       stuck.number,
@@ -967,6 +1044,9 @@ describe("the budget", () => {
       RUN,
     );
     f.comment(stuck.number, "please", { login: "owner" });
+    f.later(11 * MIN);
+    const door = { login: DOOR, type: "Bot" };
+    f.comment(stuck.number, `${againLine}\nstarted again`, door, { id: APP_ID });
     f.later(11 * MIN);
     const r = await run(f);
     expect(r.spent).toBeLessThanOrEqual(BUDGET);

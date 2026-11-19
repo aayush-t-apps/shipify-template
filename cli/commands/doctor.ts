@@ -19,6 +19,7 @@ import { PLATFORM_ROOT } from "../lib/config.ts";
 import { credential, credentialsFile, loadCredentials } from "../lib/credentials.ts";
 import { has, run } from "../lib/exec.ts";
 import { ghRun, platformRepo } from "../lib/github.ts";
+import { NODE_MAJOR } from "../lib/node-support.ts";
 import { type Check, ok, type Result } from "../lib/output.ts";
 import { sourceControl } from "../lib/providers.ts";
 import { stale } from "../lib/settings.ts";
@@ -118,18 +119,18 @@ export function bootloaderCheck(said: string): Check | undefined {
 }
 
 /**
- * What this machine needs to run Shipify and build its stacks, each blocking, with its fix: Node 22,
- * the CLI's tools and each stack's, and each stack's own checks (its libraries). `ship setup`'s
- * first step is these too.
+ * What this machine needs to run Shipify and build its stacks, each blocking, with its fix: Node
+ * (NODE_MAJOR), the CLI's tools and each stack's, and each stack's own checks (its libraries).
+ * `ship setup`'s first step is these too. When its support ends is the weekly digest's to say.
  */
 export function machineChecks(stacks = listStacks()): Check[] {
   const checks: Check[] = [];
   const major = Number(process.versions.node.split(".")[0]);
   checks.push({
-    name: "node ≥ 22",
-    ok: major >= 22,
+    name: `node ≥ ${NODE_MAJOR}`,
+    ok: major >= NODE_MAJOR,
     detail: process.version,
-    fix: "install Node 22 (docs/setup.md)",
+    fix: `install Node ${NODE_MAJOR} (docs/setup.md)`,
   });
   // The CLI itself runs on node, pnpm, git and gh; stacks name what their make targets need
   // (make among them), so the core needs no more (ADR 0047).

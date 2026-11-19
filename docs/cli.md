@@ -50,7 +50,8 @@ takes the template's key), then checks it. **`--new`** asks for its key again, t
 agent through one).
 
 **`doctor`** checks:
-- Node 22, `pnpm`, `git`, `gh`, `make`, and what each stack needs;
+- Node 26 (`cli/lib/node-support.ts`), `pnpm`, `git`, `gh`, `make`, and what each stack needs (when
+  Node 26's support ends is the weekly digest's to say, [watch.md](watch.md));
 - the host: CPUs, memory, 5 GB free disk, a 48-bit kernel on arm64;
 - the plug-in files (`tools.json`, `executors.json`) and the default agent;
 - on a box: its setup version and the agent's sandbox;
@@ -225,13 +226,12 @@ other accounts: GitHub must know the account, and the App must be set up first
 | `run think <n>` | the same, when needed | the agent (or a check's script) as the slot's own user, writing `result.json` |
 | `run decide <n>` | the same | the result into writes; outputs what to mint: `repo` and its `account`, `act`, `workflows`, `files` |
 | `run apply <n>` | the same | makes the writes, saves the status comment last, tells the door of each new reply |
-| `run github <n>` | `task.yml`'s `github` job, on GitHub's machines | what's pending, once: a merged plan's repo and keys, an operation (release, down, up, rollback), or closing a dropped or started-over task's PRs (on another account, with the repos App's token there) |
+| `run github <n>` | `task.yml`'s `github` job, on GitHub's machines | what's pending, once: a merged plan's repo and keys, an operation (release, down, up, rollback), or closing a dropped or started-over task's PRs (on another account, with the repos App's token there). On the status task, started by the weekly clean-up: closed tasks' open PRs closed and their branches deleted, 7 days after each task closed, in every repo the bot reaches; what it did on the status task's Recent (task #779) |
 | `run failed <n>` | `task.yml`, when a step broke before a reply | says so on the task, with its fix |
 | `task plans <before> <after>` | `task.yml`, on a push of merged plans to `main` | starts each merged plan's task, the one its `task:` line names |
 | `watch due` | `watch.yml`'s due run | starts each due task's run, each box's weekly clean-up; writes this box's health, "Coming up", the apps list and the schedule ([watch.md](watch.md)) |
-| `watch cleanup [<box>]` | `watch.yml`'s cleanup run, on that box | closed tasks' folders, any task's folder unchanged for 7 days with no run going, and agents' old run folders removed; once a week in all, closed chats' files and the 30-day close (ADR 0069) (the job then prunes the package store and npm's cache, while no other slot runs); the box's shared tools kept to each agent's pinned version and the two newest Node versions (while no other slot runs); doctor; on the status task |
+| `watch cleanup [<box>]` | `watch.yml`'s cleanup run, on that box | closed tasks' folders, any task's folder unchanged for 7 days with no run going, and agents' old run folders removed; once a week in all, closed chats' files, runs' files 30 days old of repeats, recipes and open projects, and the 30-day close (ADR 0069), and the `github` job started on the status task for closed tasks' PRs and branches (the job then prunes the package store and npm's cache, while no other slot runs); the box's shared tools kept to each agent's pinned version and the two newest Node versions (while no other slot runs); doctor; on the status task |
 | `watch alert ['<findings>']` | `watch.yml`'s alert run | the watch's findings (the argument, or the door App's newest comment) into the record, and an alert reply |
-
 ## Operate
 
 | Command | Does |

@@ -6,8 +6,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
-  GUEST_LABEL,
-  guestLabel,
   LIBRARY_LABEL,
   PERSONALITY_TOPIC,
   type PersonalityWord,
@@ -22,6 +20,7 @@ import {
   RUN_WRITER,
   undoneVoice,
   voiceOf,
+  whose,
   withoutLine,
   withVoice,
 } from "../../contracts/index.ts";
@@ -120,8 +119,7 @@ function readPages(label: string, guest?: string, state: "open" | "all" = "open"
   for (const p of rec().pages(label, state)) {
     const topic = topicOf(p.title);
     if (!topic) continue;
-    const theirs = p.labels.some((l) => l.name === GUEST_LABEL);
-    if (guest ? !p.labels.some((l) => l.name === guestLabel(guest)) : theirs) continue;
+    if (whose({ labels: p.labels }) !== guest) continue;
     if (!trusted(p.author, p.body, guest) || (p.editor && !trusted(p.editor, p.body, guest))) {
       skipped.push(topic);
       continue;
@@ -191,11 +189,9 @@ export function pagesTo(
   guest?: string,
 ): { done: number[]; left: number[] } {
   const record = rec();
-  const side = (labels: string[]) =>
-    guest ? labels.includes(guestLabel(guest)) : !labels.includes(GUEST_LABEL);
   const pages = record
     .issues({ labels: [label], state: state === "open" ? "closed" : "open" })
-    .filter((i) => !i.pull_request && topicOf(i.title) && side(i.labels.map((l) => l.name)));
+    .filter((i) => !i.pull_request && topicOf(i.title) && whose({ labels: i.labels }) === guest);
   const done: number[] = [];
   const left: number[] = [];
   for (const p of pages)
@@ -381,7 +377,7 @@ function personalityPage(): { page?: Page; open: boolean; skipped?: true } {
   const ours = rec()
     .pages(NOTEBOOK_LABEL.name, "all")
     .filter((p) => sameTopic(topicOf(p.title) ?? "", PERSONALITY_TOPIC))
-    .filter((p) => !p.labels.some((l) => l.name === GUEST_LABEL))
+    .filter((p) => !whose({ labels: p.labels }))
     .sort((a, b) => (a.state === b.state ? b.number - a.number : a.state === "open" ? -1 : 1));
   const p = ours[0];
   if (!p) return { open: false };

@@ -264,6 +264,44 @@ export function hold(git: Git, h: Hold, by: { name: string; email: string }) {
   );
 }
 
+/** The merge that puts a stay's next commits on the hold (below). */
+export const ON_HOLD_COMMIT = "Merge the held branch into the stay's next commits";
+
+/**
+ * A stay's next push (ADR 0057): its clone never had the hold commit the box pushed after its last
+ * answer, so the branch `head` doesn't follow `base` (the task's branch on GitHub). When hold commits
+ * are all `base` has that `head` hasn't, `head` goes on them, in one merge commit by `by` with
+ * `head`'s files: the run's whole change, its workflow lines held again as any push's are. Anything
+ * else on `base` (your own commit) leaves `head` as it is. Whether it moved.
+ */
+export function ontoHold(
+  git: Git,
+  base: string,
+  head: string,
+  by: () => { name: string; email: string },
+): boolean {
+  const lacks = git("log", "--format=%s", `${head}..${base}`).split("\n").filter(Boolean);
+  if (!lacks.length || lacks.some((s) => s !== HOLD_COMMIT)) return false;
+  const { name, email } = by();
+  const merged = git(
+    "-c",
+    `user.name=${name}`,
+    "-c",
+    `user.email=${email}`,
+    "commit-tree",
+    `${head}^{tree}`,
+    "-p",
+    head,
+    "-p",
+    base,
+    "-m",
+    ON_HOLD_COMMIT,
+  ).trim();
+  // The same files: a checkout of `head` stays as it is.
+  git("update-ref", `refs/heads/${head}`, merged);
+  return true;
+}
+
 /** A patch's part for each file it changes, by the file's path. */
 export function patchParts(patch: string): Map<string, string> {
   const parts = new Map<string, string>();

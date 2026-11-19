@@ -28,8 +28,9 @@ replace it. Setting up from nothing: `pnpm ship setup` walks it ([getting-starte
 
 1. **WSL with systemd on** (Windows only): `/etc/wsl.conf` has `[boot]` `systemd=true`, then
    `wsl --shutdown` from Windows.
-2. **Tools:** Node 22, pnpm through corepack (`corepack enable --install-directory ~/.local/bin`,
-   with `~/.local/bin` on your `PATH`), `gh` and git 2.26 or newer: that's all the core needs (a
+2. **Tools:** Node 26, pnpm from npm (`npm install -g pnpm --prefix ~/.local`, with
+   `~/.local/bin` on your `PATH`: Node 26 has no corepack, and pnpm runs the version Shipify pins by
+   itself), `gh` and git 2.26 or newer: that's all the core needs (a
    box installs its own agent). To build apps on this PC too, each stack adds its own, which
    `pnpm ship doctor` lists: `make`, and for the TypeScript stacks
    `sudo npx -y playwright@1.64.0 install-deps chromium` once.
@@ -75,6 +76,9 @@ replace it. Setting up from nothing: `pnpm ship setup` walks it ([getting-starte
   `apps.example.com`). The edge is then at `shipify.<APPS_DOMAIN>` besides workers.dev, and each app at
   `<id>.<APPS_DOMAIN>`. Put it in your credentials file; `door setup` sets the shipify variable.
   On the zone: SSL/TLS → **Always Use HTTPS** on, **Minimum TLS Version** 1.2; DNS → **DNSSEC** on.
+  Each app's name is public: its certificate goes into the public Certificate Transparency logs,
+  which subdomain finders read, and it stays there. A name is never a lock: an app that isn't for
+  the public goes behind a sign-in (below).
 - **The deploy token,** `shipify-deploy`, for your account only. Its access is in
   [Tokens and secrets](#tokens-and-secrets). It's shown once: paste it at `pnpm ship setup apps`
   (hidden), which keeps it in your credentials file as `CF_DEPLOY_TOKEN`, sets it on shipify, and

@@ -1,10 +1,12 @@
-// R2, in memory, for the web chat's tests: objects with their metadata, listed by key as R2 lists
-// them (`limit` a call, with a cursor), each list's metadata only when asked. `down` makes every call
-// fail, as a store that refuses does.
+// R2, in memory, for the web chat's tests: objects with their metadata and a version (`etag`, each
+// put a new one), listed by key as R2 lists them (`limit` a call, with a cursor), each list's
+// metadata only when asked. A put `onlyIf` another version writes nothing and is null, as R2's.
+// `down` makes every call fail, as a store that refuses does.
 import type { Bucket, R2Item } from "../../edge/src/env.ts";
 
 export function memoryR2() {
-  const items = new Map<string, { bytes: Uint8Array; meta: Record<string, string> }>();
+  type Item = { bytes: Uint8Array; meta: Record<string, string>; etag: string };
+  const items = new Map<string, Item>();
   const state = { down: false, puts: 0, lists: 0, deletes: 0 };
   const check = () => {
     if (state.down) throw new Error("R2: refused");
@@ -15,6 +17,7 @@ export function memoryR2() {
     return {
       key,
       size: it.bytes.byteLength,
+      etag: it.etag,
       ...(include ? { customMetadata: { ...it.meta } } : {}),
     };
   };
@@ -38,14 +41,17 @@ export function memoryR2() {
     },
     async put(key, value, options) {
       check();
-      state.puts++;
       const bytes =
         typeof value === "string"
           ? new TextEncoder().encode(value)
           : value instanceof ArrayBuffer
             ? new Uint8Array(value)
             : new Uint8Array(await new Response(value).arrayBuffer());
-      items.set(key, { bytes, meta: { ...(options?.customMetadata ?? {}) } });
+      const want = options?.onlyIf?.etagMatches;
+      if (want !== undefined && items.get(key)?.etag !== want) return null;
+      state.puts++;
+      const meta = { ...(options?.customMetadata ?? {}) };
+      items.set(key, { bytes, meta, etag: String(state.puts) });
       return item(key);
     },
     async list(options) {

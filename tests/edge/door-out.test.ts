@@ -575,6 +575,8 @@ describe("POST /door/files/forget", () => {
       envFor(k, more),
       f.deps,
     );
+  /** The door's answer when it deleted nothing. */
+  const none = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0, old: 0, oldBytes: 0 };
   const kept = () => {
     const r2 = memoryR2();
     void r2.keep("f-8000000000003-0123456789abcdef0123", "aaa", { name: "a", by: "you", task: 4 });
@@ -590,19 +592,41 @@ describe("POST /door/files/forget", () => {
     const env = { BUCKET: r2.bucket } as unknown as Partial<Env>;
     const res = await forget(f, { chats: [4, 9] }, await watch(f), env);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ deleted: 2, bytes: 7, unclaimed: 0, unclaimedBytes: 0 });
+    expect(await res.json()).toEqual({ ...none, deleted: 2, bytes: 7 });
     // Chat 5's stays, and a file with no chat and no time.
     expect([...r2.items.keys()].sort()).toEqual([
       "f-8000000000001-0123456789abcdef0123",
       "up-0123456789abcdef0123",
     ]);
     // A second pass over the same chats deletes nothing more.
-    expect(await (await forget(f, { chats: [4] }, await watch(f), env)).json()).toEqual({
-      deleted: 0,
-      bytes: 0,
-      unclaimed: 0,
-      unclaimedBytes: 0,
-    });
+    expect(await (await forget(f, { chats: [4] }, await watch(f), env)).json()).toEqual(none);
+  });
+
+  it("deletes the runs' files made 30 days ago or more of the old chats it names, what never closes (task #784)", async () => {
+    const f = world(k);
+    const r2 = memoryR2();
+    const days = (n: number) => f.w.at - n * 24 * 3600_000;
+    const id = "0123456789abcdef0123";
+    const run = (age: number, task = 7) => ({ name: "x", by: "run", at: days(age), task });
+    // Chat 7 is a repeat: its old runs' files go, a guest's too; yours, a newer one and one with
+    // no time stay.
+    void r2.keep(`f-8000000000006-${id}`, "aaaa", run(31));
+    void r2.keep(`g3f9a2c-8000000000005-${id}`, "b", run(30));
+    void r2.keep(`f-8000000000004-${id}`, "c", run(29));
+    void r2.keep(`f-8000000000003-${id}`, "d", { ...run(90), by: "you" });
+    void r2.keep(`run-7-${id}`, "e", { name: "e", by: "run", task: 7 });
+    // Chat 8 isn't named old: an open chat keeps its files.
+    void r2.keep(`f-8000000000002-${id}`, "f", run(90, 8));
+    const env = { BUCKET: r2.bucket } as unknown as Partial<Env>;
+    const res = await forget(f, { chats: [], old: [7] }, await watch(f), env);
+    expect(await res.json()).toEqual({ ...none, old: 2, oldBytes: 5 });
+    expect([...r2.items.keys()].sort()).toEqual([
+      `f-8000000000002-${id}`,
+      `f-8000000000003-${id}`,
+      `f-8000000000004-${id}`,
+      `run-7-${id}`,
+    ]);
+    expect(r2.state.lists).toBe(1);
   });
 
   it("deletes the files no chat used, made 60 days ago or more, a guest's too, in the same one listing", async () => {
@@ -618,7 +642,7 @@ describe("POST /door/files/forget", () => {
     const env = { BUCKET: r2.bucket } as unknown as Partial<Env>;
     // A week with no closed chats asks too.
     const res = await forget(f, { chats: [] }, await watch(f), env);
-    expect(await res.json()).toEqual({ deleted: 0, bytes: 0, unclaimed: 2, unclaimedBytes: 5 });
+    expect(await res.json()).toEqual({ ...none, unclaimed: 2, unclaimedBytes: 5 });
     // A newer one stays, an open chat's, and one with no time of its own.
     expect([...r2.items.keys()].sort()).toEqual([
       `f-8000000000001-${id}`,
@@ -639,7 +663,15 @@ describe("POST /door/files/forget", () => {
       ref: "refs/heads/x",
     });
     expect((await forget(f, { chats: [4] }, branch, env)).status).toBe(401);
-    for (const body of [{}, { chats: [0] }, { chats: ["4"] }, { chats: Array(501).fill(1) }])
+    for (const body of [
+      {},
+      { chats: [0] },
+      { chats: ["4"] },
+      { chats: Array(501).fill(1) },
+      { chats: [], old: [-1] },
+      { chats: [], old: 4 },
+      { chats: [], old: Array(501).fill(1) },
+    ])
       expect((await forget(f, body, await watch(f), env)).status, JSON.stringify(body)).toBe(400);
     expect(r2.items.size).toBe(4);
   });

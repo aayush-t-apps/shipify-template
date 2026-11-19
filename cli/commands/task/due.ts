@@ -2,8 +2,8 @@
 // and status are its own run's (task.yml, in its group); here only a part's quiet-day close (ADR
 // 0040, 0069) is written on one. It reads every repeating, waiting or deploying task and answered
 // part, and dispatches the run
-// of each one whose time has come; it keeps "Coming up" on the status task, and the apps list the
-// edge reads.
+// of each one whose time has come, and of a repeat whose PR it needed you for has merged or closed;
+// it keeps "Coming up" on the status task, and the apps list the edge reads.
 
 import {
   DEPLOYING_LABEL,
@@ -155,7 +155,8 @@ export function taskDue(at = new Date()): Result<Due> {
         });
       continue;
     }
-    if (r && !r.paused) {
+    // A closed task pauses its repeat (one is listed here by a deploy's label): reopened, it's on.
+    if (r && !r.paused && i.state === "open") {
       const due = Date.parse(r.next) <= now;
       const schedule = parseSchedule(r.every);
       const next = !due
@@ -166,11 +167,18 @@ export function taskDue(at = new Date()): Result<Due> {
             ? nextRun(schedule, at, timeZone()).toISOString()
             : r.next;
       upcoming.push({ n: i.number, title: i.title, next, every: r.every });
-      if (due && !busy.has(i.number))
+      if (busy.has(i.number)) continue;
+      if (due)
         start(
           i,
           `${r.kind === "reminder" ? "a reminder" : r.kind === "check" ? "a check" : "its job"}`,
         );
+      else {
+        // Its PR merged or closed: a merge that closes nothing (a recipe's `part-of`) starts no
+        // run, so its run is started now, and the task stops saying it needs you.
+        const ended = prsEnded(st);
+        if (ended) start(i, ended);
+      }
       continue;
     }
     if (busy.has(i.number)) continue;
@@ -222,6 +230,20 @@ export function taskDue(at = new Date()): Result<Due> {
       },
     },
   );
+}
+
+/**
+ * A task that needs you for its PRs alone, each now merged or closed: one read of each with the
+ * bot's read-only key. Why its run starts, or undefined (one still open, or unreadable).
+ */
+function prsEnded(st: TaskState): string | undefined {
+  if (st.phase !== "needs-you") return undefined;
+  const open = (st.prs ?? []).filter((u) => st.prInfo?.[u]?.state === "open");
+  if (!open.length) return undefined;
+  const token = process.env.SHIPIFY_READ_TOKEN || undefined;
+  const now = open.map((u) => releaseState(u, token).state);
+  if (!now.every((x) => x === "merged" || x === "closed")) return undefined;
+  return now.includes("merged") ? "its PR merged" : "its PR closed";
 }
 
 type AppRow = {

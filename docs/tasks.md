@@ -214,8 +214,8 @@ reads every word and the handoff.
 - **👀** on your comment, and on the task itself for its own words: a run has read it (the web
   chat shows ✓✓).
 - **The label:** `working`, then `needs you`, `answered` or `failed`. `deploying` while a merged
-  PR goes live; `stuck` (shown as Stopped) when a run ended before it finished, or no run started
-  for your words: say `continue`.
+  PR goes live; `stuck` (shown as Stopped) when a run ended before it finished, or no run answered
+  your words, even the one the watch started for them once more: say `continue`.
 - **The status comment** at the top: the state, the model, the PRs, what's waiting, and the last
   runs. Only a run edits it; if anyone else does, it's ignored and rebuilt from the task.
 
@@ -243,7 +243,8 @@ run stays in the guest profile, so nothing of yours reaches it.
 - **Its prompt** holds the guest's own memory page: their Personality first, then their notes, 8
   KB in all ([notebook.md](notebook.md#a-guests-memory-adr-0078)).
 - **A guest's words are never yours:** their author is `guest`, so `yes`, `no`, `go`, `publish`,
-  `preview`, `start over` or `clean start` in them approves nothing (`NOT_A_GUESTS`).
+  `preview`, `start over` or `clean start` in them approves nothing (`GUEST_RULES`, the one table
+  of what a guest may do, in `cli/contracts/guests.ts`).
 - **Nothing of yours in its environment:** its commands start with `LANG` and `SHIPIFY_TASK`
   alone ([security.md](security.md#a-guests-run)).
 - **Its files** go to the web chat's store (R2) only, never to `shipify-files`
@@ -362,7 +363,7 @@ changes the live app at once (taking an app down, bringing it back, a rollback) 
 | `go` | builds a big change again after you stopped it, or one whose doc merged before ADR 0080 or is a part's (a doc's merge starts its build by itself); on a new project's task until it's built, the same as `publish`. On a split task, starts its ready sub-tasks after a `stop` (your yes started them); `go #n` starts that one now; on a sub-task that hasn't started, starts it now ([Sub-tasks](#sub-tasks-one-task-a-few-prs)) | the doc (or plan) is merged; the task has open sub-tasks; the sub-task never ran |
 | `stop repeating` | ends a repeat and closes the task | it repeats |
 | `resume` | starts a paused repeat again | it's paused |
-| `close` | closes the task: its PRs stay, a repeat pauses (`resume` carries it on); write again to reopen it. From a chat, the door closes it at once with its state labels, the chat answers "Closed · #12", and no run starts: the next run that reads the task notes it (ADR 0040). A split's part and a project are the exceptions: a run with no agent sees to the close, as it starts what waited for the part (ADR 0066), or closes the project's open chats and its pages ([knowledge.md](knowledge.md#open-or-closed)). On GitHub, a run closes it and says so | always |
+| `close` | closes the task: a repeat pauses while it's closed (any reopen carries it on); write again to reopen it. Its open PRs stay for 7 days, and its reply names each one: then the weekly clean-up closes them and deletes the task's branches, unless you merge them first or write on the task ([Carrying on and closing](#carrying-on-and-closing)). From a chat, the door closes it at once with its state labels, the chat answers "Closed · #12", and no run starts: the next run that reads the task notes it (ADR 0040). A split's part, a project and a task waiting on you (`needs you`: a PR to merge, a question) are the exceptions: a run with no agent sees to the close, as it starts what waited for the part (ADR 0066), closes the project's open chats and its pages ([knowledge.md](knowledge.md#open-or-closed)), or names the PRs that stay open, and until when. On GitHub, a run closes it and says so | always |
 | `reopen` | reopens a closed task with no agent, and it waits for what you'd like next. From a chat, the door reopens it at once ("Reopened · #12") and no run starts: your next words do. A project's reopen is seen to by a run with no agent, which opens its pages again. On GitHub, a run reopens it, a minute or more after it closed, and says so | it's closed |
 | `stop` | stops the run that's going, within a minute: what it committed stays on the task's branch, and the run stays ([above](#a-run-that-stays)), so your next words carry on in the same session ([below](#words-while-a-run-works)). On a split task, no more sub-tasks start; the ones that run finish | always |
 | `clean start` | lists, with no agent, the open chats outside your projects that nothing keeps open (the 30-day close's rules, whatever their age: no repeat, errand, open PR or part, none at work or waiting on you), the oldest 100, but this one (ADR 0070). On `yes`, the box reads them again and closes each as done, as the 30-day close does: one with new words since the list stays open. Their files go 30 days later; your projects and pages stay. Export first what you want to keep | anywhere, as a whole message or a new chat |
@@ -388,6 +389,10 @@ Anything else is plain words: the next run reads them, and the agent answers.
   waits for your `yes`." When your words change it, the run lists the new one, which replaces it
   whole (the old one's Yes then approves nothing); when they drop it ("don't make that page"), the
   run drops it, and says so. A list also goes with a close, `start over`, or after a day.
+- **A list that lapsed unanswered** (its day passed, or a merge or your `close` closed its task,
+  with no `yes` or `no` of yours) is named once in the next weekly digest, under what waits on you,
+  with its task and what it held (task #786): a fix a run found is never lost. Write on its task to
+  have it listed again ([watch.md](watch.md)).
 - **With nothing listed,** `yes` and `no` are plain words: the agent reads them (an answer to its
   own question).
 
@@ -516,7 +521,12 @@ A **repeat** is a task with a time. One you want to keep and review as a file is
   ([checks/README.md](../checks/README.md)). To watch something new:
   `shipify: a check that tells me when <x> changes` → its PR → merge →
   `repeat: every hour, check <name>`.
-- **A PR waiting for you:** a repeat that comes due while its PR is open skips that time.
+- **A PR waiting for you:** a repeat that comes due while its PR is open skips that time. A PR
+  that closes nothing (a recipe's `part-of`) starts no run when you merge it, so the due run (at
+  least once a day) reads the PRs of each repeating task that needs you: once all have merged or
+  closed, it starts the task's run, which takes `needs you` off and says it once, with no agent
+  ("PR #7 merged, so nothing here waits for you. It repeats as before: next …"). A list that waits
+  for your `yes` keeps the task as it is.
 
 **Pausing and stopping:**
 - **A repeating task stays open:** it's labelled `repeats`, which is how the due run finds it,
@@ -527,7 +537,9 @@ A **repeat** is a task with a time. One you want to keep and review as a file is
   doesn't read. One that runs starts the count over.
 - **`stop repeating`** ends it, closes the task and takes its `repeats` label off, so it leaves
   every list (closing alone only pauses it).
-- **Closing the task** stops it too. Comment `resume` on it later, and it reopens and carries on.
+- **Closing the task** pauses it: the due run reads only open tasks. Reopen it any way (`reopen`,
+  GitHub's Reopen button, `resume`, or your words on it), and it carries on: the next due run, a
+  day later at most, lists it again. A time it missed while closed runs then, once.
 
 ## Carrying on and closing
 
@@ -571,6 +583,15 @@ A **repeat** is a task with a time. One you want to keep and review as a file is
 - **A new project or a release** closes once its deploy is Live in production (on staging it
   stays open for its release); an operation once it ran.
 - **To drop it:** close it as **not planned** (or as a **duplicate**). Its open PRs are closed and their branches deleted.
+- **What a closed task leaves goes by itself** (task #779): 7 days after a task closed, the
+  weekly clean-up closes its open PRs, each with a comment that says why, and deletes its
+  `task/<n>-…` branches, in every repo of Shipify's own account (Shipify, your projects and your
+  other repos). Before then, your merge keeps a PR's work, and words on the task carry it on, its
+  PRs and all. A closed PR's commits stay on GitHub: **Restore branch** on the PR brings the
+  branch back. A branch with no PR goes for good. Only Shipify's branches go: one named so by
+  hand (its newest commit not a run's, and no PR of Shipify's open from it) stays. A repo on
+  another of your accounts isn't reached: close its PRs there yourself. The status task's
+  **Recent** says what each clean-up did.
 - **A closed task comes back** when you write on it, from any chat (a minute or more after it
   closed): the run it starts reopens it first, so it's open and working while the agent reads your
   words, and the web chat says "Starting…" until then. A lone thanks leaves it closed, with a 👍.
@@ -597,7 +618,10 @@ as a feature".
   from `main` (a fresh clone), with no `go`: the build's reply comes next, and `stop` stops it.
   Your merge accepts the doc as written, its choices as recommended; comment before you merge to
   change it. A part's doc, a split's PR and a doc merged before ADR 0080 say "Part of": `go`
-  builds those after the merge, as before.
+  builds those after the merge, as before. So does a repeating task's `part-of` PR (a recipe's
+  lessons), whose close would pause the repeat; one whose merge closed its task anyway (its PR said
+  "Closes", from ADR 0080's build until this was fixed) opens it again, still repeating, with no
+  build.
 - **Apps with staging** get no version bump in PRs. Merging deploys staging; the Operate form's
   "Release to production" (or `<app>: release`) opens the release PR.
 - **More than one PR's work:** split it into sub-tasks ([below](#sub-tasks-one-task-a-few-prs)).
@@ -738,8 +762,8 @@ names the rest of its flow (its doc, its tasks first, its separate work).
    sibling task's PR merged first), the box brings it up to date with `ship refresh` first, as on
    the PC: main merged, both changelogs kept, a clashing change doc renumbered and the version
    bumped again on top of main's. A real conflict is left for the agent, with the files named. It
-   commits, and runs the tests its change touches: the full `make verify` is the box's, next, so
-   a small box doesn't run it twice.
+   commits, and runs only the test files its change touches and the quick checks: the full
+   `make verify` is the box's, next, so a box never runs it twice.
 2. **The box checks again,** as the agent's user, with the same checks `ship pr` makes in a
    terminal: first what the PR needs besides tests (`ship pr <clone> --check`: every change doc
    readable, the version bumped with its changelog section when merging ships one; for Shipify, a
@@ -749,11 +773,21 @@ names the rest of its flow (its doc, its tasks first, its separate work).
    and the reply shows the end of their output. The agent's commits are kept on the task's branch, so `continue`
    carries on from them. Shipify itself keeps the same targets: on it, `make verify` checks what
    the change reaches, quickly (its `Makefile` says how).
+   **One check at a time per 4 cores** (task #791): the box's checks take turns across all of its
+   slots, so each has the CPU to itself and none times out from the others' load (one turn on a
+   4-core Pi, two on 8 cores). A check waits up to 15 minutes for its turn, then runs anyway, so a
+   run never outgrows its clocks; the run's details say how long it waited.
    **Up to date when it finishes** (ADR 0059): after the agent, with a key minted then, the box
    fetches `main` again. When it moved while the agent worked, the box refreshes the branch as
-   above and runs the checks again, so the PR opens up to date; the run's details say so. Where the
-   refresh stops on a conflict, or the checks fail on the merged branch, the PR opens as the agent
-   left it, and the details say your `continue` brings it up to date first.
+   above and checks it again, so the PR opens up to date; the run's details say so. It runs the
+   tests again (`make verify`) only when main's new commits changed a file the branch changed too,
+   besides the changelog and the version bump, which refresh settles itself. Otherwise it runs
+   `ship pr --check` and the quick checks (`make check`: format, lint and types; `make verify`
+   for a project that has no `check`). Where the refresh stops on a conflict, or the checks fail
+   on the merged branch, the PR opens as the agent left it, as a draft, and the reply says why
+   first: your `continue` brings it up to date, and once its checks pass, the PR is ready for
+   review again. A private repo on GitHub's free plan has no drafts: there the PR opens as a
+   normal one, and the reply says so.
    **Kept work, whatever stops a run** (ADR 0035): an agent that stops before its answer keeps its
    commits the same way, with any edits it hadn't committed as one `Work in progress` commit. That
    covers its 200-minute clock, your plan's limit, a crash, or an answer that doesn't read. The reply
@@ -785,8 +819,11 @@ names the rest of its flow (its doc, its tasks first, its separate work).
    goes only as `ship upgrade` renders it for the stack, or as you approved. For any other change
    the run made there, one commit of the bot's ("Hold the workflow change for your yes") puts the
    file back as the branch on GitHub has it (else as `main` had it), and the rest of the work is
-   pushed. The run's lines stay in the branch's history, and never run. When the held change is all
-   the run changed and it's listed, nothing is pushed yet. The reply lists the change for your
+   pushed. The run's lines stay in the branch's history, and never run. A run that stays works on
+   in its clone, which doesn't have that commit: its next push goes on it first, in one merge
+   commit of the bot's that keeps the run's files, and is held again as any push is (#783). When
+   the held change is all the run changed and it's listed, nothing is pushed yet. The reply lists
+   the change for your
    `yes` only when nothing it changes runs before your merge (Shipify's four workflows, or one that
    runs only from `main`): one item for each file, "Change `<file>` on `<branch>` (PR #n) (+a −r).
    It runs only from `main`, after your merge: on … .", the secrets and actions its new lines use,
@@ -916,9 +953,14 @@ a `failed` reply that says what happened, with its real cause, and the one thing
   now, naming the step that broke: one of Shipify's, with its error ("The run's plan step failed:
   …"), or one of the workflow's own ("The run's “A read-only token for plan…” step failed").
 - **If it can't even do that** (GitHub down, the box restarted mid-run), the watch finds the task
-  still working, or your words with no run, and marks it **Stopped** (the label `stuck`), alerting
-  you once; nothing starts it again but your `continue`, which carries it on from where it got to
-  (ADR 0040).
+  still working and marks it **Stopped** (the label `stuck`), alerting you once; nothing starts it
+  again but your `continue`, which carries it on from where it got to (ADR 0040).
+- **Your words with no reply** after 10 minutes, and no run going for them, are your ask, late:
+  the watch starts their run once more by itself (task #786), with one comment of the door App's
+  on the task ("No run answered your words here for 10 minutes, so Shipify started one for them
+  again."). It's never your words, so it approves nothing. Only when that run doesn't answer in 10
+  minutes either is the task marked **Stopped**, with one alert that asks for `continue`
+  ([watch.md](watch.md)).
 
 **The problems** (`cli/contracts/problems.ts`, one catalogue for replies, the CLI, the door and the
 watch):
@@ -949,7 +991,7 @@ watch):
 | `files-unsent` | some of a reply's files didn't send to the chat | open them on the reply on GitHub |
 | `files-unkept` | the web chat's store didn't keep some of a guest's run's files, which have no backup (ADR 0071) | ask again: the run makes them again |
 | `stopped` | the task's run stopped before it finished | `continue` (it carries on from where it got to), or close it |
-| `words-unanswered` | no run replied to your words (none started, or one broke before it could say so) | `continue` |
+| `words-unanswered` | no run replied to your words, nor to the one the watch started for them once more (none started, or one broke before it could say so) | `continue` |
 | `form-wrong` | a form has a wrong answer | edit the issue |
 | `no-such-task` | a chat message names a task that doesn't exist | reply to one of the bot's messages, or use the right number |
 | `no-such-project` | the work names no project | name one of the projects it lists |

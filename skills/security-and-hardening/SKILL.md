@@ -122,6 +122,10 @@ Why the check is weaker than it reads (marker self-attestation, check/use races)
 
 A service worker answers every request in its scope. Before you add a path (an API, a login, a callback), check the worker's scope and fetch handler: a path inside the scope can be served from the cache, or hidden by the app's offline page.
 
+### Public host names
+
+Each TLS certificate's names go into public Certificate Transparency logs, so a host name with a certificate is public. When you count which names are public, check crt.sh against a second source (Cert Spotter's API): crt.sh's index lags and can miss certificates.
+
 ### Rate limiting
 
 Limit the API generally and auth endpoints strictly (about 10 attempts per 15 minutes). Once more than one process serves traffic, in-memory counters silently become `max × instances`, or never fire on serverless: back the limiter with a shared store.

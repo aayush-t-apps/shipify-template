@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { build } from "esbuild";
+import { NODE_MAJOR } from "../cli/lib/node-support.ts";
 
 const { values } = parseArgs({
   options: {
@@ -23,7 +24,7 @@ const result = await build({
   bundle: true,
   format: "esm",
   platform: "node",
-  target: "node22",
+  target: `node${NODE_MAJOR}`,
   outfile: out,
   metafile: true,
   // A bundled CommonJS package needs its `require`; everything else stays as it is written.

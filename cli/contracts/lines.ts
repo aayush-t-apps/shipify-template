@@ -1,6 +1,8 @@
 // The hidden lines on GitHub that the core and the edge read (ADR 0031):
 //   <!-- shipify-from {…} -->   first line of a comment or issue the door App wrote for you
 //   <!-- shipify-reply {…} -->  first line of a reply a run wrote, which the door copies to chats
+//   <!-- shipify-pass {…} -->   first line of your words a run copied onto a related task
+//   <!-- shipify-again -->      first line of the watch's comment that starts a run once more
 // A line counts only when its author is the right one (the door App, or a run); the caller checks
 // the author, never the text. Canonical JSON, so both sides read and write the same bytes.
 import { z } from "zod";
@@ -131,6 +133,17 @@ export type PassLine = z.infer<typeof PassLine>;
 const FROM = /^<!-- shipify-from (\{[^\n]*\}) -->/;
 const REPLY = /^<!-- shipify-reply (\{[^\n]*\}) -->/;
 const PASS = /^<!-- shipify-pass (\{[^\n]*\}) -->/;
+const AGAIN = /^<!-- shipify-again -->/;
+
+/**
+ * The first line of the door App's comment that starts a task's run once more for your words no
+ * run answered in 10 minutes (the watch, task #786): its event starts the run. It has no `from`
+ * line, so it's never your words: it approves nothing, and the run reads only yours. The watch
+ * reads it to try once, then to say so.
+ */
+export const againLine = "<!-- shipify-again -->";
+/** Whether a body starts with the watch's again line (the caller checks it's the door App's). */
+export const isAgain = (body: string | null | undefined) => AGAIN.test(body ?? "");
 
 export const fromLine = (f: From) => `<!-- shipify-from ${canonicalJson(From.parse(f))} -->`;
 export const replyLine = (r: ReplyLine) =>
@@ -158,4 +171,9 @@ export const readPass = (body: string | null | undefined) => read(PASS, PassLine
 
 /** The body without its hidden first line: the words people read. */
 export const withoutLine = (body: string | null | undefined) =>
-  (body ?? "").replace(FROM, "").replace(REPLY, "").replace(PASS, "").replace(/^\n+/, "");
+  (body ?? "")
+    .replace(FROM, "")
+    .replace(REPLY, "")
+    .replace(PASS, "")
+    .replace(AGAIN, "")
+    .replace(/^\n+/, "");

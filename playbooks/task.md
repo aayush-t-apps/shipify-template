@@ -108,13 +108,17 @@ notes and repeats, and replies.
   owner's own words (never Shipify's replies or anyone else's comment), and named in your reply;
   their words in this task still win.
 <!-- work -->
-- **Check at the end:** while you work, run the tests that cover your change (the test files it
-  touches, or `make -C <clone> test` in a project) and the quick checks on it (format, lint), and
-  before you ask for the PR, `<ship> pr <clone> --check` (the version, changelog and change docs a
-  PR needs). Leave the full `make verify` to the box: it runs it right after you (on a small box
-  it takes many minutes, so running it twice doubles them). If it still fails after your round to
-  fix it, no PR opens, your commits are kept on the task's branch, and the next run starts from
-  them. Never skip, delete or weaken a test to get green.
+- **Check at the end:** while you work, run only the test files your change touches, with the
+  project's own test runner, and the quick checks on it (format, lint, types), and before you ask
+  for the PR, `<ship> pr <clone> --check` (the version, changelog and change docs a PR needs).
+  Never run the box's full set yourself (`make verify`, `pnpm verify`, a project's whole
+  `make test`): the box runs it once, right after you, each box's checks one at a time, so a
+  second run only doubles the minutes. If main moves while you work, the box brings your branch up
+  to date and runs the tests again only when main changed a file you changed too, else the quick
+  checks; when that fails, your PR opens as a draft, and the reply says why first. If its checks
+  still fail after your round to fix them, no PR opens, your commits are
+  kept on the task's branch, and the next run starts from them. Never skip, delete or weaken a
+  test to get green.
 <!-- /work -->
 - **A change goes through `work` or your own clone:** a run with no clone of the project (a talk
   run) never builds in the read folder: those commits are never kept and no PR opens from them. Say

@@ -2,7 +2,7 @@
 // same, on what the PR will hold, and what to do when it finds something. The stand-in gitleaks
 // here (tests/fixtures/fake-gitleaks.mjs, every test's), and the real one once, with this config.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,6 +10,8 @@ import {
   canScan,
   GITLEAKS,
   GITLEAKS_CONFIG,
+  type Scanned,
+  scanAhead,
   secretFindings,
   secretScan,
 } from "../cli/lib/secret-scan.ts";
@@ -71,6 +73,77 @@ describe("the secret scan before a PR", () => {
     expect(secretScan(dir)).toBeUndefined();
     const args = JSON.parse(readFileSync(process.env.FAKE_GITLEAKS_ARGS, "utf8")) as string[];
     expect(args[args.indexOf("--config") + 1]).toBe(GITLEAKS_CONFIG);
+  });
+
+  it("takes the box's scan beside make verify only for the same bytes, and gitleaks runs for any other", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scan-"));
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src/a.ts"), "const ok = 1;\n");
+    writeFileSync(join(dir, "src/b.ts"), "const TOKEN = 'LEAK';\n");
+    const seen = join(dir, "..", `seen-${Math.random()}`);
+    process.env.FAKE_GITLEAKS_SEEN = seen;
+    const ran = () => (existsSync(seen) ? readFileSync(seen, "utf8") : "");
+    // The box's scan, of the change as the agent's user read it out.
+    const known = await scanAhead(
+      [
+        ["src/a.ts", Buffer.from("const ok = 1;\n")],
+        ["src/b.ts", Buffer.from("const TOKEN = 'LEAK';\n")],
+      ],
+      60_000,
+    );
+    expect(known?.files["src/a.ts"]).toMatch(/^[0-9a-f]{64}$/);
+    expect(known?.found).toEqual([{ file: "src/b.ts", line: 1, rule: "generic-api-key" }]);
+    rmSync(seen, { force: true });
+    // Apply's push of the same bytes: its answer, and gitleaks never starts.
+    expect(secretFindings(dir, ["src/a.ts", "src/b.ts"], known)).toEqual([
+      "src/b.ts:1 (generic-api-key)",
+    ]);
+    // Some of them (decide's held workflow files): the answer for those alone.
+    expect(secretFindings(dir, ["src/a.ts"], known)).toBeUndefined();
+    expect(ran()).toBe("");
+    // A byte it didn't read, a file it didn't read, or another gitleaks or rules: scanned again.
+    writeFileSync(join(dir, "src/a.ts"), "const LEAK = 2;\n");
+    expect(secretFindings(dir, ["src/a.ts"], known)).toEqual(["src/a.ts:1 (generic-api-key)"]);
+    writeFileSync(join(dir, "src/c.ts"), "const fine = 3;\n");
+    writeFileSync(join(dir, "src/a.ts"), "const ok = 1;\n");
+    expect(secretFindings(dir, ["src/a.ts", "src/c.ts"], known)).toBeUndefined();
+    expect(secretFindings(dir, ["src/a.ts"], { ...(known as Scanned), tool: "other" })).toBe(
+      undefined,
+    );
+    expect(ran().split("\n").filter(Boolean)).toEqual([
+      "src/a.ts",
+      "src/a.ts",
+      "src/c.ts",
+      "src/a.ts",
+    ]);
+    // A .gitleaksignore at the top counts for every file: an answer with one is for a set with it.
+    const ignoring = await scanAhead(
+      [
+        [".gitleaksignore", Buffer.from("x\n")],
+        ["src/a.ts", Buffer.from("const ok = 1;\n")],
+      ],
+      60_000,
+    );
+    rmSync(seen, { force: true });
+    expect(secretFindings(dir, ["src/a.ts"], ignoring)).toBeUndefined();
+    expect(ran()).toBe("src/a.ts\n");
+  });
+
+  it("scans nothing for a change that only deletes, and the box's scan takes only a change's paths", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scan-"));
+    process.env.FAKE_GITLEAKS_ARGS = join(dir, "..", `args-${Math.random()}`);
+    expect(secretFindings(dir, ["gone.ts"])).toBeUndefined();
+    expect(existsSync(process.env.FAKE_GITLEAKS_ARGS)).toBe(false);
+    for (const f of ["../x.ts", "/etc/x", "a/../../x", ".git/config", "a//b", ""])
+      expect(await scanAhead([[f, Buffer.from("x")]], 60_000), f).toBeUndefined();
+    expect(await scanAhead([], 60_000)).toBeUndefined();
+    // The same path twice is no change's: no answer.
+    const twice: [string, Buffer][] = [
+      ["a.ts", Buffer.from("1")],
+      ["a.ts", Buffer.from("2")],
+    ];
+    expect(await scanAhead(twice, 60_000)).toBeUndefined();
+    expect(existsSync(process.env.FAKE_GITLEAKS_ARGS)).toBe(false);
   });
 
   it("the pinned gitleaks itself reads this config: the stateless token found, a clean file passed", (ctx) => {

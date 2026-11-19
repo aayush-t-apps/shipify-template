@@ -1,8 +1,9 @@
 // The web chat's routes (ADR 0036), under /admin/chat, so the Cloudflare Access application for
 // /admin (the status page's too) covers them; each checks Access's token as the status page does
 // (accessTokenOk). The same routes serve guests under /guest (ADR 0071), behind the guests' own
-// Access application and your guest list (guests.ts): each route says whose it is (`WHOSE`), and a
-// guest's reads and writes are kept to what carries their mark. Reads go to GitHub, read-only
+// Access application and your guest list (guests.ts): each route says whose it is (the contract's
+// `GUEST_RULES.routes`), and a guest's reads and writes are kept to what carries their mark (its
+// `whose`, a file's prefix). Reads go to GitHub, read-only
 // (reads.ts). What you send goes through the door's own code (doorIn) as the `web` channel, with a
 // proof only this Worker can make: the same commands, dedupe, albums and answers as Telegram, and
 // no webhook.
@@ -24,7 +25,7 @@
 //   POST …/api/edit                a doc's words saved, as it was when you opened it (ADR 0071)
 //   POST …/api/push                notifications on this device, or off (ADR 0050)
 //   POST …/api/guests              Setup → Guests: add, remove (yours alone)
-//   *    /guest[/…]                the same page and routes for a guest, as `WHOSE` allows
+//   *    /guest[/…]                the same page and routes for a guest, as their rules allow
 // A POST or a DELETE must come from the page itself: the edge's own Origin and `x-shipify-chat: 1`.
 // The page's service worker (sw.js, one of its files) keeps the page's own files for offline
 // (network first, never `api/`), shows notifications and takes Android's shares: a share that
@@ -32,6 +33,7 @@
 import {
   agentsSeen,
   GUEST_PREFIX,
+  GUEST_RULES,
   guestOwns,
   guestPrefix,
   instantOf,
@@ -245,35 +247,6 @@ export interface Who {
   guest?: Guest;
 }
 
-/**
- * Whose each route is (ADR 0071, section 4): `guest` routes serve a guest too, each kept to what
- * carries their mark (their label, a from-line naming them, their files' prefix); `owner` routes
- * serve only you. A route with no rule here answers 404 to everyone, so no new route is reachable
- * until it says whose it is (the route test checks each).
- */
-export const WHOSE: Record<string, "owner" | "guest"> = {
-  "GET list": "guest",
-  "GET task": "guest",
-  "GET menu": "guest",
-  "GET models": "guest",
-  "GET search": "guest",
-  "GET files": "guest",
-  "GET file": "guest",
-  "GET doc": "guest",
-  "GET repeats": "owner",
-  "GET notebook": "owner",
-  "GET setup": "owner",
-  "GET sent": "owner",
-  "POST file": "guest",
-  "DELETE file": "guest",
-  "POST send": "guest",
-  "POST push": "guest",
-  "POST move": "guest",
-  "POST edit": "guest",
-  "POST repeat": "owner",
-  "POST guests": "owner",
-};
-
 /** What the guests' door says when it lets no one in, and the fix. */
 const GUEST_WHY = {
   off: ["Guests are off.", "Ask the person who invited you."],
@@ -344,7 +317,7 @@ export async function webChat(req: Request, env: Env, deps: Deps): Promise<Respo
   const [, route = "", arg] = api;
   const id = who.id;
   // Whose the route is, before anything is read: none is no route, and yours alone isn't a guest's.
-  const rule = WHOSE[`${req.method === "HEAD" ? "GET" : req.method} ${route}`];
+  const rule = GUEST_RULES.routes[`${req.method === "HEAD" ? "GET" : req.method} ${route}`];
   if (!rule || (who.guest && rule !== "guest")) {
     if (rule) log.warn("page.refused", { why: "not a guest's", route });
     return problem(404, "Not here.", "Reload the page.");

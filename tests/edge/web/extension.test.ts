@@ -1229,7 +1229,9 @@ describe("the page", () => {
     expect(js).toContain(
       'if (!location.hash.slice(2) && !WIDE.matches) history.replaceState(null, "", "#/desk");',
     );
-    expect(js).not.toMatch(/YOURS = new Set\([^)]*"desk"/);
+    // Your screens come from the guest's menu (the contract's GUEST_RULES), never a list of its own.
+    expect(js).toContain('const p = S.menu?.guest?.yours?.includes(at) ? "" : at;');
+    expect(js).not.toMatch(/YOURS = new Set/);
     expect(dk).toMatch(/if \(A\.GUEST\) \{[\s\S]*?return redraw\(\);/);
     expect(/if \(A\.GUEST\) \{[\s\S]*?\n {2}\}/.exec(dk)?.[0]).not.toMatch(/jot|repeats|notebook/);
     // Nothing on a guest's window names you.

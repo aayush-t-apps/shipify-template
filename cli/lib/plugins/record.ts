@@ -149,8 +149,8 @@ export interface SweptIssue {
   updatedAt?: string;
   /** The issue it's a sub-issue of: a project's, for a chat in one; a split's, for a part. */
   parent?: { number: number; state: "open" | "closed"; labels: string[] };
-  /** Its open sub-issues. */
-  openParts: number;
+  /** Its open sub-issues' numbers (100 at most): a project's open chats, a split's open parts. */
+  openParts: number[];
   /** Its open PRs that close it. */
   openPrs: number;
 }
@@ -161,6 +161,8 @@ export interface SweepRead {
   closed: SweptIssue[];
   /** Open, and labelled `project`. */
   projects: SweptIssue[];
+  /** Open, with one of `lasting`'s labels: what stays open for good (a repeat, a recipe). */
+  lasting: SweptIssue[];
   /**
    * Open, and labelled `library`, the least lately changed first: a closed project's pages left
    * open (task #744) are among them.
@@ -282,21 +284,29 @@ export interface TaskRecord {
   commentWriters(comment: { id: number; node_id?: string }): { author: string; editor?: string };
   /**
    * What the weekly clean-up reads (ADR 0069), in one read: the issues closed in a window of days,
-   * the open projects, the open Library pages, and the open issues quiet since a day with none of
-   * the labels it leaves open (`quietWithout`), each with its labels, its parent and what it has
-   * open. Days as YYYY-MM-DD. Pull requests are none of them.
+   * the open projects, the open issues with one of `lasting`'s labels, the open Library pages, and
+   * the open issues quiet since a day with none of the labels it leaves open (`quietWithout`), each
+   * with its labels, its parent and what it has open. Days as YYYY-MM-DD. Pull requests are none of
+   * them.
    */
   sweep(q: {
     closedFrom: string;
     closedTo: string;
     quietBefore: string;
     quietWithout: string[];
+    lasting: string[];
   }): SweepRead;
   /**
    * A project's chats (its sub-issues), each with its state, and pages (the issues with its
    * `project:<name>` label, open or closed), 100 each, in one read (ADR 0069).
    */
   projectItems(n: number, label: string): ProjectItems;
+  /**
+   * When each of these issues closed, for the closed ones, in one read (100 a call): the tasks
+   * whose branches are left in your repos (task #779). An open one, a pull request or a number with
+   * no issue is none.
+   */
+  closedAt(ns: number[]): Map<number, string>;
   /**
    * What the weekly digest says of your projects (ADR 0070), in one read: the open projects (50)
    * with their chats, and the open Inbox pages (50), each with its text and how many items

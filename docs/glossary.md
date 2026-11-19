@@ -54,7 +54,7 @@ to place each part quickly, not as a promise that it behaves the same in every d
 | **Progress** | a long job's progress file | where a task's work stands (Goal, Done, Next, Decisions, Open): each run edits it in place as its `handoff.md` and the next starts from it; shown above its thread in the web chat, up to 16,000 characters (ADR 0069). One thing, two names: Progress to you, the handoff to the agent |
 | **Quiet** | an idle process, folded away | a task with no new word for 7 days: folded at the foot of the web chat's list, back up when anyone writes. Nothing closes after a quiet day; a chat outside a project closes after 30 quiet days (write on it to open it) |
 | **kept work** | a checkpoint | a failed or stopped work run's commits, pushed to the task's branch with no PR: where `continue` starts. Never into an open PR, never a new project's first push |
-| **stuck** (shown as **Stopped**) | a stopped process, waiting for `fg` | a task whose run ended before it finished (the box restarted), or whose words got no run at all: nothing starts it but your `continue`, and it alerts once |
+| **stuck** (shown as **Stopped**) | a stopped process, waiting for `fg` | a task whose run ended before it finished (the box restarted), or whose words got no answer, even from the run the watch started for them once more: nothing starts it but your `continue`, and it alerts once |
 | **problem** | an error number with its message | an error, in one shape: what happened, and the one thing to do (`cli/contracts/problems.ts`) |
 
 ## The system

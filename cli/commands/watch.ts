@@ -14,7 +14,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { GUEST_LABEL, NEEDS_YOU_LABEL, replyLine, STATUS_LABEL } from "../contracts/index.ts";
+import { NEEDS_YOU_LABEL, replyLine, STATUS_LABEL, whose } from "../contracts/index.ts";
 import { tellDoor } from "../kernel/door.ts";
 import { hash8 } from "../kernel/keys.ts";
 import { replyTo } from "../kernel/route.ts";
@@ -28,9 +28,9 @@ import { defaultChannels } from "../lib/channels.ts";
 import { copySetting, PLATFORM_ROOT } from "../lib/config.ts";
 import { platformRepo } from "../lib/github.ts";
 import { readKeyDates } from "../lib/key-dates.ts";
+import { nodeEnding } from "../lib/node-support.ts";
 import { ok, type Result } from "../lib/output.ts";
 import { readPeople } from "../lib/people.ts";
-import type { RunRow } from "../lib/runs.ts";
 import { cleanStaleRuns, pruneContainers } from "../lib/sandbox.ts";
 import {
   addEvent,
@@ -45,7 +45,7 @@ import {
   setUpcoming,
   updateStatusIssue,
 } from "../lib/status-issue.ts";
-import { findStatus } from "../lib/task.ts";
+import { findStatus, type TaskState } from "../lib/task.ts";
 import { newer } from "../lib/versions.ts";
 import { cleanupsUnderWay, pressWatch, watchRuns } from "../lib/watch.ts";
 import { doctor } from "./doctor.ts";
@@ -56,6 +56,7 @@ import {
   digestDue,
   digestNext,
   digestText,
+  lapsedLists,
   projectsWeek,
 } from "./task/digest.ts";
 import { type Due, keepRecipes } from "./task/due.ts";
@@ -110,14 +111,15 @@ export async function watchDue(): Promise<Result> {
           rec()
             .issues({ labels: [NEEDS_YOU_LABEL] })
             // A guest's chat waits on them, not you (ADR 0071).
-            .filter((i) => !i.pull_request && !(i.labels ?? []).some((l) => l.name === GUEST_LABEL))
+            .filter((i) => !i.pull_request && !whose(i))
             .map((i) => ({ n: i.number, title: i.title })),
         [] as { n: number; title: string }[],
       )
     : [];
-  // The week's run rows, for the digest's skills, and your projects (ADR 0070), one read: read only
-  // when it's said.
-  const rows = sayDigest ? tryOr(() => weekRows(at), undefined) : undefined;
+  // The week's tasks, for the digest's skills (their run rows) and the lists that lapsed (task
+  // #786), and your projects (ADR 0070), one read each: read only when it's said.
+  const week = sayDigest ? tryOr(() => weekTasks(at), undefined) : undefined;
+  const rows = week?.flatMap((t) => t.state.runs ?? []);
   const projects = sayDigest
     ? tryOr(() => projectsWeek(rec().liveProjects(), at), undefined)
     : undefined;
@@ -155,6 +157,17 @@ export async function watchDue(): Promise<Result> {
       for (const p of bad) s.alerted.push(`recipe:${p.file}:${p.problem}`);
       const said = bad.map((p) => `- \`${p.file}\` doesn't read: ${p.problem}. Fix it in a PR.`);
       const skills = rows ? countSkills(rows, skillsOnMain(), at) : undefined;
+      // Each list that lapsed unanswered, named once: its key kept with the notes said.
+      const lapsed =
+        sayDigest && week
+          ? lapsedLists(
+              week.filter((t) => !t.guest),
+              at,
+              s.alerted,
+            )
+          : [];
+      if (lapsed.length) s.alerted = [...s.alerted, ...lapsed.map((l) => l.key)].slice(-100);
+      const node = sayDigest ? nodeEnding(process.versions.node, at) : undefined;
       const digest = sayDigest
         ? digestText(
             {
@@ -162,6 +175,8 @@ export async function watchDue(): Promise<Result> {
               skills,
               ...(projects?.length ? { projects } : {}),
               ...(agents !== undefined ? { agents } : {}),
+              ...(lapsed.length ? { lapsed } : {}),
+              ...(node ? { node } : {}),
             },
             whenHere,
           )
@@ -219,15 +234,22 @@ function digestFacts(
 }
 
 /**
- * The run rows of every task updated this week: each task's own runs, from its status
- * comment. Pull requests and the status issue have none.
+ * Every task updated this week, with its state from its status comment: its run rows (the skills
+ * count only the week's) and its lists (task #786). Eight days back, so a list that lapsed a day
+ * after it was made, just after the last digest, is read too. Pull requests have none; a guest's
+ * chat (`guest`) waits on them, not you (ADR 0071).
  */
-function weekRows(at: Date): RunRow[] {
-  const since = new Date(at.getTime() - 7 * DAY).toISOString();
+function weekTasks(at: Date): { n: number; title: string; guest: boolean; state: TaskState }[] {
+  const since = new Date(at.getTime() - 8 * DAY).toISOString();
   return rec()
     .issues({ state: "all", since })
     .filter((i) => !i.pull_request)
-    .flatMap((i) => findStatus(rec().comments(i.number)).state.runs ?? []);
+    .map((i) => ({
+      n: i.number,
+      title: i.title,
+      guest: Boolean(whose(i)),
+      state: findStatus(rec().comments(i.number)).state,
+    }));
 }
 
 /** The skills on main: each folder of skills/ in this copy of Shipify. */

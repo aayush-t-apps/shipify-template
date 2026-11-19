@@ -59,7 +59,8 @@ what `ship doctor` names. It carries on from what's done, and mends what an olde
 container changed, and the agents' IPv6; setup 12: containers' network on Ubuntu 26.04; setup 13:
 `--manage` boxes take connections through Tailscale only; setup 16: the look server's user, which
 holds the tools' look keys so no agent does; setup 17: Ubuntu 26.04's sandbox check, the box's own
-updates with GitHub's new tokens, and a box that looks after itself). Run it while no task runs: `box add` refuses while a
+updates with GitHub's new tokens, and a box that looks after itself; setup 18: Node 26, and pnpm
+from npm with corepack's links gone). Run it while no task runs: `box add` refuses while a
 slot is busy. A new disk or a fresh OS: [A new disk (an SSD), or a fresh OS](#a-new-disk-an-ssd-or-a-fresh-os).
 
 **It never says done when something isn't:** the setup ends with a line that says what's left
@@ -302,7 +303,8 @@ pnpm ship box add mybox --manage --yes  # asks for the machine's password once
 Make a free [Tailscale](https://tailscale.com) account first (sign in with GitHub), and install
 its phone app with the same login.
 
-- **What it installs:** git (2.26 or newer: `ship doctor` checks), make, gh, Node 22, shellcheck
+- **What it installs:** git (2.26 or newer: `ship doctor` checks), make, gh, Node 26 and pnpm
+  (from npm, at the version Shipify pins: Node 26 has no corepack; setup 18), shellcheck
   0.11.0 (the one Shipify's CI checks with, from its own release and checked against its
   checksum, so a PR this box checked passes CI too: setup 15), fd and sqlite3 (fd comes from
   Ubuntu's universe, on by default: without it the setup goes on and says how to add it), what
@@ -628,8 +630,8 @@ settings.
 | Piece | Stays current |
 |---|---|
 | shipify's code | a run fetches its commit only when the box has no copy of it (ADR 0057); the watch's jobs check out their own |
-| Node 22 | each setup (`box add`, its own update, or a new image) updates the system's to the newest 22.x, which a task's run and its agent use; the weekly clean-up takes the newest 22.x for the watch's jobs, and keeps the two newest |
-| pnpm, the agents | pinned (`packageManager`; each agent's `install` in `executors.json`); they change only in a PR. The weekly clean-up removes an agent's other versions |
+| Node 26 | each setup (`box add`, its own update, or a new image) updates the system's to the newest 26.x, which a task's run and its agent use; the weekly clean-up takes the newest 26.x for the watch's jobs, and keeps the two newest (another major goes). One place names the major and the day its support ends: `cli/lib/node-support.ts`, which the weekly digest reads to warn from 90 days before |
+| pnpm, the agents | pinned (`packageManager`; each agent's `install` in `executors.json`); they change only in a PR. The box's pnpm runs the version each project pins. The weekly clean-up removes an agent's other versions |
 | packages | one pnpm store per box, pruned weekly |
 | the box itself | `box/setup.sh`: a change to what it runs bumps `SETUP_VERSION` (`ship pr` refuses one that doesn't), and each box applies it by itself ([below](#its-own-updates)) |
 
@@ -673,7 +675,9 @@ When it can't:
 - **A box in Docker** gets none: a new image is its update.
 
 **Time limits:** the agent works up to 200 minutes in one session (ADR 0059), its fix round 20,
-`make verify` 25, a check one; the run's job stops after 460 minutes. The box's check of an
+`make verify` 25, a check one; the run's job stops after 460 minutes. The box's checks take turns
+across its slots, one per 4 cores (task #791): each waits up to 15 minutes for its turn (the
+finish only as long as its own clock has room), then runs anyway. The box's check of an
 agent's new version (ADR 0079) takes at most 10 minutes of what's left of the session's 200, so
 it needs no limit of its own: a session that used them all leaves it to your `continue`. A run cut off anyway is
 marked Stopped by the watch, and your `continue` carries it on from where it got to. A box that
@@ -702,8 +706,8 @@ the box when the run ends.
   - **the weekly clean-up:** the due run starts it on each box once its last is a week old. It
     removes closed and deleted tasks' folders, the agents' run folders older than 8 hours (as each
     agent, who owns them), runs `ship doctor` (the sandbox check included), checks the door
-    answers, and takes the newest Node 22.x. When no other slot is busy, it keeps the box's shared
-    tools to each agent's pinned version and the two newest Node versions, prunes the package
+    answers, and takes the newest Node 26.x. When no other slot is busy, it keeps the box's shared
+    tools to each agent's pinned version and the two newest Node 26 versions, prunes the package
     store and npm's cache, and removes each slot's containers' images. Its result goes on the
     status task, naming what it removed; a problem comes as a comment there, which notifies you on
     GitHub;
@@ -821,7 +825,7 @@ OS does the same; nothing is lost either way, since a box holds nothing that isn
    gh, and the lab's Podman and its settings. shellcheck, fd and sqlite3 can stay.
    ```sh
    sudo rm -rf /opt/node
-   sudo rm -f /usr/local/bin/{node,npm,npx,corepack,pnpm,pnpx,yarn,yarnpkg}
+   sudo rm -f /usr/local/bin/{node,npm,npx,pnpm,pnpx}
    sudo apt purge -y gh && sudo apt autoremove -y
    sudo rm -f /etc/apt/sources.list.d/github-cli.list /etc/apt/keyrings/githubcli-archive-keyring.gpg
    sudo apt purge -y podman podman-docker podman-compose uidmap slirp4netns catatonit netavark aardvark-dns && sudo apt autoremove -y

@@ -174,8 +174,12 @@ if (args[0] === "pr" && args[1] === "list") {
   process.exit(0);
 }
 // A new PR on a repo, from a branch: kept in state.prs (OPEN) and state.heads; its URL on stdout.
+// A draft (--draft) is in state.drafts, unless the repo has none (state.noDrafts, as a private repo
+// on GitHub's free plan): then it's refused, as GitHub refuses it.
 if (args[0] === "pr" && args[1] === "create") {
   const repo = args[args.indexOf("-R") + 1];
+  if (args.includes("--draft") && state.noDrafts)
+    fail("GraphQL: Draft pull requests are not supported in this repository. (createPullRequest)");
   state.prs ??= {};
   state.heads ??= {};
   const n = Object.keys(state.prs).filter((u) => u.includes(`/${repo}/pull/`)).length + 1;
@@ -184,8 +188,21 @@ if (args[0] === "pr" && args[1] === "create") {
   state.heads[url] = args[args.indexOf("--head") + 1];
   state.bodies ??= {};
   state.bodies[url] = args[args.indexOf("--body") + 1];
+  if (args.includes("--draft")) state.drafts = [...(state.drafts ?? []), url];
   save();
   out(url);
+  process.exit(0);
+}
+// A PR made ready for review, or a draft again (--undo): state.drafts.
+if (args[0] === "pr" && args[1] === "ready") {
+  const url = args[2];
+  if (args.includes("--undo") && state.noDrafts)
+    fail(
+      "GraphQL: Draft pull requests are not supported in this repository. (convertPullRequestToDraft)",
+    );
+  const others = (state.drafts ?? []).filter((u) => u !== url);
+  state.drafts = args.includes("--undo") ? [...others, url] : others;
+  save();
   process.exit(0);
 }
 // A PR's body written again (state.bodies, by its URL).
@@ -323,7 +340,50 @@ if (args[1] === "graphql") {
     createdAt: i.created_at ?? null,
     lastEditedAt: i.edited_at ?? null,
   });
-  if (query.includes("issueOrPullRequest(")) {
+  if (/\bt\d+: issue\(number: \d+\)/.test(query)) {
+    // When each issue closed (task #779), one alias a number: null for a PR's number or one with
+    // no issue, as GitHub answers what it could, and gh exits 1 when any wasn't.
+    const data = {};
+    let missing = false;
+    for (const m of query.matchAll(/t(\d+): issue\(number: (\d+)\)/g)) {
+      const i = all.find((x) => x.number === Number(m[2]));
+      if (!i || i.pull_request) missing = true;
+      data[`t${m[1]}`] =
+        i && !i.pull_request
+          ? { state: i.state === "closed" ? "CLOSED" : "OPEN", closedAt: i.closed_at ?? null }
+          : null;
+    }
+    out({ data: { repository: data } });
+    save();
+    process.exit(missing ? 1 : 0);
+  } else if (query.includes('refs(refPrefix:"refs/heads/",query:"task/"')) {
+    // Your repos' task branches (task #779), one alias a repo: state.branches, by owner/name, each
+    // {name, email, prs}, its open PRs; a repo the token can't read is null, as GitHub answers.
+    const data = {};
+    for (const m of query.matchAll(/(r\d+):repository\(owner:"([^"]+)",name:"([^"]+)"\)/g)) {
+      const list = state.branches?.[`${m[2]}/${m[3]}`];
+      data[m[1]] = list
+        ? {
+            refs: {
+              nodes: list.map((b) => ({
+                name: b.name,
+                target: { author: { email: b.email } },
+                associatedPullRequests: {
+                  nodes: (b.prs ?? []).map((p) => ({
+                    number: p.number,
+                    url: p.url,
+                    author: { __typename: p.bot ? "Bot" : "User" },
+                  })),
+                },
+              })),
+            },
+          }
+        : null;
+    }
+    out({ data });
+    save();
+    process.exit(0);
+  } else if (query.includes("issueOrPullRequest(")) {
     // A task in one read (ADR 0069): the issue and a page of 100 comments a call ($after: where the
     // last page ended), each with who wrote and last edited it, as GraphQL names them.
     const n = Number(vars.n);
@@ -382,14 +442,15 @@ if (args[1] === "graphql") {
     );
   } else if (query.includes("search(query:")) {
     // The weekly clean-up's one read (ADR 0069): each search's words matched as GitHub would, on
-    // the issues here: is:open or is:closed, label: and -label: (a name with a space in quotes),
-    // closed:<from>..<to>, updated:<<day> and sort:updated-asc, by each issue's closed_at and
-    // updated_at (a close is a change). An issue's open PR is `pr`.
+    // the issues here: is:open or is:closed, label: (names after a comma are an or) and -label: (a
+    // name with a space in quotes), closed:<from>..<to>, updated:<<day> and sort:updated-asc, by
+    // each issue's closed_at and updated_at (a close is a change). An issue's open PR is `pr`.
     const gstate = (i) => (i.state === "closed" ? "CLOSED" : "OPEN");
     const day = (t) => String(t ?? "").slice(0, 10);
     // One with no time of its own was just changed.
     const updated = (i) => i.updated_at ?? i.closed_at ?? "9999";
-    const hasLabel = (i, name) => i.labels.some((l) => l.name === name.replace(/^"(.*)"$/, "$1"));
+    const hasLabel = (i, names) =>
+      names.split(",").some((n) => i.labels.some((l) => l.name === n.replace(/^"(.*)"$/, "$1")));
     const fits = (i, w) => {
       if (w.startsWith("repo:") || w === "is:issue" || w === "sort:updated-asc") return true;
       if (w === "is:open") return i.state !== "closed";
@@ -450,7 +511,7 @@ if (args[1] === "graphql") {
     };
     out({
       data: Object.fromEntries(
-        ["closed", "projects", "pages", "quiet", "inboxes"]
+        ["closed", "projects", "lasting", "pages", "quiet", "inboxes"]
           .filter((k) => vars[k])
           .map((k) => [k, page(k, find(vars[k]))]),
       ),
@@ -735,7 +796,15 @@ if (git) {
     state.refs[`${repo}:${stdin().ref}`] = true;
     out({});
   } else if (method === "PATCH" && kind === "refs") out({});
-  else if (method === "GET" && kind === "ref/heads") {
+  else if (method === "DELETE" && kind === "refs" && rest?.startsWith("heads/")) {
+    // A task's branch deleted (task #779): gone from state.branches, said in state.deleted.
+    const name = rest.slice("heads/".length);
+    const list = state.branches?.[repo] ?? [];
+    if (!list.some((b) => b.name === name)) fail("Reference does not exist (HTTP 422)");
+    state.branches[repo] = list.filter((b) => b.name !== name);
+    state.deleted = [...(state.deleted ?? []), `${repo}:${name}`];
+    out("");
+  } else if (method === "GET" && kind === "ref/heads") {
     if (!state.refs[`${repo}:refs/heads/${rest}`]) fail("Not Found (HTTP 404)");
     out("s1");
   } else if (method === "GET" && kind === "commits") out("t1");

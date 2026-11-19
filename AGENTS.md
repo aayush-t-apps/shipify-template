@@ -48,7 +48,7 @@ Projects live in `../projects/<id>`, each its own repo with its own `AGENTS.md`.
 | what anyone can ask | `intents.json` (six intents, chat commands, fixed words) · `cli/kernel/words.ts` · `docs/tasks.md` |
 | the notebook | `docs/notebook.md` · `pnpm ship notebook` (on a box) · `remember: …` and `forget: …` (no agent, from any channel), or notes in a run's `result.json` · a repo's own notes: `remember <repo>: …`, read only by runs on that repo · `/notebook` · a way of working is a skill PR, not a note |
 | a project you make, its pages, Inbox and Journal (the Library) | `docs/knowledge.md` (the loop) · `project: <name>`, `add <name>: …`, `jot: …` (the door saves them, no agent: `edge/src/capture.ts`) · a run's `pages` and the Log (`cli/commands/task/notebook.ts`) · Keep on page and "check the project" (`cli/kernel/projects.ts`) · a project's next step and Find by meaning (`edge/src/web/reads.ts`) · `clean start` (`cli/kernel/decide.ts`, `cli/commands/task/sweep.ts`) · `skills/knowledge` · ADR 0069, ADR 0070 |
-| guests: someone you let use the web chat, in a space of their own | `docs/channels.md` ("Guests": the one-time Access setup, Setup → Guests) · the guests' door: `edge/src/guests.ts`, `edge/src/web/routes.ts` (`WHOSE`, each route's rule) · their runs: the `guest` profile (`docs/tasks.md`, `docs/security.md`) · the marks: `cli/contracts/guests.ts` · ADR 0071 |
+| guests: someone you let use the web chat, in a space of their own | `docs/channels.md` ("Guests": the one-time Access setup, Setup → Guests) · the guests' door: `edge/src/guests.ts`, `edge/src/web/routes.ts` · their runs: the `guest` profile (`docs/tasks.md`, `docs/security.md`) · the marks, whose each issue is (`whose`) and what a guest may do (`GUEST_RULES`: each route's rule, the commands, the words): `cli/contracts/guests.ts` · ADR 0071 |
 | the door, or a chat with no answer | `docs/door.md` · `pnpm ship door check` · `pnpm ship door setup` (show it, then `--yes`; `--new` for a new key) |
 | main moved under a branch | `pnpm ship refresh <p>` (merges main, redoes the version bump) |
 
@@ -86,9 +86,9 @@ The owner's rules, for every change here:
   conformance test. Add the smallest change that does the job; don't rebuild what works.
 - **Free only.** No paid service, no domain to buy. Keys live with their boundary: GitHub's
   secrets, each box's runner registration, and the edge's Worker secrets on Cloudflare.
-- **No upgrades on the side.** Versions (each agent's install in `executors.json`, Node 22, pnpm,
+- **No upgrades on the side.** Versions (each agent's install in `executors.json`, Node 26, pnpm,
   a box's shellcheck, actions) change only in a PR that says so. The OS's own updates (Ubuntu's
-  security and normal ones, box setup 17), the runner's own updates and Node 22.x fixes are the
+  security and normal ones, box setup 17), the runner's own updates and Node 26.x fixes are the
   exceptions.
 - **Nothing to sign in to on a box,** and no sudo after `box add`: you never run its setup again.
   The runner's sudo rules, made by `box add`, start the agent's own user (ADR 0031), the look

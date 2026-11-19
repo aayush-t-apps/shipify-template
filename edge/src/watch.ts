@@ -3,11 +3,13 @@
 //   due          a repeat's time came, or the daily run is due, or a task is deploying: ring
 //                `watch:due` on the status task (the due run follows deploys, and keeps
 //                recipes and their tasks in step; a merge that touches recipes/ starts one itself)
-//   stopped      a task whose run died (its status says `working · <run>` and that run ended), or
-//                whose words wait with no run for 10 minutes: marked Stopped (`stuck`), and one
-//                alert. It never starts a run (ADR 0042): your `continue` does. Never the status
-//                task, notebook or Library pages, or pull requests; a project's own opening
-//                waits for no run (ADR 0069)
+//   stopped      a task whose run died (its status says `working · <run>` and that run ended):
+//                marked Stopped (`stuck`), and one alert; your `continue` carries it on (ADR
+//                0042). Words that wait with no run for 10 minutes: a run started for them once
+//                more, by a comment of the door App's (task #786); Stopped and told only when
+//                that one doesn't answer in 10 minutes either. Never the status task, notebook or
+//                Library pages, or pull requests; a project's own opening waits for no run
+//                (ADR 0069)
 //   notice       a run's reply with no mark of the door's after 2 minutes: one short notice to each
 //                chat it was for, with its link, then 😕; if that can't be sent either, a note on
 //                the status task. A reply is never sent twice
@@ -21,8 +23,10 @@
 // Cloudflare allows 50 subrequests a call: the watch stops before 45, keeping the last few for its
 // alert, and leaves the rest for the next tick. It keeps nothing between ticks.
 import {
+  againLine,
   DEPLOYING_LABEL,
   type Findings,
+  isAgain,
   LIBRARY_LABEL,
   PROJECT_LABEL,
   problem,
@@ -78,9 +82,15 @@ const DAY = 24 * HOUR;
 /** Subrequests a tick may make (Cloudflare's limit is 50), and those kept for its alert. */
 export const BUDGET = 44;
 export const RESERVE = 4;
-/** Words that wait this long with no run: the task is Stopped, and you're told. */
+/**
+ * Words that wait this long with no run: a run starts for them once more (task #786); when that
+ * one says nothing this long either, the task is Stopped, and you're told.
+ */
 export const QUIET_MS = 10 * MINUTE;
-/** At most this many tasks marked Stopped, and replies noticed, in one tick. */
+/** The watch's comment that starts a run once more, after its again line: what you read. */
+const AGAIN_WORDS =
+  "No run answered your words here for 10 minutes, so Shipify started one for them again.";
+/** At most this many tasks started once more or marked Stopped, and replies noticed, in one tick. */
 const MAX_STOPS = 3;
 const MAX_NOTICES = 5;
 /** A reply with no mark of the door's is noticed after this, and never once it's this old. */
@@ -389,8 +399,11 @@ const SKIPPED = [STATUS_LABEL, NOTEBOOK_LABEL, LIBRARY_LABEL, STUCK_LABEL];
 
 /**
  * A task that should be working and isn't: its run ended before it finished, or your words waited
- * 10 minutes with no run for them (GitHub down when you wrote, say). It's marked Stopped, and you're
- * told once; nothing starts it but your `continue` (ADR 0040, ADR 0042). A few a tick.
+ * 10 minutes with no run for them (GitHub down when you wrote, say). A run that ended early is
+ * marked Stopped, and you're told once; only your `continue` carries it on (ADR 0040, ADR 0042).
+ * Words no run answered are your ask, late: a run starts for them once more, by a comment of the
+ * door App's (task #786), and only when that one says nothing in 10 minutes either is the task
+ * Stopped and told. A few a tick, starts and marks together.
  */
 async function stopped(t: Tick) {
   const open = (await t.open()).filter(
@@ -468,12 +481,16 @@ async function stopped(t: Tick) {
         .map((c) => Date.parse(c.created_at));
       const ownIssue =
         byDoor(t.gh, issue) || (owner !== undefined && issue.user?.login?.toLowerCase() === owner);
-      // A task no run has answered yet (no comment at all: the 100 read are only the newest, so a
-      // status comment missing from them may just be older): its own words wait. A project's
-      // opening starts no run (ADR 0069): only words in its thread wait.
+      // The watch's own starts of a run for words here (task #786), by when.
+      const again = mine
+        .filter((c) => byDoor(t.gh, c) && isAgain(c.body))
+        .map((c) => Date.parse(c.created_at));
+      // A task no run has answered yet (no comment but the watch's: the 100 read are only the
+      // newest, so a status comment missing from them may just be older): its own words wait. A
+      // project's opening starts no run (ADR 0069): only words in its thread wait.
       if (
         !statusComment &&
-        !issue.comments &&
+        (issue.comments ?? 0) <= again.length &&
         ownIssue &&
         !issue.labels.some((l) => l.name === PROJECT_LABEL) &&
         t.now - Date.parse(issue.created_at) < DAY
@@ -481,7 +498,19 @@ async function stopped(t: Tick) {
         waiting.push(Date.parse(issue.created_at));
       const last = Math.max(...waiting);
       if (!waiting.length || t.now - last < QUIET_MS) continue;
+      // The run this duty started for them once more (task #786): its comment after your words.
+      const tried = again.filter((at) => at > last);
+      if (tried.length && t.now - Math.max(...tried) < QUIET_MS) continue;
       if (await busy()) continue;
+      if (!tried.length) {
+        // Your ask, late (ADR 0040 §4): a comment of the door App's, whose event starts the run.
+        marked++;
+        await t.gh.json("POST", `repos/${t.gh.repo}/issues/${issue.number}/comments`, {
+          body: `${againLine}\n${AGAIN_WORDS}`,
+        });
+        t.log.info("watch.again", { task: issue.number });
+        continue;
+      }
       note = {
         key: `unanswered:${issue.number}:${last}`,
         problem: problem(

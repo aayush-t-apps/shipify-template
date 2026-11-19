@@ -29,6 +29,7 @@ import {
   fromLine,
   GUEST_LABEL,
   GUEST_PREFIX,
+  GUEST_RULES,
   guestLabel,
   guestProject,
   helpText,
@@ -38,7 +39,7 @@ import {
   modelSearches,
   modelsButtons,
   modelsText,
-  NOT_A_GUESTS,
+  NEEDS_YOU_LABEL,
   notebookText,
   type Picked,
   type Problem,
@@ -229,23 +230,18 @@ export async function doorIn(req: Request, env: Env, deps: Deps, ch: Channel): P
   }
 }
 
-/** The commands answered at once that a guest may use (ADR 0071): the rest say what's yours. */
-const GUEST_INSTANT = new Set(["help", "models"]);
-/**
- * What only you save (ADR 0071): a Journal line. A guest's `remember:`, `forget:` and
- * `personality:` go through, and write their own memory page alone (ADR 0078).
- */
-const ONLY_YOU = /^\s*jot\s*:/i;
+/** What only you save (the contract's GUEST_RULES), as words start with it: `jot: …`, empty too. */
+const ONLY_YOU = new RegExp(`^\\s*(?:${GUEST_RULES.saves.join("|")})\\s*:`, "i");
 
 /**
- * Whether these words are only yours to say (ADR 0071): a Journal line, or a fixed word a guest
- * never says (NOT_A_GUESTS, the box's list too). A plain `yes` or `no` stays words: it answers a
- * guest's own run, and approves nothing (the box never reads a guest's words as yours).
+ * Whether these words are only yours to say (ADR 0071, GUEST_RULES). A guest's `remember:`,
+ * `forget:` and `personality:` write their own page (ADR 0078); a plain `yes` or `no` stays words,
+ * which answer their own run and approve nothing (the box never reads a guest's words as yours).
  */
 function onlyYou(words: string) {
   const fixed = wordOf(words);
   const plain = (fixed === "yes" || fixed === "no") && !listCodeOf(words);
-  return ONLY_YOU.test(words) || Boolean(fixed && NOT_A_GUESTS.has(fixed) && !plain);
+  return ONLY_YOU.test(words) || Boolean(fixed && GUEST_RULES.words.includes(fixed) && !plain);
 }
 
 /** Why the door takes nothing of a guest's words, said at once, or undefined to go on. */
@@ -254,7 +250,7 @@ function guestRefused(m: Message, s: Settings): string | undefined {
   const words = withoutTask(m.words, taskOf(m));
   const own = instantOf(words);
   const host = s.people.find((p) => p.on.web)?.name ?? "the person who invited you";
-  if (own && !GUEST_INSTANT.has(own.name)) return ONLY_YOURS(host);
+  if (own && !GUEST_RULES.commands.includes(own.name)) return ONLY_YOURS(host);
   // The words as written, and as a chat command leaves them (`/change jot: …` is `jot: …`).
   if (onlyYou(words) || onlyYou(fromCommand(words))) return ONLY_YOURS(host);
   return undefined;
@@ -620,11 +616,7 @@ async function write(
       `A project's name can't start with ${said.name.slice(0, 8)}: pick another.`,
       "refused",
     );
-  // The Journal is yours (ADR 0071): a guest's jot is never saved, however it came in.
-  if (guest && said && "kind" in said && said.kind === "jot") {
-    const host = s.people.find((p) => p.on.web)?.name ?? "the person who invited you";
-    return say(ONLY_YOURS(host), "refused");
-  }
+  // The Journal is yours (ADR 0071): a guest's jot was refused before this (guestRefused).
   const saving =
     said && "name" in said && guest ? { ...said, name: guestProject(guest, said.name) } : said;
   if (saving && "wrong" in saving && !ADDS.test(text)) return say(saving.wrong, "refused");
@@ -729,9 +721,10 @@ async function write(
   // project's close and reopen, as its open chats close and its pages close and open with it (task
   // #744): its word is written as words, so its run is never one that skips. GitHub keeps one
   // waiting run per task, and the newest takes its place: a setting's run would take the close's
-  // and skip.
+  // and skip. A task waiting on you too (`needs you`: a PR to merge, a question), as its run says
+  // which of its PRs stay open, and until when (task #779): the door can't read a PR.
   const seenTo =
-    (turn === "close" && labels.includes(SUB_TASK_LABEL)) ||
+    (turn === "close" && (labels.includes(SUB_TASK_LABEL) || labels.includes(NEEDS_YOU_LABEL))) ||
     (turn !== undefined && labels.includes(PROJECT_LABEL));
   const from: From = {
     v: 1,

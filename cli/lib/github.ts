@@ -222,6 +222,106 @@ export function settingsHome(account: string): string {
 export const repoOfPr = (url: string) =>
   /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+$/.exec(url)?.[1];
 
+/** A task's branch in one of your repos, as the clean-up of closed tasks reads it (task #779). */
+export interface TaskBranch {
+  /** Its repo, `owner/name`. */
+  repo: string;
+  /** Its name: `task/12-a-few-words`. */
+  name: string;
+  /** Shipify made it: its newest commit is an App's (a run's), or an open PR from it is. */
+  ours: boolean;
+  /** Its open PRs. */
+  prs: { number: number; url: string }[];
+}
+
+/** An owner/name as GitHub allows them, and a task's branch as Shipify names them (branchName). */
+const REPO_NAME = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
+const TASK_BRANCH = /^task\/\d+(?:-[A-Za-z0-9._-]*)?$/;
+/** How many repos one query reads the task branches of. */
+const BRANCH_REPOS = 50;
+/** The addresses a run's commits carry (think.ts `committer`): an App's bot, or Shipify's own. */
+const APP_EMAIL = /(\[bot\]|^shipify|^shipify-bot)@users\.noreply\.github\.com$/i;
+
+type GqlBranches = Record<
+  string,
+  {
+    refs?: {
+      nodes: ({
+        name: string;
+        target?: { author?: { email?: string | null } | null } | null;
+        associatedPullRequests?: {
+          nodes: ({
+            number: number;
+            url: string;
+            author?: { __typename?: string } | null;
+          } | null)[];
+        };
+      } | null)[];
+    };
+  } | null
+>;
+
+/** One query's answer: each repo's task branches (`batch` in its aliases' order). */
+export function branchesOf(batch: string[], data: GqlBranches): TaskBranch[] {
+  return batch.flatMap((repo, k) =>
+    (data[`r${k}`]?.refs?.nodes ?? []).flatMap((ref) => {
+      const name = ref?.name ?? "";
+      if (!ref || !TASK_BRANCH.test(name)) return [];
+      const open = (ref.associatedPullRequests?.nodes ?? []).filter(
+        (p): p is NonNullable<typeof p> => Boolean(p?.url),
+      );
+      const ours =
+        APP_EMAIL.test(ref.target?.author?.email ?? "") ||
+        open.some((p) => p.author?.__typename === "Bot");
+      return [{ repo, name, ours, prs: open.map((p) => ({ number: p.number, url: p.url })) }];
+    }),
+  );
+}
+
+/**
+ * Every `task/…` branch in these repos (100 a repo), each with its open PRs and whether Shipify
+ * made it: one GraphQL query per 50 repos (task #779). GitHub answers what it could read (gh exits
+ * 1 when any part couldn't be): a repo it couldn't has none, and only a query with no answer fails.
+ * Read under `refs/heads/` with a `task/` filter, not under `refs/heads/task/`: GitHub names a ref
+ * by what follows its prefix, and finds no PR for the shorter name.
+ */
+export function taskBranches(repos: string[], token: string): TaskBranch[] {
+  const named = repos.filter((r) => REPO_NAME.test(r));
+  const out: TaskBranch[] = [];
+  for (let i = 0; i < named.length; i += BRANCH_REPOS) {
+    const batch = named.slice(i, i + BRANCH_REPOS);
+    const fields = batch.map((full, k) => {
+      const [owner, name] = full.split("/");
+      return `r${k}:repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}){refs(refPrefix:"refs/heads/",query:"task/",first:100){nodes{name target{...on Commit{author{email}}} associatedPullRequests(first:5,states:[OPEN]){nodes{number url author{__typename}}}}}}`;
+    });
+    const r = ghRun(["api", "graphql", "-f", `query=query{${fields.join(" ")}}`], { token });
+    let data: GqlBranches | undefined;
+    try {
+      data = (JSON.parse(r.stdout) as { data?: GqlBranches }).data ?? undefined;
+    } catch {}
+    if (!data)
+      throw new ShipError(
+        `Couldn't read your repos' task branches: ${r.stderr.trim().slice(0, 200)}`,
+      );
+    out.push(...branchesOf(batch, data));
+  }
+  return out;
+}
+
+/** A PR closed, with a comment that says why (task #779). */
+export function closePr(url: string, comment: string, token: string): void {
+  gh(["pr", "close", url, "--comment", comment], { token });
+}
+
+/** A task's branch deleted (task #779); one gone already counts as deleted. */
+export function deleteBranch(repo: string, branch: string, token: string): void {
+  if (!REPO_NAME.test(repo) || !TASK_BRANCH.test(branch))
+    throw new ShipError(`not a task's branch: ${repo} ${branch}`);
+  const r = ghRun(["api", "-X", "DELETE", `repos/${repo}/git/refs/heads/${branch}`], { token });
+  if (r.code !== 0 && !/Reference does not exist/i.test(r.stderr))
+    throw new ShipError(`gh api failed: ${r.stderr.trim().slice(0, 200)}`);
+}
+
 /** owner/name from a GitHub URL: its name whole (dots and all), without a `.git` ending. */
 export function repoOf(url: string): string {
   const m = /github\.com[/:]([A-Za-z0-9-]+\/[A-Za-z0-9._-]+?)(?:\.git)?(?:[/#?]|$)/.exec(url);
@@ -681,11 +781,12 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
     pin: (issue) => pinning("pinIssue", issue),
     unpin: (issue) => pinning("unpinIssue", issue),
     sweep(q) {
-      // Four searches in one query, each 100 at most; a missed one comes up the next week. The
+      // Five searches in one query, each 100 at most; a missed one comes up the next week. The
       // closed and the quiet ones come oldest first (a close is a closed issue's last change, as a
       // word on it opens it again), so the ones about to leave their window are read first. The
       // quiet search leaves out what stays open for ever, so it can't fill the 100. The open
       // Library pages come least lately changed first: a closed project's are among the first.
+      // The lasting search takes any of its labels (GitHub's comma is an or).
       const without = q.quietWithout.map((l) => ` -label:"${l}"`).join("");
       type Found = {
         nodes: (GqlSwept | null)[];
@@ -693,11 +794,14 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
       };
       const closed = `repo:${repo} is:issue is:closed closed:${q.closedFrom}..${q.closedTo} sort:updated-asc`;
       const PAGE = `pageInfo { hasNextPage endCursor }`;
-      const r = graphql<Record<"closed" | "projects" | "pages" | "quiet", Found>>(
-        `query($closed: String!, $projects: String!, $pages: String!, $quiet: String!) { closed: search(query: $closed, type: ISSUE, first: 100) { nodes { ${SWEPT} } ${PAGE} } projects: search(query: $projects, type: ISSUE, first: 100) { nodes { ${SWEPT} } } pages: search(query: $pages, type: ISSUE, first: 100) { nodes { ${SWEPT} } } quiet: search(query: $quiet, type: ISSUE, first: 100) { nodes { ${SWEPT} } } }`,
+      const found = (k: string) =>
+        `${k}: search(query: $${k}, type: ISSUE, first: 100) { nodes { ${SWEPT} } }`;
+      const r = graphql<Record<"closed" | "projects" | "lasting" | "pages" | "quiet", Found>>(
+        `query($closed: String!, $projects: String!, $lasting: String!, $pages: String!, $quiet: String!) { closed: search(query: $closed, type: ISSUE, first: 100) { nodes { ${SWEPT} } ${PAGE} } ${["projects", "lasting", "pages", "quiet"].map(found).join(" ")} }`,
         {
           closed,
           projects: `repo:${repo} is:issue is:open label:project`,
+          lasting: `repo:${repo} is:issue is:open label:${q.lasting.map((l) => `"${l}"`).join(",")}`,
           pages: `repo:${repo} is:issue is:open label:library sort:updated-asc`,
           quiet: `repo:${repo} is:issue is:open updated:<${q.quietBefore}${without} sort:updated-asc`,
         },
@@ -719,6 +823,7 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
       return {
         closed: of(all),
         projects: of(r.projects?.nodes),
+        lasting: of(r.lasting?.nodes),
         pages: of(r.pages?.nodes),
         quiet: of(r.quiet?.nodes),
       };
@@ -780,6 +885,40 @@ export function githubRecord(opts: RecordOpts = {}): TaskRecord {
         pages: (r?.pages?.nodes ?? []).map((x) => x.number),
       };
     },
+    closedAt(ns) {
+      // Each number an alias of its own, 100 a query. GitHub answers what it could read, and gh
+      // exits 1 when any part couldn't be (a pull request's number, an issue deleted): that one is
+      // none, and only a query with no answer at all fails.
+      const out = new Map<number, string>();
+      const want = [...new Set(ns.filter((n) => Number.isInteger(n) && n > 0))];
+      const [owner, name] = repo.split("/") as [string, string];
+      for (let i = 0; i < want.length; i += 100) {
+        const batch = want.slice(i, i + 100);
+        const r = ghRun(
+          [
+            "api",
+            "graphql",
+            "-f",
+            `query=query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${batch.map((n) => `t${n}: issue(number: ${n}) { state closedAt }`).join(" ")} } }`,
+            "-f",
+            `owner=${owner}`,
+            "-f",
+            `name=${name}`,
+          ],
+          call(),
+        );
+        let data: Record<string, { state?: string; closedAt?: string | null } | null> | undefined;
+        try {
+          data = (JSON.parse(r.stdout) as { data?: { repository?: typeof data } }).data?.repository;
+        } catch {}
+        if (!data) throw new ShipError(`gh api graphql failed: ${r.stderr.trim()}`);
+        for (const n of batch) {
+          const t = data[`t${n}`];
+          if (t?.state === "CLOSED" && t.closedAt) out.set(n, t.closedAt);
+        }
+      }
+      return out;
+    },
   };
 }
 
@@ -830,7 +969,7 @@ type GqlLive = {
 
 /** What the weekly clean-up reads of each issue (ADR 0069). */
 const SWEPT =
-  "... on Issue { number title closedAt updatedAt labels(first: 30) { nodes { name } } parent { number state labels(first: 30) { nodes { name } } } subIssues(first: 100) { nodes { state } } closedByPullRequestsReferences(first: 10, includeClosedPrs: false) { nodes { state } } }";
+  "... on Issue { number title closedAt updatedAt labels(first: 30) { nodes { name } } parent { number state labels(first: 30) { nodes { name } } } subIssues(first: 100) { nodes { number state } } closedByPullRequestsReferences(first: 10, includeClosedPrs: false) { nodes { state } } }";
 type GqlSwept = {
   number: number;
   title: string;
@@ -838,7 +977,7 @@ type GqlSwept = {
   updatedAt?: string | null;
   labels: GqlLabels;
   parent?: { number: number; state: GqlState; labels: GqlLabels } | null;
-  subIssues?: { nodes: { state: GqlState }[] };
+  subIssues?: { nodes: { number: number; state: GqlState }[] };
   closedByPullRequestsReferences?: { nodes: { state: string }[] };
 };
 const swept = (i: GqlSwept): SweptIssue => ({
@@ -856,7 +995,7 @@ const swept = (i: GqlSwept): SweptIssue => ({
         },
       }
     : {}),
-  openParts: (i.subIssues?.nodes ?? []).filter((p) => p.state === "OPEN").length,
+  openParts: (i.subIssues?.nodes ?? []).filter((p) => p.state === "OPEN").map((p) => p.number),
   openPrs: (i.closedByPullRequestsReferences?.nodes ?? []).filter((p) => p.state === "OPEN").length,
 });
 

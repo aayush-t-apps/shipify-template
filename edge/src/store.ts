@@ -158,26 +158,40 @@ export async function remove(bucket: Bucket, refs: string[]) {
   for (let i = 0; i < refs.length; i += 1000) await bucket.delete(refs.slice(i, i + 1000));
 }
 
-/** A file no chat used goes this many days after it was made. */
+/** A file no chat used goes this many days after it was made… */
 const UNCLAIMED_DAYS = 60;
+/** …and a run's file of a chat that never closes (a repeat, a recipe, an open project's), this. */
+const OLD_DAYS = 30;
+const DAY = 24 * 3600_000;
 
 /**
  * The weekly clean-up's step (ADR 0069, section 15), from one listing: every file of these chats
- * deleted, and every file no chat used (yours or a guest's) made 60 days ago or more. One with no
- * time of its own is kept: R2's list gives no upload time. How many of each went, and their bytes.
+ * deleted, every file no chat used (yours or a guest's) made 60 days ago or more, and every run's
+ * file of the `old` chats made 30 days ago or more (task #784: they never close, so their files
+ * would pile up; yours have their backup). One with no time of its own is kept: R2's list gives no
+ * upload time. How many of each went, and their bytes.
  */
-export async function forget(bucket: Bucket, chats: number[], now: number) {
-  const doomed = new Set(chats);
-  const old = now - UNCLAIMED_DAYS * 24 * 3600_000;
+export async function forget(
+  bucket: Bucket,
+  asked: { chats: number[]; old: number[] },
+  now: number,
+) {
+  const doomed = new Set(asked.chats);
+  const aging = new Set(asked.old);
+  const unclaimed = now - UNCLAIMED_DAYS * DAY;
+  const old = now - OLD_DAYS * DAY;
   const refs: string[] = [];
-  const done = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0 };
+  const done = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0, old: 0, oldBytes: 0 };
   await each(bucket, (ref, meta) => {
     if (meta.task && doomed.has(meta.task)) {
       done.deleted++;
       done.bytes += meta.size;
-    } else if (!meta.task && meta.at && meta.at <= old) {
+    } else if (!meta.task && meta.at && meta.at <= unclaimed) {
       done.unclaimed++;
       done.unclaimedBytes += meta.size;
+    } else if (meta.by === "run" && aging.has(meta.task ?? 0) && meta.at && meta.at <= old) {
+      done.old++;
+      done.oldBytes += meta.size;
     } else return;
     refs.push(ref);
   });

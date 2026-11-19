@@ -43,7 +43,9 @@ loops: two small recipes read better than one big one.
    weekday at 08:30. Next: …", which reaches your chat.
 4. **At each time,** the run reads the body from `main` and the agent does it (read-only, as every
    run). Its reply comes to the task and to your default channels (`SHIPIFY_SEND`: your Telegram);
-   with nothing to say, it stays quiet.
+   with nothing to say, it stays quiet. A PR it asks for is `part-of` (it says "Part of #<task>"),
+   so your merge keeps the task open: a time that comes while the PR is open is skipped, and within
+   a day of your merge the task stops saying `needs you` ([tasks.md](tasks.md#repeats)).
 5. **A changed file** updates the repeat ("Updated from …"). **A file that doesn't read** pauses it,
    says why on its task and on the status task, and it runs again once a fixed file is merged.
    **A removed file** ends it and closes its task.
@@ -52,7 +54,7 @@ loops: two small recipes read better than one big one.
 |---|---|
 | `again` | runs it now |
 | `stop repeating`, or close the task | pauses it, while the file stays |
-| `resume` | starts it again |
+| `resume`, or reopen the task | starts it again |
 | `/recipes` (anywhere) | lists each recipe, its next time and its task |
 
 The status page lists them too ([door.md](door.md#the-status-page)).

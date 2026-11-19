@@ -10,6 +10,7 @@ import {
   reposOf,
   STATE_LABELS,
   SUB_TASK_LABEL,
+  whose,
   withoutLine,
 } from "../contracts/index.ts";
 import type { RecordAbove, RecordComment } from "../lib/plugins/record.ts";
@@ -31,12 +32,14 @@ const projectOf = (a: RecordAbove, chats?: Part[]): Project | undefined => {
   const name = projectNameOf(a.title);
   if (!name || !a.labels.includes(PROJECT_LABEL)) return undefined;
   const brief = withoutLine(a.body).trim();
+  const guest = whose({ labels: a.labels });
   return {
     number: a.number,
     name,
     brief,
     repos: reposOf(brief),
     state: a.state,
+    ...(guest ? { guest } : {}),
     ...(chats ? { chats } : {}),
   };
 };

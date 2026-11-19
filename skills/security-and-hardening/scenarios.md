@@ -16,3 +16,8 @@
 - **Ask:** "add an API path to the app".
 - **Without it:** the path sat inside the service worker's scope, and the worker served it from the cache or the offline page.
 - **Done well:** check the worker's scope and fetch handler before you add the path.
+
+### 2. A count of public names from one source
+- **Ask:** "can people find my app's subdomains?"
+- **Without it:** the run counted names from crt.sh alone. Its index lags, so the count missed certificates.
+- **Done well:** check crt.sh against a second source (Cert Spotter's API) before you give the count.

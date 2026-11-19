@@ -2,12 +2,15 @@
 // (SHIPIFY_DIGEST, `every monday at 9:00` by default, or `off`), even when all is clear, so a quiet
 // week never looks like a fault. What's wrong is still said at once (the watch's alerts); this
 // only gathers the week, from what the due run already reads, and one read of your projects
-// (ADR 0070). Nothing in it acts.
+// (ADR 0070): with them, each list that lapsed unanswered, once, and the Node a box runs near its
+// end of support (task #786). Nothing in it acts.
 
 import { inboxTopic, NEEDS_YOU_LABEL, projectNameOf, waitingItems } from "../../contracts/index.ts";
+import { lapsedList } from "../../kernel/decide.ts";
 import type { AgentNews } from "../../lib/agent-install.ts";
 import type { TaskRecord } from "../../lib/plugins/record.ts";
 import { nextRun, parseSchedule } from "../../lib/repeat.ts";
+import type { TaskState } from "../../lib/task.ts";
 import { megabytes } from "./sweep.ts";
 
 export const DIGEST_EVERY = "every monday at 9:00";
@@ -48,6 +51,35 @@ export interface DigestFacts {
   files?: { deleted: number; bytes: number; unclaimed: number; failed?: string };
   /** The agents' pins beside their newest and advisories (task #673); null: a read didn't answer. */
   agents?: AgentNews[] | null;
+  /** The lists that lapsed unanswered since the last digest (task #786), each named once. */
+  lapsed?: LapsedList[];
+  /** The Node this box runs, when its support ends within 90 days or has ended (task #786). */
+  node?: { major: number; date: string; days: number };
+}
+
+/** A list that lapsed with no `yes` or `no` of yours (task #786): its task, what it held, its key. */
+export interface LapsedList {
+  n: number;
+  title: string;
+  what: string;
+  /** `lapsed:<task>:<when>`: kept in the record's said keys once named, so it's named once. */
+  key: string;
+}
+
+/**
+ * The lists that lapsed unanswered among the tasks read (task #786): one whose day passed, or one a
+ * close dropped; none whose key is among `said` (the record's keys already said).
+ */
+export function lapsedLists(
+  tasks: { n: number; title: string; state: TaskState }[],
+  at: Date,
+  said: string[],
+): LapsedList[] {
+  return tasks.flatMap(({ n, title, state }) => {
+    const lapsed = lapsedList(state, at.getTime());
+    const key = lapsed && `lapsed:${n}:${lapsed.at}`;
+    return lapsed && key && !said.includes(key) ? [{ n, title, what: lapsed.what, key }] : [];
+  });
 }
 
 /** A project's week (ADR 0070): its Inbox's items to collate, its chats waiting on you, and its
@@ -171,6 +203,18 @@ function agentLines(a?: AgentNews[] | null): string[] {
   ];
 }
 
+/** The Node this box runs, near or past its end of support (task #786, cli/lib/node-support.ts). */
+function nodeLines(n?: DigestFacts["node"]): string[] {
+  if (!n) return [];
+  const [when, by] =
+    n.days > 0
+      ? [`ends on ${n.date}, in ${n.days} days`, "before then"]
+      : [`ended on ${n.date}`, "now"];
+  return [
+    `- **Node ${n.major}:** its support ${when}, and this box runs it: move Shipify and its boxes to a newer LTS ${by} (a \`shipify:\` task)`,
+  ];
+}
+
 /** The message, short: what runs, what waits on you, what's due, and "all clear" when nothing is. */
 export function digestText(f: DigestFacts, when: (iso: string) => string): string {
   const offline = f.boxes.filter((b) => !b.online).map((b) => b.name);
@@ -187,12 +231,19 @@ export function digestText(f: DigestFacts, when: (iso: string) => string): strin
     ...(f.waiting.length
       ? [`- **Waiting on you:** ${list(f.waiting.map((t) => `#${t.n} ${t.title}`))}`]
       : []),
+    ...(f.lapsed?.length
+      ? [
+          // Each one, never "and n more": it's named only this once.
+          `- **Lists that lapsed, unanswered:** ${f.lapsed.map((l) => `#${l.n} ${l.what}`).join(", ")}. Write on its task to have it listed again`,
+        ]
+      : []),
     ...projectLines(f.projects),
     ...(behind.length ? [`- **Behind its stack:** ${list(behind)}`] : []),
     ...(f.keys.length
       ? [`- **Keys due:** ${list(f.keys.map((k) => `${k.name} on ${k.date} (${k.days} days)`))}`]
       : []),
     ...agentLines(f.agents),
+    ...nodeLines(f.node),
     ...skillLines(f.skills),
     ...(f.files
       ? [
@@ -209,6 +260,8 @@ export function digestText(f: DigestFacts, when: (iso: string) => string): strin
     !offline.length &&
     !failing.length &&
     !f.waiting.length &&
+    !f.lapsed?.length &&
+    !f.node &&
     !behind.length &&
     !f.keys.length &&
     !f.files?.failed &&

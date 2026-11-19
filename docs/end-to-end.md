@@ -32,7 +32,7 @@ days before each date in the variable `SHIPIFY_KEY_DATES`.
 | 4 | **think** | Claude Code as the slot's own user, in a fresh folder, with its login, its own read-only token (a work run's project and Shipify) and the run's look token, for the tools at the run's look server, which holds their look keys (ADR 0077); it writes `result.json`, and whatever stops it, its commits are kept | the run's "Think" step: one line per agent step |
 | 5 | **decide, mint, apply** | the result becomes writes; a write token for exactly one repo is minted; apply pushes, opens PRs, makes approved calls, writes the reply and the status | the run's "Decide" and "Apply" steps: `1 replies (answer)` |
 | 6 | **the door → you** | apply tells the door (`POST /door/replied`, the run's OIDC token); the door copies the reply to your chat and marks it 🚀 | `door.out.sent` in the Apply step; the 🚀 on the comment |
-| 7 | **the watch** | every 5 minutes: a notice for a reply that didn't go out (never sent twice), marks a stuck task Stopped (`stuck`: your `continue` starts it again; the watch starts no run), rings due runs (repeats, deploys it follows with `deploying`), alerts | the status task; Actions → watch |
+| 7 | **the watch** | every 5 minutes: a notice for a reply that didn't go out (never sent twice), starts a run once more for words no run answered, marks a stuck task Stopped (`stuck`: your `continue` starts it again), rings due runs (repeats, deploys it follows with `deploying`), alerts | the status task; Actions → watch |
 
 A change to an app adds: the agent commits in its clone → apply pushes from its bundle and opens
 the PR → you merge → the watch follows the deploy → "Live". A tool change adds: the exact calls in

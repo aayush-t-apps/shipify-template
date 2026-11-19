@@ -34,3 +34,13 @@
 - **Ask:** a command fails with a generic OS error.
 - **Without it:** the agent guessed at the cause from the message.
 - **Done well:** read the vendor's source for what raises it.
+
+### 6. A local pass with an older tool
+- **Ask:** CI fails a lint that passes here.
+- **Without it:** the agent trusted the local pass, but CI installed a newer version of the tool, with new rules.
+- **Done well:** compare the tool's version with CI's, and run CI's version (its container or its release binary).
+
+### 7. A scroll jump blamed on the code
+- **Ask:** the page jumps back after a layout change.
+- **Without it:** the agent changed its own scroll code, but the browser moved the position itself (scroll snap, scroll anchoring).
+- **Done well:** log the position on each scroll event first, and find what moves it.

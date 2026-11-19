@@ -599,6 +599,20 @@ function bumpBetween(from: string, to: string): Bump | undefined {
 const MARKERS = /^(<<<<<<<|=======|>>>>>>>)( |$)/m;
 
 /**
+ * The files that main's new commits and the branch both changed: from where the branch left main
+ * (`base`) to main, and to the branch's `head` before the refresh. The changelog and `settled` (the
+ * files of the branch's own version bump) are left out: refresh settles those itself. The box's
+ * finish runs the tests again only when there is one (task #791); else the quick checks.
+ */
+function bothChanged(dir: string, base: string, head: string, settled: string[] = []): string[] {
+  const names = (to: string) =>
+    git(dir, "diff", "--name-only", "--no-renames", base, to).split("\n").filter(Boolean);
+  const ours = new Set(names(head));
+  const skip = new Set(["CHANGELOG.md", ...settled]);
+  return names("origin/main").filter((f) => ours.has(f) && !skip.has(f));
+}
+
+/**
  * Bring a task branch up to date with main by merging it (never rewriting history), when a sibling
  * PR merged first. The branch's own version bump is undone first and redone on top of main's
  * version, a change doc whose number main took is renumbered, and changelog conflicts resolve by
@@ -615,6 +629,8 @@ export function refresh(ref: string, fetch = true): Result {
   const merging = existsSync(join(gitDir, "MERGE_HEAD"));
   const done: string[] = [];
   let bump: Bump | undefined;
+  // What main and the branch both changed, when this refresh merges main (bothChanged).
+  let both: string[] | undefined;
 
   if (merging) {
     const conflicted = git(dir, "diff", "--name-only", "--diff-filter=U")
@@ -651,6 +667,7 @@ export function refresh(ref: string, fetch = true): Result {
       };
     } else {
       const base = git(dir, "merge-base", "HEAD", "origin/main");
+      const head = git(dir, "rev-parse", "HEAD");
       const baseVersion = (
         JSON.parse(git(dir, "show", `${base}:shipify.json`)) as { version: string }
       ).version;
@@ -658,6 +675,7 @@ export function refresh(ref: string, fetch = true): Result {
       bump = bumpBetween(baseVersion, ours);
       // The bump to redo, recorded before anything changes.
       writeFileSync(stash, bump ?? "");
+      let settled: string[] = [];
       if (bump) {
         // Undo this branch's bump, so main's version and changelog merge without conflicts.
         writeManifest(dir, { ...readManifest(dir), version: baseVersion });
@@ -678,7 +696,9 @@ export function refresh(ref: string, fetch = true): Result {
         git(dir, "add", "-A");
         git(dir, "commit", "-q", "-m", `Refresh: back to ${baseVersion} before merging main`);
         done.push(`undid the bump to ${ours}`);
+        settled = git(dir, "diff", "--name-only", head, "HEAD").split("\n").filter(Boolean);
       }
+      both = bothChanged(dir, base, head, settled);
       const merge = run("git", ["merge", "-q", "--no-edit", "origin/main"], { cwd: dir });
       if (merge.code !== 0) {
         const conflicted = git(dir, "diff", "--name-only", "--diff-filter=U")
@@ -749,6 +769,7 @@ export function refresh(ref: string, fetch = true): Result {
   }
   rmSync(stash, { force: true });
   return ok("refresh", done.join("; "), {
+    ...(both ? { data: { both } } : {}),
     nextSteps: [`make -C ${dir} verify`, `pnpm ship pr ${ref} --yes`],
   });
 }
@@ -779,6 +800,11 @@ function refreshPlatform(ref: string, dir: string, fetch: boolean): Result {
   if (fetch) git(dir, "fetch", "-q", "origin", "main");
   if (gitOk(dir, "merge-base", "--is-ancestor", "origin/main", "HEAD"))
     return { command: "refresh", status: "skipped", summary: `${branch} is up to date with main` };
+  const both = bothChanged(
+    dir,
+    git(dir, "merge-base", "HEAD", "origin/main"),
+    git(dir, "rev-parse", "HEAD"),
+  );
   const merge = run("git", ["merge", "-q", "--no-edit", "origin/main"], { cwd: dir });
   if (merge.code !== 0) {
     const conflicted = git(dir, "diff", "--name-only", "--diff-filter=U")
@@ -797,7 +823,10 @@ function refreshPlatform(ref: string, dir: string, fetch: boolean): Result {
     if (left.length) return conflictsLeft(ref, left);
     git(dir, "commit", "-q", "--no-edit");
   }
-  return ok("refresh", "merged main", { nextSteps: [`pnpm ship pr ${ref} --yes`] });
+  return ok("refresh", "merged main", {
+    data: { both },
+    nextSteps: [`pnpm ship pr ${ref} --yes`],
+  });
 }
 
 function conflictsLeft(ref: string, files: string[]): Result {

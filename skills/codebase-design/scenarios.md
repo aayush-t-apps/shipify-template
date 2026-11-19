@@ -31,3 +31,13 @@
 - **Ask:** "how should the app keep its data on this service?"
 - **Without it:** the run added a new store, said the feature needed no code without a trace of the real path, and put every service path in one change.
 - **Done well:** use the service's own store first, trace the real path, read the service's code for the smallest correct step, and build one path now with the rest named "later".
+
+### 4. A lightweight ask that grew docs
+- **Ask:** "a clever, lightweight way to keep my reading in sync".
+- **Without it:** the first change doc went over 150 lines, so the run split it into many docs, one for each story. It also cut features without saying what the owner then had to do by hand.
+- **Done well:** one change doc for the smallest change that fixes the named problem, the rest as later options in a few lines, and for each cut, what the owner then does by hand.
+
+### 5. A new workflow job where one already ran
+- **Ask:** "clean up what closed tasks leave behind, by itself".
+- **Without it:** the run proposed a new workflow run with its own key. A workflow change needs one more approval and review from the owner.
+- **Done well:** find a job that already runs where the work must run and holds the key it needs, and put the work there.

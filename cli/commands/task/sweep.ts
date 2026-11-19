@@ -1,6 +1,8 @@
 // The weekly clean-up's own steps (ADR 0069 §2, §15), with no agent: the files of chats closed
 // 30 to 60 days ago (or since the last clean-up) go from the edge's store with the files no chat
-// used, a chat quiet for 30 days closes, and a closed project's pages left open close (task #744).
+// used, and runs' files 30 days old of what never closes (task #784), a chat quiet for 30 days
+// closes, and a closed project's pages left open close (task #744); and the clean-up of closed
+// tasks' PRs and branches starts, on GitHub's machines (leftovers.ts).
 // Each box runs its own clean-up (watch.ts), so these run once a week in all, however many boxes:
 // the status record keeps when they last ran, as it keeps the digest's time, and what they did.
 // One read finds it all (the record's `sweep`), and one more for each project closed in the window.
@@ -23,6 +25,7 @@ import { REPEATS_LABEL, WAITING_LABEL } from "../../lib/repeat.ts";
 import type { StatusIssueState, Swept } from "../../lib/status-issue.ts";
 import { findStatus, TASK_LABELS } from "../../lib/task.ts";
 import { rec } from "./context.ts";
+import { startLeftovers } from "./leftovers.ts";
 import { Status } from "./issue.ts";
 
 const DAY = 24 * 3600_000;
@@ -37,6 +40,8 @@ const FILES_AFTER_DAYS = 30;
 const FILES_UNTIL_DAYS = 60;
 /** The edge deletes a file no chat used this many days after it was made (edge/src/store.ts). */
 const UNCLAIMED_DAYS = 60;
+/** …and a run's file of what never closes (filesToAge) this many days after (edge/src/store.ts). */
+const OLD_DAYS = 30;
 /**
  * A chat outside a project with no word or change for this long closes (your pick, 2026-11-02: 30,
  * not 90); its files go 30 days after that. A word on it opens it again.
@@ -68,6 +73,8 @@ const KEPT = new Set([
   TASK_LABELS.working.name,
   TASK_LABELS["needs-you"].name,
 ]);
+/** What stays open for good and runs again and again, so its runs' files pile up: by label. */
+const LASTING = [REPEATS_LABEL.name, RECIPE_LABEL.name];
 
 /** A week less this is a week: a clean-up started a little early, or a box's clock, skips none. */
 const SWEEP_SLACK_MS = 3600_000;
@@ -123,6 +130,18 @@ export function filesToForget(read: SweepRead, items: Map<number, ProjectItems>)
 }
 
 /**
+ * The open chats whose runs' files go 30 days after they were made (task #784): what never closes,
+ * so a close never takes its files: a repeat, a recipe, an open project and its open chats.
+ */
+export const filesToAge = (read: SweepRead): number[] =>
+  [
+    ...new Set([
+      ...read.lasting.map((i) => i.number),
+      ...read.projects.flatMap((p) => [p.number, ...p.openParts]),
+    ]),
+  ].sort((a, b) => a - b);
+
+/**
  * The open chats the 30-day close takes (ADR 0069 §2): quiet that long, in no open project (one
  * left open under a closed project is a chat like any other), with no open PR or open part, and
  * none of the kinds it leaves open (KEPT). The search leaves KEPT out already; the check stays
@@ -133,7 +152,7 @@ export const quietToClose = (read: SweepRead): SweptIssue[] =>
     (i) =>
       !inOpenProject(i) &&
       !i.labels.some((l) => KEPT.has(l) || l.startsWith(`${PROJECT}:`)) &&
-      !i.openParts &&
+      !i.openParts.length &&
       !i.openPrs,
   );
 
@@ -157,6 +176,7 @@ export function cleanable(record: Pick<TaskRecord, "sweep">, n: number, at: stri
     closedTo: tomorrow,
     quietBefore: tomorrow,
     quietWithout: [...KEPT],
+    lasting: LASTING,
   });
   return quietToClose(read)
     .filter((i) => i.number !== n)
@@ -171,12 +191,21 @@ export function cleanable(record: Pick<TaskRecord, "sweep">, n: number, at: stri
 /** What the steps read and write. */
 export interface SweepIo {
   record: Pick<TaskRecord, "sweep" | "projectItems">;
-  /** The edge's word: these chats' files, and those no chat used, deleted (forgetFiles). */
-  forget(chats: number[]): Promise<Forgotten>;
+  /**
+   * The edge's word: these chats' files deleted, those no chat used, and the old runs' files of
+   * these (`old`, filesToAge) (forgetFiles).
+   */
+  forget(chats: number[], old: number[]): Promise<Forgotten>;
   /** Closed as completed, with its status line; whether it was. */
   close(i: SweptIssue, at: string): Promise<boolean>;
   /** A page closed as completed (a page has no status line); whether it was. */
   closePage(n: number): Promise<boolean>;
+  /**
+   * The clean-up of closed tasks' PRs and branches started on GitHub's machines (leftovers.ts: the
+   * `github` job on the status task, as it takes the bot's key, which a box never holds); whether
+   * it was.
+   */
+  leftovers?(): boolean;
 }
 
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
@@ -188,9 +217,10 @@ const numbers = (ns: number[]) => ns.map((n) => `#${n}`).join(", ");
 /**
  * The steps, as the clean-up's summary says what each really did: "deleted 12 files (8 MB) of
  * 4 closed chats", "no files to delete for 3 closed chats" (none had any, or a pass before took
- * them), "2 files no chat used (1 MB), 60 days old", "closed 2 chats quiet for 30 days (#20,
- * #31)", "closed 3 pages of closed projects (#40, #41, #42)", and what didn't happen, to try next
- * week. With the files deleted in all, for the status record; `last` is the last clean-up's start.
+ * them), "2 files no chat used (1 MB), 60 days old", "3 run files (2 MB) of repeats, recipes and
+ * open projects, 30 days old", "closed 2 chats quiet for 30 days (#20, #31)", "closed 3 pages of
+ * closed projects (#40, #41, #42)", and what didn't happen, to try next week. With the files
+ * deleted in all, for the status record; `last` is the last clean-up's start.
  */
 export async function sweep(
   at: Date,
@@ -205,6 +235,7 @@ export async function sweep(
     quietBefore: day(ago(QUIET_DAYS)),
     // What stays open for ever can't fill the search's 100, so the real quiet chats are reached.
     quietWithout: [...KEPT],
+    lasting: LASTING,
   });
   // A project closed in the window takes its closed chats' and its pages' files with it.
   const items = new Map<number, ProjectItems>();
@@ -215,7 +246,7 @@ export async function sweep(
   const said: string[] = [];
   const chats = filesToForget(read, items);
   // Asked with no chats too: the door deletes the files no chat used all the same.
-  const gone = await io.forget(chats);
+  const gone = await io.forget(chats, filesToAge(read));
   const of = plural(chats.length, "closed chat");
   if (gone.deleted)
     said.push(`deleted ${plural(gone.deleted, "file")} (${megabytes(gone.bytes)}) of ${of}`);
@@ -223,6 +254,10 @@ export async function sweep(
   if (gone.unclaimed)
     said.push(
       `${gone.deleted ? "" : "deleted "}${plural(gone.unclaimed, "file")} no chat used (${megabytes(gone.unclaimedBytes)}), ${UNCLAIMED_DAYS} days old`,
+    );
+  if (gone.old)
+    said.push(
+      `${gone.deleted || gone.unclaimed ? "" : "deleted "}${plural(gone.old, "run file")} (${megabytes(gone.oldBytes)}) of repeats, recipes and open projects, ${OLD_DAYS} days old`,
     );
   const failed = gone.failed ? "the door didn't take the files" : undefined;
   if (failed) said.push(`${failed}${chats.length ? ` of ${of}` : ""}: next week`);
@@ -246,10 +281,17 @@ export async function sweep(
     said.push(
       `couldn't close ${plural(open.length, "page")} of closed projects (${numbers(open)}): next week`,
     );
+  // A closed task's open PRs and branches (task #779): cleared on GitHub's machines, said there.
+  if (io.leftovers)
+    said.push(
+      io.leftovers()
+        ? "closed tasks' PRs and branches: started on GitHub"
+        : "couldn't start the clean-up of closed tasks' PRs and branches: next week",
+    );
   return {
     said: said.join("; ") || "nothing to clear",
-    deleted: gone.deleted + gone.unclaimed,
-    bytes: gone.bytes + gone.unclaimedBytes,
+    deleted: gone.deleted + gone.unclaimed + gone.old,
+    bytes: gone.bytes + gone.unclaimedBytes + gone.oldBytes,
     unclaimed: gone.unclaimed,
     ...(failed ? { failed } : {}),
   };
@@ -326,4 +368,5 @@ const liveIo = (): SweepIo => ({
   forget: forgetFiles,
   close: closeQuiet,
   closePage,
+  leftovers: startLeftovers,
 });

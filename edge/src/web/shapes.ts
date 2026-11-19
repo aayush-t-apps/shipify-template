@@ -290,9 +290,10 @@ export const Menu = z.object({
   version: z.string(),
   /**
    * At the guests' door (ADR 0071): who the guest is. The page shows their own Desk with the Guest
-   * tag, and none of yours (Library, Apps, Repeats, Setup, run details).
+   * tag, and none of yours (Library, Apps, Repeats, Setup, run details): `yours`, the screens it
+   * never opens for them (the contract's GUEST_RULES).
    */
-  guest: z.object({ name: z.string() }).optional(),
+  guest: z.object({ name: z.string(), yours: z.array(z.string()) }).optional(),
 });
 
 /** A search of an agent's gateway for models (`…/api/models?agent=&q=`), each as `use` takes it. */

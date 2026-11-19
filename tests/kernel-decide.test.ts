@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Cleanable } from "../cli/commands/task/sweep.ts";
-import { DEFAULT_VOICE, LIST_HEAD, PRESETS, replyLine } from "../cli/contracts/index.ts";
+import { againLine, DEFAULT_VOICE, LIST_HEAD, PRESETS, replyLine } from "../cli/contracts/index.ts";
 import {
   afterThink,
   type Context,
@@ -141,6 +141,48 @@ describe("plan: what runs at all", () => {
     expect(plan(snap({ isTask: false }), ctx()).do).toBe("nothing");
     expect(plan(snap({ issue: { ...snap().issue, isPr: true } }), ctx()).do).toBe("nothing");
     expect(plan(snap({ issue: { ...snap().issue, author: "other" } }), ctx()).do).toBe("nothing");
+  });
+
+  it("thinks on your words in a run the watch started once more for them (task #786): its comment is never yours", async () => {
+    const { saidOf } = await import("../cli/kernel/snapshot.ts");
+    const was = { owner: process.env.SHIPIFY_OWNER, door: process.env.SHIPIFY_DOOR_SLUG };
+    process.env.SHIPIFY_OWNER = "owner";
+    process.env.SHIPIFY_DOOR_SLUG = "shipify-door";
+    try {
+      const comment = (id: number, body: string, login: string) => ({
+        id,
+        body,
+        user: { login },
+        created_at: NOW,
+      });
+      const s = saidOf(12, [
+        comment(101, "and make it blue", "owner"),
+        comment(102, `${againLine}\nStarted again.`, "shipify-door[bot]"),
+      ]);
+      expect(s.map((c) => [c.id, c.author, c.text])).toEqual([
+        [101, "owner", "and make it blue"],
+        [102, "other", "Started again."],
+      ]);
+      const p = plan(
+        snap({ trigger: { kind: "comment" }, state: ran(), statusId: 5, said: s }),
+        ctx(),
+      );
+      expect(p.do).toBe("think");
+      expect(p.do === "think" ? p.think.fresh : []).toEqual([101]);
+      // Its comment alone is nothing new.
+      const alone = plan(
+        snap({ trigger: { kind: "comment" }, state: ran({ seen: 101 }), statusId: 5, said: s }),
+        ctx(),
+      );
+      expect(alone.do).toBe("nothing");
+    } finally {
+      for (const [k, v] of [
+        ["SHIPIFY_OWNER", was.owner],
+        ["SHIPIFY_DOOR_SLUG", was.door],
+      ] as const)
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+    }
   });
 
   it("does nothing when nothing is new: a second job for one event", () => {
@@ -1029,6 +1071,65 @@ describe("plan: fixed words, and where each is accepted", () => {
 });
 
 describe("plan: closes", () => {
+  it("drops the list that waits, and keeps what it held as lapsed, for the digest to name once (task #786)", () => {
+    const pr = "https://github.com/o/shipify/pull/9";
+    const first = { title: "shipify: a fix the run found", brief: "Fix it.", separate: true };
+    const listed = (at: string) =>
+      ran({
+        phase: "needs-you",
+        prs: [pr],
+        prInfo: { [pr]: { kind: "code", state: "merged" } },
+        pending: { first, list: { post: 7, at } },
+      });
+    const closed = { ...snap().issue, state: "closed" as const, closedAt: NOW };
+    // Its PR's merge closed it, an hour after the list.
+    const merged = plan(
+      snap({
+        trigger: { kind: "closed" },
+        statusId: 5,
+        issue: closed,
+        state: listed("2026-10-05T09:00:00.000Z"),
+      }),
+      ctx({ mergedPr: { url: pr, title: "The fix" } }),
+    );
+    expect(merged.state?.pending.first).toBeUndefined();
+    expect(merged.state?.lapsed).toEqual({ at: NOW, what: `separate work: ${first.title}` });
+    // A list whose day had passed lapsed then, not at the close: named once, whichever reads it.
+    const late = plan(
+      snap({
+        trigger: { kind: "closed" },
+        statusId: 5,
+        issue: closed,
+        state: listed("2026-10-03T08:00:00.000Z"),
+      }),
+      ctx({ mergedPr: { url: pr, title: "The fix" } }),
+    );
+    expect(late.state?.lapsed?.at).toBe("2026-10-04T08:00:00.000Z");
+    // Your `close` on GitHub drops it too, kept the same way.
+    const word = plan(
+      snap({
+        trigger: { kind: "comment" },
+        statusId: 5,
+        said: [said(101, "close")],
+        state: listed("2026-10-05T09:00:00.000Z"),
+      }),
+      ctx(),
+    );
+    expect(word.state?.lapsed).toEqual({ at: NOW, what: `separate work: ${first.title}` });
+    // Your `no` answers it: nothing lapsed.
+    const no = plan(
+      snap({
+        trigger: { kind: "comment" },
+        statusId: 5,
+        said: [said(101, "no")],
+        state: listed("2026-10-05T09:00:00.000Z"),
+      }),
+      ctx(),
+    );
+    expect(no.state?.pending.first).toBeUndefined();
+    expect(no.state?.lapsed).toBeUndefined();
+  });
+
   it("closed as not planned: its open PRs close on GitHub's machines", () => {
     const pr = "https://github.com/o/spotter/pull/3";
     const p = plan(
@@ -1144,6 +1245,70 @@ describe("plan: closes", () => {
     expect(again.do).toBe("nothing");
   });
 
+  it("a `close` names the PRs it leaves open, and until when; on another account they're yours to close (task #779)", () => {
+    const pr = "https://github.com/o/drop/pull/3";
+    const merged = "https://github.com/o/drop/pull/2";
+    const state = () =>
+      ran({
+        phase: "needs-you",
+        prs: [merged, pr],
+        prInfo: {
+          [merged]: { kind: "code", state: "merged" },
+          [pr]: { kind: "code", state: "open" },
+        },
+      });
+    const kept =
+      "Its PR [drop#3](https://github.com/o/drop/pull/3) stays open until this task has been closed 7 days: then the weekly clean-up closes it and deletes its branch, unless you merge it first.";
+    // Typed on GitHub: the close's own reply.
+    const typed = replies(
+      writes(
+        plan(
+          snap({
+            trigger: { kind: "comment" },
+            statusId: 5,
+            state: state(),
+            said: [said(101, "close")],
+          }),
+          ctx(),
+        ),
+      ),
+    );
+    expect(typed.map((r) => [r.text, r.links])).toEqual([
+      [`Closed. ${kept} Write again to carry it on, or say \`reopen\`.`, [["The PR", pr]]],
+    ]);
+    // From a chat: the door closed it and said "Closed"; its run says only what stays open.
+    const closedAt = "2026-10-05T09:00:00.000Z";
+    const door = plan(
+      snap({
+        trigger: { kind: "comment" },
+        statusId: 5,
+        issue: { ...snap().issue, state: "closed", closedAt },
+        state: state(),
+        said: [said(101, "close", { at: "2026-10-05T08:59:59.000Z" })],
+      }),
+      ctx(),
+    );
+    expect(replies(writes(door)).map((r) => [r.text, r.links])).toEqual([[kept, [["The PR", pr]]]]);
+    // On another of your accounts, nothing reaches it.
+    const there = replies(
+      writes(
+        plan(
+          snap({
+            trigger: { kind: "comment" },
+            statusId: 5,
+            state: state(),
+            said: [said(101, "close")],
+            account: { login: "acme", reached: true },
+          }),
+          ctx(),
+        ),
+      ),
+    );
+    expect(there[0]?.text).toContain(
+      "stays open: the clean-up doesn't reach another account, so close it on GitHub when you're done.",
+    );
+  });
+
   it("a `reopen` typed on GitHub (a `close` before it unread, too): Reopened, no agent", () => {
     const p = plan(
       snap({
@@ -1232,9 +1397,10 @@ describe("plan: one run waiting per task, nothing lost (ADR 0040)", () => {
       ctx(),
     );
     expect(p.do).toBe("think");
-    // As its run would have: a list waiting for your yes is dropped, the repeat paused.
+    // As its run would have: a list waiting for your yes is dropped. The repeat was paused only
+    // while the task was closed: your words reopen it, so it carries on (#783).
     expect(p.do === "think" && p.state.pending.calls).toBeUndefined();
-    expect(p.do === "think" && p.state.repeat?.paused).toBe(true);
+    expect(p.do === "think" && p.state.repeat?.paused).toBeFalsy();
     expect(kinds(thinkWrites(p))).toEqual(["coming-up", "reopen"]);
     expect(p.do === "think" && p.think.fresh).toEqual([102]);
   });
@@ -1749,6 +1915,137 @@ describe("plan: what a dispatch brings", () => {
     expect(replies(writes(repeat))).toHaveLength(0);
   });
 
+  it("a repeat's PR merged or closed: it repeats again, said once, with no agent", () => {
+    const u = "https://github.com/o/shipify/pull/7";
+    const repeat = {
+      kind: "agent" as const,
+      every: "every Monday at 9",
+      next: "2026-10-12T09:00:00.000Z",
+      fails: 0,
+    };
+    const ended = (state: "merged" | "closed", st: Partial<TaskState> = {}) =>
+      plan(
+        snap({
+          trigger: { kind: "dispatch", job: "run" },
+          statusId: 5,
+          ended: [u],
+          state: ran({
+            phase: "needs-you",
+            repeat,
+            prs: [u],
+            prInfo: { [u]: { kind: "code", state } },
+            ...st,
+          }),
+        }),
+        ctx(),
+      );
+    const merged = ended("merged");
+    expect(merged.do).toBe("box");
+    expect(merged.state).toMatchObject({ phase: "repeating", repeat });
+    expect(replies(writes(merged))).toEqual([
+      expect.objectContaining({
+        kind: "live",
+        state: "Merged",
+        text: "PR #7 merged, so nothing here waits for you. It repeats as before: next Mon 12 Oct, 09:00 UTC.",
+        links: [["PR #7", u]],
+        occasion: u,
+      }),
+    ]);
+    expect(replies(writes(ended("closed")))[0]?.text).toContain("PR #7 was closed unmerged");
+    // A list that waits for your yes, or a PR still open, keeps it needing you: nothing to do.
+    const list = ended("merged", { pending: { list: { post: 3, at: NOW } } });
+    expect(list.do).toBe("nothing");
+    const v = "https://github.com/o/shipify/pull/8";
+    const other = ended("merged", {
+      prs: [u, v],
+      prInfo: { [u]: { kind: "code", state: "merged" }, [v]: { kind: "code", state: "open" } },
+    });
+    expect(other.do).toBe("nothing");
+    // No PR ended in this run's read (a question waits): nothing either.
+    const asked = plan(
+      snap({
+        trigger: { kind: "dispatch", job: "run" },
+        statusId: 5,
+        state: ran({ phase: "needs-you", repeat }),
+      }),
+      ctx(),
+    );
+    expect(asked.do).toBe("nothing");
+  });
+
+  const weekly = {
+    kind: "agent" as const,
+    every: "every Monday at 9",
+    next: "2026-10-12T09:00:00.000Z",
+    fails: 0,
+  };
+
+  it("a repeat's `part-of` PR says `Part of`: no doc whose merge closes the task and builds", () => {
+    const work: Think = {
+      profile: "work",
+      project: "shipify",
+      why: "scheduled",
+      notes: [],
+      fresh: [],
+      web: true,
+    };
+    const result = readResult(
+      JSON.stringify({
+        v: 2,
+        state: "needs-you",
+        text: "Lessons kept.",
+        pr: { kind: "part-of", title: "docs(skills): lessons", body: "Why." },
+      }),
+    );
+    const meta = { readOutside: false, touchesWorkflows: false, commits: true };
+    const push = (st: Partial<TaskState>) =>
+      afterThink(
+        snap({ statusId: 5, state: ran(st) }),
+        { ...newState(), ...ran(st) } as TaskState,
+        work,
+        result,
+        meta,
+        ctx(),
+      ).writes.find((w) => w.w === "push");
+    expect(push({ repeat: weekly })).toMatchObject({ kind: "part-of" });
+    expect(push({ repeat: weekly })).not.toHaveProperty("doc");
+    // A big change's doc on a task that doesn't repeat still closes it, and its merge builds.
+    expect(push({})).toMatchObject({ kind: "part-of", doc: true });
+  });
+
+  it("a repeat its `part-of` PR's merge closed anyway opens again, still repeating, with no build", () => {
+    const u = "https://github.com/o/shipify/pull/7";
+    const closed = (kind: "change" | "code") =>
+      plan(
+        snap({
+          trigger: { kind: "closed" },
+          statusId: 5,
+          issue: { ...snap().issue, state: "closed", stateReason: "completed", closedAt: NOW },
+          state: ran({
+            phase: "needs-you",
+            repeat: weekly,
+            prs: [u],
+            prInfo: { [u]: { kind, state: "merged" } },
+          }),
+        }),
+        ctx({ mergedPr: { url: u, title: "docs(skills): lessons" } }),
+      );
+    const p = closed("change");
+    expect(p.do).toBe("box");
+    expect(p.state).toMatchObject({ phase: "repeating", repeat: { ...weekly, paused: false } });
+    expect(kinds(writes(p))).toContain("reopen");
+    expect(kinds(writes(p))).not.toContain("dispatch");
+    expect(replies(writes(p))[0]?.text).toBe(
+      "**Merged:** docs(skills): lessons. Its PR was `part-of`, so this task stays open, and it repeats as before: next Mon 12 Oct, 09:00 UTC.",
+    );
+    // A `closes` PR's merge closes it as before. The closed task pauses its repeat, so nothing
+    // marks it paused, and a reopen carries it on (#783).
+    const c = closed("code");
+    expect(c.state).toMatchObject({ phase: "done", repeat: weekly });
+    expect(c.state?.repeat?.paused).toBeUndefined();
+    expect(kinds(writes(c))).not.toContain("reopen");
+  });
+
   it("a repeat's time comes before a quiet-day close: a repeat is never closed as quiet", () => {
     const p = d({
       phase: "answered",
@@ -1796,6 +2093,30 @@ describe("plan: what a dispatch brings", () => {
         },
       }).do,
     ).toBe("nothing");
+  });
+
+  it("a closed task's repeat waits at its time; reopened (GitHub's Reopen: no run, no word), it runs (#783)", () => {
+    const repeat = {
+      kind: "agent" as const,
+      every: "every day at 09:00",
+      next: "2026-10-05T09:00:00.000Z",
+      fails: 0,
+    };
+    const at = (state: "open" | "closed") =>
+      plan(
+        snap({
+          trigger: { kind: "dispatch", job: "run" },
+          statusId: 5,
+          issue: { ...snap().issue, state, closedAt: "2026-10-04T08:00:00.000Z" },
+          state: ran({ phase: "done", repeat }),
+        }),
+        ctx(),
+      );
+    const shut = at("closed");
+    expect(shut.do).not.toBe("think");
+    expect(shut.state?.repeat?.next).toBe(repeat.next);
+    const reopened = at("open");
+    expect(reopened.do === "think" && reopened.think.why).toBe("scheduled");
   });
 
   it("a deploy that's up says Live once, keyed by its commit", () => {
@@ -3391,8 +3712,11 @@ describe("plan: close", () => {
     );
     expect(p.do).toBe("box");
     expect(writes(p)).toContainEqual({ w: "close", reason: "completed" });
-    // Its repeat is paused, not ended: `resume` carries it on (Pause and Resume on Repeats).
-    expect(p.do === "box" && p.state.repeat?.paused).toBe(true);
+    // Its repeat is paused, not ended: the closed task pauses it, so a reopen carries it on, as
+    // `resume` does (#783). Nothing marks it paused, and it's off Coming up.
+    expect(p.do === "box" && p.state.repeat).toMatchObject({ every: "every day at 09:00" });
+    expect(p.do === "box" && p.state.repeat?.paused).toBeUndefined();
+    expect(kinds(writes(p))).toContain("coming-up");
     expect(replies(writes(p))[0]?.text).toContain("Closed");
     // The chat offers `reopen` as a button under it (cli/contracts/words.ts reads the backticks).
     expect(replies(writes(p))[0]?.text).toContain("`reopen`");
@@ -5861,29 +6185,32 @@ describe("a guest's task (ADR 0071)", () => {
     const guest: Think = { profile: "guest", why: "new", notes: [], fresh: [101], web: true };
     const meta = { readOutside: false, touchesWorkflows: false };
     const pages = { v: 2, state: "done", text: "Kept.", pages: [{ page: "x", file: "x.md" }] };
-    const project = (name: string) => ({
+    // Whose a project is, as the record's family read gives it: its label (projects.ts).
+    const project = (name: string, whose?: string) => ({
       number: 40,
       name,
       brief: "",
       repos: [],
       state: "open" as const,
+      ...(whose ? { guest: whose } : {}),
     });
-    const at = (name: string) => {
+    const at = (name: string, whose?: string) => {
       const s = guests({
         said: [guestSays(101, "keep it")],
         statusId: 5,
         state: ran(),
-        project: project(name),
+        project: project(name, whose),
       });
       return afterThink(s, s.state, guest, pages as Result, meta, ctx()).writes.find(
         (w) => w.w === "pages",
       );
     };
     // By the guest's id: a new doc gets their labels.
-    expect(at("g3f9a2c-health")).toMatchObject({ project: "g3f9a2c-health", guest: GUEST });
-    // Your project: no project to write in, so the box writes none of it.
+    expect(at("g3f9a2c-health", GUEST)).toMatchObject({ project: "g3f9a2c-health", guest: GUEST });
+    // Your project, or another guest's: no project to write in, so the box writes none of it.
     expect(at("games")).toMatchObject({ guest: GUEST });
     expect(at("games")).not.toHaveProperty("project");
+    expect(at("g0b1c2d-trip", "guest-ben-0b1c2d")).not.toHaveProperty("project");
   });
 
   it("does nothing only you say from a guest's title: no operation, note, clean start or repeat", () => {

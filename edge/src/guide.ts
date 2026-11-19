@@ -30,7 +30,7 @@ import {
 } from "../../cli/contracts/index.ts";
 import type { Shown } from "./channels/channel.ts";
 import { NO_SUCH_TASK, NOT_YOURS, REFUSED } from "./chat.ts";
-import { byDoor, byRun, type GitHub, GitHubError, guestsOwn, RUN_WRITER } from "./github.ts";
+import { byDoor, byRun, type GitHub, GitHubError, RUN_WRITER, whoseIs } from "./github.ts";
 import { NOTEBOOK_LABEL, type RawRunner, type Settings, statusTask, toBoxes } from "./settings.ts";
 
 /** A task's label while a run of it works. */
@@ -77,7 +77,7 @@ export async function readTask(
     user?: { login?: string; type?: string; id?: number };
     performed_via_github_app?: { id?: number } | null;
   };
-  if (guest && !guestsOwn(gh, issue, guest)) return { why: NOT_YOURS, waiting: false };
+  if (guest && whoseIs(gh, issue) !== guest) return { why: NOT_YOURS, waiting: false };
   const labels = (issue.labels ?? []).map((l) => l.name);
   const waiting = labels.includes(NEEDS_YOU_LABEL);
   const refused = (why: string) => ({ why, waiting });

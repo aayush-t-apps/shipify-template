@@ -4,12 +4,15 @@
 // its answer keeps its commits too, and the stop is named (ADR 0035). Think runs off a box against
 // a local remote, with the stand-in agent (tests/fixtures/fake-thinker.mjs, FAKE_WORK).
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   agentSecrets,
+  blobsOf,
+  changedBlobs,
   HANDOFF_MAX,
   handOver,
   handoffOf,
@@ -25,11 +28,13 @@ import type { Said, Snapshot, Think } from "../cli/kernel/types.ts";
 import { ADAPTERS } from "../cli/lib/agents.ts";
 import { initialChangelog } from "../cli/lib/docs.ts";
 import { writeManifest } from "../cli/lib/manifest.ts";
+import { SCANNED, type Scanned } from "../cli/lib/secret-scan.ts";
 import { newState, type TaskState } from "../cli/lib/task.ts";
 import { BUILT } from "./built.ts";
 import { ROOT, sandbox } from "./helpers.ts";
 
 const saved = { ...process.env };
+const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 let dir = "";
 
 const git = (cwd: string, ...args: string[]) =>
@@ -403,6 +408,56 @@ describe("the box's checks on a task's work", () => {
     expect(out.meta.readOutside).toBe(false);
   }, 30_000);
 
+  it("scans the change for keys as the box while make verify runs, and keeps the answer for apply", async () => {
+    remote({ "shipify.json": manifest, Makefile: MAKEFILE, "old.txt": "as main has it\n" });
+    Object.assign(process.env, { FAKE_WORK: "fix", FAKE_CHANGE: "const TOKEN = 'LEAK';" });
+    const { keep, placeOut } = await run();
+    // The second check's scan, after the fix round: the change's files as the agent committed them,
+    // and nothing of main's.
+    const scanned = JSON.parse(readFileSync(join(keep, SCANNED), "utf8")) as Scanned;
+    const line = sha256("const TOKEN = 'LEAK';\n");
+    expect(scanned.files).toEqual({ "change.txt": line, fixed: line });
+    expect(scanned.found.map((f) => f.file).sort()).toEqual(["change.txt", "fixed"]);
+    // Read out by the agent's user into its out folder, and taken from there.
+    expect(existsSync(placeOut("scan.list"))).toBe(true);
+  }, 30_000);
+
+  it("reads the change's files out of git's own records: what it leaves, never a link or what it deletes", () => {
+    const repo = join(dir, "r");
+    mkdirSync(repo);
+    git(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    writeFileSync(join(repo, "b.txt"), "b\n");
+    git(repo, "add", "-A");
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base");
+    git(repo, "checkout", "-q", "-b", "work");
+    writeFileSync(join(repo, "a.txt"), "a, changed\n");
+    git(repo, "rm", "-q", "b.txt");
+    writeFileSync(join(repo, "café run.sh"), "#!/bin/sh\n", { mode: 0o755 });
+    git(repo, "-c", "core.symlinks=true", "add", "-A");
+    execFileSync("ln", ["-s", "a.txt", join(repo, "link")]);
+    git(repo, "add", "-A");
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "work");
+    const raw = execFileSync(
+      "git",
+      ["diff", "--no-renames", "--no-abbrev", "--raw", "-z", "main...work", "--"],
+      { cwd: repo },
+    );
+    const files = changedBlobs(raw) ?? [];
+    expect(files.map(([f]) => f)).toEqual(["a.txt", "café run.sh"]);
+    const out = execFileSync("git", ["cat-file", "--batch"], {
+      cwd: repo,
+      input: `${files.map(([, id]) => id).join("\n")}\n${"0".repeat(40)}\n`,
+    });
+    const blobs = blobsOf(out);
+    expect(blobs.get(files[0]?.[1] ?? "")?.toString()).toBe("a, changed\n");
+    expect(blobs.get(files[1]?.[1] ?? "")?.toString()).toBe("#!/bin/sh\n");
+    expect(blobs.size).toBe(2);
+    // Not git's shape: no list, so apply scans for itself.
+    expect(changedBlobs(Buffer.from("not\0git\0"))).toBeUndefined();
+    expect(blobsOf(Buffer.from("abc blob 99\nshort\n")).size).toBe(0);
+  });
+
   it("counts a web page read in a later ask (the fix round) for the whole run: notes wait for your yes", async () => {
     remote({ "shipify.json": manifest, Makefile: MAKEFILE });
     process.env.FAKE_WORK = "fix";
@@ -685,8 +740,11 @@ describe("an agent that stops before its answer keeps its work (ADR 0035)", () =
       error: { by: "nemotron-3-ultra-550b-a55b:free at openrouter.ai", said: "Service overloaded" },
     });
     // The sum of think's own clocks and the finish's (ADR 0059: 200 for the agent, 20 for its fix
-    // round), which task.yml's job limit covers (tests/workflows.test.ts).
-    expect(THINK_MINUTES).toBe(353);
+    // round; each of its three checks reads the change out for the secret scan in two git steps;
+    // think's two wait up to 15 minutes each for their turn on the box, task #791, and the finish's
+    // only for the room its own clock has), which task.yml's job limit covers
+    // (tests/workflows.test.ts).
+    expect(THINK_MINUTES).toBe(395);
   });
 });
 

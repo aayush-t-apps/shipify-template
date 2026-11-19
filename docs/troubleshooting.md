@@ -17,7 +17,7 @@ Find what you see, check the middle column, then fix it. Three things cover most
 | "The run's <step> step failed: …" | the run's log, at that step (the reply links the run) | `continue` once; if it fails the same way, it's Shipify's, not your task: the error and log say what |
 | a sibling task's PR merged first, and this one's is behind | nothing: its next run (`continue`, or any comment) refreshes the branch with `ship refresh` | if the reply says a file conflicts, the agent fixes it and refreshes again; say what to keep if it asks |
 | "ok" did nothing | was a question waiting (not a PR to merge, or a list for `yes`)? | a lone `ok` answers a question; after a PR or a list it's a thanks (a 👍). Say more words to carry on, or tap Yes (or say `yes`) for a list |
-| a task labelled `stuck` (Stopped in the chats) | its last run's log | its run ended before it finished (the box restarted, the run broke off), or your words waited with no run. Fix what the log shows, if anything, then `continue`, or close it |
+| a task labelled `stuck` (Stopped in the chats) | its last run's log | its run ended before it finished (the box restarted, the run broke off), or your words got no answer, even from the run the watch started for them once more. Fix what the log shows, if anything, then `continue`, or close it |
 | a run "lost communication with the server" | `pnpm ship box health <user@host>`: `up` and, on a Pi, `started` | `up` shorter than the time since the run broke: the box restarted. `started from power-on` means the power was off, cut or dropped (a brownout): check the supply (on a Pi 4, the official 5.1 V / 3 A one), power a USB disk from a powered hub, or add a UPS. Then `continue` |
 | your `yes` did nothing | it must be the whole message, unedited, after the list, within a day, with no edit to the task since; a list over 3,000 characters takes its `yes` on GitHub | say `yes` again on its own; any other words plan again |
 | a form answer is wrong | the reply names it | edit the issue (**⋯ → Edit**): that starts it again |
@@ -47,7 +47,7 @@ Find what you see, check the middle column, then fix it. Three things cover most
 | a repeat paused itself | it failed three times in a row, and said so once | fix the cause, then comment `resume` |
 | an app "failing" on the status task | `pnpm ship status <id>`, and its `/health` | fix and deploy; the watch notes it when it's back. An app that's down never alerts |
 | a recipe's task didn't appear after the merge | the status task's recent events and alerts (a file that doesn't read is named there) | fix the file in a PR ([recipes.md](recipes.md)); or press `due` (Actions → watch) |
-| a recipe says it's paused | its task: "doesn't read: …", or the task is closed | fix the file in a PR (it runs again once merged), or `resume` |
+| a recipe says it's paused | its task: "doesn't read: …", or the task is closed | fix the file in a PR (it runs again once merged), or reopen the task |
 
 ## Telegram and the door
 
@@ -178,8 +178,9 @@ chat, the file store and the notifications' key ([channels.md](channels.md#the-w
   as missing; keep `.PHONY` to targets that have rules.
 - Stack templates are stored exactly as the project formatter writes them. Otherwise every upgrade
   sees "edited" files. The golden tests check that a fresh project needs no upgrade.
-- On a box, `pnpm/action-setup` fails when corepack already manages pnpm: `task.yml` uses
-  corepack instead. There's no `jq` on the PC, so the workflows that run on boxes use node.
+- On a box, a job uses the box's own pnpm (box setup's, from npm): `pnpm/action-setup` is for
+  GitHub's machines only. Node 26 has no corepack. There's no `jq` on the PC, so the workflows that
+  run on boxes use node.
 - The PC's fine-grained token has no Issues permission, so task comments and labels use the
   workflow's own token; project work uses the bot, or the box's own gh login.
 - A GitHub App manifest can't request the Variables permission (it has no key in the API

@@ -586,6 +586,10 @@ function findStatusIssue(record: TaskRecord): {
   };
 }
 
+/** The status issue's number, when there's one: the task the weekly clean-up's `github` job runs on. */
+export const statusIssueNumber = (): number | undefined =>
+  findStatusIssue(githubRecord()).found?.number;
+
 /** What the status issue holds now, without changing it. */
 export function readStatusIssue(opts: { timeoutMs?: number } = {}): StatusIssueState {
   return parseStatusIssue(

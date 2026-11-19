@@ -59,6 +59,8 @@ export interface Snapshot {
   };
   said: Said[];
   state: TaskState;
+  /** The task's PRs that its record had open and this run's read found merged or closed. */
+  ended?: string[];
   statusId?: number;
   trigger: Trigger;
   now: string;
@@ -121,6 +123,8 @@ export interface Project {
   brief: string;
   repos: string[];
   state: "open" | "closed";
+  /** The guest whose project it is, by its label (ADR 0071, the contract's `whose`): none for yours. */
+  guest?: string;
   chats?: Part[];
 }
 
@@ -248,6 +252,11 @@ export interface ThinkMeta {
   plan?: string;
   /** Its handoff for the next run (out/handoff.md, ADR 0041), however the run ended. */
   handoff?: string;
+  /**
+   * Why its PR opens as a draft, said first (task #791): main moved while it worked, and the finish
+   * couldn't bring the branch up to date and checked, so it opens as the agent left it.
+   */
+  draft?: string;
   /** The agent's session, for a stay's next turn to carry on in (ADR 0057). */
   session?: string;
   /** A stay's turn (ADR 0057): a change it commits goes to its job's own push (ADR 0076). */
@@ -362,6 +371,12 @@ export type Write =
        */
       doc?: true;
       preview?: boolean;
+      /**
+       * A draft (task #791): true when the finish couldn't bring it up to date with main; false
+       * marks a PR Shipify made a draft ready again, once a run's work is up to date and checked.
+       * None (a stay's turn, which brings nothing up to date) leaves it as it is.
+       */
+      draft?: boolean;
       /** A repo's default branch, when it isn't `main` (ADR 0045): the PR's base. */
       base?: string;
       open?: undefined;

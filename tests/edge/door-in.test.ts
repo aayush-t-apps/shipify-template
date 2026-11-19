@@ -204,7 +204,7 @@ describe("writing your words as the door App", () => {
     const f = world(k);
     const task = f.issue({
       title: "make it faster",
-      labels: ["answered", "needs you", "staying", "bug"],
+      labels: ["answered", "staying", "bug"],
     });
     f.w.runners = [];
     expect(await said(await post(f, update({ text: `#${task.number} close` })))).toBe(
@@ -235,6 +235,20 @@ describe("writing your words as the door App", () => {
     expect(part.state).toBe("closed");
     expect(part.labels).toEqual(["sub-task"]);
     expect(readFrom(f.w.comments[0]?.body ?? "")?.setting).toBeUndefined();
+  });
+
+  it("writes the `close` of a task waiting on you as words, so its run says which PRs stay open (task #779)", async () => {
+    const f = world(k);
+    const task = f.issue({ title: "make it faster", labels: ["needs you", "bug"] });
+    expect(await said(await post(f, update({ text: `#${task.number} close` })))).toBe(
+      `Closed · #${task.number}`,
+    );
+    expect(task.state).toBe("closed");
+    expect(task.labels).toEqual(["bug"]);
+    expect(readFrom(f.w.comments[0]?.body ?? "")?.setting).toBeUndefined();
+    // Its reopen is a setting, as ever: nothing waits on you once it's closed.
+    await post(f, update({ text: `#${task.number} reopen` }));
+    expect(readFrom(f.w.comments[1]?.body ?? "")?.setting).toBe(true);
   });
 
   it("writes a project's `close` and `reopen` as words too, so their run closes its open chats and its pages, and opens its pages again (task #744)", async () => {

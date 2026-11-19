@@ -9,7 +9,7 @@ Shipify itself (the CLI, stacks, presets, workflows, docs).
 - **Keep the core small.** It runs the flow and names no stack, agent, tool or host: those plug in
   (ADR 0010). Add the smallest change that does the job; don't rebuild what works.
 - **Free only:** no paid service, no domain to buy.
-- **Versions change only in a PR that says so:** Claude Code, Node 22, pnpm, the actions.
+- **Versions change only in a PR that says so:** Claude Code, Node 26 (its major and end date in `cli/lib/node-support.ts`), pnpm, the actions.
 - **A big change is planned first:** an ADR (`guides/adr-template.md`) in a PR the owner merges,
   then the build. Stop until it's merged.
 - **Never** commit a secret's value, push to a `main` branch yourself (every change is a PR),

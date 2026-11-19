@@ -113,7 +113,7 @@ export const CATALOGUE = {
     fix: "Reply `continue` to carry it on from where it got to, or close it.",
   },
   "words-unanswered": {
-    what: "#{task} wasn't answered: no run replied to your words (none started, or one broke before it could say so).",
+    what: "#{task} wasn't answered: no run replied to your words, nor to the one Shipify started for them once more (none started, or one broke before it could say so).",
     fix: "Reply `continue`.",
   },
   "form-wrong": {

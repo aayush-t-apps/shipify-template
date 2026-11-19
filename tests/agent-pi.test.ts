@@ -22,6 +22,7 @@ import { pi } from "../cli/lib/agents/pi.ts";
 // @ts-expect-error: plain JavaScript, as pi loads it
 import { literal, parts, refused, refusedCommand } from "../cli/lib/agents/pi-gate.mjs";
 import { choose, loginOf, parseUse, readExecutors, useLabel } from "../cli/lib/agents.ts";
+import { NODE_MAJOR } from "../cli/lib/node-support.ts";
 import type { Gateway } from "../cli/lib/plugins/agent.ts";
 import { ROOT } from "./helpers.ts";
 
@@ -558,24 +559,27 @@ describe("an agent on a box", () => {
     expect(() => installAgent("pi", pi, tools(), fail)).toThrow(/didn't install: npm ERR! 404/);
   });
 
-  it("keeps each agent's pinned version and the two newest Node versions, and nothing else", () => {
+  it("keeps each agent's pinned version and the two newest of Shipify's Node, and nothing else", () => {
     const at = tools();
+    const n = NODE_MAJOR;
     for (const d of [
       `claude-code/${h.executors.claude?.install?.version}`,
       "claude-code/2.1.200",
       "pi/1.0.2",
       "pi/0.9.0",
-      "node/22.23.3",
-      "node/22.20.0",
-      "node/22.9.0",
-      "node/24.1.0",
+      `node/${n}.13.1`,
+      `node/${n}.9.0`,
+      `node/${n}.10.2`,
+      `node/${n - 4}.23.3`,
       "shipify-app/abc",
     ])
       mkdirSync(join(at, d), { recursive: true });
     const removed = tidyTools(h.executors, at);
-    expect(removed.sort()).toEqual(["claude-code 2.1.200", "node 22.9.0", "pi 0.9.0"]);
-    // Two of each major: a new major never takes the one runs use.
-    expect(readdirSync(join(at, "node")).sort()).toEqual(["22.20.0", "22.23.3", "24.1.0"]);
+    // The major Shipify moved off goes with the move, at the next clean-up.
+    expect(removed.sort()).toEqual(
+      ["claude-code 2.1.200", `node ${n}.9.0`, `node ${n - 4}.23.3`, "pi 0.9.0"].sort(),
+    );
+    expect(readdirSync(join(at, "node")).sort()).toEqual([`${n}.10.2`, `${n}.13.1`]);
     expect(readdirSync(join(at, "shipify-app"))).toEqual(["abc"]);
   });
 });

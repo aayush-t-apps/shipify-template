@@ -1347,11 +1347,10 @@ const sync = async () => {
   }
   R.mine = s && (await hex(s.endpoint));
 };
-/** Your pages: a guest never opens them. */
-const YOURS = new Set(["repeats", "notebook", "setup"]);
 function route() {
   const [, at = "", n = ""] = location.hash.match(/^#\/(\w*)\/?(\d*)/) || [];
-  const p = GUEST && YOURS.has(at) ? "" : at;
+  // Your pages: a guest never opens them (their menu names them, from the edge's rules).
+  const p = S.menu?.guest?.yours?.includes(at) ? "" : at;
   R.n = p === "t" ? +n : 0;
   R.proj = p === "p";
   // A guest's Desk is theirs: their chats and projects (desk.js).

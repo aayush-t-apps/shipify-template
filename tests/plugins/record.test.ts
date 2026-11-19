@@ -396,6 +396,36 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
     ]);
   });
 
+  it("reads when each task closed in one read, the closed ones only (task #779)", () => {
+    const { record } = make();
+    const issue = (number: number, state: string, over: Record<string, unknown> = {}) => ({
+      issue: {
+        number,
+        title: `task ${number}`,
+        body: "",
+        state,
+        labels: [],
+        user: { login: "o" },
+        ...over,
+      },
+      comments: [],
+    });
+    fake.set((f) => {
+      f.others = {
+        "759": issue(759, "closed", { closed_at: "2026-10-21T10:00:00Z" }),
+        "760": issue(760, "open", { pull_request: {} }),
+        "779": issue(779, "open"),
+      };
+    });
+    const before = fake.read().calls.length;
+    // A PR's number and one with no issue are none; GitHub's partial answer still reads.
+    expect(record.closedAt([759, 760, 779, 9999, 759])).toEqual(
+      new Map([[759, "2026-10-21T10:00:00Z"]]),
+    );
+    expect(fake.read().calls.length - before).toBe(1);
+    expect(record.closedAt([])).toEqual(new Map());
+  });
+
   it("reads the closed chats past the first 100, a page a call, so a clean-up missed for weeks catches up", () => {
     const { record } = make();
     fake.set((f) => {
@@ -427,6 +457,7 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
       closedTo: "2026-10-03",
       quietBefore: "2026-08-04",
       quietWithout: [],
+      lasting: ["repeats"],
     });
     expect(read.closed).toHaveLength(150);
     expect(new Set(read.closed.map((i) => i.number)).size).toBe(150);
@@ -463,8 +494,12 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
         "46": at(46, { labels: [{ name: "needs you" }], updated_at: "2026-06-15T10:00:00Z" }),
         "50": at(50, { title: "Project: shop", labels: [{ name: "project" }] }),
         "51": at(51, { parent: 50, state: "closed", closed_at: "2026-09-25T10:00:00Z" }),
+        "52": at(52, { parent: 50 }),
         "60": at(60, { updated_at: "2026-07-15T10:00:00Z", pr: "https://x/pull/1" }),
         "61": at(61, { parent: 60, updated_at: "2026-10-30T10:00:00Z" }),
+        "70": at(70, { labels: [{ name: "repeats" }], updated_at: "2026-10-30T10:00:00Z" }),
+        "71": at(71, { labels: [{ name: "recipe" }], updated_at: "2026-10-30T10:00:00Z" }),
+        "72": at(72, { labels: [{ name: "repeats" }], state: "closed", closed_at: "2026-10-30" }),
       };
     });
     const read = record.sweep({
@@ -472,6 +507,7 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
       closedTo: "2026-10-03",
       quietBefore: "2026-08-04",
       quietWithout: ["project", "needs you"],
+      lasting: ["repeats", "recipe"],
     });
     // The oldest first, so a missed week catches up before they leave the window.
     expect(read.closed.map((i) => [i.number, i.closedAt, i.parent?.number])).toEqual([
@@ -480,16 +516,20 @@ describe.each(RECORDS)("the record plug-in: $name", ({ make }) => {
       [51, "2026-09-25T10:00:00Z", 50],
     ]);
     expect(read.closed[2]?.parent).toEqual({ number: 50, state: "open", labels: ["project"] });
-    expect(read.projects.map((i) => [i.number, i.title])).toEqual([[50, "Project: shop"]]);
+    // Each open project with its open chats, and what stays open for good, either label (task #784).
+    expect(read.projects.map((i) => [i.number, i.title, i.openParts])).toEqual([
+      [50, "Project: shop", [52]],
+    ]);
+    expect(read.lasting.map((i) => i.number).sort()).toEqual([70, 71]);
     // The open Library pages (task #744): the closed project's page left open is among them.
     expect(read.pages.map((i) => [i.number, i.labels])).toEqual([
       [42, ["library", "project:trip"]],
     ]);
     // The oldest first too, and none with a label the 30-day close leaves open (#46).
     expect(read.quiet.map((i) => [i.number, i.openParts, i.openPrs])).toEqual([
-      [45, 0, 0],
-      [12, 0, 0],
-      [60, 1, 1],
+      [45, [], 0],
+      [12, [], 0],
+      [60, [61], 1],
     ]);
     // Each chat with its state: only a closed one's files go with its project (ADR 0069).
     expect(record.projectItems(40, "project:trip")).toEqual({

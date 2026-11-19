@@ -313,6 +313,8 @@ export const TaskState = z.object({
       z.object({
         kind: z.enum(["code", "plan", "change", "release"]),
         state: z.enum(["open", "merged", "closed"]),
+        /** Shipify made it a draft (task #791): a later run's checked work makes it ready again. */
+        draft: z.literal(true).optional(),
       }),
     )
     .optional(),
@@ -434,6 +436,11 @@ export const TaskState = z.object({
   waits: z.array(z.number().int().positive()).max(20).optional(),
   /** The separate work your yes opened from it (ADR 0080), by number: its report names each. */
   separate: z.array(z.number().int().positive()).max(50).optional(),
+  /**
+   * The last list a close dropped while it waited for your `yes` or `no` (a merge's close, or your
+   * `close`): when it lapsed and what it held, so the weekly digest names it once (task #786).
+   */
+  lapsed: z.object({ at: z.string(), what: z.string() }).optional(),
   /** The merged plan whose repo and keys were made, so a replay doesn't make them again. */
   built: z.string().optional(),
   /** The merged plan whose repo and keys were tried: a run starts a merged plan's build by itself

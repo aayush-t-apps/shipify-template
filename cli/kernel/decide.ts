@@ -8,6 +8,7 @@ import {
   DEPLOYING_LABEL,
   type Instant,
   instantOf,
+  LEFT_DAYS,
   LIST_HEAD,
   LIST_MAX,
   type Link,
@@ -31,13 +32,12 @@ import {
 } from "../contracts/index.ts";
 import {
   closedProjectText,
-  GUEST_LABEL,
-  guestLabel,
-  guestPrefix,
+  GUEST_RULES,
   projectLabel,
   projectNameOf,
   shownProject,
   useLine,
+  whose,
   withoutLine,
 } from "../contracts/index.ts";
 import { RECIPE_LABEL, type Recipe } from "../lib/recipes.ts";
@@ -108,7 +108,7 @@ import type {
   ThinkWhy,
   Write,
 } from "./types.ts";
-import { NOT_A_GUESTS, type Word, wordOf } from "./words.ts";
+import { type Word, wordOf } from "./words.ts";
 import { patchParts } from "./workflows.ts";
 
 /** Said under a pick it can't take: nothing ran with another. */
@@ -204,12 +204,12 @@ const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 export const guestOf = (s: Pick<Snapshot, "issue">) => s.issue.from?.guest;
 
 /**
- * The project of a guest's task, when it's the guest's own (its name carries their prefix, which
- * the door refuses for yours): a guest's run reads and writes only its pages. None otherwise.
+ * The project of a guest's task, when it's the guest's own (`whose` it is): a guest's run reads and
+ * writes only its pages. None otherwise.
  */
 export function guestsProject(s: Pick<Snapshot, "issue" | "project">) {
   const guest = guestOf(s);
-  return guest && s.project?.name.startsWith(`${guestPrefix(guest)}-`) ? s.project : undefined;
+  return guest && s.project?.guest === guest ? s.project : undefined;
 }
 const isYou = (c: Said) => c.author === "owner" || c.author === "door";
 /**
@@ -425,7 +425,7 @@ const quietDay = (s: Snapshot) =>
     : undefined;
 /** The state labels a closed task drops. */
 const GONE: string[] = [...STATE_LABELS];
-/** What `close` does to the task's status, wherever it's closed: done, read, its repeat paused (`resume` carries it on). */
+/** What `close` does to the task's status, wherever it's closed: done, read, its repeat paused while it's closed. */
 /**
  * The list waiting for your yes, taken off the state to put back (ADR 0080): a run's new list
  * replaces it whole, and its `drop_list` drops it. None when nothing waits.
@@ -610,10 +610,40 @@ function closeWord(s: Snapshot, st: TaskState, fresh: Said[]): Write[] {
   st.seen = upTo(s, fresh);
   st.working = undefined;
   const off = closeRepeat(st);
-  dropList(st);
+  dropOnClose(st, s.now);
   st.closes = undefined;
   st.phase = "done";
   return [...off, ...projectChats(s, fresh), ...projectPages(s, "closed")];
+}
+
+/**
+ * What a `close` leaves open (task #779): the task's open PRs, each linked, and when they go. On
+ * Shipify's own account the weekly clean-up closes them, and deletes their branches, once the task
+ * has been closed LEFT_DAYS; on another of yours nothing reaches them, so they're yours to close.
+ * Empty when it has none.
+ */
+export function leftOpen(
+  s: Pick<Snapshot, "account">,
+  st: TaskState,
+): { text: string; links: Link[] } {
+  const open = (st.prs ?? []).filter(
+    (u) => st.prInfo?.[u]?.state !== "merged" && st.prInfo?.[u]?.state !== "closed",
+  );
+  if (!open.length) return { text: "", links: [] };
+  const names = open
+    .map((u) => {
+      const m = /\/([^/]+)\/pull\/(\d+)$/.exec(u);
+      return m ? `[${m[1]}#${m[2]}](${u})` : u;
+    })
+    .join(", ");
+  const one = open.length === 1;
+  const its = one ? `Its PR ${names} stays` : `Its PRs ${names} stay`;
+  return {
+    text: s.account
+      ? `${its} open: the clean-up doesn't reach another account, so close ${one ? "it" : "them"} on GitHub when you're done.`
+      : `${its} open until this task has been closed ${LEFT_DAYS} days: then the weekly clean-up closes ${one ? "it and deletes its branch" : "them and deletes their branches"}, unless you merge ${one ? "it" : "them"} first.`,
+    links: open.map((u) => [one ? "The PR" : `PR #${u.split("/").pop()}`, u] as Link),
+  };
 }
 
 /**
@@ -656,9 +686,7 @@ function projectChats(s: Snapshot, fresh: Said[]): Write[] {
       ? said("Its chats couldn't be read, so they stay open: say `reopen`, then close it again.")
       : said();
   const guest = guestOf(s);
-  const ours = (labels: string[]) =>
-    guest ? labels.includes(guestLabel(guest)) : !labels.includes(GUEST_LABEL);
-  const open = chats.filter((c) => c.state === "open" && ours(c.labels));
+  const open = chats.filter((c) => c.state === "open" && whose({ labels: c.labels }) === guest);
   const kept = open.filter((c) => c.labels.some((l) => KEEPS_OPEN.has(l)));
   const shut = open.filter((c) => !kept.includes(c));
   return [
@@ -681,8 +709,12 @@ function projectChats(s: Snapshot, fresh: Said[]): Write[] {
   ];
 }
 
+/** A repeat that comes again and again: not a time once, nor an errand. */
+const repeats = (st: TaskState) => Boolean(st.repeat && !st.repeat.on && !isOnce(st.repeat));
+
 /**
- * Closing pauses a repeat (`resume` carries it on), and drops a time once. An errand is dropped
+ * Closing drops a time once. A repeat stays as it is: closed, its task pauses it (the due run reads
+ * open tasks only), so a reopen carries it on, however it's reopened (#783). An errand is dropped
  * with its label (the due run lists closed tasks by it), unless a merge closed the task: then it
  * waits on, and that merge may be what it waits for (ADR 0054 §4).
  */
@@ -690,7 +722,6 @@ function closeRepeat(st: TaskState, byMerge = false): Write[] {
   const r = st.repeat;
   if (r?.on && byMerge) return [];
   if (r && isOnce(r)) st.repeat = undefined;
-  else if (r) r.paused = true;
   return r?.on ? [{ w: "labels", remove: [labelOf(r).name] }] : [];
 }
 
@@ -883,7 +914,7 @@ function planned(s: Snapshot, ctx: Context): Plan {
     const fixed = passed ? undefined : wordOf(c.text);
     // A `sign in` that names no agent signing in ("please sign in") is words for the agent.
     const word =
-      (guest && fixed && NOT_A_GUESTS.has(fixed)) ||
+      (guest && fixed && GUEST_RULES.words.includes(fixed)) ||
       (fixed === "sign in" && !signingIn(c.text, ctx))
         ? undefined
         : fixed;
@@ -1009,8 +1040,10 @@ function planned(s: Snapshot, ctx: Context): Plan {
   if (words.at(-1) === "sign in" && signing && !plain.length)
     return signIn(s, st, fresh, writes, signing, ctx);
 
-  // `close`: the task is done, with no agent (its PRs stay as they are; a repeat stops).
+  // `close`: the task is done, with no agent (a repeat stops). Its open PRs stay, and its reply
+  // says until when (task #779).
   if (words.at(-1) === "close" && !plain.length) {
+    const kept = leftOpen(s, st);
     const off = closeWord(s, st, fresh);
     return box(
       st,
@@ -1021,8 +1054,9 @@ function planned(s: Snapshot, ctx: Context): Plan {
       reply(
         "answer",
         "Done",
-        "Closed. Write again to carry it on, or say `reopen`.",
+        `Closed.${kept.text ? ` ${kept.text}` : ""} Write again to carry it on, or say \`reopen\`.`,
         `close-${fresh.at(-1)?.id ?? 0}`,
+        kept.links.length ? { links: kept.links } : {},
       ),
       { w: "close", reason: "completed" },
       // A part closed as done (ADR 0066): what waited for it may start.
@@ -1782,7 +1816,7 @@ function closedPlan(s: Snapshot, st: TaskState, ctx: Context): Plan {
 function closing(s: Snapshot, st: TaskState, ctx: Context): Plan {
   const notPlanned = droppedBy(s.issue.stateReason);
   st.working = undefined;
-  dropList(st);
+  dropOnClose(st, s.now);
   st.pending.work = undefined;
   // A close already handled leaves an errand as it was: one a merge kept waits on (ADR 0054).
   const handled = st.phase === "done" || st.phase === "dropped";
@@ -1798,9 +1832,18 @@ function closing(s: Snapshot, st: TaskState, ctx: Context): Plan {
     Math.abs(Date.parse(last.at) - at) <= AFTER_CLOSE_MS &&
     st.phase !== "dropped"
   ) {
-    return box(st, "closed by its `close`", ...off, ...closeWord(s, st, fresh), {
-      w: "coming-up",
-    });
+    // The chat said "Closed" already: a reply only for the PRs it leaves open (task #779).
+    const kept = leftOpen(s, st);
+    return box(
+      st,
+      "closed by its `close`",
+      ...off,
+      ...closeWord(s, st, fresh),
+      { w: "coming-up" },
+      ...(kept.text
+        ? [reply("answer", "Done", kept.text, `close-${last.id}`, { links: kept.links })]
+        : []),
+    );
   }
   if (handled) return nothing("closed already", st);
   if (notPlanned) {
@@ -1813,6 +1856,26 @@ function closing(s: Snapshot, st: TaskState, ctx: Context): Plan {
       return box(st, "closed as not planned", ...off, { w: "dispatch", job: "github" });
     }
     return box(st, "closed as not planned", ...off);
+  }
+  // A repeat's `part-of` PR closes nothing. One whose merge closed its task anyway (its footer said
+  // "Closes", as from ADR 0080's build to this fix) opens it again, and it repeats on: no build.
+  const own = ctx.mergedPr && st.prInfo?.[ctx.mergedPr.url]?.kind === "change";
+  if (own && ctx.mergedPr && st.repeat && repeats(st)) {
+    st.repeat.paused = false;
+    st.phase = "repeating";
+    return box(
+      st,
+      "its part-of PR merged",
+      ...off,
+      { w: "reopen" },
+      reply(
+        "live",
+        "Merged",
+        `**Merged:** ${ctx.mergedPr.title}. Its PR was \`part-of\`, so this task stays open, and it repeats as before: next ${formatWhen(st.repeat.next, ctx.timeZone, true)}.`,
+        "merged",
+        { links: [["The PR", ctx.mergedPr.url]], occasion: ctx.mergedPr.url },
+      ),
+    );
   }
   st.phase = "done";
   // Your words from before the merge that no run read (it came first): said with it, so none is
@@ -2467,7 +2530,90 @@ function dispatched(s: Snapshot, st: TaskState, ctx: Context, writes: Write[]): 
       : told;
   }
   // An answered part quiet for a day is the due run's to close (ADR 0040), with no run of its own.
-  return repeatTime(s, st, ctx, writes);
+  return repeatTime(s, st, ctx, writes) ?? repeatsAgain(s, st, ctx, writes);
+}
+
+/** A list waits for your `yes` (calls, notes, a split, a workflow change, a task first, …). */
+const listWaits = (p: TaskState["pending"]) =>
+  Boolean(p.list || p.calls || p.notes || p.split || p.workflow || p.first || p.clean || p.atOnce);
+
+/** What a list holds, in a few words: the weekly digest names a lapsed one so (task #786). */
+export function listWhat(p: TaskState["pending"]): string {
+  const n = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
+  return [
+    p.first ? `${p.first.separate ? "separate work" : "a task first"}: ${p.first.title}` : "",
+    p.split?.length ? `a split into ${n(p.split.length, "part")}` : "",
+    p.calls?.calls?.length ? n(p.calls.calls.length, "tool call") : "",
+    p.notes?.length ? n(p.notes.length, "note") : "",
+    p.workflow ? "a workflow change" : "",
+    p.clean?.length ? `a clean start of ${n(p.clean.length, "chat")}` : "",
+    p.atOnce ? `an operation (${p.atOnce.op})` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+/**
+ * The list that waits, once it went with no `yes` or `no` of yours (task #786): its day passed, or
+ * (`closed`) its task closed. When it lapsed (its day's end, if that came first) and what it held.
+ */
+function lapseOf(p: TaskState["pending"], now: number, closed = false): TaskState["lapsed"] {
+  const what = listWhat(p);
+  const end = Date.parse(p.list?.at ?? "") + CALLS_GOOD_FOR_MS;
+  if (!what || !(closed || end <= now)) return undefined;
+  return { at: new Date(Number.isNaN(end) ? now : Math.min(end, now)).toISOString(), what };
+}
+
+/**
+ * A task's lapsed list (task #786): the one waiting past its day, else the last one a close
+ * dropped. The digest names each once, by its task and when it lapsed.
+ */
+export const lapsedList = (st: TaskState, now: number): TaskState["lapsed"] =>
+  lapseOf(st.pending, now) ?? st.lapsed;
+
+/** A close drops the list that waits (ADR 0080): kept as lapsed, for the digest (task #786). */
+function dropOnClose(st: TaskState, now: string) {
+  const lapsed = lapseOf(st.pending, Date.parse(now), true);
+  if (lapsed) st.lapsed = lapsed;
+  dropList(st);
+}
+
+/**
+ * A repeat's PR merged or closed, and it was all the task needed you for. A merge that closes
+ * nothing (a recipe's `part-of` PR) starts no run, so the due run starts this one when it sees it:
+ * the task repeats again, said once, with no agent, instead of saying it needs you until its next
+ * time. A list that waits for your `yes` keeps it as it is.
+ */
+function repeatsAgain(s: Snapshot, st: TaskState, ctx: Context, writes: Write[]): Plan | undefined {
+  const r = st.repeat;
+  const ended = s.ended ?? [];
+  if (!ended.length || !r || r.paused || r.on || st.phase !== "needs-you") return undefined;
+  // A task its PR's merge closed is its close run's (closing).
+  if (s.issue.state !== "open") return undefined;
+  if (openPr(st) || listWaits(st.pending)) return undefined;
+  const merged = ended.filter((u) => st.prInfo?.[u]?.state === "merged");
+  const name = (u: string) => `PR #${u.split("/").pop()}`;
+  const what = [
+    ...merged.map((u) => `${name(u)} merged`),
+    ...ended.filter((u) => !merged.includes(u)).map((u) => `${name(u)} was closed unmerged`),
+  ].join(", and ");
+  st.phase = "repeating";
+  st.closes = undefined;
+  return box(
+    st,
+    merged.length ? "its PR merged" : "its PR closed",
+    ...writes,
+    reply(
+      merged.length ? "live" : "answer",
+      merged.length ? "Merged" : "Done",
+      `${what}, so nothing here waits for you. It repeats as before: next ${formatWhen(r.next, ctx.timeZone, true)}.`,
+      "repeats-again",
+      {
+        links: ended.map((u): [string, string] => [name(u), u]),
+        occasion: ended.join(" "),
+      },
+    ),
+  );
 }
 
 /** A repeat whose time has come: its next time saved, and its job run now. */
@@ -2475,6 +2621,8 @@ function repeatTime(s: Snapshot, st: TaskState, ctx: Context, writes: Write[]): 
   const r = st.repeat;
   if (!r || r.paused || Date.parse(r.next) > Date.parse(s.now)) return undefined;
   if (r.on) return errandTime(s, st, ctx, writes);
+  // Its task closed pauses it, until it's reopened.
+  if (s.issue.state !== "open") return undefined;
   const occasion = r.next;
   const schedule = parseSchedule(r.every);
   // The next time is saved before the reply, so a second job for the same time does nothing.
@@ -3043,14 +3191,21 @@ function decideAfter(
     const kind = parent ? "part-of" : pr.kind;
     // A big change's doc (ADR 0080): its PR closes the task, and its merge starts the build. Not a
     // new project's plan (its merge builds it already), a split's, nor a part's (its close would
-    // start the parts that wait for it): those stay `Part of`, and `go` builds.
-    const doc = kind === "part-of" && !parent && !st.plan && !isPart(s);
+    // start the parts that wait for it): those stay `Part of`, and `go` builds. Nor a repeat's (a
+    // recipe's lessons): its close would pause the repeat, so it stays `Part of` too.
+    const doc = kind === "part-of" && !parent && !st.plan && !isPart(s) && !repeats(st);
     // Your words carried it on, with no wait for its tasks first: it waits for them no more.
     st.waits = undefined;
     // A PR always says what it is: the agent's description, or its reply when it gave none.
     const body = pr.body.trim() ? pr.body : r.text;
     // Its workflow change all it changed: nothing to push before your yes, which opens the PR.
     if (!onlyHeld || kind === "publish") {
+      // A draft when the finish couldn't bring it up to date with main (task #791), said first. A
+      // run's work up to date and checked makes a draft of Shipify's ready again; a stay's turn,
+      // which brings nothing up to date, leaves it as it is.
+      if (meta.draft)
+        text = `**Not ready to merge yet:** ${meta.draft} Its PR opens as a draft, as the agent left it: reply \`continue\`, and the next run brings it up to date and checks it again.\n\n${text}`;
+      const draft = meta.draft ? true : meta.stayed ? undefined : false;
       writes.push({
         w: "push",
         repo,
@@ -3059,6 +3214,7 @@ function decideAfter(
         title: pr.title,
         body,
         ...(doc ? { doc: true as const } : {}),
+        ...(draft !== undefined && kind !== "publish" ? { draft } : {}),
         ...(think.base ? { base: think.base } : {}),
         // A preview is an app's (its pipeline makes it); a repo that keeps its own rules has none.
         ...((pr.preview || st.preview) && !think.ownRules ? { preview: true } : {}),

@@ -3,7 +3,8 @@
 // GitHub, with yours (SHIPIFY_ACCESS's `guests`): no page can change which door a guest's token opens.
 // Access signs a guest in (with Google, ADR 0073), and only proves their email; this list says
 // who is a guest. An email that isn't on it gets nothing (fails closed), as does every guest while
-// the list can't be read. Read at most every 10 s, so a removed guest is refused within 10 s.
+// the list can't be read. Read at most every 10 s, so a removed guest is refused within 10 s. Each
+// change is written over the version it read (`edit`), so none undoes another.
 // GET /door/guest/<id> gives the box's job a guest's email and name, for their drop (ADR 0073):
 // task.yml's OIDC token only, so no agent's run asks it, and a removed guest is 404.
 import {
@@ -66,11 +67,11 @@ function parse(text: string): Guests {
   return { v: 1, guests };
 }
 
-/** The list as the store has it, read now: none kept yet is no guests. */
-async function readGuests(bucket: Bucket): Promise<Guests> {
+/** The list as the store has it, read now, with its version: none kept yet is no guests. */
+async function readGuests(bucket: Bucket): Promise<Guests & { etag?: string }> {
   const o = await bucket.get(GUESTS_KEY);
   if (!o) return NONE;
-  return parse(await new Response(o.body).text());
+  return { ...parse(await new Response(o.body).text()), ...(o.etag ? { etag: o.etag } : {}) };
 }
 
 /** The list, kept 10 s for every request of this Worker. No store: no guests. */
@@ -80,14 +81,28 @@ export function guestsOf(env: Env, deps: Deps): Promise<Guests> {
   return cached(GUESTS_KEY, GUESTS_MS, () => readGuests(bucket), deps.now());
 }
 
-/** The list changed: written whole, and read again by the next request. */
-async function keep(bucket: Bucket, g: Guests) {
-  await bucket.put(GUESTS_KEY, JSON.stringify(g));
-  forget(GUESTS_KEY);
-}
-
 /** What a change to the list says back: the list, or why not. */
 type Changed = { guests: Guests } | { why: string };
+
+/**
+ * The list changed by `change` (the new list, or why not), and written whole over the version it
+ * read only: when another write came first (a guest's "last in", your other tab), `change` is made
+ * again on the list read again, once, so no write undoes another (a removal stays). The next
+ * request reads it again.
+ */
+async function edit(bucket: Bucket, change: (g: Guests) => Guests | string): Promise<Changed> {
+  for (let tries = 0; tries < 2; tries++) {
+    const { etag, ...g } = await readGuests(bucket);
+    const next = change(g);
+    if (typeof next === "string") return { why: next };
+    const onlyIf = etag ? { onlyIf: { etagMatches: etag } } : {};
+    if (await bucket.put(GUESTS_KEY, JSON.stringify(next), onlyIf)) {
+      forget(GUESTS_KEY);
+      return { guests: next };
+    }
+  }
+  return { why: "The guest list changed as you saved it: try again." };
+}
 
 /**
  * A guest added: an email and a name. The same email again keeps its id (and finds their old
@@ -105,17 +120,16 @@ export async function addGuest(
   if (!e) return { why: "That isn't an email." };
   const n = name.trim().replace(/\s+/g, " ");
   if (!GUEST_NAME.test(n)) return { why: "Give a name of 40 letters or fewer." };
-  const g = await readGuests(bucket);
   const id = await guestIdOf(e);
-  const had = g.guests.find((x) => x.id === id);
-  if (!had && g.guests.length >= MOST_GUESTS)
-    return { why: `${MOST_GUESTS} guests at most: Access's free plan has 50 seats.` };
-  const guests = had
-    ? g.guests.map((x) => (x.id === id ? { ...x, name: n } : x))
-    : [...g.guests, { id, email: e, name: n, added: deps.now() }];
-  const next = { ...g, guests };
-  await keep(bucket, next);
-  return { guests: next };
+  return edit(bucket, (g) => {
+    const had = g.guests.some((x) => x.id === id);
+    if (!had && g.guests.length >= MOST_GUESTS)
+      return `${MOST_GUESTS} guests at most: Access's free plan has 50 seats.`;
+    const guests = had
+      ? g.guests.map((x) => (x.id === id ? { ...x, name: n } : x))
+      : [...g.guests, { id, email: e, name: n, added: deps.now() }];
+    return { ...g, guests };
+  });
 }
 
 /**
@@ -129,11 +143,12 @@ export async function removeGuest(
 ): Promise<Changed & { closed?: number }> {
   const bucket = bucketOf(env);
   if (!bucket) return { why: "The chat's file store isn't set up." };
-  const g = await readGuests(bucket);
-  if (!g.guests.some((x) => x.id === id)) return { why: "That guest isn't on the list." };
-  const next = { ...g, guests: g.guests.filter((x) => x.id !== id) };
-  await keep(bucket, next);
-  return { guests: next, closed: await closeAll(gh, id) };
+  const r = await edit(bucket, (g) =>
+    g.guests.some((x) => x.id === id)
+      ? { ...g, guests: g.guests.filter((x) => x.id !== id) }
+      : "That guest isn't on the list.",
+  );
+  return "why" in r ? r : { ...r, closed: await closeAll(gh, id) };
 }
 
 /** A guest's open chats and projects closed, as the door closes one (its state labels off). */
@@ -188,16 +203,13 @@ export async function guestAt(req: Request, env: Env, deps: Deps, s: Settings): 
   const guest = email ? g.guests.find((x) => x.email === email) : undefined;
   if (!guest) return { why: "not a guest", status: 403 };
   if (deps.now() - (guest.seen ?? 0) > SEEN_MS) {
-    const bucket = bucketOf(env) as Bucket;
     const at = deps.now();
-    const work = readGuests(bucket)
-      .then((now) =>
-        keep(bucket, {
-          ...now,
-          guests: now.guests.map((x) => (x.id === guest.id ? { ...x, seen: at } : x)),
-        }),
-      )
-      .catch(() => {});
+    // On the list as it is now: one removed since is left out, not written back.
+    const work = edit(bucketOf(env) as Bucket, (now) =>
+      now.guests.some((x) => x.id === guest.id)
+        ? { ...now, guests: now.guests.map((x) => (x.id === guest.id ? { ...x, seen: at } : x)) }
+        : "gone",
+    ).catch(() => {});
     if (deps.waitUntil) deps.waitUntil(work);
     else await work;
   }

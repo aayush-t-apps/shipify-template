@@ -6,14 +6,13 @@
 // while its project is closed (task #744).
 import {
   fromLine,
-  GUEST_LABEL,
   LIBRARY_LABEL,
   PROJECT_LABEL,
   projectOfLabels,
   projectTitle,
   readFrom,
 } from "../../../cli/contracts/index.ts";
-import { type GitHub, GitHubError, guestsOwn } from "../github.ts";
+import { type GitHub, GitHubError, whoseIs } from "../github.ts";
 import { NOTEBOOK_LABEL } from "../settings.ts";
 
 /** The most characters a doc's words may have: as a run's write (cli/lib/notebook.ts MAX_PAGE). */
@@ -62,10 +61,9 @@ export async function saveDoc(
   const labels = (i?.labels ?? []).map((l) => l.name);
   // Whose it is (ADR 0071): a guest edits only their own docs, and you none of a guest's, so a
   // save never moves a doc across the wall. A guest hears the same for none as for another's.
-  const theirs = Boolean(i) && labels.includes(GUEST_LABEL);
-  const mine = i && (me.guest ? guestsOwn(gh, i, me.guest) : !theirs);
-  if (r.status !== 200 || !i || i.pull_request || i.locked || !mine)
-    return me.guest || !theirs || !i
+  const guest = i ? whoseIs(gh, i) : undefined;
+  if (r.status !== 200 || !i || i.pull_request || i.locked || guest !== me.guest)
+    return me.guest || !guest || !i
       ? { status: 404, error: `There's no doc #${b.n}.`, fix: "Reload the page." }
       : { status: 409, error: `#${b.n} is a guest's doc.`, fix: "Read it; only they edit it." };
   if (!labels.some((l) => (!me.guest && l === NOTEBOOK_LABEL) || l === LIBRARY_LABEL))

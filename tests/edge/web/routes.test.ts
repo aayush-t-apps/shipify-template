@@ -5,6 +5,7 @@
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  againLine,
   fileRefOf,
   fromLine,
   PRESETS,
@@ -1122,6 +1123,23 @@ describe("what the page reads", () => {
     const thread = await (await t.call(`/admin/chat/api/task/${i.number}`)).json();
     expect(thread.task.staying).toBe(true);
     expect(thread.task.state).toBe("open");
+  });
+
+  it("a thread shows the watch's start of a run for your words as Shipify's note (task #786)", async () => {
+    const t = setUp();
+    await t.post("/admin/chat/api/send", { id: "again0001", words: "make it faster" });
+    const words = "No run answered your words here for 10 minutes, so Shipify started one again.";
+    t.f.comment(1, `${againLine}\n${words}`, { login: DOOR, type: "Bot" }, { id: APP_ID });
+    const thread = await (await t.call("/admin/chat/api/task/1")).json();
+    const note = thread.messages.at(-1);
+    expect(note).toMatchObject({ who: "shipify", name: "Shipify", md: words });
+    expect(note.reply).toBeUndefined();
+    // Only the door App's counts: anyone else's copy of the line is theirs.
+    const u = setUp();
+    await u.post("/admin/chat/api/send", { id: "again0002", words: "make it faster" });
+    u.f.comment(1, `${againLine}\n${words}`, { login: "stranger" });
+    const theirs = await (await u.call("/admin/chat/api/task/1")).json();
+    expect(theirs.messages.at(-1)).toMatchObject({ who: "other", name: "stranger" });
   });
 
   it("a thread: hidden lines never reach the page, a reply's bits are read, its HTML is cleaned", async () => {

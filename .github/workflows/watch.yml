@@ -6,7 +6,7 @@
 #              this box's health, "Coming up", and the apps catalogue the edge reads. A merge that
 #              touches recipes/ starts one too (ADR 0032)
 #   cleanup    one box's weekly clean-up, on that box: closed tasks' folders and agents' runs,
-#              doctor, cache prune, Node 22 fixes
+#              doctor, cache prune, Node 26 fixes
 #   alert      what the watch saw change, on the status task, as a reply the door copies to your
 #              channels: on a box, or on GitHub's machines when no box is online
 # Labels: watch:due, watch:alert, watch:alert-github. Each run takes its own label off.
@@ -83,13 +83,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 26
           check-latest: ${{ inputs.run == 'cleanup' }}
-      - name: pnpm
-        run: |
-          mkdir -p "$RUNNER_TEMP/bin"
-          corepack enable --install-directory "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # pnpm: a box has its own (box setup's); GitHub's machine (an alert from GitHub) gets it here.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: runner.environment == 'github-hosted'
       # Said when it fails: the watch rings a label left on with no run again (docs/watch.md).
       - name: Its doorbell off
         if: github.event_name == 'issues'

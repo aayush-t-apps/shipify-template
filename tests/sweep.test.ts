@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { cleanUpTasks } from "../cli/commands/task/lifecycle.ts";
 import {
   cleanable,
+  filesToAge,
   filesToForget,
   pagesToClose,
   QUIET_CLOSED,
@@ -26,7 +27,7 @@ const issue = (number: number, over: Partial<SweptIssue> = {}): SweptIssue => ({
   number,
   title: `task ${number}`,
   labels: [],
-  openParts: 0,
+  openParts: [],
   openPrs: 0,
   ...over,
 });
@@ -39,9 +40,9 @@ const project = (number: number, name: string, state: "open" | "closed" = "open"
 const inProject = (n: number, state: "open" | "closed" = "open") => ({
   parent: { number: n, state, labels: ["project"] },
 });
-const none: SweepRead = { closed: [], projects: [], pages: [], quiet: [] };
+const none: SweepRead = { closed: [], projects: [], lasting: [], pages: [], quiet: [] };
 /** The door's answer when it deleted nothing. */
-const gone = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0 };
+const gone = { deleted: 0, bytes: 0, unclaimed: 0, unclaimedBytes: 0, old: 0, oldBytes: 0 };
 const chat = (number: number, state: "open" | "closed" = "closed") => ({ number, state });
 
 describe("the weekly clean-up's files (ADR 0069)", () => {
@@ -67,6 +68,42 @@ describe("the weekly clean-up's files (ADR 0069)", () => {
     const read: SweepRead = { ...none, closed: [project(70, "trip", "closed")] };
     const items = new Map([[70, { chats: [chat(71), chat(72), chat(73, "open")], pages: [80] }]]);
     expect(filesToForget(read, items)).toEqual([70, 71, 72, 80]);
+  });
+
+  it("names what never closes for its runs' old files: a repeat, a recipe, an open project and its open chats (task #784)", () => {
+    const read: SweepRead = {
+      ...none,
+      projects: [project(50, "shop"), { ...project(60, "trip"), openParts: [61, 62] }],
+      lasting: [issue(30, { labels: ["repeats"] }), issue(61, { labels: ["recipe"] })],
+    };
+    expect(filesToAge(read)).toEqual([30, 50, 60, 61, 62]);
+  });
+
+  it("asks the door for them, and says the old runs' files it deleted", async () => {
+    const old: number[][] = [];
+    const io: SweepIo = {
+      record: {
+        sweep: () => ({ ...none, lasting: [issue(30, { labels: ["repeats"] })] }),
+        projectItems: () => ({ chats: [], pages: [] }),
+      },
+      forget: async (_, aging) => {
+        old.push(aging);
+        return { ...gone, old: 3, oldBytes: 2_000_000 };
+      },
+      close: async () => true,
+      closePage: async () => true,
+    };
+    expect(await sweep(AT, io)).toEqual({
+      said: "deleted 3 run files (2 MB) of repeats, recipes and open projects, 30 days old",
+      deleted: 3,
+      bytes: 2_000_000,
+      unclaimed: 0,
+    });
+    expect(old).toEqual([[30]]);
+    io.forget = async () => ({ ...gone, unclaimed: 1, unclaimedBytes: 1_000, old: 1, oldBytes: 9 });
+    expect((await sweep(AT, io)).said).toBe(
+      "deleted 1 file no chat used (1 KB), 60 days old; 1 run file (1 KB) of repeats, recipes and open projects, 30 days old",
+    );
   });
 
   it("sends the chats' numbers to the door, reads each closed project's items, and says what went", async () => {
@@ -122,6 +159,8 @@ describe("the weekly clean-up's files (ADR 0069)", () => {
           "working",
           "needs you",
         ],
+        // What never closes, so its runs' files go by their age (task #784).
+        lasting: ["repeats", "recipe"],
       },
       { n: 70, label: "project:trip" },
     ]);
@@ -162,6 +201,7 @@ describe("the weekly clean-up's files (ADR 0069)", () => {
     expect(sent).toEqual([[]]);
     io.record.sweep = () => ({ ...none, closed: [issue(10), issue(11)] });
     io.forget = async () => ({
+      ...gone,
       deleted: 3,
       bytes: 2_000_000,
       unclaimed: 2,
@@ -173,6 +213,26 @@ describe("the weekly clean-up's files (ADR 0069)", () => {
       bytes: 3_000_000,
       unclaimed: 2,
     });
+  });
+
+  it("starts the clean-up of closed tasks' PRs and branches on GitHub, once a week with the rest (task #779)", async () => {
+    let started = 0;
+    const io: SweepIo = {
+      record: { sweep: () => none, projectItems: () => ({ chats: [], pages: [] }) },
+      forget: async () => gone,
+      close: async () => true,
+      closePage: async () => true,
+      leftovers: () => {
+        started++;
+        return true;
+      },
+    };
+    expect((await sweep(AT, io)).said).toBe("closed tasks' PRs and branches: started on GitHub");
+    expect(started).toBe(1);
+    io.leftovers = () => false;
+    expect((await sweep(AT, io)).said).toBe(
+      "couldn't start the clean-up of closed tasks' PRs and branches: next week",
+    );
   });
 
   it("reads from 30 days before the last clean-up's start, so one missed for weeks catches up; 60 days at least", async () => {
@@ -207,7 +267,7 @@ describe("the 30-day close (ADR 0069)", () => {
     issue(23, { openPrs: 1 }),
     issue(24, { labels: ["repeats"] }),
     issue(25, { labels: ["waiting"] }),
-    issue(26, { openParts: 2 }),
+    issue(26, { openParts: [38, 39] }),
     project(27, "shop"),
     issue(28, { labels: ["notebook"] }),
     issue(29, { labels: ["library", "project:shop"] }),

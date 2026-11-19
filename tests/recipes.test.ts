@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { defaultAgent, parseUse, readExecutors } from "../cli/lib/agents.ts";
 import { readRecipe, readRecipes, recipeFile, recipeOf, recipeTitle } from "../cli/lib/recipes.ts";
 import { ROOT } from "./helpers.ts";
 
@@ -96,5 +97,16 @@ describe("every recipe here keeps its contract", () => {
         .recipes.map((r) => r.name)
         .sort(),
     ).toEqual(["daily-brief", "site-watch", "weekly-dependencies", "weekly-lessons"]);
+  });
+
+  it("each one's model is a pick executors.json takes, so its task thinks with it", () => {
+    const { executors } = readExecutors(join(ROOT, "executors.json"));
+    const fallback = defaultAgent(executors, "");
+    for (const dir of ["recipes", "recipes/examples"])
+      for (const r of readRecipes(ROOT, dir).recipes.filter((x) => x.model))
+        expect(
+          parseUse(r.model as string, executors, { agent: fallback }, fallback),
+          `${dir}/${r.name}.md: model: ${r.model}`,
+        ).toBeDefined();
   });
 });

@@ -162,16 +162,18 @@ export const kvOf = (env: Env): Kv | undefined => {
   return kv && typeof kv.get === "function" ? kv : undefined;
 };
 
-/** An object in R2, as listed: its key, its size and its own metadata (strings). */
+/** An object in R2, as listed: its key, its size, its own metadata (strings) and its version. */
 export interface R2Item {
   key: string;
   size: number;
   customMetadata?: Record<string, string>;
+  etag?: string;
 }
 
 /**
  * As much of R2 as the edge uses, bound as BUCKET (`shipify-web-files`, ADR 0069): the web chat's
- * files, yours and a copy of a run's, each with its metadata. Listed by key, 1,000 a call.
+ * files, yours and a copy of a run's, each with its metadata. Listed by key, 1,000 a call. A put
+ * with `onlyIf` writes only over that version (`etag`), and is null when another write came first.
  */
 export interface Bucket {
   head(key: string): Promise<R2Item | null>;
@@ -179,8 +181,8 @@ export interface Bucket {
   put(
     key: string,
     value: ReadableStream | ArrayBuffer | Blob | string,
-    options?: { customMetadata?: Record<string, string> },
-  ): Promise<unknown>;
+    options?: { customMetadata?: Record<string, string>; onlyIf?: { etagMatches: string } },
+  ): Promise<R2Item | null>;
   list(options?: {
     prefix?: string;
     limit?: number;

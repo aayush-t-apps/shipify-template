@@ -19,6 +19,13 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 If you haven't run the verification command in this message, you cannot claim it passes.
 
+**In Shipify:** in a task, your claim is about your change. Run the test files it touches (one file
+is `pnpm exec vitest run <file>`), the quick checks (format, lint, types) and `<ship> pr <clone>
+--check`. Never run the box's full set yourself (`make verify`, `pnpm verify`, a project's whole
+`make test`): the box runs it once, right after you, and a second run on a shared box only doubles
+the minutes and slows the other runs. "FULL" below means the whole command that proves your claim,
+not the whole suite, even when you have time for it.
+
 ## The Gate Function
 
 ```
@@ -50,6 +57,7 @@ Skip any step = lying, not verifying
 ## When The Check Repeats The Product
 
 - **Config edits:** before the PR, scan them for key-like public IDs. Allow one line with `gitleaks:allow` and its reason.
+- **Test values shaped like keys:** a value with a real key's shape (a token prefix at its usual length, a JWT) fails the secret scan and blocks the push, even in a test. Build such values at run time, and run the secret scan on the changed files before you ask for the PR: a quick PR check may not run it.
 - **Tests that read files at run time:** `make verify` runs only tests that import a changed TypeScript file. After you change a script, JSON or Markdown file, grep `tests/` for its name and run those tests.
 - **A release's check:** repeat it on a tree built as the release builds it: leave out the owner's files, and add the template as `origin`.
 - **A PR a later run carries on:** check that the PR's head commit has the earlier commit before you say it has.

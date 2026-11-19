@@ -14,6 +14,7 @@ import {
   guestLabel,
   IN_PROJECT_LABEL,
   inertImages,
+  isAgain,
   LIBRARY_LABEL,
   NEEDS_YOU_LABEL,
   PROJECT_LABEL,
@@ -32,6 +33,7 @@ import {
   STUCK_LABEL,
   SUB_TASK_LABEL,
   TASK_MARK,
+  whose,
   withoutLine,
   withUpcoming,
   withZone,
@@ -39,15 +41,7 @@ import {
 import { cached, recall, remember } from "../cache.ts";
 import { channelOf } from "../channels/index.ts";
 import { build, type Deps, type Env } from "../env.ts";
-import {
-  byDoor,
-  byRun,
-  type GitHub,
-  GitHubError,
-  github,
-  guestsOwn,
-  RUN_WRITER,
-} from "../github.ts";
+import { byDoor, byRun, type GitHub, GitHubError, github, RUN_WRITER, whoseIs } from "../github.ts";
 import {
   libraryPages,
   NOTEBOOK_LABEL,
@@ -411,9 +405,7 @@ export async function list(
           .catch(() => [])
       : [],
   ]);
-  const shown = issues.filter(
-    (i) => !hidden(i) && (guest ? !i.pull_request : !labelsOf(i).includes(GUEST_LABEL)),
-  );
+  const shown = issues.filter((i) => !hidden(i) && whose(i) === guest);
   const parents = await parentsOf(gh, deps, shown);
   const tasks = shown.map((i) => {
     const labels = tagsOf(i);
@@ -516,7 +508,9 @@ function message(gh: GitHub, owner: string | undefined, c: Comment & { id: numbe
   const from = byDoor(gh, c) ? readFrom(body) : undefined;
   const reply = byRun(c) ? readReply(body) : undefined;
   const yours = Boolean(from) || (owner !== undefined && login.toLowerCase() === owner);
-  const who = reply || (byRun(c) && login === RUN_WRITER) ? "shipify" : yours ? "you" : "other";
+  // The watch's start of a run for your words (task #786) is Shipify's note, as a run's line is.
+  const ours = (byRun(c) && login === RUN_WRITER) || (byDoor(gh, c) && isAgain(body));
+  const who = reply || ours ? "shipify" : yours ? "you" : "other";
   const files: FileSeen[] = [
     ...(from?.files ?? []).map((f) => {
       const [channel, ref] = [
@@ -659,8 +653,8 @@ const SEARCH_MS = 60_000;
  */
 export async function search(env: Env, deps: Deps, words: string, guest?: string): Promise<Found> {
   // A guest's Find is kept to their label; yours leaves guests' out (ADR 0071).
-  const whose = guest ? `label:"${guestLabel(guest)}"` : `-label:${GUEST_LABEL}`;
-  const q = encodeURIComponent(`repo:${env.GITHUB_REPO} is:issue ${whose} ${words}`);
+  const side = guest ? `label:"${guestLabel(guest)}"` : `-label:${GUEST_LABEL}`;
+  const q = encodeURIComponent(`repo:${env.GITHUB_REPO} is:issue ${side} ${words}`);
   type Hits = { items?: Issue[]; search_type?: string };
   const look = async (): Promise<Hits> => {
     try {
@@ -682,11 +676,7 @@ export async function search(env: Env, deps: Deps, words: string, guest?: string
     v: 1,
     ...(r.search_type === "hybrid" ? {} : { words: true as const }),
     items: (r.items ?? [])
-      .filter(
-        (i) =>
-          !i.pull_request &&
-          (guest ? labelsOf(i).includes(guestLabel(guest)) : !labelsOf(i).includes(GUEST_LABEL)),
-      )
+      .filter((i) => !i.pull_request && whose(i) === guest)
       .map((i) => {
         const labels = labelsOf(i);
         const page = /^Notebook: /.test(i.title);
@@ -782,7 +772,7 @@ export async function thread(
   if (!issue) return null;
   // A guest's (ADR 0071): only a chat whose opening line the door wrote names them. Anything else
   // is none to them, read no further.
-  if (guest && !guestsOwn(gh, issue, guest)) return null;
+  if (guest && whoseIs(gh, issue) !== guest) return null;
   const newest = Math.max(1, Math.ceil((issue.comments ?? 0) / 100));
   const at = (p: number) => (p === 1 ? one : page(p));
   const earlierPage = older && older < newest ? older : undefined;
@@ -1051,7 +1041,7 @@ export function projectIndex(env: Env, deps: Deps): Promise<Indexed[]> {
               name,
               open: i.state === "open",
               ...(i.state === "closed" && i.closed_at ? { closed: i.closed_at } : {}),
-              guest: labelsOf(i).includes(GUEST_LABEL),
+              guest: Boolean(whose(i)),
             },
           ]
         : [];

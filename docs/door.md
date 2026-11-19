@@ -260,32 +260,41 @@ What it does and how to set it up: [channels.md](channels.md#the-web-chat).
 - **Guests** (ADR 0071) come in at `<the edge>/guest/`: the same page and routes, behind a second
   Access application (path `guest/*`, Google sign-in, ADR 0073), whose audience (AUD) is `SHIPIFY_ACCESS`'s
   `guests` key, set once on GitHub beside yours (no page can set it). The guest list is one
-  object in R2 (`_guests`), read at most every 10 s, so a removed guest is refused within 10 s. A guest is let in only when the token is the
+  object in R2 (`_guests`), read at most every 10 s, so a removed guest is refused within 10 s.
+  Each change to it (an add, a removal, a guest's hourly "last in") is written only over the
+  version it read (R2's etag), and made again once on the list read again when another write came
+  first, so no write undoes another: a removal is never lost. A guest is let in only when the token is the
   guests' application's and its `email` is on the list (`guestAt`, `edge/src/guests.ts`); your
-  token at `/guest/`, or a guest's at `/admin/`, is refused. Every route says whose it is
-  (`WHOSE`, `edge/src/web/routes.ts`): a route with no rule answers 404 to everyone, and a route of
-  yours answers a guest 404 before anything is read. A guest's list reads by their label
-  (`issues?labels=guest:<id>`, never a search); a thread opens only when its opening line, written
-  by the door, names them (or the box wrote it with their label); a file only by their prefix
+  token at `/guest/`, or a guest's at `/admin/`, is refused. What a guest may do is one table,
+  `GUEST_RULES` in `cli/contracts/guests.ts`: every route says whose it is there (a route with no
+  rule answers 404 to everyone, and a route of yours answers a guest 404 before anything is read),
+  and a guest's menu names your screens from it, which their page never opens. Whose an issue is
+  is one check, `whose` in the same contract, the box's too: what the door wrote is whose its
+  opening line says; a doc the box wrote, whose label it carries; anyone else's, yours. A guest's
+  list reads by their label (`issues?labels=guest:<id>`, never a search); a thread opens only
+  when it's theirs by that check; a file only by their prefix
   (`g3f9a2c-…`). The door takes a guest's words with the web channel's own proof and the guest's
   id on the message: it writes their marks (labels `guest` and `guest:<id>`, `"guest"` on every
   from-line), names their projects `g<6 hex>-<name>` on GitHub, answers "Not your chat" for a
-  task that isn't theirs or doesn't exist, and refuses, writing nothing, what only you say
-  (`remember`, `forget`, `jot`, `/tasks`, `/ping`, `/apps`, `/repos`, `/notebook`, `/recipes`,
-  and the fixed words of `NOT_A_GUESTS`, the box's list too: `yes <code>`, `no <code>`, `go`,
-  `publish`, `preview`, `start over`, `clean start`). `POST …/api/guests` (yours alone) adds
+  task that isn't theirs or doesn't exist, and refuses, writing nothing, what only you say, from
+  the same table (`jot`, `/tasks`, `/ping`, `/apps`, `/repos`, `/notebook`, `/recipes`, and the
+  fixed words the box reads as plain words too: `yes <code>`, `no <code>`, `go`, `publish`,
+  `preview`, `start over`, `clean start`, `sign in`). `POST …/api/guests` (yours alone) adds
   a guest, or removes one (their open chats close).
 - **Files** live in R2, the bucket `shipify-web-files` bound as `BUCKET` (the deploy creates it),
   one key a file (`f-<time counted down>-<id>`, so a list is newest first; older `up-…` and
   `run-…` refs still open), each with its chat's number, kept as long as the chat or its project
-  and deleted by the weekly clean-up 30 days after it closes (ADR 0069). Uploads stream in, 95 MB
+  and deleted by the weekly clean-up 30 days after it closes (ADR 0069); a run's file of what
+  never closes (a repeat, a recipe, an open project's chat), 30 days after it was made. Uploads stream in, 95 MB
   at most (inside Cloudflare's 100 MB a request). A file used in a second chat is copied for it;
   a copy no chat takes (the door refused the message, or it named no chat) is deleted at once. KV (`FILES`) keeps only your model and your devices. A run fetches one through
-  `GET /door/file/web:<ref>`, 100 MB at most. **`POST /door/files/forget`** `{"chats": [n, …]}`
-  (500 at most; the box sends more in calls of 500) is the weekly clean-up's: it takes only
-  watch.yml's OIDC token (task.yml's gets 403), deletes those chats' files and every file no chat
-  used (yours or a guest's) made 60 days ago or more, and answers what it deleted:
-  `{deleted, bytes, unclaimed, unclaimedBytes}`. Only PNG, JPEG, GIF and
+  `GET /door/file/web:<ref>`, 100 MB at most. **`POST /door/files/forget`** `{"chats": [n, …],
+  "old": [n, …]}` (500 at most in each; the box sends more in calls of 500) is the weekly
+  clean-up's: it takes only watch.yml's OIDC token (task.yml's gets 403), deletes those chats'
+  files, every file no chat used (yours or a guest's) made 60 days ago or more, and the runs'
+  files made 30 days ago or more of the `old` chats (what never closes: an open repeat or recipe,
+  an open project and its open chats), in one listing, and answers what it deleted:
+  `{deleted, bytes, unclaimed, unclaimedBytes, old, oldBytes}`. Only PNG, JPEG, GIF and
   WebP show inline; anything else, HTML and SVG too, downloads
   ([security.md](security.md#the-web-chat)). The doc pane (ADR 0065) reads one through
   `…/api/doc/<ref>`: Markdown rendered by GitHub (`POST /markdown`, once a file, kept a day in the

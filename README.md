@@ -83,7 +83,7 @@ Paste screenshots or files, up to 5 a message. A few **fixed words** do one thin
 ## Get started
 
 You need a GitHub account, a Claude subscription (or a free gateway key), and a computer with
-Linux, or Windows with WSL, plus Node 22, pnpm, git and `gh`.
+Linux, or Windows with WSL, plus Node 26, pnpm, git and `gh`.
 
 1. On GitHub, **Use this template** to make your own private copy named `shipify`.
 2. Clone it, then:

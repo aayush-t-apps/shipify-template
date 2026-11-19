@@ -6,7 +6,7 @@
   "description": "{{APP_DESCRIPTION}}",
   "packageManager": "pnpm@12.6.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=26"
   },
   "exports": {
     ".": "./src/index.ts"

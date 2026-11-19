@@ -42,7 +42,9 @@ import {
 import { repoFor } from "../lib/projects-on-github.ts";
 import type { RunDetails } from "../lib/runs.ts";
 import { onBox } from "../lib/sandbox.ts";
+import { SCANNED, type Scanned, scanAhead } from "../lib/secret-scan.ts";
 import { loadTools } from "../lib/tools.ts";
+import { type Turn, takeTurn, turnsFor } from "../lib/turns.ts";
 import { type CheckOut, checkPins, RECORDS } from "./agent-check.ts";
 import {
   agentForRun,
@@ -79,6 +81,13 @@ const FIX_MINUTES = 20;
 const RULES_MINUTES = 2;
 const VERIFY_MINUTES = 25;
 const GIT_MINUTES = 2;
+/** The box's checks (gate): its PR's rules, the change's files read out for the secret scan (two
+ * git steps), then make verify, with the scan beside it on a shorter clock (SCAN_MINUTES). */
+const CHECKS_MINUTES = RULES_MINUTES + 2 * GIT_MINUTES + VERIFY_MINUTES;
+/** The most the box's checks wait for their turn (lib/turns.ts), then they run all the same. */
+const TURN_MINUTES = 15;
+/** The secret scan beside make verify: gitleaks takes about 35 s to start on a Raspberry Pi 4. */
+const SCAN_MINUTES = 5;
 /** What you wrote while it worked is taken in only with this much of the agent's clock left. */
 const CATCH_UP_MINUTES = 5;
 /** A stay's turn on a project: it makes a change it's asked for itself, as any work run does, and
@@ -93,10 +102,16 @@ export const STAY_FAILED_NOTE = (what: string, project?: string) =>
 const STOP_EVERY_MS = 60_000;
 /** `ship refresh` on a box: the CLI's start, a merge, and `make version` twice. */
 const REFRESH_MINUTES = 5;
+/**
+ * The finish (ADR 0059): main fetched, refreshed, checked once more, bundled again. Its read key's
+ * hour holds it, decide and apply (keyRunsOut), so its checks wait for their turn only for the room
+ * this clock has left (upToDate), never longer.
+ */
+export const FINISH_MINUTES = CLONE_MINUTES + REFRESH_MINUTES + CHECKS_MINUTES + 2 * GIT_MINUTES;
 /** The clone, a new repo's layout and setup; a branch behind main refreshed, and the way back if
- * it stops; the agent and its fix round; the checks (its PR's rules, then make verify), twice with
- * the fix round; three git steps (is there a main, the work-in-progress commit, the bundle); and
- * the finish after it (ADR 0059): main fetched, refreshed, checked once more, bundled again. */
+ * it stops; the agent and its fix round; the box's checks, twice with the fix round, each with its
+ * wait for a turn; three git steps (is there a main, the work-in-progress commit, the bundle); and
+ * the finish after it. */
 export const THINK_MINUTES =
   CLONE_MINUTES +
   LAYOUT_MINUTES +
@@ -105,9 +120,9 @@ export const THINK_MINUTES =
   GIT_MINUTES +
   AGENT_MINUTES +
   FIX_MINUTES +
-  2 * (RULES_MINUTES + VERIFY_MINUTES) +
+  2 * (TURN_MINUTES + CHECKS_MINUTES) +
   3 * GIT_MINUTES +
-  (CLONE_MINUTES + REFRESH_MINUTES + RULES_MINUTES + VERIFY_MINUTES + 2 * GIT_MINUTES);
+  FINISH_MINUTES;
 /** A merge left half-done (the agent stopped mid-merge), dropped: conflict markers are never kept. */
 const DROP_HALF_MERGE =
   'if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then git merge --abort; fi';
@@ -998,7 +1013,12 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
         }
       // The box's checks before its commits go anywhere, the same `ship pr` makes (ADR 0018). When
       // they fail, the agent gets one round, in the same session, to fix what they found.
-      let g = await gate(place, copy.cli, env);
+      const trunk = t.base ?? "main";
+      let g = await gate(place, copy.cli, env, trunk);
+      const waited = (w: number | undefined) => {
+        if (w) checkNotes.push(`The box's checks waited ${w} min for their turn on the box.`);
+      };
+      waited(g.waited);
       if (!g.ok && !g.timedOut && session && !stopBy) {
         const fixed = await ask(argvFor(session), fixPrompt(g.tail, pins?.told), FIX_MINUTES);
         // Its new answer, when it gave one; the PR it asked for stands either way.
@@ -1006,13 +1026,16 @@ export async function think(s: Snapshot, t: Think, io: ThinkIn): Promise<ThinkOu
         if (!("error" in next)) result = { ...next, pr: next.pr ?? result.pr };
         // The box's records as it wrote them: the fix round never changes one.
         await pins?.again();
-        g = await gate(place, copy.cli, env);
+        g = await gate(place, copy.cli, env, trunk);
+        waited(g.waited);
         checkNotes.push(
           g.ok
             ? "The box's checks failed once; the agent fixed it in the same session."
             : "The box's checks failed, and again after the agent's one round to fix them.",
         );
       }
+      // The secret scan the box ran beside make verify, for apply's push of the same bytes.
+      if (g.scanned) keep(SCANNED, JSON.stringify(g.scanned));
       const pr = result.pr;
       if (!g.ok && pr) {
         // Its commits are kept on the task's branch for the next run (no PR opens), except a new
@@ -1274,13 +1297,14 @@ export const runEnv = (s: Pick<Snapshot, "n">, guest = false): Record<string, st
  * The task's branch brought up to date with main by `ship refresh`, as the PC does: main merged,
  * both changelogs kept, change docs renumbered, the version bump redone. Where it stops (a real
  * conflict), the clone goes back to `head`, as it was: never left inside a half-done merge.
+ * `both`: the files main's new commits changed as the branch did, when refresh says.
  */
 async function refresh(
   place: Place,
   cli: string,
   env: Record<string, string>,
   head: string | undefined,
-): Promise<{ ok: boolean; said: string }> {
+): Promise<{ ok: boolean; said: string; both?: string[] }> {
   let out = "";
   const r = head
     ? await place.run([...cli.split(" "), "refresh", place.work, "--no-fetch", "--json"], {
@@ -1293,11 +1317,23 @@ async function refresh(
       })
     : { code: 1, timedOut: false };
   const res = tryOr(
-    () => JSON.parse(out) as { status?: string; summary?: string; checks?: { name: string }[] },
+    () =>
+      JSON.parse(out) as {
+        status?: string;
+        summary?: string;
+        checks?: { name: string }[];
+        data?: { both?: unknown };
+      },
     {},
   );
-  if (r.code === 0 && res.status === "succeeded")
-    return { ok: true, said: maskSecrets(res.summary ?? "") };
+  if (r.code === 0 && res.status === "succeeded") {
+    const both = res.data?.both;
+    return {
+      ok: true,
+      said: maskSecrets(res.summary ?? ""),
+      ...(Array.isArray(both) ? { both: both.map(String) } : {}),
+    };
+  }
   if (head) await backTo(place, head, env);
   const files = (res.checks ?? []).map((c) => c.name).join(", ");
   return {
@@ -1323,19 +1359,22 @@ const backTo = (place: Place, head: string, env: Record<string, string>) =>
  * The finish (ADR 0059): after a work run's agent, in its run's folder, with a read key minted
  * after it (SHIPIFY_READ_TOKEN). When main moved past the branch while the agent worked, the box
  * brings it up to date as a run's start does, runs its checks again and bundles it again, so the
- * PR opens up to date. Where refresh or the checks stop, the branch stays as the agent left it,
- * and its PR opens from that, as before; the note says so. No agent runs here: a conflict is the
- * next run's, from your `continue`.
+ * PR opens up to date. Its tests run again only when main's new commits changed a file the branch
+ * changed too; else the quick checks do (task #791). Where refresh or the checks stop, the branch
+ * stays as the agent left it, and its PR opens from that as a draft: `draft` says why, and the
+ * reply says it first. No agent runs here: a conflict is the next run's, from your `continue`.
  */
 export async function finish(
   s: Snapshot,
   t: Think,
   io: { keep: string; local: string },
-): Promise<{ note?: string; changed?: string[] }> {
+): Promise<Finished> {
   const place = placeFor(s.run.id.replace(/[^A-Za-z0-9._-]/g, "-"), io.local, true);
-  const done = await upToDate(place, s, t, io.keep).catch((e) => ({
-    note: `The branch couldn't be brought up to date with main: ${maskSecrets(errorLine(e))}. ${AS_LEFT}`,
-  }));
+  const done = await upToDate(place, s, t, io.keep).catch(
+    (e): Finished => ({
+      draft: `The branch couldn't be brought up to date with main: ${maskSecrets(errorLine(e))}.`,
+    }),
+  );
   // As after the agent: nothing of its user's left running before a write key is minted.
   const stopped = place.stop();
   if (!stopped.ok)
@@ -1343,16 +1382,24 @@ export async function finish(
   return done;
 }
 
-const AS_LEFT =
-  "Its PR opens as the agent left it: reply `continue`, and the next run brings it up to date first.";
+/** What the finish did: a note for the run's details, the files the PR changes now, or why it
+ * opens as a draft. */
+export interface Finished {
+  note?: string;
+  changed?: string[];
+  draft?: string;
+}
+
+/** A few file names, for a note. */
+const someOf = (files: string[]) =>
+  files
+    .slice(0, 3)
+    .map((f) => `\`${f}\``)
+    .join(", ") + (files.length > 3 ? ", …" : "");
 
 /** The finish's work: main fetched; behind it, refreshed, checked and bundled again (see finish). */
-async function upToDate(
-  place: Place,
-  s: Snapshot,
-  t: Think,
-  keep: string,
-): Promise<{ note?: string; changed?: string[] }> {
+async function upToDate(place: Place, s: Snapshot, t: Think, keep: string): Promise<Finished> {
+  const began = performance.now();
   const env = runEnv(s);
   const cli = shipifyCopy().cli;
   const key = process.env.SHIPIFY_READ_TOKEN;
@@ -1379,24 +1426,34 @@ async function upToDate(
   if (!head) return {};
   const r = await refresh(place, cli, env, head);
   if (!r.ok)
-    return {
-      note: `Main moved while it worked, and refreshing the branch stopped: ${r.said}. ${AS_LEFT}`,
-    };
-  if (!(await gate(place, cli, env)).ok) {
+    return { draft: `Main moved while it worked, and refreshing the branch stopped: ${r.said}.` };
+  // The tests again only when main's new commits changed a file this branch changed too: else
+  // the quick checks (format, lint and types). When refresh can't say, the tests.
+  const quick = r.both?.length === 0;
+  // Its checks wait for a turn only for the room left on its clock (FINISH_MINUTES).
+  const room =
+    FINISH_MINUTES - (performance.now() - began) / 60_000 - CHECKS_MINUTES - 2 * GIT_MINUTES;
+  const g = await gate(place, cli, env, t.base ?? "main", { quick, turnMinutes: room });
+  const waited = g.waited ? ` They waited ${g.waited} min for their turn on the box.` : "";
+  if (!g.ok) {
     await backTo(place, head, env);
     return {
-      note: `Main moved while it worked; brought up to date, the box's checks failed. ${AS_LEFT}`,
+      draft: `Main moved while it worked, and brought up to date, the box's checks failed (${quick ? "format, lint or types" : "its tests too"}).${waited}`,
     };
   }
   const changed = await bundle(place, s);
   const b = place.take("work.bundle", BUNDLE_MAX);
-  if (!b)
-    return {
-      note: `Main moved while it worked, and the branch couldn't be bundled again. ${AS_LEFT}`,
-    };
+  if (!b) return { draft: "Main moved while it worked, and the branch couldn't be bundled again." };
   writeFileSync(join(keep, "work.bundle"), b);
+  // The scan of the change as it is now. An earlier one answers only for the bytes it read.
+  if (g.scanned) writeFileSync(join(keep, SCANNED), JSON.stringify(g.scanned));
+  const what = quick
+    ? ": main's new commits changed none of its files, so the quick checks (format, lint and types), not its tests"
+    : r.both?.length
+      ? `, its tests too, since main's new commits changed ${someOf(r.both)} as it did`
+      : ", its tests too";
   return {
-    note: "Main moved while it worked, so the box brought the branch up to date (`ship refresh`) and checked it again before its PR.",
+    note: `Main moved while it worked, so the box brought the branch up to date (\`ship refresh\`) and checked it again before its PR${what}.${waited}`,
     changed,
   };
 }
@@ -1466,15 +1523,128 @@ async function setUp(place: Place, env: Record<string, string>): Promise<void> {
 }
 
 /**
+ * `git diff --raw -z`'s records: each regular file the change leaves (no link, no submodule, none
+ * it deletes), with its blob. None when it isn't git's shape.
+ */
+export function changedBlobs(raw: Buffer): [string, string][] | undefined {
+  const parts = raw.toString("utf8").split("\0");
+  const out: [string, string][] = [];
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const m = /^:\d{6} (\d{6}) [0-9a-f]+ ([0-9a-f]+) ([A-Z])\d*$/.exec(parts[i] ?? "");
+    if (!m) return undefined;
+    if (m[3] !== "D" && (m[1] === "100644" || m[1] === "100755"))
+      out.push([parts[i + 1] ?? "", m[2] ?? ""]);
+  }
+  return out;
+}
+
+/** `git cat-file --batch`'s output: each blob's bytes by its id (a missing one left out). */
+export function blobsOf(out: Buffer): Map<string, Buffer> {
+  const blobs = new Map<string, Buffer>();
+  let at = 0;
+  while (at < out.length) {
+    const nl = out.indexOf(10, at);
+    if (nl < 0) break;
+    const [id, type, size] = out.subarray(at, nl).toString("latin1").split(" ");
+    const n = Number(size);
+    if (type === "missing") {
+      at = nl + 1;
+      continue;
+    }
+    if (!id || type !== "blob" || !Number.isSafeInteger(n) || nl + 1 + n > out.length) break;
+    blobs.set(id, out.subarray(nl + 1, nl + 1 + n));
+    at = nl + 1 + n + 1;
+  }
+  return blobs;
+}
+
+/**
+ * The change's files as the agent committed them, each path with its bytes: what apply pushes,
+ * against `origin/<trunk>` as apply diffs it (three dots), or a new repo's every file. Its user
+ * writes them out; the box reads them. None when they can't be read whole (more than a take holds).
+ */
+async function changeFiles(
+  place: Place,
+  trunk: string,
+  env: Record<string, string>,
+): Promise<[string, Buffer][] | undefined> {
+  const [list, blobs] = ["scan.list", "scan.blobs"];
+  await place.run(
+    [
+      "sh",
+      "-c",
+      'rm -f "$2" "$3"; d="git diff --no-renames --no-abbrev --raw -z"; if git rev-parse --verify --quiet "refs/remotes/origin/$1" >/dev/null; then $d "origin/$1...work" -- > "$2"; else $d "$(git hash-object -t tree /dev/null)" work -- > "$2"; fi',
+      "sh",
+      trunk,
+      `${place.out}/${list}`,
+      `${place.out}/${blobs}`,
+    ],
+    { cwd: place.work, minutes: GIT_MINUTES, env },
+  );
+  const files = changedBlobs(place.take(list) ?? Buffer.alloc(0));
+  if (!files?.length) return undefined;
+  await place.run(["sh", "-c", 'git cat-file --batch > "$1"', "sh", `${place.out}/${blobs}`], {
+    cwd: place.work,
+    minutes: GIT_MINUTES,
+    env,
+    stdin: `${files.map(([, id]) => id).join("\n")}\n`,
+  });
+  const got = blobsOf(place.take(blobs) ?? Buffer.alloc(0));
+  const read = files.map(([f, id]) => [f, got.get(id)] as const);
+  return read.every(([, b]) => b) ? (read as [string, Buffer][]) : undefined;
+}
+
+/**
  * The box's checks on the agent's clone, as the agent's user, before anything is pushed: what its
- * PR needs besides tests (`ship pr --check`, quick), then the project's `make verify`. Their output
- * goes to the run's log, and its end comes back, so a failure says why.
+ * PR needs besides tests (`ship pr --check`, quick), then the project's `make verify`, or with
+ * `quick` its `make check` (format, lint and types; make verify where it has none). Their output
+ * goes to the run's log, and its end comes back, so a failure says why. While they run, the box
+ * scans the change for keys (gitleaks, as the runner), so apply's push needs no scan of its own
+ * when it sends the same bytes (`scanned`, kept as SCANNED). On a box they wait for their turn
+ * first (lib/turns.ts), at most `turnMinutes`: `waited`, in whole minutes, when it was one or more.
  */
 export async function gate(
   place: Place,
   cli: string,
   env: Record<string, string>,
-): Promise<{ ok: boolean; timedOut: boolean; tail: string }> {
+  trunk: string,
+  opts: { quick?: boolean; turnMinutes?: number } = {},
+): Promise<{ ok: boolean; timedOut: boolean; tail: string; scanned?: Scanned; waited?: number }> {
+  const turn = await checksTurn(opts.turnMinutes ?? TURN_MINUTES);
+  try {
+    const g = await checks(place, cli, env, trunk, opts.quick === true);
+    const waited = Math.floor((turn?.waitedMs ?? 0) / 60_000);
+    return { ...g, ...(waited ? { waited } : {}) };
+  } finally {
+    turn?.release();
+  }
+}
+
+/**
+ * A turn for the box's checks, among every slot's (lib/turns.ts): one per 4 cores. None off a box
+ * (this PC, the tests), or on one with no box folder to hold the turns in.
+ */
+async function checksTurn(minutes: number): Promise<Turn | undefined> {
+  const dir = process.env.SHIPIFY_BOX_DIR;
+  if (!onBox() || !dir) return undefined;
+  const turn = await takeTurn(dir, turnsFor(), Math.max(0, minutes) * 60_000);
+  const secs = Math.round(turn.waitedMs / 1000);
+  process.stderr.write(
+    turn.got
+      ? `The box's checks: their turn came after ${secs} s.\n`
+      : `The box's checks: no turn after ${secs} s, so they run now, beside the others.\n`,
+  );
+  return turn;
+}
+
+/** The gate's checks themselves (see gate). */
+async function checks(
+  place: Place,
+  cli: string,
+  env: Record<string, string>,
+  trunk: string,
+  quick: boolean,
+): Promise<{ ok: boolean; timedOut: boolean; tail: string; scanned?: Scanned }> {
   const lines: string[] = [];
   const onLine = (l: string) => {
     // In the run's log as it goes (masked), and its end for the reply and the agent.
@@ -1492,14 +1662,20 @@ export async function gate(
   place.stop();
   if (rules.code !== 0) return { ok: false, timedOut: false, tail: tail() };
   lines.length = 0;
-  const v = await place.run(["sh", "-c", "make verify 2>&1"], {
+  const files = await changeFiles(place, trunk, env);
+  const scanning = files ? scanAhead(files, SCAN_MINUTES * 60_000) : undefined;
+  const target = quick
+    ? "{ if make -n check >/dev/null 2>&1; then make check; else make verify; fi; } 2>&1"
+    : "make verify 2>&1";
+  const v = await place.run(["sh", "-c", target], {
     cwd: place.work,
     minutes: VERIFY_MINUTES,
     env,
     onLine,
   });
   place.stop();
-  return { ok: v.code === 0, timedOut: v.timedOut, tail: tail() };
+  const scanned = await scanning;
+  return { ok: v.code === 0, timedOut: v.timedOut, tail: tail(), ...(scanned ? { scanned } : {}) };
 }
 
 /**

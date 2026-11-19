@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fetchAgain } from "./net.ts";
+import { NODE_MAJOR } from "./node-support.ts";
 import { ShipError } from "./output.ts";
 import type { Executor, Executors, Install } from "./plugins/agent.ts";
 import { newer } from "./versions.ts";
@@ -104,8 +105,8 @@ export function installAgent(
 
 /**
  * The box's shared tools kept to what's used: each agent's pinned version (any other version of
- * it removed) and the two newest of each Node major. For the weekly clean-up, while no other slot
- * runs.
+ * it removed) and the two newest of Shipify's Node major (NODE_MAJOR), the one its jobs ask for: a major
+ * it moved off goes. For the weekly clean-up, while no other slot runs.
  */
 export function tidyTools(all: Executors, tools = process.env.RUNNER_TOOL_CACHE): string[] {
   if (!tools || !existsSync(tools)) return [];
@@ -122,22 +123,13 @@ export function tidyTools(all: Executors, tools = process.env.RUNNER_TOOL_CACHE)
     const at = installedAt(id, entry, tools);
     if (at && entry.install) prune(at.dir, [entry.install.version]);
   }
-  // Node: the two newest (setup-node's check-latest adds one now and then).
+  // Node: the two newest of Shipify's major (setup-node's check-latest adds one now and then).
   const node = join(tools, "node");
   if (existsSync(node)) {
-    const parts = (v: string) => v.split(".").map(Number);
-    const newer = (a: string, b: string) => {
-      const [x, y] = [parts(a), parts(b)];
-      for (let k = 0; k < 3; k++) if ((y[k] ?? 0) !== (x[k] ?? 0)) return (y[k] ?? 0) - (x[k] ?? 0);
-      return 0;
-    };
-    // Two of each major, so a new major never takes the one runs use.
-    const all = readdirSync(node)
-      .filter((v) => /^\d+\.\d+\.\d+$/.test(v))
-      .sort(newer);
-    const keep = all.filter(
-      (v, i) => all.slice(0, i).filter((w) => parts(w)[0] === parts(v)[0]).length < 2,
-    );
+    const keep = readdirSync(node)
+      .filter((v) => v.startsWith(`${NODE_MAJOR}.`) && /^\d+\.\d+\.\d+$/.test(v))
+      .sort((a, b) => (newer(a, b) ? -1 : newer(b, a) ? 1 : 0))
+      .slice(0, 2);
     prune(node, keep);
   }
   return removed;

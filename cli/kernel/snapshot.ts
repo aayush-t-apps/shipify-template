@@ -287,10 +287,14 @@ export async function snapshot(
 
   // A merge or a close is seen (`go`, `preview`, `start over` and repeats act on what's true).
   let merged = false;
+  const ended: string[] = [];
   for (const { url, now } of await prsRead) {
     const info = state.prInfo?.[url];
     if (!info) continue;
-    if (now === "merged" || now === "closed") info.state = now;
+    if (now === "merged" || now === "closed") {
+      info.state = now;
+      ended.push(url);
+    }
     merged ||= now === "merged";
   }
   // A merge ends its branch: the task's next work starts a new one from the default branch, so its
@@ -343,6 +347,7 @@ export async function snapshot(
     },
     said,
     state,
+    ...(ended.length ? { ended } : {}),
     ...(statusId ? { statusId } : {}),
     trigger,
     now: new Date().toISOString(),

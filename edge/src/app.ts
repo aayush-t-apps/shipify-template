@@ -14,7 +14,7 @@
 //     GET  /admin            sends you to the chat
 //   *    /guest[/…]           the guests' door (ADR 0071): the same chat, behind a second Access
 //                            application (path guest/*) and your guest list, each route kept to
-//                            what is the guest's (web/routes.ts `WHOSE`)
+//                            what is the guest's (the contract's `GUEST_RULES`)
 //   GET  /                   the bare address, for everyone: Access's sign-in cookie sends you to
 //                            your chat or a guest to theirs, else a page with both ways in (web/home.ts)
 //   GET  /draw               the chat's diagram frame: a static page with no data, outside the

@@ -4,12 +4,12 @@
 // write; every GitHub string escaped. Access's token is checked here too, so a missing rule shows
 // nothing. What it reads (about four GitHub calls) is kept a minute in Cloudflare's cache.
 import {
-  GUEST_LABEL,
   NEEDS_YOU_LABEL,
   plural,
   problem,
   timeAgo,
   timeUntil,
+  whose,
   withUpcoming,
 } from "../../cli/contracts/index.ts";
 import pkg from "../../package.json" with { type: "json" };
@@ -142,7 +142,7 @@ async function gather(gh: GitHub, s: Settings, env: Env, deps: Deps): Promise<Vi
     boxes: toBoxes(list),
     // A guest's chat waits on them, not you (ADR 0071).
     needs: needs
-      .filter((i) => !i.pull_request && !(i.labels ?? []).some((l) => l.name === GUEST_LABEL))
+      .filter((i) => !i.pull_request && !whose(i))
       .map((i) => ({ number: i.number, title: i.title, url: i.html_url })),
     pages,
     keyDates: s.keyDates,

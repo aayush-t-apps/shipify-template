@@ -31,8 +31,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 17, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=17$/m);
+  it("is version 18, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=18$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -389,7 +389,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
   });
 
   it("installs shellcheck, fd and sqlite3 in a step of their own, with fd under its own name for every user", () => {
-    const step = setup.slice(at('say "shellcheck, fd and sqlite3"'), at('say "Node 22'));
+    const step = setup.slice(at('say "shellcheck, fd and sqlite3"'), at("# Shipify's Node major"));
     // After the system packages and gh, where an image installs too; never in the main apt line,
     // so a machine without Ubuntu's universe still gets the rest.
     expect(at('if [ -z "$CONTAINER" ]; then\nsay "System packages"')).toBeLessThan(
@@ -406,7 +406,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
   });
 
   it("installs the shellcheck CI checks with, from its release and its checksum, not Ubuntu's (setup 15)", () => {
-    const step = setup.slice(at('say "shellcheck, fd and sqlite3"'), at('say "Node 22'));
+    const step = setup.slice(at('say "shellcheck, fd and sqlite3"'), at("# Shipify's Node major"));
     // Ubuntu 24.04's is 0.9.0; GitHub's machines (Ubuntu 26.04) check with 0.11.0.
     expect(code).not.toMatch(/apt_get install[^\n]*shellcheck/);
     expect(step).toContain("SHELLCHECK=0.11.0\n");
@@ -431,7 +431,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     const dir = mkdtempSync(join(tmpdir(), "tools-"));
     // Its shellcheck in the test's folder, not /usr/local/bin.
     const step = setup
-      .slice(at('say "shellcheck, fd and sqlite3"'), at('say "Node 22'))
+      .slice(at('say "shellcheck, fd and sqlite3"'), at("# Shipify's Node major"))
       .replaceAll("/usr/local/bin/shellcheck", join(dir, "shellcheck"));
     // Not the release: a file of the same name, whose checksum isn't the one setup holds.
     mkdirSync(join(dir, "src", "shellcheck-v0.11.0"), { recursive: true });

@@ -200,6 +200,14 @@ function build(live: Row[], manifests: Map<string, string>, account?: string): L
   return { projects, repos };
 }
 
+/**
+ * An App's repos by owner/name, none archived (GitHub refuses a change there): where the clean-up of
+ * closed tasks looks for their branches (task #779). One read, with no shipify.json.
+ */
+export function liveRepos(token: string): string[] {
+  return liveOf(ghJson<Pages>(LIST, { token })).map((r) => r.full_name);
+}
+
 /** Your projects: the repos with a shipify.json. */
 export function projectsOnGitHub(token: string | undefined): ProjectOnGitHub[] {
   return token ? [...listed(token).projects] : [];

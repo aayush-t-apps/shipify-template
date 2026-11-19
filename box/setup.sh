@@ -8,7 +8,7 @@
 #   $3  the slots' systemd unit, rendered by `ship box add` (the same definition as every box's),
 #       with @SLOT_NAME@ and @SLOT_DIR@ for each slot's
 #   $4  box/update.sh, the box's own setup update (setup 14)
-# What it installs: git, make, gh, Node 22 (pnpm through corepack), shellcheck, fd and sqlite3, the
+# What it installs: git, make, gh, Node 26 and pnpm (through npm), shellcheck, fd and sqlite3, the
 # updates waiting now and automatic updates (Ubuntu's security and normal ones, gh's and Tailscale's
 # too, rebooting at 04:30 when one needs it, never restarting a slot), no sleep, a hardware watchdog,
 # logs kept small, what each stack needs, the user "shipify" (no sudo)
@@ -64,7 +64,11 @@
 # off once the setup passes, so it no longer puts back the hostname, /etc/hosts or the network at
 # each boot. With --manage, --lan-ssh <range> keeps SSH open to your own network (a box with no
 # keyboard); without it, nothing comes in but through Tailscale, as before.
-# Running it again updates Node to the newest 22.x, and adds or removes slots to match
+# Setup 18: Node 26, the LTS (supported to 2029-04-30), in place of Node 22. Node 26 has no
+# corepack: pnpm comes from npm, at the version Shipify pins, and runs the version each project pins
+# by itself, as corepack did. Corepack's links in /usr/local/bin and the runner's corepack cache
+# are removed.
+# Running it again updates Node to the newest 26.x, and adds or removes slots to match
 # RUNNER_SLOTS.
 # SSH takes keys only, never passwords, once the account running this has a key; with
 # SHIPIFY_HERE=1 (`box add` with no target: the PC you run it from) SSH and its power settings stay
@@ -82,7 +86,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=17
+SETUP_VERSION=18
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -150,8 +154,9 @@ if [ -n "$(dpkg --audit 2>/dev/null)" ]; then
   echo "  finishing what a run cut off left half installed (dpkg --configure -a)"
   dpkg --configure -a || true
 fi
+# libatomic1: Node 26 needs it (setup 18), and a minimal Ubuntu has none.
 apt_update
-apt_get install -y -q git make curl ca-certificates tar xz-utils build-essential jq unattended-upgrades tmux sudo procps
+apt_get install -y -q git make curl ca-certificates tar xz-utils libatomic1 build-essential jq unattended-upgrades tmux sudo procps
 # The image's init: it runs the slots and passes docker stop on to them (box/container.sh).
 [ -z "$IMAGE" ] || apt_get install -y -q tini
 if ! command -v gh >/dev/null; then
@@ -196,9 +201,15 @@ fi
 rm -rf "$WORK/shellcheck-v$SHELLCHECK"
 rm -f "$WORK/$file"
 
-say "Node 22 (the newest 22.x) and pnpm"
-base=https://nodejs.org/dist/latest-v22.x
-file=$(curl -fsSL "$base/SHASUMS256.txt" | grep -oE "node-v22\.[0-9.]+-linux-${ARCH}\.tar\.xz" | head -n 1)
+# Shipify's Node major (cli/lib/node-support.ts, which tests/node.test.ts holds this to):
+# nodejs.org's newest release of it, checked against its checksum. Node has no corepack from 25 on:
+# pnpm comes from npm, at the version Shipify's package.json pins, and runs the version each
+# project pins by itself. A new version of either is a PR that says so.
+NODE=26
+PNPM=12.6.0
+say "Node $NODE (the newest $NODE.x) and pnpm $PNPM"
+base=https://nodejs.org/dist/latest-v$NODE.x
+file=$(curl -fsSL "$base/SHASUMS256.txt" | grep -oE "node-v$NODE\.[0-9.]+-linux-${ARCH}\.tar\.xz" | head -n 1)
 want=${file#node-}
 want=${want%%-linux-*}
 if [ "$(node --version 2>/dev/null || true)" != "$want" ]; then
@@ -207,10 +218,18 @@ if [ "$(node --version 2>/dev/null || true)" != "$want" ]; then
   rm -rf /opt/node && mkdir -p /opt/node
   tar -xJf "$WORK/$file" -C /opt/node --strip-components 1
   rm -f "$WORK/$file"
-  for b in node npm npx corepack; do ln -sf "/opt/node/bin/$b" "/usr/local/bin/$b"; done
+  for b in node npm npx; do ln -sf "/opt/node/bin/$b" "/usr/local/bin/$b"; done
 fi
-corepack enable --install-directory /usr/local/bin
-node --version
+# From root's own folder, its download cache in it: npm runs pnpm's install script (which puts its
+# binary in place) as root.
+if [ "$(/opt/node/bin/pnpm --version 2>/dev/null || true)" != "$PNPM" ]; then
+  (cd "$WORK" && npm install -g --silent --no-audit --no-fund --cache "$WORK/npm" --prefix /opt/node "pnpm@$PNPM")
+fi
+for b in pnpm pnpx; do ln -sf "/opt/node/bin/$b" "/usr/local/bin/$b"; done
+# What setup 17 and before left: corepack's links (yarn's too) and the runner's corepack cache.
+rm -f /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
+rm -rf /home/shipify/.cache/node/corepack
+echo "  $(node --version), pnpm $(pnpm --version)"
 fi
 
 if [ -z "$IMAGE$CONTAINER" ]; then

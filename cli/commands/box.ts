@@ -17,6 +17,7 @@ import { PLATFORM_ROOT } from "../lib/config.ts";
 import { has, type RunResult, run } from "../lib/exec.ts";
 import { tailscaleKeyCheck } from "./doctor.ts";
 import { gh, ghJson, ghRun, platformRepo } from "../lib/github.ts";
+import { NODE_MAJOR } from "../lib/node-support.ts";
 import { type Check, fail, ok, type Result, ShipError } from "../lib/output.ts";
 import { sourceControl } from "../lib/providers.ts";
 import { SANDBOX_LABEL, slotOf as slotOfRunner } from "../lib/sandbox.ts";
@@ -965,7 +966,7 @@ export function boxHealth(target: string | undefined): Result {
   if (r.code !== 0)
     throw new ShipError(
       /node: (command )?not found|input-type/.test(r.stderr)
-        ? `${target} needs Node 22.18 or newer: \`pnpm ship box add ${target}\` sets it up.`
+        ? `${target} needs Node ${NODE_MAJOR}:\`pnpm ship box add ${target}\` sets it up.`
         : sshAdvice(target, r.stderr, sshConfig(target)),
       "blocked",
     );

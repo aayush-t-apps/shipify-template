@@ -207,7 +207,7 @@ One job for each store (ADR 0071), the same for you and for guests:
 | Store | Its job | What it holds | Kept |
 |---|---|---|---|
 | GitHub issues | **the record** | every word: chats, projects, docs, Inbox finds | for good, each doc's versions in its history |
-| R2 | **the working copy** | every file the window shows: what you and guests send, and what runs make; the guest list | while its chat or project is open, and 30 days after |
+| R2 | **the working copy** | every file the window shows: what you and guests send, and what runs make; the guest list | while its chat or project is open, and 30 days after; a run's file of what never closes, 30 days |
 | `shipify-files` | **the backup** | every file your runs make, written as the run's reply is posted; never a guest's | for good |
 | KV | **small settings** | model picks, devices | until changed |
 
@@ -216,7 +216,9 @@ your run makes goes to R2 **and** the backup, in the step that posts the reply; 
 reply opens it in the pane, and the next run in the chat gets 5 of the chat's files, a run's too
 ("make the PDF shorter" works on the last PDF): yours first, then runs' in the places left. A file is never edited: a run makes a new
 version beside the old one. It leaves R2 30 days after its chat or project closes (or at once,
-with **Delete**); a run's file then shows as **Archived**, linked to the backup. A file no chat
+with **Delete**); a run's file then shows as **Archived**, linked to the backup. A run's file of
+what never closes (a repeat, a recipe, an open project or a chat in one) leaves 30 days after the
+run made it, so they don't pile up. A file no chat
 used (an upload never sent, an old draft's) leaves 60 days after it came. A guest's files live in
 R2 only, and go the same way. A clean-up missed for weeks catches up the next time; two failed in
 a row say so, and the weekly digest's **Files** line says what the last one deleted.

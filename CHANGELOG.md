@@ -7,6 +7,181 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.25] - 2026-11-19
+
+### Added
+
+- **What a closed task leaves goes by itself (task #779).** 7 days after a task closed, the weekly
+  clean-up closes its open PRs, each with a comment that says why and how to carry it on, and
+  deletes its `task/…` branches, in every repo of Shipify's own account. Before, a `close` kept a
+  task's PRs for good, and a merged or closed PR's branch stayed in a repo that keeps branches.
+  - **Where it runs:** the clean-up starts task.yml's `github` job on the status task, on GitHub's
+    machines, with the bot's key that job already holds: that key writes every repo, so a box never
+    holds it. No workflow changes, and no new key. Its reads: the repos, their task branches with
+    their open PRs (one GraphQL query per 50 repos), and the tasks' states (one read, the record's
+    new `closedAt`). The status task's Recent says what it did.
+  - **What stays:** an open task's PRs and branches, a task closed less than 7 days ago, a branch
+    named so by hand (its newest commit not a run's, and no PR of Shipify's open from it), and a
+    repo on another of your accounts (its PRs are yours to close there).
+  - **`close` says it:** its reply names each open PR and when it closes. A chat's `close` of a task
+    waiting on you is seen to by a run with no agent, which says it, as a part's and a project's
+    close already are.
+  - **An app's name is public:** setup.md says so ("A domain on Cloudflare"): its certificate goes
+    into the public Certificate Transparency logs, so an app that isn't for the public goes behind
+    a sign-in. This was PR #760's one lasting line; the first clean-up from 22 Nov on closes that
+    PR, as its task closed on 15 Nov.
+- **Old run files of what never closes go by themselves (task #784).** The weekly clean-up now
+  deletes the runs' files made 30 days ago or more of an open repeat or recipe, an open project
+  and its open chats. Before, the clean-up kept them for as long as these stayed open, which is
+  for good. Yours keep their backup on `shipify-files`, so their chips say **Archived**; files
+  you sent stay. No new GitHub call: the clean-up's one read gains a search for open repeats and
+  recipes, and each open project's chats come with it. The summary says "3 run files (2 MB) of
+  repeats, recipes and open projects, 30 days old".
+- **Nothing waits on you by hand (task #786).** Three small changes in the watch and the digest,
+  with nothing new to run:
+  - **Words no run answered start their run once more by themselves.** Before, words with no
+    reply after 10 minutes (GitHub never started a run, or one broke before it could say so) were
+    marked Stopped at once and waited for your `continue`. Now the watch starts their run once
+    more, with one comment of the door App's on the task ("No run answered your words here for 10
+    minutes, so Shipify started one for them again."), whose event starts the run as a chat's
+    words do. It's never your words, so it approves nothing. Only when that run doesn't answer in
+    10 minutes either is the task Stopped, with the alert that asks for `continue`. A run that
+    ended early still waits for `continue`. ADR 0042 has an addendum for it.
+  - **A list that lapsed unanswered is named once in the next weekly digest,** right under what
+    waits on you: one whose day passed, or whose task a merge or your `close` closed, with no `yes`
+    or `no` of yours ("#779 separate work: …"). A fix a run found is never lost, as #779's was.
+    Write on its task to have it listed again. The digest reads it from the week's tasks it already
+    reads for the skills, now eight days back.
+  - **The digest warns from 90 days before the Node its box runs ends its support:** Node 22's
+    ends on 2027-04-30. Each LTS major's end is in one table (`cli/lib/node-support.ts`), so the
+    warning follows a box to a newer Node.
+
+### Changed
+
+- **A change's tests run once, and the box's checks take turns (task #791).** Before, an agent
+  often ran the box's full test set itself (22 minutes on a busy Pi), the box ran it again, and a
+  branch that main moved under ran it a third time. Three to four checks at once on a Pi's 4 cores
+  pushed its load to about 10, and a test timed out from load. No new step, setting or key:
+  - **The agent runs only the test files its change touches,** the quick checks and
+    `ship pr --check`: `skills/verification-before-completion` and `playbooks/task.md` say so. The
+    box's `make verify` is the one full run.
+  - **The finish runs the tests again only when they can differ.** When main moved while the
+    agent worked, `ship refresh` now says which files main's new commits changed as the branch did
+    (besides the changelog and the version bump, which it settles itself). Only then does the
+    finish run `make verify` again; else `ship pr --check` and `make check` (format, lint and
+    types; `make verify` for a project without `check`). Shipify's own `Makefile` gets `check`.
+  - **A PR the finish couldn't bring up to date opens as a draft,** and the reply says why first:
+    "Not ready to merge yet". Your `continue` brings it up to date, and once its checks pass, the
+    PR is ready for review again, with nothing to click. A private repo on GitHub's free plan has
+    no drafts: there the PR opens as a normal one, and the reply says so.
+  - **The box's checks take turns,** across every slot: one at a time per 4 cores (one on a Pi,
+    two on 8 cores), through a lock in the box's folder that ends with its run. A check waits up
+    to 15 minutes for its turn, then runs anyway, so no run outgrows its job; the finish waits only
+    as long as its own clock has room, so its key still lasts to apply's end. The run's details
+    say how long a check waited. A check that runs alone may be faster; that isn't measured yet.
+- **Guests: one check and one table (task #784).** Whose an issue is is decided in one place,
+  `whose` in `cli/contracts/guests.ts`, for the edge and the box, in place of three ways (the
+  door's first line, labels, a project's name). What a guest may do is one table there,
+  `GUEST_RULES`: the routes' rules, the commands their menu shows, the words and lines the door
+  refuses and the box reads as plain words. The guest's page takes your screens from their menu,
+  made from the same table, in place of a list of its own. Nothing a guest may do changes.
+- **A change run's push no longer waits for the secret scan (task #785).** gitleaks takes about
+  35 s to start on a Raspberry Pi 4, and apply started it before every push. Now the box starts it
+  while `make verify` runs: the agent's user reads the change's files out of its clone, and the
+  runner scans them. Its answer (`scanned.json`, beside the bundle) holds each file's sha256, and
+  apply takes it only when every file it pushes has those same bytes; for any other file or byte,
+  gitleaks runs in apply as before. Decide's check of a held workflow change takes it the same way.
+  A change that only deletes files starts no scan.
+  - **Before and after:** apply took 59 s, 67 s and 82 s on three change runs (tasks #772, #779,
+    #783; gh calls 11–14 s of each), and gitleaks' start 35–38 s of each on a Raspberry Pi 4. With
+    the box's answer, apply's scan takes 17 ms, so apply takes about 35 s less. Beside the scan,
+    a job of the box's checks took 2–4 s longer (a test run 19 s → 21 s, `tsc` 17 s → 22 s, on a
+    box at load 5–8): a change run's PR opens about 30 s sooner. Decide with a held workflow change
+    (#779: 42 s) takes the same 35 s less.
+- **One read token fewer when think is short (task #785).** task.yml minted a second read token
+  for decide and apply after think, with the same permissions as plan's (about 2 s, and 1 s to
+  revoke it as the job ends). Think now says `long` when the rest of the run could outlast plan's
+  hour: the finish's clock when it can run, then 15 minutes for decide and apply. Only then is the
+  second token minted; else decide and apply take plan's. A run with no agent (your `yes`, a
+  merge) and a talk run's answer save about 3 s; a change run that asks for a PR still mints it.
+  A stay's apply takes the stay's own token the same way. **A workflow change:** the box holds it
+  for your Yes (ADR 0075).
+  - The box's checks read the change out in two git steps of 2 minutes each, so think's clocks
+    sum to 365 minutes (353 before), within the job's 460.
+- **Node 26 on every box, in CI and in the stacks (box setup 18, task #790).** Node 22's support
+  ends 2027-04-30; Node 26 is the LTS, supported to 2029-04-30. Tested on a Pi (arm64) with Node
+  26.13.1: each agent (Claude Code, pi, OpenCode, Codex) installs with its npm and starts, here.sh's
+  steps run, and the CLI's bundle is the same as for 22.
+  - **One place:** `cli/lib/node-support.ts` holds the major (`NODE_MAJOR`) beside each LTS's end
+    of support, the table the weekly digest reads (task #786): it now warns from 2029-01-30 that
+    Node 26's support ends. The CLI's build target, `ship doctor`, `ship setup`, `box health` and
+    the box's tools read the major; `tests/node.test.ts` holds each copy that can't (box setup,
+    here.sh, every workflow's `node-version`, the stacks' `.nvmrc` and `engines`, `package.json`)
+    to it.
+  - **pnpm without corepack:** Node 26 has none. Box setup 18 installs pnpm from npm, at the
+    version `package.json` pins, which runs the version each project pins by itself, as corepack
+    did; it removes corepack's links and the runner's corepack cache. here.sh takes your copy's
+    pinned pnpm the same way. GitHub's machines take `pnpm/action-setup` (the image job too); a
+    box's jobs use the box's own pnpm. On your PC: `npm install -g pnpm --prefix ~/.local`.
+  - **Boxes move by themselves:** each applies setup 18 at its next due run or weekly clean-up. A
+    box still on Node 22 runs tasks meanwhile, with a warning on the run. The weekly clean-up then
+    keeps only Node 26 in the box's shared tools. Node 26 needs `libatomic1`, which a minimal
+    Ubuntu doesn't have (Docker's `ubuntu:24.04`): box setup installs it, and here.sh when it's
+    missing.
+  - **Stacks:** ts-package 1.1.0, ts-static 1.3.0 and ts-worker 1.3.0 take Node 26 (`.nvmrc`,
+    `engines`): `ship upgrade` brings it to each project, and its migration note says what to do.
+  - **Your PC needs Node 26:** `ship doctor` and `ship setup` name it.
+
+### Fixed
+
+- **A guest's removal is never lost (task #784).** The guest list is written only over the
+  version it read (R2's etag), and a change is made again once on the list read again when
+  another write came first. Before, a guest's hourly "last in", written at the same moment, could
+  put a guest you had just removed back on the list.
+- **Eight weekly lessons in their skills, and the recipe thinks with Opus at high (task #576).**
+  `recipes/weekly-lessons.md` says `model: opus high`, so its runs use it from the merge on.
+  `codebase-design`: an existing job before a new one, the smallest change doc, and what a cut
+  costs. `systematic-debugging`: a tool's version in CI, and a scroll position the browser moves.
+  `verification-before-completion`: test values shaped like keys. `security-and-hardening`: public
+  host names in Certificate Transparency logs. Each has a case in its `scenarios.md`. Skill text
+  and a recipe setting only: no version change.
+- **Every recipe's `model` is checked:** `tests/recipes.test.ts` reads each one in `recipes/` and
+  `recipes/examples/` as a `use` line against `executors.json`, so a model the box can't take fails
+  `make verify` instead of being left out of its task in silence.
+- **A file with other than ASCII in its name is scanned (task #785).** Apply listed a change's
+  files with `git diff --name-only`, which quotes such a name (`"caf\303\251.md"`), so the secret
+  scan skipped it as missing and its checkout left it out. It lists them with `-z` now.
+- **A repeat's merged PR stops its task saying "needs you" (task #576).** A PR that closes nothing
+  (a recipe's `part-of`, as weekly lessons asks for) started no run when you merged it, so its task
+  kept `needs you` until its next run. Three times in a row, the weekly-lessons task showed
+  `needs you` for 3 to 7 days after its PR merged; on 14 Nov, in one of those gaps, it was closed,
+  which paused it, and its 16 Nov run didn't happen. Now the due run (at least once a day) reads the
+  PRs of each repeating task that needs you; once every one has merged or closed, it starts the
+  task's run, which takes `needs you` off and says it once, with no agent: "PR #7 merged, so
+  nothing here waits for you. It repeats as before: next …". One read per open PR, only for those
+  tasks; a list that waits for your `yes` keeps the task as it is.
+- **A repeating task's `part-of` PR says "Part of" again (task #576).** Since ADR 0080's build, a
+  `part-of` PR on a task that is no part, split or plan counted as a big change's doc: its footer
+  said "Closes #n" and "Merging this accepts it and starts its build", so its merge would close the
+  task, pause its repeat and start a build. The weekly-lessons PR #782 says so. A repeating task's
+  PR is no doc now. A merge that closed a repeating task through its `part-of` PR anyway (#782's,
+  and any from before this fix) opens it again, still repeating, says "Merged" once, and builds
+  nothing.
+- **A stay's next push after a held workflow change goes through (task #783).** When apply holds a
+  run's workflow change (ADR 0075), it adds a hold commit to the task's branch on GitHub, but a run
+  that stays (ADR 0057) works on in its clone without it. Its next push then brought the held
+  lines back, and apply refused it ("would be pushed as the run changed it"): #779 lost a turn so.
+  Now apply puts the stay's commits on the hold first, in one merge commit of the bot's that keeps
+  the run's files, then holds its workflow change again, as for any push. Decide reads the held
+  change the same way, so a turn that leaves the workflow alone keeps your list as it was, and one
+  that takes the change out lists nothing. Your own commit on the branch is never merged over.
+- **Reopen carries on a repeat that its close paused (task #783).** A close no longer marks a
+  repeat paused: a closed task is what pauses it, as the due run reads only open tasks. So any
+  reopen carries it on: `reopen`, GitHub's Reopen button, `resume`, or your words on it. Before,
+  only `resume` did, and a task reopened on GitHub (#576) stayed paused. The next due run, a day
+  later at most, lists it again, and a time it missed while closed runs then, once. `resume` still
+  starts a repeat that three failures in a row paused.
+
 ## [0.1.24] - 2026-11-18
 
 ### Added

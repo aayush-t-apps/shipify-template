@@ -11,15 +11,19 @@ import { REPOS_PERMISSIONS } from "../cli/commands/bot.ts";
 import { permissionsRule, prRules, setupRule, setupVersionOf } from "../cli/commands/workspace.ts";
 import { NEEDS_YOU_LABEL } from "../cli/contracts/labels.ts";
 import { GIVE_UP_MS } from "../cli/kernel/decide.ts";
-import { agentOf, agentRepos } from "../cli/kernel/run.ts";
+import { agentOf, agentRepos, keyRunsOut } from "../cli/kernel/run.ts";
 import { JOB_MINUTES } from "../cli/kernel/stay.ts";
-import { THINK_MINUTES } from "../cli/kernel/think.ts";
+import { FINISH_MINUTES, THINK_MINUTES } from "../cli/kernel/think.ts";
 import { STALE_RUN_MS } from "../cli/lib/sandbox.ts";
 import type { Plan, Snapshot } from "../cli/kernel/types.ts";
+import { NODE_MAJOR } from "../cli/lib/node-support.ts";
 import {
   factsOf,
+  HOLD_COMMIT,
   hold,
   holdOf,
+  ON_HOLD_COMMIT,
+  ontoHold,
   patchParts,
   runsBeforeMerge,
   whenItRuns,
@@ -33,6 +37,8 @@ import { ROOT } from "./helpers.ts";
 const dir = join(ROOT, ".github", "workflows");
 /** How a box's steps start the CLI (ADR 0051): the built file in the copy made first. */
 const BUILT = 'node "$SHIPIFY_COPY/cli/dist/ship.mjs"';
+/** The read key after think: its own when think ran long, else plan's (task #785). */
+const AFTER_THINK = `\${{ steps.apply_token.outputs.token || steps.read.outputs.token }}`;
 type Step = {
   name?: string;
   id?: string;
@@ -142,7 +148,7 @@ describe("task.yml (ADR 0031)", () => {
     git("config", "uploadpack.allowReachableSHA1InWant", "true");
     const before = commit("a.txt");
     const after = commit("plans.md");
-    const go = (ws: string, env: Record<string, string>, node = "v22.1.0") => {
+    const go = (ws: string, env: Record<string, string>, node = `v${NODE_MAJOR}.1.0`) => {
       mkdirSync(ws, { recursive: true });
       writeFileSync(join(bin, "node"), `#!/bin/sh\necho ${node}\n`, { mode: 0o755 });
       return spawnSync(
@@ -184,10 +190,16 @@ describe("task.yml (ADR 0031)", () => {
       encoding: "utf8",
     });
     expect(diff.trim()).toBe("plans.md");
-    // A box whose Node isn't 22 says so, with its fix.
+    // A box on the Node before (22) runs on, with a warning, until its own setup update moves it.
+    const moving = go(join(tmp, "moving"), {}, "v22.23.5");
+    expect(moving.status).toBe(0);
+    expect(moving.stdout).toContain(
+      `::warning::this box's Node is v22.23.5, not ${NODE_MAJOR} yet`,
+    );
+    // Any other Node says so, with its fix.
     const old = go(join(tmp, "old"), {}, "v20.1.0");
     expect(old.status).not.toBe(0);
-    expect(old.stdout).toContain("run its box setup again");
+    expect(old.stdout).toContain(`not ${NODE_MAJOR}: run its box setup again`);
   });
 
   it("starts a run only for you or the door App, never for the status issue, a notebook page or a PR", () => {
@@ -286,8 +298,29 @@ describe("task.yml (ADR 0031)", () => {
     // A step's token, as a GitHub Actions expression.
     const token = (id: string) => `\${{ steps.${id}.outputs.token }}`;
     expect(step("think").env?.SHIPIFY_AGENT_READ_TOKEN).toBe(token("agent_token"));
-    for (const s of [step("decide"), apply])
-      expect(s.env?.SHIPIFY_READ_TOKEN).toBe(token("apply_token"));
+    // Decide and apply's own only when think ran long (it says so); plan's otherwise, the same
+    // permissions, so a box run, a talk run and a short one mint one read token fewer.
+    expect(step("apply_token").if).toBe(
+      "steps.think.outputs.long == 'yes' && vars.SHIPIFY_BOT_CLIENT_ID != ''",
+    );
+    for (const s of [step("decide"), apply]) {
+      expect(s.env?.SHIPIFY_READ_TOKEN).toBe(AFTER_THINK);
+      expect(s.env?.GH_TOKEN).toBe(AFTER_THINK);
+    }
+  });
+
+  it("says think ran long only when plan's read key may not last to apply's end", () => {
+    const at = Date.parse("2026-11-19T10:00:00Z");
+    const min = 60_000;
+    // A talk run's answer, or a box run: plan's key does (an hour, with 15 minutes for the rest).
+    expect(keyRunsOut(at, 0, at + 5 * min)).toBe(false);
+    expect(keyRunsOut(at, 0, at + 44 * min)).toBe(false);
+    expect(keyRunsOut(at, 0, at + 46 * min)).toBe(true);
+    // A PR the finish may bring up to date and check again: its clock counts too.
+    expect(keyRunsOut(at, FINISH_MINUTES, at)).toBe(false);
+    expect(keyRunsOut(at, FINISH_MINUTES, at + min)).toBe(true);
+    // A plan's time it can't read: never taken as short.
+    expect(keyRunsOut(Number.NaN)).toBe(true);
   });
 
   it("finishes a work run after think with the read key minted then, before decide: no agent, no write key (ADR 0059)", () => {
@@ -296,8 +329,7 @@ describe("task.yml (ADR 0031)", () => {
     expect(step("finish").if).toBe(
       "steps.think.outcome == 'success' && steps.plan.outputs.profile == 'work'",
     );
-    const key = `\${{ steps.apply_token.outputs.token }}`;
-    expect(step("finish").env).toEqual({ SHIPIFY_READ_TOKEN: key });
+    expect(step("finish").env).toEqual({ SHIPIFY_READ_TOKEN: AFTER_THINK });
     expect(step("finish").run).toContain('run finish "$ISSUE"');
   });
 
@@ -330,9 +362,7 @@ describe("task.yml (ADR 0031)", () => {
     const bin = join(tmp, "bin");
     mkdirSync(join(repo, "scripts"), { recursive: true });
     mkdirSync(bin);
-    for (const tool of ["pnpm", "corepack"])
-      writeFileSync(join(bin, tool), "#!/bin/sh\nsleep 0.2\n", { mode: 0o755 });
-    writeFileSync(join(repo, "package.json"), '{"packageManager":"pnpm@1.0.0"}\n');
+    writeFileSync(join(bin, "pnpm"), "#!/bin/sh\nsleep 0.2\n", { mode: 0o755 });
     writeFileSync(
       join(repo, "scripts", "build-cli.mjs"),
       [
@@ -370,13 +400,7 @@ describe("task.yml (ADR 0031)", () => {
     // One copy, built, with the commit's files, and nothing of another run's inside or beside it.
     const base = join(tools, "shipify-app");
     expect(readdirSync(base)).toEqual([sha]);
-    expect(readdirSync(join(base, sha)).sort()).toEqual([
-      ".built",
-      ".git",
-      "cli",
-      "package.json",
-      "scripts",
-    ]);
+    expect(readdirSync(join(base, sha)).sort()).toEqual([".built", ".git", "cli", "scripts"]);
     expect(readFileSync(join(base, sha, "cli", "dist", "ship.mjs"), "utf8")).toBe("built");
     for (const id of [1, 2, 3, 4, 5])
       expect(readFileSync(join(tmp, `env-${id}`), "utf8")).toBe(
@@ -414,10 +438,13 @@ describe("task.yml (ADR 0031)", () => {
     expect(stayApply.if).toBe(
       "steps.stay.outcome == 'success' && steps.stay.outputs.apply == 'yes'",
     );
-    // The same steps as decide's, each reading the stay's outputs: nothing more is minted.
+    // The same steps as decide's, each reading the stay's outputs: nothing more is minted. Its read
+    // key is the stay's own while it lasts, as decide's is plan's (the stay says `long`).
     const asStay = (v: unknown) =>
       JSON.stringify(v)
         .replaceAll("steps.decide.outputs.", "steps.stay.outputs.")
+        .replaceAll("steps.think.outputs.long", "steps.stay.outputs.long")
+        .replaceAll("steps.read.outputs.", "steps.stay_token.outputs.")
         .replace(
           /steps\.(apply_token|write|write_account|files)\.outputs/g,
           "steps.stay_$1.outputs",
@@ -438,7 +465,7 @@ describe("task.yml (ADR 0031)", () => {
       expect(at(step(now)), now).toBeGreaterThan(at(step("stay")));
       expect(at(step(now)), now).toBeLessThan(at(stayApply));
     }
-    for (const [was, now] of pairs.slice(1))
+    for (const [was, now] of pairs)
       expect(step(now).if, now).toBe(
         `steps.stay.outputs.apply == 'yes' && ${JSON.parse(asStay(step(was).if))}`,
       );
@@ -809,6 +836,80 @@ describe("the workflow rule: a run's workflow change is held, and listed only wh
     expect(h?.files.sort()).toEqual([".github/workflows/a.yml", ".github/workflows/b.yml"]);
     if (h) hold(git, h, { name: "bot", email: "bot@x" });
     expect(git("diff", "--name-only", "main", "HEAD")).toBe("");
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("puts a stay's next commits on the hold its clone never had: held again, a fast-forward, never over your commit (#783)", () => {
+    const repo = mkdtempSync(join(tmpdir(), "workflow-stay-"));
+    const git = (...a: string[]) =>
+      execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...a], {
+        encoding: "utf8",
+        stdio: "pipe",
+      });
+    const by = () => ({ name: "bot", email: "bot@x" });
+    const ci = ".github/workflows/ci.yml";
+    const put = (f: string, text: string) => {
+      mkdirSync(dirname(join(repo, f)), { recursive: true });
+      writeFileSync(join(repo, f), text);
+    };
+    put(ci, "on: workflow_dispatch\n");
+    git("init", "-q", "-b", "main");
+    git("add", "-A");
+    git("commit", "-qm", "main");
+    // The run's change, with a workflow line, pushed: `gh` stands for the branch on GitHub, the
+    // hold on top of it.
+    git("checkout", "-qb", "task/1-x");
+    put(ci, "on: workflow_dispatch\n# the run's\n");
+    put("change.txt", "x\n");
+    git("add", "-A");
+    git("commit", "-qm", "The change");
+    git("checkout", "-qb", "gh");
+    const first = holdOf(git, repo, "main", "gh");
+    if (first) hold(git, first, by());
+    expect(git("log", "-1", "--format=%s").trim()).toBe(HOLD_COMMIT);
+    // The stay's next turn, in its clone without the hold: a fix that leaves the workflow alone.
+    git("checkout", "-q", "task/1-x");
+    put("fixed", "x\n");
+    git("add", "-A");
+    git("commit", "-qm", "Fix what the checks found");
+    const turn = git("rev-parse", "HEAD^{tree}");
+    // As it was: the old merge-base puts the run's lines back, and the last check refuses it.
+    const stale = holdOf(git, repo, "gh", "task/1-x");
+    expect(stale).toBeUndefined();
+    expect(workflowsMismatch(repo, git("diff", "--name-only", "gh", "task/1-x").split("\n"))).toBe(
+      `${ci} would be pushed as the run changed it`,
+    );
+    // Now: on the hold, with the turn's files; the workflow line held again; a fast-forward.
+    expect(ontoHold(git, "gh", "task/1-x", by)).toBe(true);
+    expect(git("rev-parse", "HEAD^{tree}")).toBe(turn);
+    expect(git("log", "-1", "--format=%s %P").trim()).toMatch(
+      new RegExp(`^${ON_HOLD_COMMIT} [0-9a-f]+ ${git("rev-parse", "gh").trim()}$`),
+    );
+    const again = holdOf(git, repo, "gh", "task/1-x");
+    expect(again).toEqual({ files: [ci], at: git("rev-parse", "gh").trim() });
+    if (again) hold(git, again, by());
+    const left = git("diff", "--name-only", "gh", "task/1-x").trim();
+    expect(left).toBe("fixed");
+    expect(workflowsMismatch(repo, [left])).toBeUndefined();
+    git("merge-base", "--is-ancestor", "gh", "task/1-x");
+    expect(ontoHold(git, "gh", "task/1-x", by)).toBe(false);
+    // A turn that takes the workflow line out again (#779): nothing left to hold or list.
+    git("reset", "-q", "--hard", "HEAD~2");
+    put(ci, "on: workflow_dispatch\n");
+    git("commit", "-qam", "No workflow change after all");
+    expect(ontoHold(git, "gh", "task/1-x", by)).toBe(true);
+    expect(holdOf(git, repo, "gh", "task/1-x")).toBeUndefined();
+    expect(git("diff", "--name-only", "gh", "task/1-x").trim()).toBe("fixed");
+    // Your own commit on the branch on GitHub is never merged over: the push stays refused.
+    git("reset", "-q", "--hard", "HEAD~2");
+    git("checkout", "-q", "gh");
+    put("yours.txt", "x\n");
+    git("add", "-A");
+    git("commit", "-qm", "Your commit");
+    git("checkout", "-q", "task/1-x");
+    const head = git("rev-parse", "HEAD");
+    expect(ontoHold(git, "gh", "task/1-x", by)).toBe(false);
+    expect(git("rev-parse", "HEAD")).toBe(head);
     rmSync(repo, { recursive: true, force: true });
   });
 

@@ -69,6 +69,11 @@ export type ReplyKind = (typeof REPLY_KINDS)[number];
 export const TO_DEFAULTS: ReplyKind[] = ["alert"];
 /** A comment this long after a close carries the task on ("Close with comment" comes just after). */
 export const AFTER_CLOSE_MS = 60_000;
+/**
+ * A closed task's open PRs and its branches stay this many days; the weekly clean-up closes and
+ * deletes them after (task #779). Words on it before then carry it on, its PRs and all.
+ */
+export const LEFT_DAYS = 7;
 
 /** Every log event's name, the same on a box and in the edge. */
 export const EVENTS = [
@@ -92,6 +97,7 @@ export const EVENTS = [
   "run.problem",
   "watch.due",
   "watch.stopped",
+  "watch.again",
   "watch.stay.cleared",
   "watch.notice",
   "watch.guard",

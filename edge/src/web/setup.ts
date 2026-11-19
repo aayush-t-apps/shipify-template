@@ -11,13 +11,14 @@ import {
   zoneName,
   effortsFor,
   gatewayName,
-  GUEST_LABEL,
+  GUEST_RULES,
   guestLabel,
   guestOwns,
   PERSONALITY_TOPIC,
   PRESETS,
   presetOf,
   voiceOf,
+  whose,
   withoutLine,
 } from "../../../cli/contracts/index.ts";
 import executors from "../../../executors.json" with { type: "json" };
@@ -124,11 +125,10 @@ export const statusOf = (env: Env, deps: Deps) =>
     deps.now(),
   );
 
-/**
- * The commands a guest's menu shows (ADR 0071): asking, and models. The rest are yours: they say or
- * change your tasks, apps, boxes, repos, pages and repeats.
- */
-export const GUEST_COMMANDS = new Set(["ask", "use", "models", "help"]);
+/** Your screens, by their GET routes' names (ADR 0071, GUEST_RULES): a guest's page never opens them. */
+const YOURS = Object.entries(GUEST_RULES.routes).flatMap(([k, rule]) =>
+  rule === "owner" && k.startsWith("GET ") ? [k.slice(4)] : [],
+);
 
 export async function menu(
   env: Env,
@@ -160,8 +160,8 @@ export async function menu(
       failing: Boolean(a.failing),
       paused: Boolean(a.paused),
     })),
-    commands: guest ? commands.filter(([c]) => GUEST_COMMANDS.has(c)) : commands,
-    ...(guest ? { guest } : {}),
+    commands: guest ? commands.filter(([c]) => GUEST_RULES.commands.includes(c)) : commands,
+    ...(guest ? { guest: { ...guest, yours: YOURS } } : {}),
     files: { on: files, most: MOST_FILES, bytes: MOST_BYTES },
     ...(key ? { notifications: { key } } : {}),
     chars: MOST_CHARS,
@@ -329,7 +329,7 @@ async function personalitySeen(env: Env, deps: Deps) {
     (p) =>
       !p.pull_request &&
       new RegExp(`^Notebook:\\s*${PERSONALITY_TOPIC}\\s*$`, "i").test(p.title ?? "") &&
-      !(p.labels ?? []).some((l) => l.name === GUEST_LABEL),
+      !whose({ labels: p.labels }),
   );
   const words = page ? voiceOf(withoutLine(page.body)) : "";
   return {

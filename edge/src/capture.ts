@@ -26,7 +26,7 @@ import {
   timeZoneNow,
   withoutLine,
 } from "../../cli/contracts/index.ts";
-import { type GitHub, guestsOwn } from "./github.ts";
+import { type GitHub, whoseIs } from "./github.ts";
 
 /** What the chat is told, and the issue it wrote on. */
 interface Captured {
@@ -92,13 +92,9 @@ type Labelled = Issue & {
 };
 
 /**
- * Whether an issue is on the right side of the wall (ADR 0071): a guest's own, for a guest; for you,
- * none of a guest's, so your chats and theirs never share a project.
+ * An open project by its number, or why it isn't one; for a guest, only one of theirs, and for you
+ * none of a guest's (ADR 0071), so your chats and theirs never share a project.
  */
-const onSide = (gh: GitHub, i: Labelled, guest: string | undefined) =>
-  guest ? guestsOwn(gh, i, guest) : !(i.labels ?? []).some((l) => l.name === GUEST_LABEL);
-
-/** An open project by its number, or why it isn't one; for a guest, only one of theirs. */
 async function openProject(
   gh: GitHub,
   n: number,
@@ -106,7 +102,7 @@ async function openProject(
 ): Promise<Labelled | { why: string }> {
   const r = await gh.call("GET", `repos/${gh.repo}/issues/${n}`);
   const p = r.data as Labelled | null;
-  if (r.status !== 200 || !p || !onSide(gh, p, guest))
+  if (r.status !== 200 || !p || whoseIs(gh, p) !== guest)
     return { why: guest ? "Not your project." : `There's no project #${n}.` };
   if (!(p.labels ?? []).some((l) => l.name === PROJECT_LABEL) || p.pull_request)
     return { why: `#${n} isn't a project.` };
@@ -174,7 +170,7 @@ export async function moveToProject(
   if ("why" in p) return p.why;
   const r = await gh.call("GET", `repos/${gh.repo}/issues/${task}`);
   const t = r.data as Labelled | null;
-  if (r.status !== 200 || !t || t.pull_request || !onSide(gh, t, guest))
+  if (r.status !== 200 || !t || t.pull_request || whoseIs(gh, t) !== guest)
     return guest ? "Not your chat." : `There's no task #${task}.`;
   const labels = (t.labels ?? []).map((l) => l.name);
   if (labels.some((l) => [PROJECT_LABEL, LIBRARY_LABEL].includes(l)))

@@ -20,8 +20,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { workspace } from "../cli/commands/task/context.ts";
-import { ensureLabels, forgetLabels, LABELS_KEPT_MS } from "../cli/commands/task/issue.ts";
 import { keepRecipes, taskDue } from "../cli/commands/task/due.ts";
+import { ensureLabels, forgetLabels, LABELS_KEPT_MS } from "../cli/commands/task/issue.ts";
+import { startLeftovers } from "../cli/commands/task/leftovers.ts";
 import { QUIET_CLOSED, sweep } from "../cli/commands/task/sweep.ts";
 import { fromLine, readReply } from "../cli/contracts/index.ts";
 import { readTaskSeen } from "../cli/contracts/watch.ts";
@@ -41,7 +42,7 @@ import {
 } from "../cli/kernel/run.ts";
 import type { Result } from "../cli/lib/output.ts";
 import { mockCallsLogged } from "../cli/lib/providers.ts";
-import { StatusIssueState, setUpcoming } from "../cli/lib/status-issue.ts";
+import { parseStatusIssue, StatusIssueState, setUpcoming } from "../cli/lib/status-issue.ts";
 import { findStatus, newState, renderStatus, type TaskState } from "../cli/lib/task.ts";
 import { BUILT } from "./built.ts";
 import { fakeApi } from "./fake-api.ts";
@@ -71,11 +72,16 @@ interface Fake {
   prs?: Record<string, unknown>;
   heads?: Record<string, string>;
   bodies?: Record<string, string>;
+  /** The PRs that are drafts; a repo with none (`noDrafts`) refuses one (task #791). */
+  drafts?: string[];
+  noDrafts?: boolean;
   closer?: string;
   files?: Record<string, string>;
   commitStatus?: Record<string, unknown>;
   /** The run's own jobs and steps, as GitHub lists them. */
   jobs?: { name: string; steps: { name: string; conclusion: string | null }[] }[];
+  /** Shipify's status task, made by the first write to it ("Coming up"). */
+  status?: { body: string };
 }
 
 const saved = { ...process.env };
@@ -259,6 +265,23 @@ afterEach(() => {
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
+/**
+ * A project's checks, as its stack's targets: each says it ran in FAKE_CHECKS, and the quick one
+ * (`check`: format, lint and types) fails once main has a broken.txt.
+ */
+const MAKEFILE = [
+  "setup:",
+  "\t@true",
+  "check:",
+  '\t@echo check >> "$${FAKE_CHECKS:-/dev/null}"; test ! -f broken.txt',
+  "verify:",
+  '\t@echo verify >> "$${FAKE_CHECKS:-/dev/null}"',
+  "",
+].join("\n");
+/** A reply's words, without its mark: what a chat shows first. */
+const wordsOf = (body: string | undefined) =>
+  (body ?? "").replace(/^<!-- shipify-reply [^\n]* -->\n+/, "");
+
 /** A project's manifest: an app, no releases (so its checks need no version bump). */
 const DEMO = JSON.stringify({
   shipify: 1,
@@ -306,7 +329,7 @@ async function onProject(): Promise<string> {
   const seed = join(dir, "seed");
   git(dir, "clone", "-q", origin, seed);
   writeFileSync(join(seed, "shipify.json"), DEMO);
-  writeFileSync(join(seed, "Makefile"), "setup:\n\t@true\nverify:\n\t@true\n");
+  writeFileSync(join(seed, "Makefile"), MAKEFILE);
   git(seed, "add", "-A");
   git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "first");
   git(seed, "push", "-q", "origin", "main");
@@ -825,11 +848,17 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
 
   it("main moved while the agent worked: the finish brings the branch up to date and checks it again, and the PR opens from it (ADR 0059)", async () => {
     const origin = await onProject();
-    process.env.FAKE_WORK = "ok";
+    const checks = join(dirname(file), "checks.log");
+    Object.assign(process.env, { FAKE_WORK: "ok", FAKE_CHECKS: checks });
     const r = await job("issues", "opened", () =>
       onMain(origin, "sibling.txt", "merged meanwhile\n"),
     );
     expect(r.finish?.summary).toContain("brought the branch up to date");
+    // Main's new commit changed none of the branch's files: the quick checks, not the tests again
+    // (task #791). The box's make verify ran once, before the finish.
+    expect(r.finish?.summary).toContain("the quick checks (format, lint and types), not its tests");
+    expect(readFileSync(checks, "utf8")).toBe("verify\ncheck\n");
+    expect(read().drafts ?? []).toEqual([]);
     expect(r.apply.status).toBe("succeeded");
     const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
     const files = git(origin, "ls-tree", "-r", "--name-only", branch);
@@ -842,7 +871,7 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     // Raspberry Pi box, more while its other slots run their own checks.
   }, 180_000);
 
-  it("main moved and conflicts: the PR opens as the agent left it, and the reply says `continue` brings it up to date (ADR 0059)", async () => {
+  it("main moved and conflicts: the PR opens as the agent left it, a draft, and the reply says so first: `continue` brings it up to date (ADR 0059)", async () => {
     const origin = await onProject();
     process.env.FAKE_WORK = "ok";
     const r = await job("issues", "opened", () => onMain(origin, "change.txt", "theirs\n"));
@@ -851,8 +880,55 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     expect(git(origin, "show", `${branch}:change.txt`)).toBe("x\n");
     expect(git(origin, "log", "--format=%s", branch)).not.toContain("Merge");
     expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
-    expect(lastReply()?.c.body).toContain("reply `continue`");
+    expect(read().drafts).toEqual(["https://github.com/o/demo/pull/1"]);
+    expect(wordsOf(lastReply()?.c.body)).toMatch(
+      /^\*\*Not ready to merge yet:\*\* Main moved while it worked, and refreshing the branch stopped: .*Its PR opens as a draft, as the agent left it: reply `continue`/,
+    );
+    expect(wordsOf(lastReply()?.c.body)).toContain("Made it.");
     // A job and a refresh that stops, as above.
+  }, 180_000);
+
+  it("main moved, and with its commits the quick checks fail: a draft, said first; `continue` brings it up to date and makes it ready (task #791)", async () => {
+    const origin = await onProject();
+    const checks = join(dirname(file), "checks.log");
+    Object.assign(process.env, { FAKE_WORK: "ok", FAKE_CHECKS: checks });
+    const url = "https://github.com/o/demo/pull/1";
+    const r = await job("issues", "opened", () => onMain(origin, "broken.txt", "x\n"));
+    expect(r.finish?.summary).toContain(
+      "brought up to date, the box's checks failed (format, lint or types)",
+    );
+    expect(readFileSync(checks, "utf8")).toBe("verify\ncheck\n");
+    // As the agent left it, main's commit not merged: a draft, which Shipify made one.
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    expect(git(origin, "ls-tree", "-r", "--name-only", branch)).not.toContain("broken.txt");
+    expect(read().prs).toEqual({ [url]: "OPEN" });
+    expect(read().drafts).toEqual([url]);
+    expect(status()?.prInfo?.[url]?.draft).toBe(true);
+    expect(wordsOf(lastReply()?.c.body)).toMatch(/^\*\*Not ready to merge yet:\*\* Main moved/);
+    // `continue`: the next run starts from main as it is now, its checks pass, and its PR is ready.
+    say("continue");
+    const next = await job("issue_comment", "created");
+    expect(next.finish?.summary).toBe("task #12: up to date with main");
+    expect(git(origin, "ls-tree", "-r", "--name-only", branch)).toContain("broken.txt");
+    expect(read().drafts).toEqual([]);
+    expect(status()?.prInfo?.[url]?.draft).toBeUndefined();
+    expect(wordsOf(lastReply()?.c.body)).not.toContain("Not ready to merge");
+  }, 300_000);
+
+  it("a draft in a repo that has none (a private repo on GitHub's free plan): a plain PR, and the reply says so (task #791)", async () => {
+    const origin = await onProject();
+    process.env.FAKE_WORK = "ok";
+    set((f) => Object.assign(f, { noDrafts: true }));
+    const url = "https://github.com/o/demo/pull/1";
+    await job("issues", "opened", () => onMain(origin, "broken.txt", "x\n"));
+    expect(read().prs).toEqual({ [url]: "OPEN" });
+    expect(read().drafts ?? []).toEqual([]);
+    expect(status()?.prInfo?.[url]?.draft).toBeUndefined();
+    const words = wordsOf(lastReply()?.c.body);
+    expect(words).toMatch(/^\*\*Not ready to merge yet:\*\*/);
+    expect(words).toContain(
+      "GitHub has no draft PRs in o/demo (a private repo on GitHub's free plan has none), so it's a plain PR: don't merge it before `continue` has brought it up to date.",
+    );
   }, 180_000);
 
   it("stays after its PR opens; a change asked of the stay is made in it, and its job pushes it: no new run (ADR 0076)", async () => {
@@ -876,8 +952,10 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
       );
       expect(prompt).toContain("make it here as before: commit, run its tests, and ask for the PR");
       expect(prompt).toContain("Never set `work` for `demo`");
-      // The job's own steps mint the repo's key and push what the stay decided.
+      // The job's own steps mint the repo's key and push what the stay decided, reading with the
+      // stay's own key, which lasts: no other is minted (its turn's think says nothing of it).
       expect(out("apply")).toBe("yes");
+      expect(out("long")).toBe("");
       // Never taken for the run's own push before it, in the same job.
       await runApply(12);
       expect(git(origin, "log", "--format=%s", branch).split("\n")[0]).toBe(
@@ -995,6 +1073,8 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     });
     await job("issues", "opened");
     expect(out("stay")).toBe("yes");
+    // A quick answer: decide and apply read with plan's key, and no other is minted.
+    expect(out("long")).toBe("");
     set((f) => {
       f.issue.state = "closed";
       Object.assign(f.issue, { closed_at: new Date(Date.now() - 300_000).toISOString() });
@@ -1008,9 +1088,16 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
   it("main didn't move: the finish fetches and changes nothing (ADR 0059)", async () => {
     await onProject();
     process.env.FAKE_WORK = "ok";
+    const seen = join(mkdtempSync(join(tmpdir(), "seen-")), "seen");
+    process.env.FAKE_GITLEAKS_SEEN = seen;
     const r = await job("issues", "opened");
     expect(r.finish?.summary).toBe("task #12: up to date with main");
     expect(lastReply()?.c.body).not.toContain("Main moved");
+    // The secret scan ran once, beside make verify: apply pushed the same bytes, so took its answer.
+    expect(read().prs).toEqual({ "https://github.com/o/demo/pull/1": "OPEN" });
+    expect(readFileSync(seen, "utf8")).toBe("change.txt\n");
+    // The finish could have run its checks again: decide and apply get a read key minted after it.
+    expect(out("long")).toBe("yes");
   }, 90_000);
 
   it("a run that stops early keeps its work on the branch, and `continue` opens the PR from it", async () => {
@@ -1191,6 +1278,53 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     expect(status()?.pending.workflow).toBeUndefined();
   }, 300_000);
 
+  it("a stay's next push after its workflow change was held goes on the hold: the change held again, the list as it was (#783)", async () => {
+    const origin = await onProject();
+    Object.assign(process.env, { FAKE_WORK: "ok", FAKE_WORKFLOW: "on: workflow_dispatch" });
+    await job("issues", "opened");
+    const branch = branches(origin).find((b) => b.startsWith("task/12-")) as string;
+    expect(git(origin, "log", "-1", "--format=%s", branch).trim()).toBe(
+      "Hold the workflow change for your yes",
+    );
+    const code = lastReply()?.line?.list as string;
+    expect(out("stay")).toBe("yes");
+    // The stay's turn, in its clone, which never had the hold commit: a fix, and its PR asked for.
+    delete process.env.FAKE_WORKFLOW;
+    process.env.FAKE_WORK = "fix";
+    try {
+      say("make it green");
+      writeFileSync(outputs, "");
+      const done = await runStay(12);
+      expect(done.summary).toContain("1 answer; left: its answer needs a token");
+      expect(out("apply")).toBe("yes");
+      const applied = await runApply(12);
+      expect(applied.status).toBe("succeeded");
+      expect(lastReply()?.c.body).not.toContain("went wrong");
+      expect(
+        git(origin, "log", "--first-parent", "--format=%s", branch).split("\n").slice(0, 4),
+      ).toEqual([
+        "Hold the workflow change for your yes",
+        "Merge the held branch into the stay's next commits",
+        "Fix what the checks found",
+        "The change",
+      ]);
+      const files = git(origin, "ls-tree", "-r", "--name-only", branch);
+      expect(files).toContain("fixed");
+      expect(files).not.toContain("x.yml");
+      // Its list waits as it was: the same change, and your yes still pushes it.
+      expect(lastReply()?.c.body).toContain("still waits for your `yes`");
+      expect(status()?.pending.workflow?.files).toEqual([".github/workflows/x.yml"]);
+      delete process.env.FAKE_WORK;
+      say(`yes ${code}`);
+      await job("issue_comment", "created");
+      expect(git(origin, "show", `${branch}:.github/workflows/x.yml`)).toBe(
+        "on: workflow_dispatch\n",
+      );
+    } finally {
+      delete process.env.FAKE_WORK;
+    }
+  }, 300_000);
+
   it("a yes after its PR merged pushes nothing, and says why (ADR 0075)", async () => {
     const origin = await onProject();
     Object.assign(process.env, { FAKE_WORK: "ok", FAKE_WORKFLOW: "on: workflow_dispatch" });
@@ -1253,6 +1387,18 @@ describe("a task on a project, end to end, as a box runs it (ADR 0035)", () => {
     expect(lastReply()?.c.body).toContain(
       "looks like a key (change.txt:1 (generic-api-key)), so it wasn't pushed",
     );
+  }, 90_000);
+
+  it("finds a key in a file with other than ASCII in its name too: each name read as it is", async () => {
+    const origin = await onProject();
+    Object.assign(process.env, {
+      FAKE_WORK: "ok",
+      FAKE_CHANGE: "const TOKEN = 'LEAK';",
+      FAKE_CHANGE_FILE: "café notes.txt",
+    });
+    await job("issues", "opened");
+    expect(branches(origin).some((b) => b.startsWith("task/12-"))).toBe(false);
+    expect(lastReply()?.c.body).toContain("looks like a key (café notes.txt:1 (generic-api-key))");
   }, 90_000);
 
   it("a key in a workflow change: never listed, and the whole push refused (ADR 0075)", async () => {
@@ -2179,6 +2325,44 @@ describe("a run end to end", () => {
     }
   });
 
+  it("a close pauses a repeat, and GitHub's Reopen carries it on with no word: the due run starts it at its time (#783)", async () => {
+    process.env.FAKE_RESULT = JSON.stringify({
+      v: 2,
+      state: "done",
+      text: "I'll remind you.",
+      repeat: { when: "every day at 09:00", kind: "reminder", text: "Drink water" },
+    });
+    await job("issues", "opened");
+    const next = Date.parse(status().repeat?.next ?? "");
+    const due = (at: number) => taskDue(new Date(at)).data;
+    const coming = () =>
+      parseStatusIssue(read().status?.body ?? "").upcoming.find((u) => u.n === 12);
+    expect(coming()?.next).toBe(new Date(next).toISOString());
+    // Your close: the task closes, off Coming up, and the due run starts nothing at its time.
+    say("close");
+    await job("issue_comment", "created");
+    expect(read().issue.state).toBe("closed");
+    expect(coming()).toBeUndefined();
+    expect(due(next + 60_000)).toMatchObject({ events: [], upcoming: [] });
+    // GitHub's Reopen: no run and no word. The next due run lists it, and starts it at its time.
+    set((f) => {
+      f.issue.state = "open";
+    });
+    expect(due(next - 60_000)?.upcoming.find((u) => u.n === 12)?.next).toBe(
+      new Date(next).toISOString(),
+    );
+    expect(due(next + 60_000)?.events).toEqual(["started #12 (a reminder)"]);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(next + 60_000);
+      expect((await job("workflow_dispatch")).do).toBe("box");
+      expect(replies().at(-1)?.c.body).toContain("Drink water");
+      expect(status().repeat?.next).toBe(new Date(next + 86_400_000).toISOString());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("checks back once: set in words, started by the due run at its time, then gone", async () => {
     process.env.FAKE_RESULT = JSON.stringify({
       v: 2,
@@ -2219,6 +2403,49 @@ describe("a run end to end", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("a repeat's PR that merged: the due run starts its run, which stops it needing you, once", async () => {
+    process.env.FAKE_RESULT = JSON.stringify({
+      v: 2,
+      state: "done",
+      text: "I'll look every Monday.",
+      repeat: { when: "every Monday at 9", kind: "job", text: "Keep the week's lessons" },
+    });
+    await job("issues", "opened");
+    // Its job asked for a PR that closes nothing (a recipe's `part-of`): the task needs you.
+    const url = "https://github.com/o/shipify/pull/7";
+    set((f) => {
+      f.prs = { [url]: "OPEN" };
+      const c = f.comments.find((x) => x.body.startsWith("<!-- shipify-task "));
+      if (c)
+        c.body = renderStatus({
+          ...findStatus(f.comments as never).state,
+          phase: "needs-you",
+          prs: [url],
+          prInfo: { [url]: { kind: "code", state: "open" } },
+        });
+      f.issue.labels.push({ name: "needs you" });
+    });
+    const labels = () => read().issue.labels.map((l) => l.name);
+    const events = () => taskDue(new Date()).data?.events;
+    // Open: nothing starts.
+    expect(events()).toEqual([]);
+    // You merge it: the next due run starts its run, which says so once and repeats again.
+    set((f) => {
+      f.prs = { [url]: { state: "MERGED", mergeCommit: { oid: "m1" } } };
+    });
+    expect(events()).toEqual(["started #12 (its PR merged)"]);
+    delete process.env.FAKE_RESULT;
+    const r = await job("workflow_dispatch");
+    expect(r.do).toBe("box");
+    expect(replies().at(-1)?.c.body).toContain("PR #7 merged, so nothing here waits for you.");
+    expect(status().phase).toBe("repeating");
+    expect(status().prInfo?.[url]?.state).toBe("merged");
+    expect(labels()).toContain("repeats");
+    expect(labels()).not.toContain("needs you");
+    // Said once: the next due run starts nothing for it.
+    expect(events()).toEqual([]);
   });
 
   it("an errand: set in words, looked at by the due run with no agent, fired once when done (ADR 0054)", async () => {
@@ -3227,6 +3454,91 @@ describe("a project you make, end to end (ADR 0069)", () => {
     expect((await job("issues", "edited")).do).toBe("nothing");
     say("what do we know so far?");
     expect((await job("issue_comment", "created")).do).toBe("think");
+  });
+});
+
+describe("what closed tasks leave: the status task's github job (task #779)", () => {
+  it("the weekly clean-up starts it; it closes a closed task's PR, deletes its branches, keeps the rest and says so", async () => {
+    const ago = (days: number) => new Date(Date.now() - days * 24 * 3600_000).toISOString();
+    const pr = "https://github.com/o/shipify/pull/760";
+    const bot = "1+shipify-pi[bot]@users.noreply.github.com";
+    const task = (number: number, state: string, closed_at?: string) => ({
+      issue: {
+        number,
+        title: `task ${number}`,
+        body: "",
+        state,
+        ...(closed_at ? { closed_at } : {}),
+        labels: [],
+        user: { login: "owner" },
+      },
+      comments: [],
+    });
+    set((f) => {
+      // The fake keeps the status issue's record apart (#900): the job reads #12 as the status
+      // task by its label, as task.yml's github job reads the number it's started with.
+      f.issue.title = "Shipify status";
+      f.issue.labels = [{ name: "shipify-status" }];
+      f.others = { 759: task(759, "closed", ago(10)), 779: task(779, "open") };
+      f.prs = { [pr]: "OPEN" };
+      Object.assign(f, {
+        status: { number: 900, title: "Shipify status", body: "", labels: [], comments: [] },
+        installs: {
+          "bot-full": [
+            { name: "shipify", full_name: "o/shipify" },
+            { name: "drop", full_name: "o/drop" },
+          ],
+        },
+        branches: {
+          "o/shipify": [
+            {
+              name: "task/759-hide-app-names",
+              email: bot,
+              prs: [{ number: 760, url: pr, bot: true }],
+            },
+            { name: "task/779-close-leftovers", email: bot },
+          ],
+          "o/drop": [
+            { name: "task/759-hide-app-names-r2", email: bot },
+            { name: "task/759-mine", email: "someone@example.com" },
+          ],
+        },
+      });
+    });
+    // On a box: the weekly clean-up starts the github job on the status task.
+    expect(startLeftovers()).toBe(true);
+    expect(read().calls).toContain("workflow run task.yml -R o/shipify -f issue=900 -f job=github");
+    // On GitHub's machines: the task step, then the job, with the bot's key.
+    Object.assign(process.env, {
+      EVENT: "workflow_dispatch",
+      JOB: "github",
+      GITHUB_RUN_ID: "904",
+      GH_TOKEN: "bot-full",
+    });
+    writeFileSync(outputs, "");
+    await runTask(12);
+    expect(out("account")).toBe("");
+    const done = await runGithub(12);
+    expect(done.summary).toBe(
+      "closed 1 PR (shipify#760) and deleted 2 branches of tasks closed 7 days ago or more",
+    );
+    const f = read() as Fake & {
+      closedBy: Record<string, string>;
+      deleted: string[];
+      status: { body: string };
+    };
+    expect(f.prs?.[pr]).toBe("CLOSED");
+    expect(f.closedBy[pr]).toBe("bot-full");
+    expect(f.deleted).toEqual([
+      "o/shipify:task/759-hide-app-names",
+      "o/drop:task/759-hide-app-names-r2",
+    ]);
+    // An open task's branch, and one named so by hand, stay.
+    expect(JSON.stringify(f)).toContain("task/779-close-leftovers");
+    expect(JSON.stringify(f)).toContain("task/759-mine");
+    expect(f.status.body).toContain("Closed tasks' PRs and branches: closed 1 PR (shipify#760)");
+    // Nothing on the status task's own thread: it's no task's run.
+    expect(replies()).toEqual([]);
   });
 });
 

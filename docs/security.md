@@ -41,7 +41,7 @@ which steps hold it. The list of every key, when each expires and how to replace
 
 | Token | Which steps | What it can do |
 |---|---|---|
-| the bot's read-only tokens (one hour each, minted right before each phase) | plan's; the finish's, decide's and apply's (ADR 0059: the finish fetches main with it, with no agent) | read every project: code, PRs, issues, statuses, runs |
+| the bot's read-only tokens (one hour each) | plan's, minted right before plan; the finish's, decide's and apply's: plan's while it lasts, else one minted after think (think's `long`; ADR 0059: the finish fetches main with it, with no agent) | read every project: code, PRs, issues, statuses, runs |
 | the agent's read-only token (one hour, minted right before think, and not renewed: an agent working longer reads GitHub only in its first hour, ADR 0059) | think (the agent's copy) | read the same, but in a work run only its project or repo and Shipify; a talk run reads every project, as its profile says. A read run's agent gets none: the box keeps it, for the task and your repos it reads (ADR 0044). A guest run's agent gets no GitHub key at all: its secrets are empty but for its login, and a guest's stay hands its agent no token (ADR 0071, [below](#a-guests-run)) |
 | the run's look token (`SHIPIFY_LOOK_TOKEN`, 32 random bytes, made by think for each ask's look server: a stay's turn gets a new one) | think (the agent's copy), when the run offers tools (ADR 0077) | the run's look calls, through its look server on `127.0.0.1`: on this box alone (nothing comes in), and only until the run ends, when the server ends with it |
 | `GITHUB_TOKEN` (the workflow's own) | the task step, plan, decide, apply; the runner of think and of a stay, never their agent (below) | write shipify's issues and comments, start runs |
@@ -49,7 +49,7 @@ which steps hold it. The list of every key, when each expires and how to replace
 | the files token | apply, when the run made files | write shipify's `shipify-files` branch |
 | an act key (a tool's write key) | apply, when decide found the calls approved | the approved calls, made by the box |
 | the run's OIDC token | apply, and the plan step's file fetch | prove the run to the door; nothing else |
-| the bot's full token | the `github` job, on GitHub's machines, no agent | a merged plan's repo, settings and keys; release, down, up, rollback (its Actions write starts an app's pipeline: no other token has it) |
+| the bot's full token | the `github` job, on GitHub's machines, no agent | a merged plan's repo, settings and keys; release, down, up, rollback (its Actions write starts an app's pipeline: no other token has it); on the status task, once a week, started by the clean-up: closes the open PRs of tasks closed 7 days ago or more, and deletes their `task/…` branches, in every repo the bot reaches (task #779) |
 | the bot's status token | the due run | read commits, statuses and runs, to follow deploys and previews |
 | the repos App's tokens (ADR 0045), on a task on another of your accounts | plan's (read); the agent's (read, its repos there only); apply's write token (contents and PRs, one repo, never workflows); the `github` job's (its PRs there) | the same as the bot's, on that account alone |
 
@@ -326,9 +326,14 @@ of its own. The walls keep your things yours:
   signed in as them, where Drop checks `by`, its own Origin and the guest options.
 - **A guest's words approve nothing:** their author is `guest`, never you, so `yes`, `no`, `go`,
   `publish`, `preview`, `start over` or `clean start` in them counts for nothing. The door refuses
-  each at once, from the same list the box reads (`NOT_A_GUESTS`, `cli/contracts/words.ts`), but a
-  plain `yes` or `no`, which answers their own run. They start runs only on the guest's own chats
+  each at once, from the same table the box reads (`GUEST_RULES`, `cli/contracts/guests.ts`), but
+  a plain `yes` or `no`, which answers their own run. They start runs only on the guest's own chats
   and projects, and only in the guest profile.
+- **Whose each thing is, one check:** `whose` in `cli/contracts/guests.ts`, for the edge and the
+  box. What the door wrote is whose its opening line says; a doc the box wrote, whose label it
+  carries; an issue anyone else wrote, yours, whatever its labels. An item of a list (a project's
+  chats, a page) is whose label it carries: only the door, the box and you set labels, never a
+  guest.
 - **Their collate and close stay on their side:** "collate the inbox" in a guest's project reads
   only the items the door wrote for that guest, and a project's close closes only the chats on its
   own side (a guest's, theirs; yours, none of a guest's).
@@ -394,7 +399,11 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
   file. Its config (`cli/lib/gitleaks.toml`) keeps gitleaks' own rules and adds GitHub's stateless
   installation tokens (`ghs_<app id>_<JWT>`, from 2026-04-27), which those miss. Every reply, log
   and chat message is masked for the same shapes (`cli/contracts/mask.ts`, the box's and the
-  edge's).
+  edge's). The runner runs that scan while `make verify` runs, on the change's files as the
+  agent's user read them out of its clone. Those bytes come from the agent's side, so the answer
+  (`scanned.json`, in the run's folder, which only the runner writes) keeps the sha256 of each file
+  it scanned: apply takes it only when each file it pushes has those same bytes, and runs gitleaks
+  itself on any other.
 - **Workflow files: the run's change is held** (ADR 0075). The run's workflow change is each file
   under `.github/workflows/` or `.github/actions/` that its commits change, against the task's
   branch on GitHub (else against `main`, from where the branch left it), but for a project's file
@@ -405,7 +414,11 @@ A run's steps, in order: **task → plan → think → decide → mint → apply
   yes", that puts each held file back as the branch on GitHub has it (else as `main` had it, where
   the branch left it), or removes it. Then apply's workflow check runs on what the push changes
   after the hold, and finds nothing of the run's. The run's lines stay in the branch's history,
-  and never run. When the held change is all the run changed and it's listed, nothing is pushed
+  and never run. A run that stays (ADR 0057) has no hold commit in its clone: when hold commits
+  are all the branch on GitHub has that the run's commits don't, apply puts them under the run's
+  next commits with one merge commit of the bot's that keeps the run's files, then holds as above
+  (#783). Anything else there (your own commit) is never merged over: that push is refused, as
+  before. When the held change is all the run changed and it's listed, nothing is pushed
   before your `yes`. One you changed yourself on the task's branch on GitHub isn't the run's: when
   the run leaves it as it is there, it goes through.
   - **Listed only when nothing it changes runs before your merge:** a workflow file passes only
@@ -799,7 +812,7 @@ From [AGENTS.md](../AGENTS.md), for every person and agent:
 | Every change is a PR you merge; never merge what deploys production; never force-push or delete | the merge is the approval and its record |
 | Create repos, set secrets or publish only with your go-ahead | each widens who holds a key |
 | Nothing to sign in to on a box, and no sudo after `box add` (the runner's rules start its agents, and, as root, only the box's own update of main's setup) | a box with no logins has nothing to leak, and nothing waits on you to stay current |
-| Versions change only in a PR (each agent's install in `executors.json`, Node 22, pnpm, actions); the OS's own updates (Ubuntu's security and normal ones), the runner's own and Node 22.x fixes excepted | nothing changes a run unseen |
+| Versions change only in a PR (each agent's install in `executors.json`, Node 26, pnpm, actions); the OS's own updates (Ubuntu's security and normal ones), the runner's own and Node 26.x fixes excepted | nothing changes a run unseen |
 | Free only; keys live with their boundary | a leaked key stays inside its boundary |
 | An account is yours only when you add it; a run holds only what its repo's account may see | an install can't widen trust, and one account's text can't reach another's data |
 

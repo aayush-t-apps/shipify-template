@@ -9,7 +9,7 @@ how to check each part and what to do when one fails: [end-to-end.md](end-to-end
 **You need:** a GitHub account (your own, or an organization; free), a Claude subscription (or a
 gateway key: OpenRouter has free models), and a machine to be a box: a Raspberry Pi, a small VPS,
 or this PC, on Ubuntu 24.04 LTS or newer. On the PC: Linux, or Windows with WSL and systemd on,
-with Node 22, pnpm, git and `gh`. Cloudflare (free) comes only with the add-ons that need it.
+with Node 26, pnpm, git and `gh`. Cloudflare (free) comes only with the add-ons that need it.
 
 **First, your copy:** on GitHub, open the Shipify template (the one you were given, or
 `<owner>/shipify-template`) and press **Use this template** → **Create a new repository**: name it

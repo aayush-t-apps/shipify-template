@@ -90,6 +90,10 @@ belongs to the authors named there.
 - **`frontend-design`:** a last section, "A one-file page (in Shipify)", for the pages Drop shows
   in its sandbox: everything inside the file, what works and what doesn't, small screens first,
   light and dark, under 1 MB; and a `scenarios.md` (ADR 0072, 2026-11-06).
+- **`verification-before-completion`:** an "In Shipify" note: in a task, the test files a change
+  touches, the quick checks and `ship pr --check`, never the box's full set, which the box runs
+  once after the agent; "FULL" means the whole command for the claim, not the whole suite
+  (2026-11-19).
 - **Everything else:** unchanged.
 
 **Adding or updating one** ([writing-skills](writing-skills/SKILL.md) has the whole way):

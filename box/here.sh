@@ -9,7 +9,7 @@
 #      token you paste (--token). The login lives in a folder this script deletes when it ends
 #   3. your copy (asked; by default the private Shipify copy you manage, else `<you>/shipify`): you
 #      manage its runners, and it's private
-#   4. your copy's own `ship box add` on this machine, from a clone in that folder, with Node 22 and
+#   4. your copy's own `ship box add` on this machine, from a clone in that folder, with Node 26 and
 #      pnpm put there too: the plan first, then your yes. sudo asks for your password once
 #   5. always, even on an error or Ctrl-C: the folder deleted, with the login, the clone and the
 #      tools in it, and the link to revoke the approval on GitHub
@@ -155,7 +155,7 @@ tools() {
     note "the image's gh $(gh --version | head -n 1 | cut -d' ' -f3), Node $(node --version)"
     return
   fi
-  say "gh, Node 22 and pnpm, in a folder deleted at the end"
+  say "gh and Node 26, in a folder deleted at the end (pnpm comes with your copy)"
   mkdir -p "$WORK/bin" "$WORK/node"
   # gh: GitHub's release, its checksum checked.
   local ghv tgz
@@ -168,20 +168,25 @@ tools() {
     curl -fsSL "https://github.com/cli/cli/releases/download/v${ghv}/gh_${ghv}_checksums.txt" |
     grep " ${tgz}\$" | sha256sum -c - >/dev/null) || die "gh's download didn't match its checksum."
   tar -xzf "$WORK/$tgz" -C "$WORK" && mv "$WORK/gh_${ghv}_linux_${gharch}/bin/gh" "$WORK/bin/gh"
-  # Node 22: nodejs.org's newest 22.x, its checksum checked (as box/setup.sh takes it).
-  local base=https://nodejs.org/dist/latest-v22.x file
-  file=$(curl -fsSL "$base/SHASUMS256.txt" | grep -oE "node-v22\.[0-9.]+-linux-${ARCH}\.tar\.xz" | head -n 1)
-  [ -n "$file" ] || die "couldn't find Node 22 for $ARCH on nodejs.org."
+  # Node 26: nodejs.org's newest 26.x, its checksum checked (as box/setup.sh takes it).
+  local node=26 base file
+  base=https://nodejs.org/dist/latest-v$node.x
+  file=$(curl -fsSL "$base/SHASUMS256.txt" | grep -oE "node-v$node\.[0-9.]+-linux-${ARCH}\.tar\.xz" | head -n 1)
+  [ -n "$file" ] || die "couldn't find Node $node for $ARCH on nodejs.org."
   (cd "$WORK" && curl -fsSLO "$base/$file" &&
     curl -fsSL "$base/SHASUMS256.txt" | grep " ${file}\$" | sha256sum -c - >/dev/null) ||
     die "Node's download didn't match its checksum."
   tar -xJf "$WORK/$file" -C "$WORK/node" --strip-components 1
   export PATH="$WORK/bin:$WORK/node/bin:$PATH"
-  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_HOME="$WORK/corepack"
-  corepack enable --install-directory "$WORK/bin"
-  command -v git >/dev/null ||
-    { sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git >/dev/null; } ||
-    die "couldn't install git."
+  # git, and libatomic1 (Node 26 needs it, and a minimal Ubuntu has none), when they're missing.
+  local missing=""
+  command -v git >/dev/null || missing=git
+  node --version >/dev/null 2>&1 || missing="$missing libatomic1"
+  if [ -n "$missing" ]; then
+    # shellcheck disable=SC2086 # one or two package names
+    { sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $missing >/dev/null; } ||
+      die "couldn't install ${missing# }."
+  fi
   note "gh $ghv, $(node --version)"
 }
 
@@ -241,6 +246,12 @@ copy() {
   # gh lends git its login for this clone alone: nothing is written to your git settings.
   git -c credential.helper= -c "credential.helper=!$WORK/bin/gh auth git-credential" \
     clone -q --depth 1 "https://github.com/$COPY.git" "$WORK/shipify" || die "couldn't clone $COPY."
+  # pnpm, as your copy pins it (Node 26 has no corepack), from npm into the folder, its download
+  # cache too. The image has its own.
+  if [ "$CONTAINER" != 1 ]; then
+    (cd "$WORK/shipify" && npm install -g --silent --no-audit --no-fund --cache "$WORK/npm" --prefix "$WORK/node" \
+      "$(node -p 'require("./package.json").packageManager')") || die "couldn't install pnpm."
+  fi
   (cd "$WORK/shipify" && pnpm install --frozen-lockfile --prod --silent) ||
     die "couldn't install $COPY's packages."
 }

@@ -50,3 +50,13 @@
 - **Ask:** "make a report and share it".
 - **Without it:** the reply named the file, but it was not in the out folder or the files list. An earlier reply's file also lacked what the reply said.
 - **Done well:** put the file in the out folder and the files list, and open an earlier file to check it before you build on it.
+
+### 9. A test value shaped like a key
+- **Ask:** add a test for a token check, and open the PR.
+- **Without it:** the test held a literal with a real token's prefix and length. The quick PR check passed, and the secret scan then blocked the push.
+- **Done well:** build the value at run time, and run the secret scan on the changed files before you ask for the PR.
+
+### 10. The box's full set, run twice
+- **Ask:** make a change in a task and ask for its PR.
+- **Without it:** the agent read "run the FULL command" as the whole suite and ran the box's full set itself (22 minutes on a busy box). The box then ran the same set again before the PR (19 minutes), and the other runs on the box slowed down.
+- **Done well:** run the test files the change touches, the quick checks and `ship pr --check`; the box runs the full set once.

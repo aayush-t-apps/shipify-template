@@ -3,7 +3,7 @@
 // per isolate until shortly before it expires. The App may do exactly what its install allows:
 // Issues read and write, Actions, Administration and Variables read, on shipify only. Every call
 // goes through a fetch the caller hands in, so a tick can count its subrequests and stop in time.
-import { guestLabel, RUN_WRITER, readFrom } from "../../cli/contracts/index.ts";
+import { RUN_WRITER, readFrom, whose } from "../../cli/contracts/index.ts";
 import { recall, remember } from "./cache.ts";
 import type { Deps, Env } from "./env.ts";
 import { BudgetSpent, obj, utf8 } from "./env.ts";
@@ -225,11 +225,10 @@ export const issueOf = (issueUrl: string | undefined) =>
   Number(/\/issues\/(\d+)$/.exec(issueUrl ?? "")?.[1] ?? 0);
 
 /**
- * Whether an issue is this guest's (ADR 0071), from the record: its opening line, written by the
- * door, names them; or the box wrote it (a doc of their project, from their run) with their label.
- * Nothing the page sends counts.
+ * Whose an issue is (ADR 0071, the contract's `whose`): a guest's id, or undefined for yours, its
+ * writer proven here (the door, the box's runs, or anyone else). Nothing the page sends counts.
  */
-export const guestsOwn = (
+export const whoseIs = (
   gh: GitHub,
   issue: {
     body?: string | null;
@@ -237,7 +236,9 @@ export const guestsOwn = (
     performed_via_github_app?: { id?: number } | null;
     user?: { login?: string; type?: string; id?: number } | null;
   },
-  guest: string,
 ) =>
-  (byDoor(gh, issue) && readFrom(issue.body)?.guest === guest) ||
-  (byRun(issue) && (issue.labels ?? []).some((l) => l.name === guestLabel(guest)));
+  whose({
+    labels: issue.labels,
+    by: byDoor(gh, issue) ? "door" : byRun(issue) ? "run" : "other",
+    from: readFrom(issue.body)?.guest,
+  });

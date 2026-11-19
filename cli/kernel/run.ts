@@ -5,7 +5,7 @@
 //   ship run decide <n>   its result into writes; outputs what to mint: repo, act, workflows, files
 //   ship run apply <n>    make the writes, save the status, tell the door
 //   ship run github <n>   the github job's pending work: a merged plan's repo and keys, an operation,
-//                         PRs to close
+//                         PRs to close; on the status task, closed tasks' PRs and branches (task #779)
 // Each step leaves its file in .tasks/<n>/ for the next. Outputs come from fixed lists only.
 import {
   appendFileSync,
@@ -19,6 +19,7 @@ import { basename, join } from "node:path";
 import { filesDir, queue, rec, thisRun, workspace } from "../commands/task/context.ts";
 import { followDeploy } from "../commands/task/deploys.ts";
 import { fileHash, freeFile, laterAttachments, taskAttachments } from "../commands/task/files.ts";
+import { leftoversJob } from "../commands/task/leftovers.ts";
 import { LOGIN } from "../contracts/accounts.ts";
 import {
   asProblem,
@@ -39,10 +40,12 @@ import { callsSoFar } from "../lib/exec.ts";
 import { ghRun, platformRepo, readsSeen, repoOfPr } from "../lib/github.ts";
 import { sourceControl } from "../lib/providers.ts";
 import { onBox } from "../lib/sandbox.ts";
+import { scannedIn } from "../lib/secret-scan.ts";
 import { type Result, ShipError } from "../lib/output.ts";
 import type { RecordComment, RecordWrite } from "../lib/plugins/record.ts";
 import { repoFor } from "../lib/projects-on-github.ts";
 import type { RunDetails } from "../lib/runs.ts";
+import { isStatusIssue } from "../lib/status-issue.ts";
 import { PLATFORM, type TaskState } from "../lib/task.ts";
 import { agentForRun, executors, taskAgent } from "./agent.ts";
 import { apply, heldChange } from "./apply.ts";
@@ -83,8 +86,8 @@ import {
   takes,
 } from "./stay.ts";
 import { placeFor } from "./place.ts";
-import { finish, placeId, think as runThink, type ThinkOut } from "./think.ts";
-import type { Decided, Plan, Said, Snapshot, ThinkMeta, Trigger, Write } from "./types.ts";
+import { FINISH_MINUTES, finish, placeId, think as runThink, type ThinkOut } from "./think.ts";
+import type { Decided, Plan, Said, Snapshot, Think, ThinkMeta, Trigger, Write } from "./types.ts";
 import { isWorkflowFile } from "./workflows.ts";
 
 const dir = (n: number) => join(workspace(), ".tasks", String(n));
@@ -229,7 +232,9 @@ export async function runTask(n: number): Promise<Result> {
   const at = new Date(Date.now() - 60_000).toISOString();
   const record = readRecord(n);
   save(n, "task", { run: thisRun(), at, record });
-  const account = recordAccount(n, record) ?? "";
+  // The status task's github job is the weekly clean-up's (task #779): no other account, whatever
+  // its record's text names.
+  const account = isStatusIssue(record.issue) ? "" : (recordAccount(n, record) ?? "");
   output("account", account, ACCOUNT);
   // The repos on that account whose PRs the github job may close: its token's, and no more.
   const prRepos = (record.state.pending.closePrs ?? [])
@@ -526,13 +531,42 @@ export async function runThinkStep(
     ],
   });
   save(n, "think", out);
+  // The read key after think (task.yml) is minted only when plan's may not last to apply's end; a
+  // stay's turn has no such step.
+  if (!resume.resume)
+    output(
+      "long",
+      keyRunsOut(Date.parse(s.now), finishes(saved.p.think, out) ? FINISH_MINUTES : 0) ? "yes" : "",
+    );
   return { command: "run think", status: "succeeded", summary: `task #${n}: thought` };
+}
+
+/** A read key's life: GitHub's App tokens last an hour. */
+const KEY_MINUTES = 60;
+/** Decide and apply after think or a stay (a clone, a push, the PR, the replies), with room. */
+const APPLY_MINUTES = 15;
+
+/**
+ * Whether a read key minted at `since` (plan's, or the stay's) may run out before apply ends, with
+ * `more` minutes of steps before decide (the finish): then task.yml mints another for decide and
+ * apply (think's or the stay's `long`), else they take that one (task #785).
+ */
+export const keyRunsOut = (since: number, more = 0, now = Date.now()) =>
+  !Number.isFinite(since) || (now - since) / 60_000 + more + APPLY_MINUTES > KEY_MINUTES;
+
+/** Whether the finish has a PR to bring up to date: a work run of yours that asks one, with commits. */
+function finishes(k: Think, t: ThinkOut): boolean {
+  const path = join(t.out, "result.json");
+  const result = readResult(existsSync(path) ? readFileSync(path, "utf8") : undefined);
+  const asks = !("error" in result) && result.state !== "failed" && result.pr?.kind !== "publish";
+  const mine = k.profile === "work" && k.project && !k.ownRules && !k.account;
+  return Boolean(mine && asks && result.pr && t.meta.commits && !t.meta.firstPush);
 }
 
 /**
  * The finish (ADR 0059), between think and decide: a work run's branch, on a project of yours that
  * its PR is asked for, brought up to date with main and checked again, with a read key minted after
- * the agent. Any other run has nothing to finish.
+ * the agent, or plan's when that lasts (keyRunsOut). Any other run has nothing to finish.
  */
 export async function runFinishStep(n: number): Promise<Result> {
   const saved = load<{ s: Snapshot; p: Plan }>(n, "plan");
@@ -541,17 +575,14 @@ export async function runFinishStep(n: number): Promise<Result> {
   if (saved?.p.do !== "think" || !t)
     return { ...nothing, summary: `task #${n}: nothing to finish` };
   const k = saved.p.think;
-  const path = join(t.out, "result.json");
-  const result = readResult(existsSync(path) ? readFileSync(path, "utf8") : undefined);
-  const asks = !("error" in result) && result.state !== "failed" && result.pr?.kind !== "publish";
-  const mine = k.profile === "work" && k.project && !k.ownRules && !k.account;
-  if (!mine || !asks || !result.pr || !t.meta.commits || t.meta.firstPush)
-    return { ...nothing, summary: `task #${n}: no PR to bring up to date` };
+  if (!finishes(k, t)) return { ...nothing, summary: `task #${n}: no PR to bring up to date` };
   const done = await finish({ ...saved.s, state: saved.p.state }, k, {
     keep: t.out,
     local: join(dir(n), "agent"),
   });
   if (done.note && t.details) t.details.notes = [...(t.details.notes ?? []), done.note];
+  // Its PR opens as a draft, and the reply says why first (task #791).
+  if (done.draft) t.meta.draft = done.draft;
   if (done.changed) {
     t.meta.touchesWorkflows = done.changed.some((f) => f.startsWith(".github/workflows/"));
     if (done.changed.some(isWorkflowFile)) t.meta.holds = true;
@@ -561,7 +592,7 @@ export async function runFinishStep(n: number): Promise<Result> {
   return {
     command: "run finish",
     status: "succeeded",
-    summary: `task #${n}: ${done.note ?? "up to date with main"}`,
+    summary: `task #${n}: ${done.note ?? done.draft ?? "up to date with main"}`,
   };
 }
 
@@ -592,6 +623,7 @@ function withHeld(s: Snapshot, p: Plan, t: ThinkOut | undefined): ThinkMeta {
       k.base ?? "main",
       bundle,
       process.env.SHIPIFY_READ_TOKEN ?? "",
+      scannedIn(t.out),
     );
     return held ? { ...meta, held } : meta;
   } catch (e) {
@@ -739,12 +771,10 @@ export async function runApply(n: number, record?: TaskRecord): Promise<Result> 
 }
 
 export async function runGithub(n: number): Promise<Result> {
-  const record = recordOf(n);
-  const { s, ctx } = await snapshot(
-    n,
-    { kind: "dispatch", job: "github" },
-    record ? { record } : {},
-  );
+  const record = recordOf(n) ?? readRecord(n);
+  // The status task's: the weekly clean-up of what closed tasks left (task #779), started by a box.
+  if (isStatusIssue(record.issue)) return leftoversJob();
+  const { s, ctx } = await snapshot(n, { kind: "dispatch", job: "github" }, { record });
   const p = decidePlan(s, ctx);
   if (p.do !== "github")
     return { command: "run github", status: "skipped", summary: `task #${n}: ${p.why}` };
@@ -871,6 +901,8 @@ export async function runStay(n: number): Promise<Result> {
       if (needsMint(d)) {
         mints(s, d);
         output("apply", "yes");
+        // Its apply takes the stay's own read key (minted as it started) while that one lasts.
+        output("long", keyRunsOut(began) ? "yes" : "");
         process.stderr.write(`  · ${clock.line()}\n`);
         return "apply";
       }

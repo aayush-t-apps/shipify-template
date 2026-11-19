@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  againLine,
   agentsSeen,
   asProblem,
+  isAgain,
   canonicalJson,
   fromLine,
   logger,
@@ -43,6 +45,15 @@ describe("contracts", () => {
     expect(readFrom("<!-- shipify-from {broken} -->")).toBeUndefined();
     expect(readFrom("hello")).toBeUndefined();
     expect(withoutLine(`${line}\nhello`)).toBe("hello");
+  });
+
+  it("marks the watch's start of a run for your words (task #786): never a from line, and hidden", () => {
+    const body = `${againLine}\nStarted again.`;
+    expect(isAgain(body)).toBe(true);
+    expect(readFrom(body)).toBeUndefined();
+    expect(withoutLine(body)).toBe("Started again.");
+    expect(isAgain(`hello\n${againLine}`)).toBe(false);
+    expect(isAgain(undefined)).toBe(false);
   });
 
   it("writes and reads a run's reply line with its key and destinations", () => {
