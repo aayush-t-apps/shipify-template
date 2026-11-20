@@ -68,6 +68,11 @@
 # corepack: pnpm comes from npm, at the version Shipify pins, and runs the version each project pins
 # by itself, as corepack did. Corepack's links in /usr/local/bin and the runner's corepack cache
 # are removed.
+# Setup 19: the runner's own cache of actions, so "Set up job" copies each action the box's
+# workflows pin instead of downloading it again in every job (about 3 s of its 6 s on a Pi). A
+# folder only the runner writes, /home/shipify/action-archives, named in each slot's .env
+# (ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE); the due run fills it and the weekly clean-up removes what
+# no workflow pins any more. A slot takes it at its next start.
 # Running it again updates Node to the newest 26.x, and adds or removes slots to match
 # RUNNER_SLOTS.
 # SSH takes keys only, never passwords, once the account running this has a key; with
@@ -86,7 +91,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=18
+SETUP_VERSION=19
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -432,6 +437,16 @@ install -d -o shipify -g shipify -m 0755 "$TOOL_DIR"
 chown shipify:shipify "$TOOL_DIR"
 chmod 0755 "$TOOL_DIR"
 
+# The runner's own cache of actions (setup 19): GitHub's archive of each action the box's workflows
+# pin, which "Set up job" copies instead of downloading it in every job (cli/lib/action-cache.ts
+# fills it). What's in it runs with the bot's key, so it's the runner's alone, in its own home
+# (0700): no agent reaches it. Empty, the runner downloads as before.
+ACTION_CACHE=/home/shipify/action-archives
+say "The runner's cache of actions: $ACTION_CACHE"
+install -d -o shipify -g shipify -m 0700 "$ACTION_CACHE"
+chown shipify:shipify "$ACTION_CACHE"
+chmod 0700 "$ACTION_CACHE"
+
 # The agents' own users (setup 5, ADR 0031): slot k's agent runs as shipify-agent-<k>, a system
 # user with no password and no login shell. Its runs go in /srv/shipify-agent-<k>, its own, with
 # group shipify and setgid (2711): the runner can pass through to a run's out/ folder, which it
@@ -723,15 +738,17 @@ registered() {
 }
 
 # slot_env <folder>: what the slot's runner hands its jobs (it reads its folder's .env when it
-# starts): the box, the box's folder (the weekly clean-up covers every slot) and the machine's one
-# tool cache. The rest of the file is the runner's own.
+# starts): the box, the box's folder (the weekly clean-up covers every slot), the machine's one
+# tool cache, and the runner's cache of actions (setup 19), which the runner reads itself. The rest
+# of the file is the runner's own.
 slot_env() {
   local home=$1 tmp="$WORK/slot.env"
   {
-    grep -vE '^$|^(SHIPIFY_BOX|SHIPIFY_BOX_DIR|RUNNER_TOOL_CACHE)=' "$home/.env" 2>/dev/null || true
+    grep -vE '^$|^(SHIPIFY_BOX|SHIPIFY_BOX_DIR|RUNNER_TOOL_CACHE|ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE)=' "$home/.env" 2>/dev/null || true
     echo "SHIPIFY_BOX=$RUNNER_NAME"
     echo "SHIPIFY_BOX_DIR=$RUNNER_HOME"
     echo "RUNNER_TOOL_CACHE=$TOOL_DIR"
+    echo "ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=$ACTION_CACHE"
   } > "$tmp"
   if ! cmp -s "$tmp" "$home/.env"; then
     install -m 600 -o shipify -g shipify "$tmp" "$home/.env"

@@ -88,7 +88,7 @@ function setUp(o: { aud?: boolean; guests?: string[] } = {}) {
     { name: "Aayush", on: { github: "owner", web: "me" } },
   ]);
   f.w.apps[`https://${TEAM}/cdn-cgi/access/certs`] = { body: { keys: [jwk] } };
-  const store = memoryKv(() => f.w.at);
+  const store = memoryKv();
   const assets = {
     fetch: async (r: Request) =>
       new URL(r.url).pathname === "/admin/chat/index.html"

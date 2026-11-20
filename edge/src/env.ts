@@ -139,21 +139,12 @@ export const ownProof = async (env: Env, channel: string) => {
 
 /**
  * As much of Workers KV as the edge uses, bound as FILES (ADR 0036): your model (model.ts) and the
- * devices a chat notifies (below). It held the web chat's files till ADR 0069, which copied them
- * to R2 once (store.ts).
+ * devices a chat notifies (below), each one key read whole, never a listing. It held the web
+ * chat's files till ADR 0069 moved them to R2 (store.ts).
  */
 export interface Kv {
   get(key: string, type: "stream"): Promise<ReadableStream | null>;
-  put(
-    key: string,
-    value: ReadableStream | ArrayBuffer | string,
-    options?: { expirationTtl?: number; metadata?: unknown },
-  ): Promise<void>;
-  list<M>(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
-    keys: { name: string; expiration?: number; metadata?: M }[];
-    list_complete: boolean;
-    cursor?: string;
-  }>;
+  put(key: string, value: string): Promise<void>;
 }
 
 /** The store, when the Worker has it (an optional binding: Env holds strings). */

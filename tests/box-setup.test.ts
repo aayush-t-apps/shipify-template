@@ -31,8 +31,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 18, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=18$/m);
+  it("is version 19, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=19$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -271,6 +271,26 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(code).not.toContain("BROWSERS_DIR");
     // The services: refused without the umask that keeps the runner's files its own.
     expect(code).toContain("grep -qx 'UMask=0077' \"$UNIT_FILE\"");
+  });
+
+  it("gives the runner a cache of actions that only it writes, named in each slot's .env (setup 19)", () => {
+    // In the runner's own home (0700): what's in it runs with the bot's key, so no agent reaches it.
+    expect(code).toContain("ACTION_CACHE=/home/shipify/action-archives");
+    expect(code).toContain('install -d -o shipify -g shipify -m 0700 "$ACTION_CACHE"');
+    expect(code).toContain('chmod 0700 "$ACTION_CACHE"');
+    expect(at("chmod 0700 /home/shipify")).toBeLessThan(at('chmod 0700 "$ACTION_CACHE"'));
+    // The variable actions/runner reads in "Set up job", beside the box's own: written once, an
+    // older line of its own replaced, the runner's lines kept.
+    const env = fn("slot_env");
+    expect(env).toContain('echo "ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=$ACTION_CACHE"');
+    expect(env).toContain(
+      "grep -vE '^$|^(SHIPIFY_BOX|SHIPIFY_BOX_DIR|RUNNER_TOOL_CACHE|ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE)='",
+    );
+    // Made before any slot's .env names it, in a container too (its home is a volume).
+    expect(at('install -d -o shipify -g shipify -m 0700 "$ACTION_CACHE"')).toBeLessThan(
+      at('slot_env "$home"'),
+    );
+    expect(setup).toMatch(/^# Setup 19: the runner's own cache of actions/m);
   });
 
   it("gives each slot's agent a user of its own, outside the runner's group, with a folder only it and the runner enter", () => {

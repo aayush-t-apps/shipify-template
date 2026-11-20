@@ -1,15 +1,17 @@
 // The watch's runs (ADR 0019, docs/watch.md): what watch.yml runs when the watch (the edge's check
 // every 5 minutes) or you press one of its buttons. Each is one job:
 //   due      what's due now (lib: taskDue starts each due task's own run and closes a quiet part),
-//            each box's weekly clean-up once its last is a week old, this box's own setup update
-//            when main's is newer (lib/box-update.ts), this box's health, and the schedule (the
-//            soonest time is `watch.next`, which the watch reads)
+//            each box's weekly clean-up once its last is a week old, this box's runner's cache of
+//            actions filled (lib/action-cache.ts), its own setup update when main's is newer
+//            (lib/box-update.ts), its health, and the schedule (the soonest time is
+//            `watch.next`, which the watch reads)
 //   cleanup  one box's weekly clean-up: its own setup update when it's due, closed or deleted
 //            tasks' folders, the agents' leftover run folders (lib/sandbox.ts), old agent
-//            installs, doctor (the workflow prunes the package caches after, while no other slot
-//            runs); and, once a week in all, closed chats' files and the 30-day close
-//            (task/sweep.ts, ADR 0069)
-//   alert    what the watch saw change: a box offline, back, new or gone; an app failing or back
+//            installs, the runner's cache of actions kept to the pins, doctor (the workflow
+//            prunes the package caches after, while no other slot runs); and, once a week in
+//            all, closed chats' files and the 30-day close (task/sweep.ts, ADR 0069)
+//   alert    what the watch saw change: a box offline, back, new or gone (its console link then
+//            taken out by the status task's github job); an app failing or back
 // A box knows none of this: it runs what the queue hands it. The status issue is the record.
 import { readdirSync, statSync } from "node:fs";
 import { hostname } from "node:os";
@@ -19,6 +21,7 @@ import { tellDoor } from "../kernel/door.ts";
 import { hash8 } from "../kernel/keys.ts";
 import { replyTo } from "../kernel/route.ts";
 import { doorLogin } from "../kernel/snapshot.ts";
+import { actionsSaid, boxPins, keepActions } from "../lib/action-cache.ts";
 import { agentNews, tidyTools } from "../lib/agent-install.ts";
 import { loadExecutors } from "../lib/agents.ts";
 import { boxFacts } from "../lib/box-facts.ts";
@@ -26,6 +29,7 @@ import { otherSlotBusy, type Updated, updateBox } from "../lib/box-update.ts";
 import { findStack } from "../lib/catalog.ts";
 import { defaultChannels } from "../lib/channels.ts";
 import { copySetting, PLATFORM_ROOT } from "../lib/config.ts";
+import { CONSOLES, consolesOf } from "../lib/consoles.ts";
 import { platformRepo } from "../lib/github.ts";
 import { readKeyDates } from "../lib/key-dates.ts";
 import { nodeEnding } from "../lib/node-support.ts";
@@ -60,12 +64,23 @@ import {
   projectsWeek,
 } from "./task/digest.ts";
 import { type Due, keepRecipes } from "./task/due.ts";
+import { goneLinked, startLeftovers } from "./task/leftovers.ts";
 import { nearlyFull, readNotebook } from "./task/notebook.ts";
 import { sweep, sweepOnce } from "./task/sweep.ts";
 import { cleanUpTasks, runUrl, taskDue } from "./task.ts";
 
 const WEEK = 7 * 24 * 60 * 60_000;
 const inActions = () => process.env.GITHUB_ACTIONS === "true";
+/**
+ * The runner's cache of actions (box setup 19, lib/action-cache.ts), kept to the box's workflows'
+ * pins; `prune` removes the rest. Nothing on a box before setup 19, or a PC.
+ */
+const keepCache = (prune: boolean) =>
+  keepActions(
+    tryOr(() => boxPins(), []),
+    process.env.ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE,
+    { prune },
+  ).catch(() => undefined);
 /**
  * The box this run is on: the box its slot belongs to (SHIPIFY_BOX, from the slot's `.env`, ADR
  * 0020), else its runner's name in a job, else this machine's name.
@@ -126,6 +141,9 @@ export async function watchDue(): Promise<Result> {
   // The agents' pins beside their newest, and any advisory against one (task #673): the reads
   // executors.json names, with no key, only when it's said.
   const agents = sayDigest ? ((await agentNews(loadExecutors())) ?? null) : undefined;
+  // The runner's cache of actions on this box (box setup 19): a pin new since, downloaded once.
+  const cached = actionsSaid(await keepCache(false));
+  if (cached) events.push(`${box}: ${cached}`);
   // This box's own setup update (box setup 14), when main's is newer: last, as it takes minutes.
   const updated = inActions() ? tryOr(() => updateBox(box), undefined) : undefined;
   const posted = updateStatusIssue(
@@ -314,6 +332,9 @@ export async function watchCleanup(boxArg?: string): Promise<Result> {
   const idle = onBox && !otherSlotBusy();
   const tidied = idle ? tryOr(() => tidyTools(loadExecutors()), [] as string[]) : [];
   const images = idle ? pruneContainers() : { pruned: 0, failed: [] as string[] };
+  // The runner's cache of actions (box setup 19): filled, and what no workflow pins removed. A
+  // job setting up meanwhile that finds its archive gone downloads it, as before.
+  const cached = actionsSaid(await keepCache(true));
   // A notebook page nearly full is said.
   const full = tryOr(() => nearlyFull(readNotebook()), [] as string[]);
   const door = await doorAnswers();
@@ -340,7 +361,7 @@ export async function watchCleanup(boxArg?: string): Promise<Result> {
     const failed = `the weekly steps stopped: ${(e as Error).message.slice(0, 160)}`;
     return { said: failed, deleted: 0, bytes: 0, unclaimed: 0, failed };
   });
-  const agents = `${runs.removed ? `, ${runs.removed} old agent run folder(s) removed` : ""}${runs.failed.length ? `; couldn't clean ${runs.failed.join(", ")}` : ""}${tidied.length ? `, old tools removed (${tidied.join(", ")})` : ""}${images.pruned ? `, containers' images removed (${images.pruned} slot(s))` : ""}${images.failed.length ? `; couldn't prune containers of ${images.failed.join(", ")}` : ""}${onBox && !idle ? "; tools and images left as they are (another slot is busy)" : ""}`;
+  const agents = `${runs.removed ? `, ${runs.removed} old agent run folder(s) removed` : ""}${runs.failed.length ? `; couldn't clean ${runs.failed.join(", ")}` : ""}${tidied.length ? `, old tools removed (${tidied.join(", ")})` : ""}${images.pruned ? `, containers' images removed (${images.pruned} slot(s))` : ""}${images.failed.length ? `; couldn't prune containers of ${images.failed.join(", ")}` : ""}${onBox && !idle ? "; tools and images left as they are (another slot is busy)" : ""}${cached ? `, ${cached}` : ""}`;
   const summary = `${t.folders} task folder(s) removed${agents}${swept ? `; ${swept.said}` : ""}${full.length ? `; notebook pages nearly full, to split: ${full.join(", ")}` : ""}${door ? `; ${door}` : ""}`;
   const posted = updateStatusIssue(
     (s) => {
@@ -422,6 +443,10 @@ export async function watchAlert(json: string | undefined): Promise<Result> {
     { timeZone: timeZone() },
   );
   await toYourChats(posted);
+  // A gone box's console link goes with it (task #803): only the bot's key writes a variable, so
+  // the status task's github job takes it out, on GitHub's machines.
+  const linked = goneLinked(findings.boxes, consolesOf(copySetting(CONSOLES)));
+  const dropping = linked.length > 0 && startLeftovers();
   const seen = [
     ...Object.entries(findings.boxes).map(([n, st]) => `${n} ${st}`),
     ...Object.entries(findings.apps).map(([n, st]) => `${n} ${st}`),
@@ -429,7 +454,7 @@ export async function watchAlert(json: string | undefined): Promise<Result> {
   ];
   return ok(
     "watch alert",
-    seen.length ? `${seen.join(", ")}${changed ? "" : " (nothing new)"}` : "nothing to note",
+    `${seen.length ? `${seen.join(", ")}${changed ? "" : " (nothing new)"}` : "nothing to note"}${dropping ? `; ${linked.join(", ")}'s console link goes (the status task's github job)` : ""}`,
   );
 }
 

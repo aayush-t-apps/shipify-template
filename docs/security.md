@@ -186,7 +186,8 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
   don't, and a program a script runs isn't matched by any. Those fail all the same on the walls
   below, which hold for it, its helpers and anything it starts.
 - **The walls it can't cross:**
-  - the runner's home, `/home/shipify` (0700): its runners, jobs' folders, logins and caches;
+  - the runner's home, `/home/shipify` (0700): its runners, jobs' folders, logins and caches,
+    its cache of actions too (box setup 19: what's in it runs with the bot's key);
   - anything the runner writes (its services run with `UMask=0077`);
   - a runner process's environment (`/proc/<pid>/environ`), where the job's tokens are;
   - another slot's runs (each slot's folder is 2711, its own: another user can pass through it,

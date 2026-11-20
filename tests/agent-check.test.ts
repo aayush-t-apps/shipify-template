@@ -246,7 +246,9 @@ function remote(executors: string, makeFile: string) {
     writeFileSync(join(seed, f), body);
   }
   git(seed, "add", "-A");
-  git(seed, "commit", "-q", "-m", "first");
+  // Its own name: a box's hostname has no domain, so git makes up none (and on Node 26 the
+  // sandbox's GIT_AUTHOR_* in a replaced process.env reach no child).
+  git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "first");
   git(seed, "push", "-q", "origin", "main");
 }
 

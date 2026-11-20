@@ -351,7 +351,8 @@ out): a version moves only in a PR that says so, after the first live run.
 **Later, each after your `go`** (from `docs/roadmap.md`, "Faster and cheaper runs"):
 1. **Fewer token steps in `task.yml`:** 2 to 4 s less before each first reply. A workflow change,
    so a list for your Yes (ADR 0075).
-2. **The runner's own cache of actions** (box setup 17): about 3 s less on every job.
+2. **The runner's own cache of actions** (built as box setup 19, task #803): about 3 s less on
+   every job.
 3. **A reply's push before its files:** your phone rings sooner when a reply has files.
 
 **Cut, as not worth what it costs** (your ask: only what's worth it):

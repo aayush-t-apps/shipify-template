@@ -5,8 +5,8 @@
 // change an object's metadata alone, so a file that gets its chat later is written again under the
 // same key, and one a second chat uses is copied for it. Plain web code: R2 is reached through the
 // small shape in env.ts, so tests stand in for it.
-import type { Bucket, Deps, Env, Kv } from "./env.ts";
-import { bucketOf, FILE_REF, fileRefOf, kvOf, logOf } from "./env.ts";
+import type { Bucket } from "./env.ts";
+import { FILE_REF, fileRefOf } from "./env.ts";
 
 /** What each file says about itself. */
 export interface FileMeta {
@@ -197,71 +197,4 @@ export async function forget(
   });
   await remove(bucket, refs);
   return done;
-}
-
-// ---------------------------------------------------------------- the switch from KV, once
-// KV kept a file 7 days, so a week after this deploys there's nothing left to copy: then this part
-// goes (MOVED, COPY_STEP, moveFromKv, copyStep) with its line in index.ts.
-
-/** The copy's mark in the bucket: the last file copied (`after`), or none once all are. */
-export const MOVED = "_moved-from-kv";
-/**
- * What one step copies at most: its files (three calls each, well inside an invocation's 1,000 to
- * Cloudflare's stores), and its bytes, past which it stops (KV took 10 MB a file).
- */
-export const COPY_STEP = { files: 200, bytes: 25_000_000 };
-
-/**
- * The files still in Workers KV, copied to R2 under their old keys (ADR 0069: the switch in one
- * go), so a ref in an old message opens once it's copied. A run's carries its chat in its key; yours
- * has none, so the clean-up keeps it. One step a cron tick (index.ts, after the watch's), never in a
- * request: a request that waited for a step (each file a read of KV and two writes) took longer
- * than the page's 20 s, and one cut off left its step unfinished for the requests after it. Each
- * file is marked in the bucket as it's copied, so the next tick carries on from the mark, never
- * from the start. Once all are copied the mark says so: one look at it is all a tick costs.
- */
-export async function moveFromKv(env: Env, deps: Deps) {
-  const kv = kvOf(env);
-  const bucket = bucketOf(env);
-  if (!kv || !bucket) return;
-  await copyStep(kv, bucket).catch((e) =>
-    logOf(deps, "store").warn("watch.guard", {
-      why: "KV's files not copied to R2 this tick",
-      message: String((e as Error)?.message ?? e).slice(0, 200),
-    }),
-  );
-}
-
-/** One step of the copy, from its mark on: COPY_STEP at most. Whether it's done. */
-async function copyStep(kv: Kv, bucket: Bucket): Promise<boolean> {
-  const mark = await bucket.head(MOVED);
-  const after = mark?.customMetadata?.after;
-  if (mark && !after) return true;
-  let files = 0;
-  let size = 0;
-  let cursor: string | undefined;
-  do {
-    const page = await kv.list<FileMeta>({ limit: 1000, ...(cursor ? { cursor } : {}) });
-    // KV lists by key, so the files up to the mark are the ones copied.
-    for (const k of page.keys) {
-      if ((after && k.name <= after) || !k.metadata?.name || !FILE_REF.test(k.name)) continue;
-      if (files === COPY_STEP.files || size >= COPY_STEP.bytes) return false;
-      const v = await kv.get(k.name, "stream");
-      if (v) {
-        const bytes = await new Response(v).arrayBuffer();
-        const task = k.metadata.task || Number(/^run-(\d+)-/.exec(k.name)?.[1]) || undefined;
-        await put(bucket, k.name, bytes, {
-          ...k.metadata,
-          size: bytes.byteLength,
-          ...(task ? { task } : {}),
-        });
-        size += bytes.byteLength;
-      }
-      await bucket.put(MOVED, "", { customMetadata: { after: k.name } });
-      files++;
-    }
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
-  await bucket.put(MOVED, "");
-  return true;
 }

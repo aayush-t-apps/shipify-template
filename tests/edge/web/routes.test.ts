@@ -22,8 +22,7 @@ import { handle } from "../../../edge/src/app.ts";
 import { clearCaches } from "../../../edge/src/cache.ts";
 import { web } from "../../../edge/src/channels/web.ts";
 import { alertOf } from "../../../edge/src/chat.ts";
-import type { Bucket, Env } from "../../../edge/src/env.ts";
-import { COPY_STEP, MOVED, moveFromKv } from "../../../edge/src/store.ts";
+import type { Env } from "../../../edge/src/env.ts";
 import { clearSeen } from "../../../edge/src/web/gh.ts";
 import { clearBuilt, INBOX_FULL, nextStep } from "../../../edge/src/web/reads.ts";
 import { MERMAID, PDFJS } from "../../../edge/src/web/routes.ts";
@@ -99,7 +98,7 @@ function setUp() {
     { name: "owner", on: { github: "owner", telegram: "4242", web: "me" } },
   ]);
   f.w.apps[`https://${TEAM}/cdn-cgi/access/certs`] = { body: { keys: [jwk] } };
-  const store = memoryKv(() => f.w.at);
+  const store = memoryKv();
   const assets = {
     fetch: async (r: Request) => {
       if (
@@ -751,115 +750,24 @@ describe("files the chat keeps", () => {
     expect(listed.files.map((f: { ref: string }) => f.ref)).toEqual([theirs.ref]);
   });
 
-  it("the cron copies KV's files to R2 once: an old message's ref opens; devices stay in KV", async () => {
+  // The files KV held were copied to R2 once, under their old keys (ADR 0069), and that copy has
+  // gone: their refs (yours `up-…`, a run's `run-<task>-…`) still open, and its mark is no file.
+  it("opens a file kept under its ref from before R2: yours and a run's; the copy's mark is no file", async () => {
     const t = setUp();
-    const meta = { name: "old.png", type: "image/png", size: 3, by: "you", at: t.f.w.at - 9e5 };
-    const bytes = new TextEncoder().encode("old").buffer as ArrayBuffer;
-    await t.store.kv.put("up-0123456789abcdef0123", bytes, {
-      expirationTtl: 86_400,
-      metadata: meta,
-    });
-    await t.store.kv.put("run-7-0123456789abcdef0123", bytes, {
-      expirationTtl: 86_400,
-      metadata: { ...meta, name: "made.md", by: "run" },
-    });
-    await t.store.kv.put("push:web:me", "[]");
-    await moveFromKv(t.env, t.f.deps);
+    const at = t.f.w.at - 9e5;
+    const run = { name: "made.md", by: "run", at, task: 7 };
+    await t.r2.keep("up-0123456789abcdef0123", "old", { name: "old.png", by: "you", at });
+    await t.r2.keep("run-7-0123456789abcdef0123", "made", run);
+    await t.r2.bucket.put("_moved-from-kv", "");
     const old = await t.call("/admin/chat/api/file/up-0123456789abcdef0123");
     expect(old.status).toBe(200);
     expect(await old.text()).toBe("old");
-    expect(t.r2.items.get("run-7-0123456789abcdef0123")?.meta.task).toBe("7");
-    expect(t.r2.items.get("up-0123456789abcdef0123")?.meta.task).toBeUndefined();
-    expect(t.r2.items.has("push:web:me")).toBe(false);
-    expect(t.r2.items.has("_moved-from-kv")).toBe(true);
+    const made = await t.call("/admin/chat/api/file/run-7-0123456789abcdef0123");
+    expect(made.status).toBe(200);
+    expect(await made.text()).toBe("made");
     const listed = await (await t.call("/admin/chat/api/files")).json();
     expect(listed.count).toBe(2);
-    // Once: a file put in KV after the copy isn't read.
-    await t.store.kv.put("up-9999999999abcdef0123", bytes, { metadata: meta });
-    await moveFromKv(t.env, t.f.deps);
-    expect((await t.call("/admin/chat/api/file/up-9999999999abcdef0123")).status).toBe(410);
-  });
-
-  // A request that waited for a step of the copy took longer than the page's 20 s: a message with
-  // a photo failed as "Offline", every try, while words alone went.
-  it("nothing you do waits for KV's copy: an upload, a message with a file, its read, Files", async () => {
-    const t = setUp();
-    const meta = { name: "old.png", type: "image/png", size: 3, by: "you", at: t.f.w.at - 9e5 };
-    const bytes = new TextEncoder().encode("old").buffer as ArrayBuffer;
-    await t.store.kv.put("up-0123456789abcdef0123", bytes, { metadata: meta });
-    const lists = t.store.state.lists;
-    const up = await t.upload("new.png", "image/png", "new");
-    expect(up.status).toBe(200);
-    const { ref } = await up.json();
-    const file = { ref, name: "new.png", type: "image/png", size: 3 };
-    const sent = await t.post("/admin/chat/api/send", {
-      id: "nowait001",
-      words: "what's this",
-      files: [file],
-    });
-    expect(sent.status).toBe(200);
-    expect((await t.call(`/admin/chat/api/file/${ref}`)).status).toBe(200);
-    expect((await t.call("/admin/chat/api/files")).status).toBe(200);
-    expect(t.store.state.lists).toBe(lists);
-    expect(t.r2.items.has(MOVED)).toBe(false);
-    // Not copied yet: an old ref is gone till the cron's step, then it opens.
-    expect((await t.call("/admin/chat/api/file/up-0123456789abcdef0123")).status).toBe(410);
-    await moveFromKv(t.env, t.f.deps);
-    expect((await t.call("/admin/chat/api/file/up-0123456789abcdef0123")).status).toBe(200);
-  });
-
-  it("the cron copies KV's files a step a tick, on from its mark after a failure; done, one look a tick", async () => {
-    const t = setUp();
-    const meta = { name: "old.png", type: "image/png", size: 3, by: "you", at: t.f.w.at - 9e5 };
-    const bytes = new TextEncoder().encode("old").buffer as ArrayBuffer;
-    const keys = Array.from(
-      { length: 2 * COPY_STEP.files + 5 },
-      (_, i) => `up-${String(i).padStart(3, "0")}3456789abcdef0123`,
-    );
-    expect(COPY_STEP.files).toBeGreaterThan(3);
-    for (const key of keys) await t.store.kv.put(key, bytes, { metadata: meta });
-    // The first is big: its step ends with it.
-    const big = new Uint8Array(COPY_STEP.bytes).buffer;
-    await t.store.kv.put(keys[0] ?? "", big, { metadata: { ...meta, size: COPY_STEP.bytes } });
-    await t.store.kv.put("push:web:me", "[]");
-    // R2 as the cron's tick has it: it counts its writes, and refuses one key when told.
-    const writes: string[] = [];
-    let refuse: string | undefined = keys[3];
-    const bucket: Bucket = { ...t.r2.bucket };
-    bucket.put = async (key, value, options) => {
-      if (key === refuse) throw new Error("R2: refused");
-      writes.push(key);
-      return t.r2.bucket.put(key, value, options);
-    };
-    const tick = () =>
-      moveFromKv({ FILES: t.store.kv, BUCKET: bucket } as unknown as Env, t.f.deps);
-    const copied = () => keys.filter((key) => t.r2.items.has(key));
-    // A step a tick: the big file alone, then on from its mark.
-    await tick();
-    expect(copied()).toEqual(keys.slice(0, 1));
-    expect(t.r2.items.get(keys[0] ?? "")?.bytes.byteLength).toBe(COPY_STEP.bytes);
-    // R2 refuses the fourth file: the step stops there, the third marked as the last copied, said.
-    await tick();
-    expect(copied()).toEqual(keys.slice(0, 3));
-    expect(t.r2.items.get(MOVED)?.meta).toEqual({ after: keys[2] });
-    expect(t.f.w.logs.join("\n")).toContain("KV's files not copied to R2 this tick");
-    // The next tick carries on from the mark, COPY_STEP.files a tick, never from the start.
-    refuse = undefined;
-    writes.length = 0;
-    await tick();
-    expect(copied()).toEqual(keys.slice(0, 3 + COPY_STEP.files));
-    await tick();
-    await tick();
-    expect(copied()).toEqual(keys);
-    expect(writes.filter((key) => key !== MOVED)).toEqual(keys.slice(3));
-    // Done, and marked so: a tick's one look at the mark is all it costs, no read of KV.
-    expect(t.r2.items.get(MOVED)?.meta).toEqual({});
-    const after = { lists: t.store.state.lists, r2: t.r2.state.lists, writes: writes.length };
-    await tick();
-    expect(t.store.state.lists).toBe(after.lists);
-    expect(t.r2.state.lists).toBe(after.r2);
-    expect(writes).toHaveLength(after.writes);
-    expect(t.r2.items.has("push:web:me")).toBe(false);
+    expect((await t.call("/admin/chat/api/file/_moved-from-kv")).status).not.toBe(200);
   });
 
   // The doc pane (ADR 0065): a PDF in the browser's own viewer, which refuses a sandbox; framed only
@@ -1168,8 +1076,7 @@ describe("what the page reads", () => {
     });
     t.f.w.comments.splice(0, 1);
     const thread = await (await t.call("/admin/chat/api/task/1")).json();
-    // Reading a thread asks nothing of the stores: KV's lists are 1,000 a day on the free plan.
-    expect(t.store.state.lists).toBe(0);
+    // Reading a thread lists no files: a listing is one call per 1,000 files, for Files alone.
     expect(t.r2.state.lists).toBe(0);
     expect(thread.task).toMatchObject({ n: 1, from: "web", model: "opus high", open: true });
     expect(thread.writable).toBe(true);

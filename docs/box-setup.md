@@ -60,7 +60,8 @@ container changed, and the agents' IPv6; setup 12: containers' network on Ubuntu
 `--manage` boxes take connections through Tailscale only; setup 16: the look server's user, which
 holds the tools' look keys so no agent does; setup 17: Ubuntu 26.04's sandbox check, the box's own
 updates with GitHub's new tokens, and a box that looks after itself; setup 18: Node 26, and pnpm
-from npm with corepack's links gone). Run it while no task runs: `box add` refuses while a
+from npm with corepack's links gone; setup 19: the runner's own cache of actions, for a faster
+"Set up job"). Run it while no task runs: `box add` refuses while a
 slot is busy. A new disk or a fresh OS: [A new disk (an SSD), or a fresh OS](#a-new-disk-an-ssd-or-a-fresh-os).
 
 **It never says done when something isn't:** the setup ends with a line that says what's left
@@ -428,7 +429,7 @@ reaches the runner's keys or changes what the runner runs next.
 
 | | The runner (`shipify`) | Slot k's agent (`shipify-agent-<k>`) |
 |---|---|---|
-| Its folders | `/home/shipify` (0700): the runners, jobs' folders, logins, caches | `/srv/shipify-agent-<k>` (2711): its runs; the runner may only pass through to a run's `out/`, and other users can pass through but never list it or enter a folder in it |
+| Its folders | `/home/shipify` (0700): the runners, jobs' folders, logins, caches, its cache of actions (setup 19) | `/srv/shipify-agent-<k>` (2711): its runs; the runner may only pass through to a run's `out/`, and other users can pass through but never list it or enter a folder in it |
 | What it writes | for itself alone (`UMask=0077`) | in its run's folder |
 | Its keys | the job's tokens, in processes the agent can't read | only what a run hands it on stdin: a read-only token and the run's look token (the look server holds the tools' look keys, below), and its login, which goes on a pipe (fd 3), never in its environment |
 | sudo | run commands as its slots' agents and the look server's user; as root, only the box's own update | none |
@@ -633,6 +634,7 @@ settings.
 | Node 26 | each setup (`box add`, its own update, or a new image) updates the system's to the newest 26.x, which a task's run and its agent use; the weekly clean-up takes the newest 26.x for the watch's jobs, and keeps the two newest (another major goes). One place names the major and the day its support ends: `cli/lib/node-support.ts`, which the weekly digest reads to warn from 90 days before |
 | pnpm, the agents | pinned (`packageManager`; each agent's `install` in `executors.json`); they change only in a PR. The box's pnpm runs the version each project pins. The weekly clean-up removes an agent's other versions |
 | packages | one pnpm store per box, pruned weekly |
+| actions | the runner's own cache of actions (setup 19): GitHub's archive of each action the box's workflows (`task.yml`, `watch.yml`) pin, in `/home/shipify/action-archives`, which each slot's `.env` names (`ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE`). "Set up job" copies it instead of downloading it in every job: about 3 s less a job on a Pi. What's in it runs with the bot's key, so only the runner writes it, in its own home (0700). The due run fills it with a pin it lacks, and the weekly clean-up removes what no workflow pins any more; an archive goes in only once it unpacks to one folder. One missing, the runner downloads it as before. A slot takes it at its next start (setup 19 restarts the idle ones) |
 | the box itself | `box/setup.sh`: a change to what it runs bumps `SETUP_VERSION` (`ship pr` refuses one that doesn't), and each box applies it by itself ([below](#its-own-updates)) |
 
 ### Its own updates

@@ -2,14 +2,21 @@
 // closed and its branches deleted, 7 days after it closed, in every repo of Shipify's own account,
 // by the weekly clean-up on GitHub's machines. An open task's, one closed since, and a branch named
 // so by hand are kept.
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  type ConsolesIo,
   clearLeftovers,
   closedWhy,
+  dropGoneConsoles,
+  goneLinked,
   type LeftoversIo,
   leftovers,
   taskOf,
 } from "../cli/commands/task/leftovers.ts";
+import { consolesOf, goneConsoles, keepConsoles, readConsoles } from "../cli/lib/consoles.ts";
 import { branchesOf, type TaskBranch } from "../cli/lib/github.ts";
 
 const AT = new Date("2026-11-23T03:00:00.000Z");
@@ -187,5 +194,91 @@ describe("what a closed task leaves behind (task #779)", () => {
       branch("shipify", "task/506-old-idea"),
       branch("homelab", "task/12-mine", { ours: false }),
     ]);
+  });
+});
+
+// A box GitHub dropped (14 days off, or removed there with no `box remove`) left its console link
+// in SHIPIFY_CONSOLES: homepi's stayed after the watch saw it gone on 14 Nov (task #803).
+describe("what a gone box leaves behind (task #803)", () => {
+  const LINKS = { homepi: "https://homepi.tail1.ts.net", workpi: "https://workpi.tail1.ts.net" };
+  /** The job's reads and writes, counted. */
+  const io = (kept: Record<string, string>, boxes: string[]) => {
+    const seen = { boxes: 0, dropped: [] as string[][] };
+    const it: ConsolesIo = {
+      kept: () => kept,
+      boxes: () => {
+        seen.boxes++;
+        return new Set(boxes);
+      },
+      takeOut: (gone) => {
+        seen.dropped.push(gone);
+      },
+    };
+    return { it, seen };
+  };
+
+  it("takes out each console whose box has no runner on GitHub; an offline box keeps its own", () => {
+    // workpi's runners are on GitHub, online or not: only homepi's link goes.
+    const t = io(LINKS, ["workpi"]);
+    expect(dropGoneConsoles(t.it)).toBe(
+      "took out homepi's console link: the box has no runner on GitHub",
+    );
+    expect(t.seen.dropped).toEqual([["homepi"]]);
+    const two = io(LINKS, []);
+    expect(dropGoneConsoles(two.it)).toBe(
+      "took out the console links of homepi and workpi: those boxes have no runner on GitHub",
+    );
+    expect(two.seen.dropped).toEqual([["homepi", "workpi"]]);
+  });
+
+  it("writes nothing when every box is there, and reads nothing when no link is kept", () => {
+    const all = io(LINKS, ["homepi", "workpi"]);
+    expect(dropGoneConsoles(all.it)).toBe("");
+    expect(all.seen.dropped).toEqual([]);
+    const none = io({}, []);
+    expect(dropGoneConsoles(none.it)).toBe("");
+    expect(none.seen).toEqual({ boxes: 0, dropped: [] });
+  });
+
+  it("starts the job from the alert only for a gone box that has a link", () => {
+    expect(goneLinked({ homepi: "gone", workpi: "offline" }, LINKS)).toEqual(["homepi"]);
+    expect(goneLinked({ pi3: "gone" }, LINKS)).toEqual([]);
+    expect(goneLinked({ workpi: "online" }, LINKS)).toEqual([]);
+  });
+
+  it("reads a missing variable as no link, never writes over one it couldn't read, and deletes it when none is left", () => {
+    // gh as it answers: a 404 is "was not found"; another refusal, its HTTP status.
+    const bin = mkdtempSync(join(tmpdir(), "consoles-gh-"));
+    const log = join(bin, "calls");
+    const gh = (answer: string) =>
+      writeFileSync(join(bin, "gh"), `#!/bin/sh\necho "$*" >> "${log}"\n${answer}\n`, {
+        mode: 0o755,
+      });
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    try {
+      gh('echo "variable SHIPIFY_CONSOLES was not found" >&2; exit 1');
+      expect(readConsoles("o/shipify")).toEqual({});
+      gh('echo "failed to get variable SHIPIFY_CONSOLES: HTTP 403: Forbidden" >&2; exit 1');
+      expect(() => readConsoles("o/shipify")).toThrow("HTTP 403");
+      gh(`echo '${JSON.stringify(LINKS)}'`);
+      expect(readConsoles("o/shipify", "bot-full")).toEqual(LINKS);
+      keepConsoles("o/shipify", {}, "bot-full");
+      expect(readFileSync(log, "utf8").trim().split("\n").at(-1)).toBe(
+        "variable delete SHIPIFY_CONSOLES -R o/shipify",
+      );
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
+  it("reads the links as kept: a box's https address each; anything else is none", () => {
+    expect(consolesOf(JSON.stringify(LINKS))).toEqual(LINKS);
+    expect(consolesOf(undefined)).toEqual({});
+    expect(consolesOf("")).toEqual({});
+    expect(consolesOf("not json")).toEqual({});
+    expect(consolesOf("[1]")).toEqual({});
+    expect(consolesOf('{"homepi":"https://h","odd":3}')).toEqual({ homepi: "https://h" });
+    expect(goneConsoles(LINKS, new Set(["workpi"]))).toEqual(["homepi"]);
   });
 });

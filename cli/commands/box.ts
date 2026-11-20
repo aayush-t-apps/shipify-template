@@ -14,6 +14,7 @@ import { defaultAgent, loadExecutors, loginOf } from "../lib/agents.ts";
 import { boxFacts, factLines } from "../lib/box-facts.ts";
 import { listStacks } from "../lib/catalog.ts";
 import { PLATFORM_ROOT } from "../lib/config.ts";
+import { keepConsoles, readConsoles } from "../lib/consoles.ts";
 import { has, type RunResult, run } from "../lib/exec.ts";
 import { tailscaleKeyCheck } from "./doctor.ts";
 import { gh, ghJson, ghRun, platformRepo } from "../lib/github.ts";
@@ -976,35 +977,35 @@ export function boxHealth(target: string | undefined): Result {
 
 // ---------------------------------------------------------------- list, remove
 
-/**
- * Each box's web console (`box add --manage` records Cockpit's address), as a repo variable:
- * {"<box>": "https://…"}. Any console works; nothing here is Cockpit-only.
- */
-const CONSOLES = "SHIPIFY_CONSOLES";
-
-function consoles(repo: string): Record<string, string> {
-  const r = ghRun(["variable", "get", CONSOLES, "-R", repo]);
-  if (r.code !== 0) return {};
+/** The consoles to show: none when they don't read. */
+function tryConsoles(repo: string): Record<string, string> {
   try {
-    const v = JSON.parse(r.stdout) as unknown;
-    return v && typeof v === "object" ? (v as Record<string, string>) : {};
+    return readConsoles(repo);
   } catch {
     return {};
   }
 }
 
+/**
+ * A box's web console (`box add --manage` records Cockpit's address) in SHIPIFY_CONSOLES
+ * (lib/consoles.ts), or taken out. One that isn't written leaves the box as it is.
+ */
 function setConsole(repo: string, box: string, url: string | undefined) {
-  const all = consoles(repo);
-  if (url) all[box] = url;
-  else if (box in all) delete all[box];
-  else return;
-  ghRun(["variable", "set", CONSOLES, "-R", repo, "--body", JSON.stringify(all)]);
+  try {
+    const all = readConsoles(repo);
+    if (url) all[box] = url;
+    else if (box in all) delete all[box];
+    else return;
+    keepConsoles(repo, all);
+  } catch {
+    // The link only: `box list` shows what's kept.
+  }
 }
 
 /** One row per box: its slots grouped by its label (ADR 0020). */
 export function boxList(): Result {
   const all = runners(platformRepo()).filter(isBoxRunner);
-  const web = consoles(platformRepo());
+  const web = tryConsoles(platformRepo());
   const names = [...new Set(all.map(boxOf))].sort();
   const rows = names.map((box) => {
     const slots = all.filter((r) => boxOf(r) === box);

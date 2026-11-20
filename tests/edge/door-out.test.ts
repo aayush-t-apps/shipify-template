@@ -348,7 +348,7 @@ describe("POST /door/replied", () => {
     f.w.variables.SHIPIFY_PEOPLE = JSON.stringify([
       { name: "owner", on: { github: "owner", telegram: String(CHAT), web: "me" } },
     ]);
-    const store = memoryKv(() => f.w.at);
+    const store = memoryKv();
     const b = await browser();
     await keepDevices(store.kv, "web", "me", [
       { ...(deviceOf(b.subscription) as Device), at: f.w.at },

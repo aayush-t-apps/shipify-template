@@ -1193,7 +1193,8 @@ second doc PR in it. Where the build differs from the design above:
   forget), R2 behind it. A key is `f-<1e13 − now, 13 digits>-<id>`. A new chat's files are stamped
   after the door's answer (`waitUntil`). KV's files are copied to R2 a step at a time (200 files or
   25 MB a read of the store), each marked in a `_moved-from-kv` object as it's copied, so a step
-  that fails carries on from the mark; that copy goes a week after the deploy (`docs/roadmap.md`).
+  that fails carries on from the mark. That copy is gone since task #803, with nothing left in KV
+  to copy: the files keep their old keys, and the empty mark stays in the bucket, never listed.
   A file is 95 MB at most, not 100: Cloudflare refuses a request over 100 MB before the Worker, its
   form included. A copy made for a second chat that no chat takes (the door refused the message,
   or it named no chat) is deleted at once, so no copy is left with no chat. `ship door check` and

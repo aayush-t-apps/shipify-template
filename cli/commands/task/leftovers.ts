@@ -5,8 +5,19 @@
 // task, on GitHub's machines with the bot's key, which a box never holds; no new workflow, no new
 // key. Its reads: your repos (one), their task branches with their open PRs (one query per 50
 // repos), and those tasks' states (one, from the record); then a write for each PR and each branch.
+// The same job takes out a gone box's console link (task #803; the watch's alert starts it too):
+// one read of the runners when any link is kept, and one write when a box is gone.
 // The status task's Recent says what it did.
 import { LEFT_DAYS } from "../../contracts/index.ts";
+import { copySetting } from "../../lib/config.ts";
+import {
+  boxesOnGitHub,
+  CONSOLES,
+  consolesOf,
+  goneConsoles,
+  keepConsoles,
+  readConsoles,
+} from "../../lib/consoles.ts";
 import {
   closePr,
   deleteBranch,
@@ -122,9 +133,62 @@ export const liveLeftovers = (record: LeftoversIo["record"], token: string): Lef
   deleteBranch: (repo, branch) => deleteBranch(repo, branch, token),
 });
 
+// ---------------------------------------------------------------- what a gone box leaves
+
+/** What the consoles' clean-up reads and writes. */
+export interface ConsolesIo {
+  /** The consoles as this job's variables had them at its start (SHIPIFY_VARS): no call. */
+  kept(): Record<string, string>;
+  /** The boxes GitHub has now. */
+  boxes(): Set<string>;
+  /** These boxes' consoles taken out of what GitHub keeps now. */
+  takeOut(boxes: string[]): void;
+}
+
 /**
- * The weekly clean-up's start (sweep.ts), on a box: task.yml's `github` job on the status task, which
- * runs `leftoversJob` on GitHub's machines. Whether it started.
+ * A gone box's console link (task #803): each box in SHIPIFY_CONSOLES with no runner on GitHub (14
+ * days off, or removed there with no `box remove`) taken out, so `box list` and the web chat link
+ * only boxes there are. An offline box keeps its own. No call when none is kept. What it did, for
+ * Recent, or "" when it had nothing to do.
+ */
+export function dropGoneConsoles(io: ConsolesIo): string {
+  const kept = io.kept();
+  if (!Object.keys(kept).length) return "";
+  const gone = goneConsoles(kept, io.boxes());
+  if (!gone.length) return "";
+  io.takeOut(gone);
+  const one = gone.length === 1;
+  const links = one
+    ? `${gone[0]}'s console link`
+    : `the console links of ${gone.slice(0, -1).join(", ")} and ${gone.at(-1)}`;
+  return `took out ${links}: ${one ? "the box has" : "those boxes have"} no runner on GitHub`;
+}
+
+/**
+ * The boxes the watch found gone that have a console link kept (SHIPIFY_CONSOLES): for them, the
+ * alert starts the status task's github job.
+ */
+export const goneLinked = (found: Record<string, string>, kept: Record<string, string>) =>
+  Object.keys(found)
+    .filter((box) => found[box] === "gone" && box in kept)
+    .sort();
+
+/** The consoles' reads and writes on GitHub, with the bot's key (the `github` job's). */
+export const liveConsoles = (token: string, repo = platformRepo()): ConsolesIo => ({
+  kept: () => consolesOf(copySetting(CONSOLES)),
+  boxes: () => boxesOnGitHub(repo, token),
+  takeOut: (boxes) => {
+    const all = readConsoles(repo, token);
+    if (!boxes.some((b) => b in all)) return;
+    for (const b of boxes) delete all[b];
+    keepConsoles(repo, all, token);
+  },
+});
+
+/**
+ * task.yml's `github` job on the status task, which runs `leftoversJob` on GitHub's machines: the
+ * weekly clean-up starts it on a box (sweep.ts), and so does the watch's alert when a box it knew
+ * is gone and had a console link. Whether it started.
  */
 export function startLeftovers(): boolean {
   const n = statusIssueNumber();
@@ -132,12 +196,14 @@ export function startLeftovers(): boolean {
 }
 
 /**
- * The `github` job on the status task (run.ts): the clean-up, with the job's bot key (GH_TOKEN).
- * The status task's Recent says what it did, or why it stopped; the next week tries again.
+ * The `github` job on the status task (run.ts), with the job's bot key (GH_TOKEN): what closed tasks
+ * left, then what gone boxes left. The status task's Recent says what each did, or why it stopped;
+ * the next one tries again.
  */
 export function leftoversJob(token = process.env.GH_TOKEN): Result {
   const at = new Date();
   let said: string;
+  let consoles = "";
   let failed = false;
   try {
     if (!token) throw new Error("no bot key");
@@ -146,12 +212,20 @@ export function leftoversJob(token = process.env.GH_TOKEN): Result {
     failed = true;
     said = `stopped: ${(e as Error).message.slice(0, 160)}: next week`;
   }
+  // A link only: one not taken out is said in Recent, and never fails the job.
+  if (token)
+    try {
+      consoles = dropGoneConsoles(liveConsoles(token));
+    } catch (e) {
+      consoles = `couldn't take out gone boxes' console links: ${(e as Error).message.slice(0, 160)}: next time`;
+    }
   updateStatusIssue(
     (s) => {
       addEvent(s, `Closed tasks' PRs and branches: ${said}`, at.toISOString());
+      if (consoles) addEvent(s, `Box consoles: ${consoles}`, at.toISOString());
       return undefined;
     },
     { timeZone: timeZone() },
   );
-  return (failed ? fail : ok)("run github", said);
+  return (failed ? fail : ok)("run github", consoles ? `${said}; ${consoles}` : said);
 }

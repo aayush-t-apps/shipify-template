@@ -1,62 +1,30 @@
-// Workers KV, in memory, for the edge's tests (model picks, devices, and the files the switch to R2
-// copies once): values with their metadata and expiry, listed by prefix as KV lists them. `down`
-// makes every call fail, as a store over its limits does.
+// Workers KV, in memory, for the edge's tests (model picks and devices): one value a key, read whole.
+// `down` makes every call fail, as a store over its limits does.
 import type { Kv } from "../../edge/src/env.ts";
 
-export function memoryKv(now: () => number = Date.now) {
-  const items = new Map<string, { bytes: Uint8Array; metadata: unknown; until?: number }>();
-  const state = { down: false, puts: 0, lists: 0 };
-  const alive = (k: string) => {
-    const it = items.get(k);
-    if (it?.until !== undefined && it.until <= now()) items.delete(k);
-    return items.get(k);
-  };
-  const stream = (b: Uint8Array) =>
-    new ReadableStream<Uint8Array>({
-      start(c) {
-        c.enqueue(b);
-        c.close();
-      },
-    });
+export function memoryKv() {
+  const items = new Map<string, { bytes: Uint8Array }>();
+  const state = { down: false, puts: 0 };
   const check = () => {
     if (state.down) throw new Error("KV: over its limits");
   };
   const kv: Kv = {
     async get(key) {
       check();
-      const it = alive(key);
-      return it ? stream(it.bytes) : null;
+      const it = items.get(key);
+      return it
+        ? new ReadableStream<Uint8Array>({
+            start(c) {
+              c.enqueue(it.bytes);
+              c.close();
+            },
+          })
+        : null;
     },
-    async put(key, value, options) {
+    async put(key, value) {
       check();
       state.puts++;
-      const bytes =
-        typeof value === "string"
-          ? new TextEncoder().encode(value)
-          : value instanceof ArrayBuffer
-            ? new Uint8Array(value)
-            : new Uint8Array(await new Response(value).arrayBuffer());
-      items.set(key, {
-        bytes,
-        metadata: options?.metadata ?? null,
-        ...(options?.expirationTtl ? { until: now() + options.expirationTtl * 1000 } : {}),
-      });
-    },
-    async list<M>(options?: { prefix?: string }) {
-      check();
-      state.lists++;
-      const keys = [...items.keys()]
-        .filter((k) => k.startsWith(options?.prefix ?? "") && alive(k))
-        .sort()
-        .map((name) => {
-          const it = items.get(name);
-          return {
-            name,
-            ...(it?.until ? { expiration: Math.floor(it.until / 1000) } : {}),
-            metadata: it?.metadata as M,
-          };
-        });
-      return { keys, list_complete: true };
+      items.set(key, { bytes: new TextEncoder().encode(value) });
     },
   };
   return { kv, items, state };

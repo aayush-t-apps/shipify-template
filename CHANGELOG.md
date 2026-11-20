@@ -7,6 +7,48 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.26] - 2026-11-20
+
+### Added
+
+- **"Set up job" about 3 s faster on a box (box setup 19, task #803).** The runner downloaded
+  `create-github-app-token` again in every job, 3.4–4.1 s of its 6 s on a Pi. It now copies it
+  from a cache of its own, as GitHub's own machines do: GitHub's archive of each action the box's
+  workflows pin (`task.yml`, `watch.yml`), in `/home/shipify/action-archives`, which each slot's
+  `.env` names (`ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE`, which actions/runner reads).
+  - **Safe:** what's in it runs with the bot's key, so only the runner writes it, in its own home
+    (0700); no agent reaches it. An archive goes in only once it unpacks to one folder, as the
+    runner needs it, so no job's set-up can fail on it. One missing, the runner downloads it as
+    before.
+  - **Kept by itself:** the due run downloads a pin its box lacks (a few MB once, about 1 s a
+    pin); the weekly clean-up also removes what no workflow pins any more, and its summary says
+    so. A box applies setup 19 by itself; each slot takes it at its next start.
+- **A gone box's console link goes with it (task #803).** A box GitHub dropped (14 days off, or
+  removed there with no `box remove`) left its entry in `SHIPIFY_CONSOLES`, so `box list` and the
+  web chat kept its Cockpit link: homepi's stayed after the watch saw it gone. The status task's
+  `github` job, on GitHub's machines with the bot's key, now takes out each link whose box has no
+  runner on GitHub; an offline box keeps its own. The weekly clean-up starts that job already, and
+  the watch's alert starts it too when a gone box had a link. Only the bot's key writes a variable
+  (an installation token has no narrower permission for it), so no box holds it, and no workflow
+  changes. Recent says it: "Box consoles: took out homepi's console link: the box has no runner on
+  GitHub".
+
+### Fixed
+
+- **A task's checks on a box no longer fail in two test files (task #803).** The `remote()` helper
+  in `tests/kernel-gate.test.ts` and `tests/agent-check.test.ts` committed with git's own guess of
+  who you are. GitHub's machines have a hostname with a domain, so git made one up there; a box
+  like workpi has none, so 29 tests failed on every task's checks once they ran as the agent's
+  user. On Node 26, the sandbox's `GIT_AUTHOR_*` in a replaced `process.env` reach no child
+  process. The helper now gives its own name, as the rest of both files does.
+
+### Removed
+
+- **The one-time copy of the web chat's files from KV to R2 (task #803).** KV kept a file 7 days,
+  and the copy ran from 2 Nov: nothing is left in KV to copy. The edge's cron runs the watch alone,
+  with no look at the copy's mark each tick, and KV holds only your model picks and devices, one
+  string a key. The copied files keep their old refs (`up-…`, `run-…`), which still open.
+
 ## [0.1.25] - 2026-11-19
 
 ### Added

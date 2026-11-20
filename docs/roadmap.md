@@ -22,12 +22,6 @@ pipeline (ADR 0048).
      they run (never in the agent's step). Minting on GitHub's machines and handing the box only
      the narrow tokens closes that.
    - **`ship task <n>` on the PC:** a task's status and its last runs, with links to their logs.
-   - **The copy of the web chat's files from KV to R2 goes** (ADR 0069), a week after the edge
-     with it deploys: KV kept a file 7 days, so nothing is left to copy. In `edge/src/store.ts`
-     the section "the switch from KV, once" (`MOVED`, `COPY_STEP`, `moveFromKv`, `copyStep`),
-     and its line in `edge/src/index.ts`'s cron; `Kv.list` in `edge/src/env.ts` and
-     `tests/edge/kv.ts`; the two routes tests that copy KV's files. Keep
-     `FILE_REF`'s `up-…` and `run-…` forms: the copied files keep those keys.
    - **Knowledge, only if it's needed** (ADR 0070's "Not in it"): a search store of Shipify's own
      (Cloudflare Vectorize) only if GitHub's search by meaning proves not enough, or goes; a
      Zotero tool (its free Web API, as a plug-in) if you work from papers.
@@ -146,21 +140,14 @@ From the web chat to a reply (task #673, measured on homepi over 54 runs, 2026-1
 answers in its thinking time plus 37–56 s, a staying run in its thinking time plus 4–11 s. Done
 then: a reply shows within 5 s of landing (the edge keeps a read 4 s, not 8), a stay's marks go on
 as its agent starts, and a box checks the labels once a day. Done since (task #785): the secret
-scan runs beside `make verify`, and decide and apply take plan's read token unless think ran long.
-What's left:
+scan runs beside `make verify`, and decide and apply take plan's read token unless think ran long;
+(task #803) the runner's own cache of actions (box setup 19), so "Set up job" downloads no action
+a box's workflows pin. What's left:
 
-3. **The runner's own cache of actions (a box setup 13):** "Set up job" downloads
-   `create-github-app-token` again in every job, 3.4–4.1 s of its 6 s (`curl` gets the same
-   tarball in 0.65 s). The runner reads `ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE`
-   (`<dir>/<owner>_<repo>/<sha>.tar.gz`, or an unpacked copy with
-   `ACTIONS_RUNNER_SYMLINK_CACHED_ACTIONS`), which `slot_env` can write in each slot's `.env`.
-   It needs a folder that only the runner's user can write (what's in it runs with the bot's key),
-   filled for `task.yml`'s pins with the old ones removed, and a live test on a box. About 3 s
-   less on every job.
-4. **A reply's push before its files:** the box tells the door of a reply in one upload with its
+3. **A reply's push before its files:** the box tells the door of a reply in one upload with its
    files (up to 50 MB), and the door rings your phone only after it read them all. Telling first,
    then sending the files, rings it at once.
-5. **A first answer in seconds needs the direct layer (Later, 8):** of a new chat's 37–56 s
+4. **A first answer in seconds needs the direct layer (Later, 8):** of a new chat's 37–56 s
    besides thinking, about 18 s is GitHub's (its queue, a runner taking the job and starting it,
    "Set up job"). A job for each message can't go under that, and a staying run's 4–11 s is the
    floor of this design.

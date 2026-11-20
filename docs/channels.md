@@ -475,7 +475,8 @@ as **Change a repo** writes it); a task with none is **General**.
     failing, what a box's health flags, like a full disk), with a tile each for the box, the door,
     the chats and the next key to renew. Links out: the status page (`/admin/status`, which
     links back here), the tasks and the runs on GitHub, and each box's console (Cockpit, from
-    `SHIPIFY_CONSOLES`, which `box add --manage` writes; it opens only on your own devices).
+    `SHIPIFY_CONSOLES`, which `box add --manage` writes, and a gone box's link goes by itself; it
+    opens only on your own devices).
     **Check now** sends `/ping`.
   - **Agents and models:** a row each (the default first): its login (its gateway's key, "openrouter
     key, set 2026-10-06" from `SHIPIFY_GATEWAYS`, which `pnpm ship add openrouter --yes` writes,

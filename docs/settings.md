@@ -34,7 +34,7 @@ names what's on your copy but on no list, and a workflow can't read one that isn
 | `SHIPIFY_KEY_DATES` | a variable | when your keys expire: `{"<key>": "YYYY-MM-DD"}` | `ship doctor --yes` (this PC's token, each agent's login), and you | the watch, 30 and 7 days before each; the status page | no: unset, its default |
 | `SHIPIFY_TEMPLATE` | a variable, this PC | the template this copy follows, `owner/name` (unset: the one its version file names, else the one GitHub says it was made from) | `ship template` (where releases are made), or you | `update.yml` (`ship update`), and `ship template` | no: unset, its default |
 | `SHIPIFY_PRIVATE_WORDS` | a variable | words never published to the template, each with its stand-in: `{"<word>": "<stand-in>"}` (any case; ADR 0055) | you | `ship template`: replaced in what it publishes, then checked for | no: unset, its default |
-| `SHIPIFY_CONSOLES` | a variable | each box's Cockpit link, as JSON | `box add --manage` | `ship box list` | no: unset, its default |
+| `SHIPIFY_CONSOLES` | a variable | each box's Cockpit link, as JSON | `box add --manage`; `box remove` takes a box's out, and the status task's `github` job a gone box's ([watch.md](watch.md)) | `ship box list`, the web chat's Status & setup | no: unset, its default |
 | `SHIPIFY_DOOR_APP_ID` | a variable | the door App's id | `ship door setup` | the edge, deployed with it (`ci.yml`): its App, matched by id | by its add-on |
 | `SHIPIFY_DOOR_SLUG` | a variable | the door App's name | `ship door setup` | `task.yml`, `watch.yml`: the door App's events start runs; the edge | by its add-on |
 | `SHIPIFY_DOOR_INSTALLATION` | a variable | the door App's install on your copy | `ship door setup` | the edge, deployed with it (`ci.yml`) | by its add-on |

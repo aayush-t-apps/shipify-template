@@ -190,8 +190,9 @@ export const CORE_SETTINGS: readonly Setting[] = [
     name: "SHIPIFY_CONSOLES",
     lives: ["variable"],
     what: "each box's Cockpit link, as JSON",
-    setBy: "`box add --manage`",
-    readBy: "`ship box list`",
+    setBy:
+      "`box add --manage`; `box remove` takes a box's out, and the status task's `github` job a gone box's ([watch.md](watch.md))",
+    readBy: "`ship box list`, the web chat's Status & setup",
     optional: true,
   },
 ];
