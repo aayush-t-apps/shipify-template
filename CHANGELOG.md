@@ -7,6 +7,27 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.27] - 2026-11-21
+
+### Fixed
+
+- **A box on Ubuntu 26.04 starts with one network: a Pi, a PC or a VM (box setup 20, task
+  #819).** Its initrd, which dracut makes, ran systemd-networkd itself and left
+  `/run/systemd/network/zzzz-dracut-default.network`, DHCP on every link, beside netplan's file.
+  That's a known 26.04 clash: workpi had a start with no network for more than 4 minutes, which
+  the watchdog can't see, and the 04:30 restarts after a kernel update risk the same. One module
+  brings it in: `dyn-netconf`, from cloud-initramfs-dyn-netconf, which `ubuntu-server` installs on
+  every Ubuntu Server. Where the root is on the machine's own disk, the setup now leaves that one
+  module out (`/etc/dracut.conf.d/50-shipify-box.conf`); a root reached over the network keeps its
+  network through its own modules. It makes the initrd again as a kernel update does
+  (`update-initramfs`), which the next restart takes: a Pi's flash-kernel writes it to
+  `/boot/firmware/new`, and the Pi tries it (it starts twice) and keeps it only once it starts.
+  The setting stays, so each kernel update's initrd is the same, and each setup looks at the
+  initrd itself, so one that wasn't made is made at the next run. Checked end to end on clean
+  Ubuntu 26.04, with Ubuntu's own Pi and generic kernels. A box applies setup 20 by itself. This
+  PC without `--manage`, a root over the network, and Ubuntu 24.04 (no dracut) stay as they are.
+  [box-setup.md](docs/box-setup.md#how-every-box-stays-running).
+
 ## [0.1.26] - 2026-11-20
 
 ### Added

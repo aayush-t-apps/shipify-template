@@ -11,7 +11,8 @@
 # What it installs: git, make, gh, Node 26 and pnpm (through npm), shellcheck, fd and sqlite3, the
 # updates waiting now and automatic updates (Ubuntu's security and normal ones, gh's and Tailscale's
 # too, rebooting at 04:30 when one needs it, never restarting a slot), no sleep, a hardware watchdog,
-# logs kept small, what each stack needs, the user "shipify" (no sudo)
+# logs kept small, an initrd with no network of its own, what each stack needs, the user "shipify"
+# (no sudo)
 # and the box's slots as that user's services (ADR 0020): one GitHub runner each, all labelled
 # shipify-box and box-<name>, each running what the queue hands it, one task at a time (ADR 0019).
 # The sandbox (setup 5, ADR 0031): each slot's agent runs as a user of its own, shipify-agent-<k>,
@@ -73,6 +74,11 @@
 # folder only the runner writes, /home/shipify/action-archives, named in each slot's .env
 # (ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE); the due run fills it and the weekly clean-up removes what
 # no workflow pins any more. A slot takes it at its next start.
+# Setup 20: a box on Ubuntu 26.04 (a Pi, a PC or a VM) starts with one network, netplan's. Its
+# initrd (dracut) ran a network of its own, which left a DHCP setting for every link beside
+# netplan's, and a start could come up with no address. Where the root is on the machine's own
+# disk, /etc/dracut.conf.d leaves out the one module that brought it in, and the initrd is made
+# again, which the next restart takes (a Pi tries it first, and keeps the one before if it fails).
 # Running it again updates Node to the newest 26.x, and adds or removes slots to match
 # RUNNER_SLOTS.
 # SSH takes keys only, never passwords, once the account running this has a key; with
@@ -91,7 +97,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=19
+SETUP_VERSION=20
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -317,6 +323,55 @@ else
     "[Journal]" "SystemMaxUse=200M" > "$WORK/journald.conf"
   if put_file "$WORK/journald.conf" "$JOURNALD_DROPIN"; then systemctl restart systemd-journald || true; fi
   echo "  logs: 200 MB at most"
+fi
+
+# One network at each start, netplan's (setup 20): a Pi, a PC or a VM on Ubuntu 26.04. Its initrd,
+# which dracut makes, started systemd-networkd itself and left
+# /run/systemd/network/zzzz-dracut-default.network (DHCP on every link) beside netplan's file: a
+# known clash, and a start could come up with no address, which no watchdog sees. One module brings
+# it in: dyn-netconf (cloud-initramfs-dyn-netconf, which ubuntu-server installs), whose dracut
+# module has no check, so it's always in, and needs systemd-networkd. A root on the machine's own
+# disk needs no network before it's mounted, so dracut leaves that module out; a root that does
+# (iSCSI, NFS) keeps its network through its own modules. The setting stays, so every kernel
+# update's initrd is the same. The initrd the next start takes (/boot/initrd.img) is made again
+# while it still has the module, as a kernel update makes it: update-initramfs (on a Pi, its
+# flash-kernel writes it to /boot/firmware/new, which the next restart tries, the Pi starting
+# twice, and keeps only once it starts, else it starts from current/ as before). So each run looks
+# at the initrd itself: one that wasn't made (a full disk, a cut-off run) is made at the next run.
+# This PC keeps its own, as it keeps its watchdog.
+# local_root: the root is on the machine's own disk (an SD card, an SSD, a VM's disk): a block
+# device, and no network root, nor a network for the initrd, on the kernel's command line.
+local_root() {
+  case "$(findmnt -no SOURCE / 2>/dev/null)" in /dev/*) ;; *) return 1 ;; esac
+  ! grep -qE '(^| )((ip|netroot|nfsroot)=|rd\.neednet=1|rd\.(iscsi|nvmf)\.)' /proc/cmdline
+}
+DRACUT_DROPIN=/etc/dracut.conf.d/50-shipify-box.conf
+say "One network at each start: none in the initrd"
+if [ "${SHIPIFY_HERE:-}" = 1 ] && [ "${SHIPIFY_MANAGE:-}" != 1 ]; then
+  echo "  skipped: this is the PC you set it up from (no --manage), so its start stays as it is"
+elif ! command -v dracut >/dev/null || [ ! -e /boot/initrd.img ]; then
+  echo "  skipped: dracut doesn't make this machine's initrd (Ubuntu 26.04's does), so it has no such network"
+elif ! local_root; then
+  echo "  skipped: this machine's root is reached over the network, so its initrd keeps its network"
+else
+  printf '%s\n' "# Written by Shipify box setup (docs/box-setup.md): no network in the initrd, as the root is on this machine's own disk." \
+    'omit_dracutmodules+=" dyn-netconf "' > "$WORK/dracut.conf"
+  put_file "$WORK/dracut.conf" "$DRACUT_DROPIN" || true
+  # Its list of dracut's modules, read whole (a pipe into grep -q could cut lsinitrd off).
+  mods=$(lsinitrd --mod /boot/initrd.img 2>/dev/null || true)
+  made=1
+  if grep -qx dyn-netconf <<<"$mods"; then
+    echo "  making its initrd again, with no network (a minute or two)"
+    update-initramfs -u >"$WORK/initrd.log" 2>&1 || made=""
+  fi
+  if [ -z "$made" ]; then
+    tail -n 20 "$WORK/initrd.log"
+    echo "  skipped: its initrd wasn't made again (above); the setting stays, so the next kernel update makes it so, and the setup's next run tries again"
+  elif [ -e /run/systemd/network/zzzz-dracut-default.network ]; then
+    echo "  set: from the next restart (a Pi starts twice: it tries the new initrd, and keeps the one before if that fails)"
+  else
+    echo "  on: its initrd has no network of its own, so the network comes up once, as netplan says"
+  fi
 fi
 fi
 

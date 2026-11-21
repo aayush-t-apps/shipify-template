@@ -61,7 +61,8 @@ container changed, and the agents' IPv6; setup 12: containers' network on Ubuntu
 holds the tools' look keys so no agent does; setup 17: Ubuntu 26.04's sandbox check, the box's own
 updates with GitHub's new tokens, and a box that looks after itself; setup 18: Node 26, and pnpm
 from npm with corepack's links gone; setup 19: the runner's own cache of actions, for a faster
-"Set up job"). Run it while no task runs: `box add` refuses while a
+"Set up job"; setup 20: a box on Ubuntu 26.04 starts with one network, none in its initrd). Run it
+while no task runs: `box add` refuses while a
 slot is busy. A new disk or a fresh OS: [A new disk (an SSD), or a fresh OS](#a-new-disk-an-ssd-or-a-fresh-os).
 
 **It never says done when something isn't:** the setup ends with a line that says what's left
@@ -259,7 +260,10 @@ it. In the installer:
   card, boot from it until the green light blinks steadily, then remove the card. Three things
   found on a Pi 4 with Ubuntu 26.04:
   - **No address on your network after the first boot** (your router doesn't list it): Ubuntu
-    26.04's first boot on a Pi may come up with no IPv4 address. Turn the power off and on once.
+    26.04's initrd starts a network of its own beside netplan's (a known clash, on any machine),
+    so a start may come up with no IPv4 address. Turn the power off and on once. The box's setup
+    takes the initrd's network out (setup 20, [below](#how-every-box-stays-running)), so the
+    starts after it don't.
   - **A USB-SATA case that fails with UAS** (the Pi stops at boot, or `dmesg` shows
     `uas_eh_abort_handler` and I/O errors): turn UAS off for that case. Find its ID with `lsusb`
     on any Linux machine (`ID 174c:55aa` is a genuine ASMedia bridge: its vendor ID is `174c`).
@@ -270,8 +274,9 @@ it. In the installer:
     ignored. `current/` keeps the change through kernel updates.
   - **A hostname that comes back:** step 1 above.
 - **A laptop or a PC:** let the installer finish, remove the stick, and restart. Nothing else on
-  the machine needs setting: the setup keeps every box awake, and swaps the installer's swap file
-  (`/swap.img`, on the disk) for swap in memory (zram), as a Pi has.
+  the machine needs setting: the setup keeps every box awake, swaps the installer's swap file
+  (`/swap.img`, on the disk) for swap in memory (zram), as a Pi has, and takes the initrd's own
+  network out (setup 20). If a start comes up with no address before that, restart it once.
 
 ### 3. Connect from the PC, once
 
@@ -312,7 +317,8 @@ its phone app with the same login.
   each stack needs; automatic updates, Ubuntu's security and normal ones (restarting at 04:30
   when one needs it, and never restarting a slot mid-task); no sleep (the lid
   does nothing, and sleep is off: on a Pi or a VPS this changes nothing); the hardware watchdog,
-  logs kept to 200 MB, and cloud-init off once the setup passes (setup 17); SSH by key only; the
+  logs kept to 200 MB, and cloud-init off once the setup passes (setup 17); an initrd with no
+  network of its own (setup 20); SSH by key only; the
   user `shipify` (no sudo, its home 0700) running one runner per slot as system services (`shipify-box-<name>`, then
   `shipify-box-<name>-<k>`, with `UMask=0077`); the machine's tools in `/opt/shipify`; the sandbox
   ([below](#the-agents-own-user)), the agents' network wall included; containers for the agents,
@@ -622,9 +628,26 @@ It looks after itself too (setup 17), with nothing for you to do:
   up at its first boot, but at every boot after it, it put back the image's hostname and
   `/etc/hosts`, and could rewrite the network. What it wrote stays (the network's netplan file
   too); it just runs no more.
+- **One network at each start (setup 20, Ubuntu 26.04: a Pi, a PC or a VM):** the initrd, which
+  dracut makes, ran a network of its own and left
+  `/run/systemd/network/zzzz-dracut-default.network` (DHCP on every link) beside netplan's file.
+  That is a known clash: a start could come up with no address, and the box stayed offline until
+  a power cycle, which the watchdog can't see. One module brings it in: `dyn-netconf`, from
+  `cloud-initramfs-dyn-netconf`, which `ubuntu-server` installs. A root on the machine's own disk
+  needs no network before it's mounted, so the setup leaves that module out
+  (`/etc/dracut.conf.d/50-shipify-box.conf`). A root reached over the network (NFS, iSCSI, or
+  `ip=` on the kernel's command line) is left as it is, and would keep its network through its own
+  modules anyway. While the initrd the next start takes (`/boot/initrd.img`) still has the module,
+  the setup makes it again as a kernel update does (`update-initramfs`). From the next restart:
+  a PC or a VM starts from it; a Pi's flash-kernel writes it to `/boot/firmware/new`, and the Pi
+  starts twice, once to try it, and keeps it in `current/` only once it starts, else it starts
+  from `current/` as before. The setting stays, so each kernel update's initrd is the same, and
+  each setup looks at the initrd itself, so one that wasn't made (the setup's output says why) is
+  made at the next run. To check after a restart: `ls /run/systemd/network` lists only netplan's
+  file, and `ip -4 addr` shows the address.
 
-This PC without `--manage` keeps its own watchdog, logs and cloud-init, as it keeps its power
-settings.
+This PC without `--manage` keeps its own watchdog, logs, cloud-init and initrd, as it keeps its
+power settings.
 
 ## Fast and current
 

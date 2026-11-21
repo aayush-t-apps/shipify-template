@@ -31,8 +31,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 19, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=19$/m);
+  it("is version 20, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=20$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -575,6 +575,146 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(off).toBeLessThan(at('record "$SETUP_VERSION" "manage: not finished"'));
     expect(setup.slice(at("# cloud-init off, once the box is set up"), off)).toContain(
       'if [ -z "$CONTAINER" ] && [ -d /etc/cloud ] && [ ! -e /etc/cloud/cloud-init.disabled ] &&\n  ! { [ "${SHIPIFY_HERE:-}" = 1 ] && [ "${SHIPIFY_MANAGE:-}" != 1 ]; }; then',
+    );
+  });
+
+  it("starts every box on Ubuntu 26.04 with one network: none in its initrd, made again as a kernel update makes it (setup 20)", () => {
+    expect(setup).toMatch(/^# Setup 20: a box on Ubuntu 26\.04 \(a Pi, a PC or a VM\) starts/m);
+    // In the part an image or a container skips (its host starts it), beside the watchdog.
+    const one = at('say "One network at each start: none in the initrd"');
+    expect(at('if [ -z "$IMAGE$CONTAINER" ]; then\nsay "Automatic updates"')).toBeLessThan(one);
+    expect(at('say "Restarts when it hangs, and keeps its logs small"')).toBeLessThan(one);
+    expect(one).toBeLessThan(at('if [ -z "$IMAGE$CONTAINER" ]; then\nsay "Swap in memory (zram)"'));
+    // Made again by update-initramfs, whose hooks put it where the machine starts from (a Pi's
+    // flash-kernel: /boot/firmware/new), never by dracut alone, which writes only /boot.
+    expect(code).not.toMatch(/^\s*dracut /m);
+
+    // local_root: the root on the machine's own disk, and no network root asked for.
+    const dir = sandbox().dir;
+    const cmdline = join(dir, "cmdline");
+    const local = (root: string, line: string) => {
+      writeFileSync(cmdline, `${line}\n`);
+      return bash([
+        `findmnt() { echo '${root}'; }`,
+        fn("local_root").replaceAll("/proc/cmdline", cmdline),
+        "local_root && echo yes || echo no",
+      ]).stdout.trim();
+    };
+    // workpi's own command line, as the Pi's firmware gives it, then a PC's and a VM's.
+    const workpi =
+      "coherent_pool=1M 8250.nr_uarts=1 smsc95xx.macaddr=D8:3A:DD:0F:06:94 vc_mem.mem_base=0x3eb00000 usb-storage.quirks=7825:a2a4:u console=ttyS0,115200 console=tty1 root=LABEL=writable rootfstype=ext4 panic=10 rootwait fixrtc";
+    expect(local("/dev/sda2", workpi)).toBe("yes");
+    expect(local("/dev/mmcblk0p2", "root=LABEL=writable")).toBe("yes");
+    expect(local("/dev/nvme0n1p2", "BOOT_IMAGE=/vmlinuz-7.0.0-20-generic root=UUID=1 ro")).toBe(
+      "yes",
+    );
+    expect(local("/dev/vda1[/@]", "root=LABEL=cloudimg-rootfs ro console=ttyS0")).toBe("yes");
+    // A root the initrd reaches over the network: on NFS, or asked for on the command line.
+    expect(local("10.0.0.2:/srv/pi", "root=/dev/nfs nfsroot=10.0.0.2:/srv/pi ip=dhcp")).toBe("no");
+    expect(local("/dev/sda2", `ip=dhcp ${workpi}`)).toBe("no");
+    expect(local("/dev/sda2", `${workpi} netroot=iscsi:10.0.0.2::::iqn.2026-11.pi`)).toBe("no");
+    expect(local("/dev/sda1", "root=UUID=1 rd.iscsi.ibft=1 rd.iscsi.firmware=1")).toBe("no");
+    expect(local("/dev/nvme1n1p1", "root=UUID=1 rd.nvmf.discover=fc,auto")).toBe("no");
+    expect(local("/dev/mapper/root", `${workpi} rd.neednet=1`)).toBe("no");
+
+    // The step, as it runs: the setting, and the initrd the next start takes made again while it
+    // still has the module, whatever an earlier run left. A stand-in initrd: its modules' list,
+    // which update-initramfs makes again with the setting, as dracut does.
+    const step = setup.slice(at("DRACUT_DROPIN="), at("\nfi\n\n# Swap in memory"));
+    const dropin = join(dir, "dracut.conf.d", "50-shipify-box.conf");
+    const zzzz = join(dir, "zzzz-dracut-default.network");
+    const image = join(dir, "initrd.img");
+    const initrd = join(dir, "initrd-modules");
+    const network = "dyn-netconf\nsystemd-networkd\nnet-lib\nkernel-network-modules\n";
+    const calls = join(dir, "calls");
+    writeFileSync(image, "");
+    const run = (
+      o: { local?: boolean; dracut?: boolean; made?: boolean; env?: Record<string, string> } = {},
+    ) => {
+      writeFileSync(calls, "");
+      const r = bash(
+        [
+          `WORK='${dir}'`,
+          'say() { echo "== $*"; }',
+          fn("put_file"),
+          `local_root() { return ${o.local === false ? 1 : 0}; }`,
+          o.dracut === false
+            ? 'command() { [ "$*" != "-v dracut" ] || return 1; builtin command "$@"; }'
+            : "dracut() { :; }",
+          `lsinitrd() { [ "$*" = "--mod ${image}" ] || return 1; echo "dracut modules:"; echo systemd; cat '${initrd}'; echo systemd-networkd-wait-online.d; }`,
+          `update-initramfs() { echo "update-initramfs $*" >> '${calls}'; ${o.made === false ? "echo 'dracut[E]: No space left on device' >&2; return 1" : `[ ! -e '${dropin}' ] || : > '${initrd}'`}; }`,
+          step
+            .replaceAll("/etc/dracut.conf.d/50-shipify-box.conf", dropin)
+            .replaceAll("/boot/initrd.img", image)
+            .replaceAll("/run/systemd/network/zzzz-dracut-default.network", zzzz),
+          'echo "went on"',
+        ],
+        { SHIPIFY_HERE: "", SHIPIFY_MANAGE: "", ...o.env },
+      );
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toContain("went on");
+      return { out: r.stdout, calls: readFileSync(calls, "utf8") };
+    };
+    // A Pi as Ubuntu 26.04 left it: this start had the initrd's network (its file is there). The
+    // setting, the initrd made again, and on from the next restart.
+    writeFileSync(initrd, network);
+    writeFileSync(zzzz, "[Match]\nKind=!*\nType=!loopback\n");
+    const first = run();
+    // The one module that brings the network in; a root that needs the network keeps it through
+    // its own modules (iSCSI's, NFS's), as net-lib and systemd-networkd aren't left out.
+    expect(readFileSync(dropin, "utf8")).toContain('\nomit_dracutmodules+=" dyn-netconf "\n');
+    expect(first.calls).toBe("update-initramfs -u\n");
+    expect(readFileSync(initrd, "utf8")).toBe("");
+    expect(first.out).toContain("  making its initrd again, with no network (a minute or two)\n");
+    expect(first.out).toContain("  set: from the next restart");
+    // Run again before the restart: nothing made again.
+    const again = run();
+    expect(again.calls).toBe("");
+    expect(again.out).toContain("  set: from the next restart");
+    // After the restart, the initrd's file is gone: on.
+    rmSync(zzzz);
+    const restarted = run();
+    expect(restarted.calls).toBe("");
+    expect(restarted.out).toContain("  on: its initrd has no network of its own");
+    // Not made (a full disk, a cut-off run): said, the setup goes on, and the setting stays, so
+    // a kernel update's initrd has no network either; the next run makes it.
+    writeFileSync(initrd, network);
+    const failed = run({ made: false });
+    expect(failed.calls).toBe("update-initramfs -u\n");
+    expect(failed.out).toContain("dracut[E]: No space left on device");
+    expect(failed.out).toContain(
+      "  skipped: its initrd wasn't made again (above); the setting stays",
+    );
+    expect(existsSync(dropin)).toBe(true);
+    expect(run().calls).toBe("update-initramfs -u\n");
+    expect(readFileSync(initrd, "utf8")).toBe("");
+    // The setting taken out by hand, the initrd still without the network: put back, nothing made.
+    rmSync(dropin);
+    expect(run().calls).toBe("");
+    expect(existsSync(dropin)).toBe(true);
+    // An initrd that keeps a network of the machine's own (a data disk over iSCSI) but not the
+    // module: nothing made again, so no run makes it again and again.
+    writeFileSync(initrd, "iscsi\nsystemd-networkd\nnet-lib\n");
+    expect(run().calls).toBe("");
+    // Nothing on a machine whose root is reached over the network, nor where dracut doesn't make
+    // the initrd (Ubuntu 24.04, a machine with no initrd of its own), nor on this PC without
+    // --manage.
+    rmSync(dropin);
+    writeFileSync(initrd, network);
+    const skipped = (o: Parameters<typeof run>[0]) => {
+      const r = run(o);
+      expect(r.calls).toBe("");
+      expect(existsSync(dropin)).toBe(false);
+      return r.out;
+    };
+    expect(skipped({ local: false })).toContain("  skipped: this machine's root is reached over");
+    expect(skipped({ dracut: false })).toContain("  skipped: dracut doesn't make this machine's");
+    expect(skipped({ env: { SHIPIFY_HERE: "1" } })).toContain("  skipped: this is the PC you");
+    rmSync(image);
+    expect(skipped({})).toContain("  skipped: dracut doesn't make this machine's");
+    writeFileSync(image, "");
+    expect(run({ env: { SHIPIFY_HERE: "1", SHIPIFY_MANAGE: "1" } }).calls).toBe(
+      "update-initramfs -u\n",
     );
   });
 
