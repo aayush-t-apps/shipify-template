@@ -323,8 +323,8 @@ names and dates:
 - **Key dates:** the watch's reminders, and `pnpm ship doctor`.
 - **Your domain's renewal,** with your registrar. If it lapses, the edge and the apps on it are down.
 - **A box off for 14 days** is removed by GitHub: `box add` again (with no target on this PC).
-- **Ubuntu on the Pi:** 24.04's updates end in 2029 (2034 with free Ubuntu Pro), 26.04's in 2031.
-  To move, write it fresh ([box-setup.md](box-setup.md#about-the-os)).
+- **Ubuntu on a box:** 24.04 LTS, whose updates end in May 2029 (2034 with free Ubuntu Pro). To
+  move to a newer LTS once it's proven on a Pi, write it fresh ([box-setup.md](box-setup.md#about-the-os)).
 - **Each agent's version** is pinned in `executors.json` (its `install`). Raise it in a PR now and
   then.
 - **Shipify's releases:** fixes land on `main`, and runs use `main` at once; `shipify: release`

@@ -62,6 +62,29 @@ describe("box/here.sh: its shape", () => {
     const code = text.split("\n").filter((l) => !/^\s*(#|note |printf)/.test(l));
     for (const l of code) expect(l).not.toMatch(/curl[^\n]*\|\s*(sudo )?(ba)?sh\b/);
   });
+
+  it("waits out a first boot's own updates (apt's lock), and asks for sudo once", () => {
+    // A Pi's first boot: unattended-upgrades held apt's lock, and here.sh stopped. Its install
+    // block, run with apt-get locked once: it says so, waits, and installs.
+    const block = /\n {2}if \[ -n "\$missing" \]; then\n[\s\S]*?\n {2}fi\n/.exec(text)?.[0] ?? "";
+    const dir = mkdtempSync(join(tmpdir(), "here-apt-"));
+    dirs.push(dir);
+    const stub = `#!/bin/sh\necho "$*" >> ${dir}/calls\ncase "$*" in *update*) [ -e ${dir}/free ] || { touch ${dir}/free; echo "E: Could not get lock" >&2; exit 100; } ;; esac\n`;
+    writeFileSync(join(dir, "apt-get"), stub, { mode: 0o755 });
+    const script = `set -euo pipefail\nnote() { echo "$*"; }\ndie() { echo Stopped; exit 1; }\nsleep() { :; }\nsudo() { env "$@"; }\nWORK=${dir} missing=" libatomic1"\nf() {${block}}\nf && echo done`;
+    const r = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: { PATH: `${dir}:${process.env.PATH}` },
+    });
+    expect(r.stdout).toContain("apt is busy (E: Could not get lock): again in 30 seconds");
+    expect(r.stdout).toContain("done");
+    expect(readFileSync(join(dir, "calls"), "utf8")).toContain(
+      "-o DPkg::Lock::Timeout=1200 install -y -qq libatomic1",
+    );
+    // sudo kept fresh while it runs (a phone's approval can outlast its 15 minutes), stopped with it.
+    expect(text).toContain("SUDO_KEPT=$!");
+    expect(text).toContain("for p in $WAITING $SUDO_KEPT; do");
+  });
 });
 
 describe("box/here.sh: shellcheck, where it's installed (GitHub's machines have it)", () => {

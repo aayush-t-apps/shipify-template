@@ -155,7 +155,7 @@ a box's workflows pin. What's left:
 ## Kept current and safe (task #673, 2026-11-05)
 
 What's automatic: Ubuntu's security updates on a box, and its normal ones since box setup 17
-(daily, a restart at 04:30 when one needs it), the runner's own updates, Dependabot's security alerts and its quarterly PRs, and since #673
+(daily, a restart from 04:30 when one needs it, once no slot runs a task: setup 21), the runner's own updates, Dependabot's security alerts and its quarterly PRs, and since #673
 the weekly digest's line on the agents behind their newest, with any advisory against a pin first,
 and since ADR 0079 the task that moves one (`shipify: update claude to <version>`), which a box
 checks live. What's left:

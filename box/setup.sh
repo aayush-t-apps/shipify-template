@@ -10,9 +10,9 @@
 #   $4  box/update.sh, the box's own setup update (setup 14)
 # What it installs: git, make, gh, Node 26 and pnpm (through npm), shellcheck, fd and sqlite3, the
 # updates waiting now and automatic updates (Ubuntu's security and normal ones, gh's and Tailscale's
-# too, rebooting at 04:30 when one needs it, never restarting a slot), no sleep, a hardware watchdog,
-# logs kept small, an initrd with no network of its own, what each stack needs, the user "shipify"
-# (no sudo)
+# too, restarting from 04:30 when one needs it, once no slot runs a task), no sleep, a hardware
+# watchdog, logs kept small, an initrd with no network of its own, what each stack needs, the user
+# "shipify" (no sudo)
 # and the box's slots as that user's services (ADR 0020): one GitHub runner each, all labelled
 # shipify-box and box-<name>, each running what the queue hands it, one task at a time (ADR 0019).
 # The sandbox (setup 5, ADR 0031): each slot's agent runs as a user of its own, shipify-agent-<k>,
@@ -79,6 +79,10 @@
 # netplan's, and a start could come up with no address. Where the root is on the machine's own
 # disk, /etc/dracut.conf.d leaves out the one module that brought it in, and the initrd is made
 # again, which the next restart takes (a Pi tries it first, and keeps the one before if it fails).
+# Setup 21: the restart an update asks for (a new kernel) waits for the slots: from 04:30, every 10
+# minutes until 06:50, once no slot runs a task (a timer, shipify-box-restart), in place of
+# unattended-upgrades' restart at 04:30, which cut a task off whatever ran. Ubuntu 24.04 LTS is the
+# OS a new box gets: on a Pi 4, 26.04's start didn't come back reliably (docs/box-setup.md).
 # Running it again updates Node to the newest 26.x, and adds or removes slots to match
 # RUNNER_SLOTS.
 # SSH takes keys only, never passwords, once the account running this has a key; with
@@ -97,7 +101,7 @@ set -euo pipefail
 # What this script gives a box. Bump it when a change here should reach boxes already set up:
 # `ship doctor` (and so the weekly clean-up, on the status issue) names a box set up by an older
 # one, and running `ship box add` again brings it up to date (ADR 0017).
-SETUP_VERSION=20
+SETUP_VERSION=21
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 export NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -252,19 +256,49 @@ CONF
 # Ubuntu's security updates (its own setting), and its normal ones (setup 17: bug fixes, as
 # Podman's), which nobody would install by hand on a box. gh and Tailscale come from their own apt
 # sources, which Ubuntu's updates leave out, and Cockpit (--manage) from Ubuntu's backports: only
-# what's installed from there takes its updates. Kernel fixes need a restart: at 04:30, only when
-# an update asks for one. A task running then shows failed; comment "continue" on it.
+# what's installed from there takes its updates. Kernel fixes need a restart: the box's own, below,
+# not unattended-upgrades', which restarts at its time whatever runs.
 cat > /etc/apt/apt.conf.d/52shipify-updates <<'CONF'
 Unattended-Upgrade::Allowed-Origins { "${distro_id}:${distro_codename}-updates"; };
 Unattended-Upgrade::Origins-Pattern { "origin=gh"; "origin=Tailscale"; "origin=Ubuntu,archive=${distro_codename}-backports"; };
-Unattended-Upgrade::Automatic-Reboot "true";
-Unattended-Upgrade::Automatic-Reboot-Time "04:30";
+Unattended-Upgrade::Automatic-Reboot "false";
 CONF
-echo "  on: security and normal updates every day, restarting at 04:30 when one needs it (the updates waiting now come once the slots are registered)"
+# The restart an update asks for (setup 21): from 04:30, once no slot runs a task, never in the
+# middle of one. A timer tries every 10 minutes until 06:50; a task that outlasts that, the next
+# night. It runs nothing the runner or an agent can write, and takes no setting from them. It stays
+# with the machine's own updates when Shipify goes (box/remove.sh), and then restarts as Ubuntu's
+# would: with no runner's user, nothing runs a task.
+RESTART_SH=/usr/local/sbin/shipify-box-restart
+cat > "$WORK/restart.sh" <<'SH'
+#!/bin/sh
+# Written by Shipify box setup (docs/box-setup.md): the restart an update asks for, once no slot runs a task.
+[ -e /var/run/reboot-required ] || exit 0
+if id shipify >/dev/null 2>&1 && pgrep -u shipify -f 'bin/Runner\.Worker' >/dev/null; then
+  echo "An update needs a restart, and a slot runs a task: the next try is in 10 minutes."
+  exit 0
+fi
+echo "Restarting for an update ($(tr '\n' ' ' 2>/dev/null </var/run/reboot-required.pkgs))."
+exec systemctl reboot
+SH
+cmp -s "$WORK/restart.sh" "$RESTART_SH" || install -m 0755 "$WORK/restart.sh" "$RESTART_SH"
+if [ -d /run/systemd/system ]; then
+  printf '%s\n' "# Written by Shipify box setup (docs/box-setup.md): the restart an update asks for." \
+    "[Unit]" "Description=Shipify box: the restart an update asks for, once no slot runs a task" \
+    "[Service]" "Type=oneshot" "ExecStart=$RESTART_SH" > "$WORK/restart.service"
+  printf '%s\n' "# Written by Shipify box setup (docs/box-setup.md): tries from 04:30, every 10 minutes until 06:50." \
+    "[Unit]" "Description=Shipify box: the restart an update asks for, from 04:30" \
+    "[Timer]" "OnCalendar=*-*-* 04:30/10:00" "OnCalendar=*-*-* 05,06:00/10:00" "[Install]" "WantedBy=timers.target" > "$WORK/restart.timer"
+  changed=""
+  put_file "$WORK/restart.service" /etc/systemd/system/shipify-box-restart.service && changed=1
+  put_file "$WORK/restart.timer" /etc/systemd/system/shipify-box-restart.timer && changed=1
+  [ -z "$changed" ] || systemctl daemon-reload
+  systemctl enable -q --now shipify-box-restart.timer
+fi
+echo "  on: security and normal updates every day; a restart one asks for from 04:30, once no slot runs a task (the updates waiting now come once the slots are registered)"
 
 # After an update, needrestart restarts the services whose libraries changed (Ubuntu's apt hook,
 # in its automatic mode). Never a slot's: that would stop its task. A slot takes a new library at
-# its next start (box add again, or the restart at 04:30 a kernel update brings).
+# its next start (box add again, or the restart a kernel update brings, from 04:30).
 say "Updates leave the slots running"
 install -d -m 755 /etc/needrestart/conf.d
 printf '%s\n' "# Written by Shipify box setup (docs/box-setup.md): an update never restarts a slot mid-task." \
@@ -913,7 +947,7 @@ if wait "$updating"; then
 else
   echo "  some didn't install now (see /var/log/shipify-box-updates.log); the daily run tries again"
 fi
-[ ! -f /var/run/reboot-required ] || echo "  they need a restart: it happens at 04:30 by itself, or run: sudo reboot"
+[ ! -f /var/run/reboot-required ] || echo "  they need a restart: it happens from 04:30 by itself, once no slot runs a task, or run: sudo reboot"
 fi
 
 # Tailscale, then the firewall, then Cockpit on 127.0.0.1 only, shared with your own devices by

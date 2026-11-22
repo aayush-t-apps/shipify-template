@@ -6,10 +6,10 @@
 # their ID ranges, folders and processes (the containers' images too); the sudo rules; the update rule for the slots; the
 # agents' network rules; the containers' settings for the agents; /opt/shipify; the box's own
 # update (setup 14), with its settings, its folder and its log.
-# Stays, as the machine's own: automatic updates (with the restart at 04:30), Ubuntu's normal updates
-# where setup added them, SSH by key only, zram, never sleeping, the watchdog, the journal's limit,
-# cloud-init off (setup 17), and with --manage Tailscale, Cockpit and the firewall; and the tools it
-# installed (Node, gh, Podman), which the docs say how to remove.
+# Stays, as the machine's own: automatic updates (with the restart from 04:30, shipify-box-restart),
+# Ubuntu's normal updates where setup added them, SSH by key only, zram, never sleeping, the
+# watchdog, the journal's limit, cloud-init off (setup 17), and with --manage Tailscale, Cockpit and
+# the firewall; and the tools it installed (Node, gh, Podman), which the docs say how to remove.
 # Safe to run again: what's gone already is skipped.
 set -euo pipefail
 

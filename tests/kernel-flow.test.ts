@@ -125,7 +125,9 @@ const until = async (done: () => boolean) => {
       return false;
     }
   };
-  for (let i = 0; i < 300 && !now(); i++) await new Promise((r) => setTimeout(r, 100));
+  // Up to 2 minutes: a stay is a process of its own, and a busy CI machine (the template's, at a
+  // release) took more than 30 s. It returns as soon as it's done, so a fast run never waits.
+  for (let i = 0; i < 1200 && !now(); i++) await new Promise((r) => setTimeout(r, 100));
   expect(now()).toBe(true);
 };
 /** Your words while a stay runs: under the fake gh's own lock, so neither loses the other's. */
@@ -1973,7 +1975,7 @@ describe("a run end to end", () => {
       } finally {
         delete process.env.FAKE_FINAL;
       }
-    });
+    }, 180_000);
 
     // A slip in its answer's shape: a note longer than its 500 characters.
     const slip = JSON.stringify({
@@ -2043,7 +2045,7 @@ describe("a run end to end", () => {
         spy.mockRestore();
         delete process.env.FAKE_FINAL;
       }
-    });
+    }, 180_000);
 
     it("answers each turn with its own answer, never the file an earlier answer left (#462)", async () => {
       // The first answer is the file the agent wrote (its session from its final answer); the
@@ -2066,7 +2068,7 @@ describe("a run end to end", () => {
         delete process.env.FAKE_RESULT;
         delete process.env.FAKE_FINAL;
       }
-    });
+    }, 180_000);
 
     it("a `use` you're already on, alone, is answered in the stay, which stays for your next words (ADR 0059)", async () => {
       process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
@@ -2091,7 +2093,7 @@ describe("a run end to end", () => {
       } finally {
         delete process.env.FAKE_FINAL;
       }
-    });
+    }, 180_000);
 
     it("`use` naming the model and effort Auto already runs, with your words: answered in the stay (ADR 0059)", async () => {
       process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
@@ -2114,7 +2116,7 @@ describe("a run end to end", () => {
       } finally {
         delete process.env.FAKE_FINAL;
       }
-    });
+    }, 180_000);
 
     it("keeps the session through a new model and effort: the next ask takes them, no new run (#532, ADR 0063)", async () => {
       process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
@@ -2141,7 +2143,7 @@ describe("a run end to end", () => {
       } finally {
         delete process.env.FAKE_FINAL;
       }
-    });
+    }, 180_000);
 
     it("carries `continue` on in the session, and posts `close` itself, then leaves (ADR 0063)", async () => {
       process.env.FAKE_FINAL = JSON.stringify({ v: 2, state: "done", text: "12 GB free." });
@@ -2161,7 +2163,7 @@ describe("a run end to end", () => {
       } finally {
         delete process.env.FAKE_FINAL;
       }
-    });
+    }, 180_000);
 
     it("decides your `yes` to a list in the stay, and its job makes the calls: no new run (ADR 0063)", async () => {
       process.env.FAKE_FINAL = JSON.stringify({

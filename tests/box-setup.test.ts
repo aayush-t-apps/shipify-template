@@ -31,8 +31,8 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     return i;
   };
 
-  it("is version 20, and bash reads it", () => {
-    expect(setup).toMatch(/^SETUP_VERSION=20$/m);
+  it("is version 21, and bash reads it", () => {
+    expect(setup).toMatch(/^SETUP_VERSION=21$/m);
     expect(spawnSync("bash", ["-n", file]).status).toBe(0);
   });
 
@@ -538,7 +538,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
   });
 
   it("looks after itself: normal updates too, a hardware watchdog, small logs, and cloud-init off once set up (setup 17)", () => {
-    // Ubuntu's normal updates beside its security ones, and the 04:30 restart kept.
+    // Ubuntu's normal updates beside its security ones; the restart is the box's own (setup 21).
     const updates =
       /cat > \/etc\/apt\/apt\.conf\.d\/52shipify-updates <<'CONF'\n([\s\S]*?)\nCONF/.exec(
         setup,
@@ -546,7 +546,7 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(updates).toContain(
       'Unattended-Upgrade::Allowed-Origins { "${distro_id}:${distro_codename}-updates"; };',
     );
-    expect(updates).toContain('Unattended-Upgrade::Automatic-Reboot-Time "04:30";');
+    expect(updates).toContain('Unattended-Upgrade::Automatic-Reboot "false";');
     // The watchdog and the journal's limit: drop-ins systemd takes without a restart, only when
     // they changed; this PC keeps its own without --manage, as with sleep.
     const part = setup.slice(
@@ -576,6 +576,79 @@ describe("box/setup.sh: setup 5, checked without a box", () => {
     expect(setup.slice(at("# cloud-init off, once the box is set up"), off)).toContain(
       'if [ -z "$CONTAINER" ] && [ -d /etc/cloud ] && [ ! -e /etc/cloud/cloud-init.disabled ] &&\n  ! { [ "${SHIPIFY_HERE:-}" = 1 ] && [ "${SHIPIFY_MANAGE:-}" != 1 ]; }; then',
     );
+  });
+
+  it("restarts for an update from 04:30 only once no slot runs a task, never cutting one off (setup 21)", () => {
+    expect(setup).toMatch(/^# Setup 21: the restart an update asks for \(a new kernel\) waits/m);
+    // Not unattended-upgrades' restart, which takes no notice of a task.
+    expect(code).not.toContain("Automatic-Reboot-Time");
+    expect(code).not.toContain('Automatic-Reboot "true"');
+    // The box's own: a timer from 04:30, every 10 minutes until 06:50, in the updates' part (which
+    // an image or a container skips), only where systemd runs.
+    const part = setup.slice(
+      at('if [ -z "$IMAGE$CONTAINER" ]; then\nsay "Automatic updates"'),
+      at('say "Updates leave the slots running"'),
+    );
+    for (const line of [
+      '"[Timer]" "OnCalendar=*-*-* 04:30/10:00" "OnCalendar=*-*-* 05,06:00/10:00"',
+      '"[Service]" "Type=oneshot" "ExecStart=$RESTART_SH"',
+      "RESTART_SH=/usr/local/sbin/shipify-box-restart",
+      'cmp -s "$WORK/restart.sh" "$RESTART_SH" || install -m 0755 "$WORK/restart.sh" "$RESTART_SH"',
+      "systemctl enable -q --now shipify-box-restart.timer",
+      "if [ -d /run/systemd/system ]; then",
+    ])
+      expect(part, line).toContain(line);
+
+    // The script itself, run with stand-ins: the restart only when one is asked for and no slot's
+    // runner has a job (its Worker), or no runner's user is here at all (Shipify gone).
+    const script = /cat > "\$WORK\/restart\.sh" <<'SH'\n([\s\S]*?)\nSH\n/.exec(setup)?.[1] ?? "";
+    expect(script).toMatch(/^#!\/bin\/sh\n/);
+    const dir = sandbox().dir;
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const flag = join(dir, "reboot-required");
+    const log = join(dir, "calls");
+    const stub = (name: string, body: string) =>
+      writeFileSync(join(bin, name), `#!/bin/sh\necho "${name} $*" >> "${log}"\n${body}\n`, {
+        mode: 0o755,
+      });
+    const file = join(dir, "restart.sh");
+    writeFileSync(file, script.replaceAll("/var/run/reboot-required", flag));
+    const run = (o: { asked: boolean; busy: boolean; user?: boolean }) => {
+      rmSync(log, { force: true });
+      rmSync(flag, { force: true });
+      rmSync(`${flag}.pkgs`, { force: true });
+      if (o.asked) {
+        writeFileSync(flag, "*** System restart required ***\n");
+        writeFileSync(`${flag}.pkgs`, "linux-image-raspi\nlinux-base\n");
+      }
+      stub("id", `exit ${o.user === false ? 1 : 0}`);
+      stub("pgrep", `exit ${o.busy ? 0 : 1}`);
+      stub("systemctl", "exit 0");
+      const r = spawnSync("sh", [file], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      });
+      const calls = existsSync(log) ? readFileSync(log, "utf8") : "";
+      return { code: r.status, out: r.stdout + r.stderr, calls };
+    };
+    // Nothing asked for: nothing looked at, no restart.
+    expect(run({ asked: false, busy: false })).toEqual({ code: 0, out: "", calls: "" });
+    // A slot runs a task: it waits for the next try, and says so.
+    const busy = run({ asked: true, busy: true });
+    expect(busy.code).toBe(0);
+    expect(busy.calls).toContain("pgrep -u shipify -f bin/Runner\\.Worker");
+    expect(busy.calls).not.toContain("systemctl");
+    expect(busy.out).toContain("a slot runs a task: the next try is in 10 minutes");
+    // No task: it restarts, naming what asked for it.
+    const free = run({ asked: true, busy: false });
+    expect(free.code).toBe(0);
+    expect(free.calls).toContain("systemctl reboot");
+    expect(free.out).toContain("Restarting for an update (linux-image-raspi linux-base )");
+    // No runner's user (Shipify taken off, its updates kept): it restarts as Ubuntu's would.
+    const gone = run({ asked: true, busy: true, user: false });
+    expect(gone.calls).not.toContain("pgrep");
+    expect(gone.calls).toContain("systemctl reboot");
   });
 
   it("starts every box on Ubuntu 26.04 with one network: none in its initrd, made again as a kernel update makes it (setup 20)", () => {

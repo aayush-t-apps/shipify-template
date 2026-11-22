@@ -191,13 +191,20 @@ export function boxFacts(given: Partial<BoxIo> = {}, now = Date.now()): Fact[] {
   const since = changed("/run/reboot-required");
   if (since) {
     const pkgs = [...new Set(read("/run/reboot-required.pkgs")?.split("\n").filter(Boolean))];
-    // box add sets one (box/setup.sh).
-    const at = read("/etc/apt/apt.conf.d/52shipify-updates")?.match(
-      /Automatic-Reboot-Time\s+"([^"]+)"/,
+    // box add sets one (box/setup.sh): from setup 21 the box's own timer, which waits until no slot
+    // runs a task; before it, unattended-upgrades' time.
+    const from = read("/etc/systemd/system/shipify-box-restart.timer")?.match(
+      /OnCalendar=\*-\*-\* (\d\d:\d\d)/,
     )?.[1];
+    const at =
+      from ??
+      read("/etc/apt/apt.conf.d/52shipify-updates")?.match(
+        /Automatic-Reboot-Time\s+"([^"]+)"/,
+      )?.[1];
+    const by = from ? `from ${from}, once no slot runs a task` : `at ${at}`;
     facts.push({
       name: "restart",
-      value: `needed since ${when(since)}${pkgs.length ? ` (${pkgs.join(", ")})` : ""}${at ? `; it restarts by itself at ${at}` : ""}`,
+      value: `needed since ${when(since)}${pkgs.length ? ` (${pkgs.join(", ")})` : ""}${at ? `; it restarts by itself ${by}` : ""}`,
       // A day and a bit: the nightly restart should have happened by then.
       look:
         now - since.getTime() > 30 * 3_600_000

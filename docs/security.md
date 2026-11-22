@@ -214,8 +214,8 @@ runs as `shipify-agent-<k>`, a system user with no password and no login shell.
   kernel's code (mounts, network namespaces, firewall rules there); a kernel bug there could give
   it the box. It could already do this before, through `aa-exec` and one of Ubuntu's own AppArmor
   profiles, so this isn't a new reach, and Ubuntu's limit on user namespaces was never a wall here.
-  What defends it is the kernel's security updates, installed each day with a restart at 04:30
-  when one needs it. A stronger wall (gVisor, a VM per run) is for later, if a run ever needs it.
+  What defends it is the kernel's security updates, installed each day with a restart from 04:30
+  when one needs it, once no slot runs a task. A stronger wall (gVisor, a VM per run) is for later, if a run ever needs it.
 - **Nothing outlives its run:** after it thinks, and at its time limit, every process of its user
   is killed, and checked gone (its range's too: its containers' processes) before any step with a
   write key starts. It can't use cron or at. Its containers' records, volumes and networks go when

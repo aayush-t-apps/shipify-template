@@ -547,7 +547,7 @@ export function boxAdd(
     );
   if (!isBoxOs(os ?? ""))
     throw new ShipError(
-      `${m.label} runs ${os || "an unknown OS"}; a box runs Ubuntu Server 24.04 LTS (64-bit) or a newer LTS (26.04), the one setup Shipify tests (Raspberry Pi OS's kernel is too small for some stacks' tests). Write it fresh, then run this again: docs/box-setup.md.`,
+      `${m.label} runs ${os || "an unknown OS"}; a box runs Ubuntu Server 24.04 LTS (64-bit) or a newer LTS, the one setup Shipify tests (Raspberry Pi OS's kernel is too small for some stacks' tests). Write 24.04 fresh, then run this again: docs/box-setup.md.`,
       "unsupported",
     );
   const all = runners(repo);
@@ -597,7 +597,7 @@ export function boxAdd(
       ? []
       : [
           `automatic updates never restart a slot mid-task (needrestart)${m.here && !opts.manage ? "; this PC's power settings stay as they are (--manage: a box you keep, which never sleeps)" : ", and the box never sleeps: the lid does nothing, and sleep is off"}`,
-          `automatic updates, Ubuntu's security and normal ones (setup 17), restarting at 04:30 only when one needs it${m.here && !opts.manage ? "" : "; the hardware watchdog restarts the box when it hangs for 30 seconds, its logs keep 200 MB at most, and cloud-init is off once the setup passes, so the box keeps its own name and network"}`,
+          `automatic updates, Ubuntu's security and normal ones (setup 17), restarting from 04:30 when one needs it, once no slot runs a task (setup 21)${m.here && !opts.manage ? "" : "; the hardware watchdog restarts the box when it hangs for 30 seconds, its logs keep 200 MB at most, and cloud-init is off once the setup passes, so the box keeps its own name and network"}`,
         ]),
     `it creates the user "shipify" (no sudo; its home 0700, only its own) and runs ${slots} slot(s)${why}, one task at a time each: the GitHub runners ${slotNumbers(
       slots,

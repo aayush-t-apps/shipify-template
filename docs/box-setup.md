@@ -13,8 +13,8 @@ checks out, so every box takes task runs ([The agent's own user](#the-agents-own
 
 ## Anywhere, with one command
 
-On any Ubuntu 26.04 or 24.04 LTS machine (a cloud VM, a spare PC, a friend's laptop), as a user who can
-sudo, with nothing on it yet:
+On any Ubuntu Server 24.04 LTS machine (a cloud VM, a spare PC, a friend's laptop; a newer LTS works
+too, [About the OS](#about-the-os)), as a user who can sudo, with nothing on it yet:
 
 ```sh
 curl -fsSL https://github.com/<owner>/shipify-template/releases/latest/download/here.sh | bash
@@ -61,7 +61,8 @@ container changed, and the agents' IPv6; setup 12: containers' network on Ubuntu
 holds the tools' look keys so no agent does; setup 17: Ubuntu 26.04's sandbox check, the box's own
 updates with GitHub's new tokens, and a box that looks after itself; setup 18: Node 26, and pnpm
 from npm with corepack's links gone; setup 19: the runner's own cache of actions, for a faster
-"Set up job"; setup 20: a box on Ubuntu 26.04 starts with one network, none in its initrd). Run it
+"Set up job"; setup 20: a box on Ubuntu 26.04 starts with one network, none in its initrd; setup
+21: the restart an update asks for waits until no slot runs a task). Run it
 while no task runs: `box add` refuses while a
 slot is busy. A new disk or a fresh OS: [A new disk (an SSD), or a fresh OS](#a-new-disk-an-ssd-or-a-fresh-os).
 
@@ -190,9 +191,10 @@ shares a laptop between its apps.
   and a limit comes only if a slot is ever killed for memory (ADR 0061).
 - **Measure a box:** `box/load-test.sh`, below.
 
-**One OS for every box: Ubuntu Server LTS (64-bit):** 26.04 for a new box, and 24.04 as before
-(setup 12 makes both the same). `box add` refuses any other, Raspberry Pi OS and Debian included
-([About the OS](#about-the-os)), so every box is set up and tested the same way.
+**One OS for every box: Ubuntu Server 24.04 LTS (64-bit),** on a Pi, a PC or a VPS. A box on 26.04
+works too, but on a Pi 4 its start didn't come back reliably, so write 24.04 for a new box
+([About the OS](#about-the-os)). `box add` refuses any other OS, Raspberry Pi OS and Debian
+included, so every box is set up and tested the same way.
 
 **More boxes share the work:** any free slot on any box takes the next run. A task runs one at a
 time, and carries on from any box: its branch and status live on GitHub.
@@ -234,8 +236,8 @@ afterwards `gh auth logout` and delete the clone.)
 
 **A Pi:**
 1. In **Raspberry Pi Imager**, pick: Device **Raspberry Pi 4** (or 5); OS **Other general-purpose
-   OS → Ubuntu → Ubuntu Server 26.04.x LTS (64-bit)** (check the version: older ones sit next to
-   it); Storage: the SSD.
+   OS → Ubuntu → Ubuntu Server 24.04.x LTS (64-bit)** (check the version: 26.04 sits next to it);
+   Storage: the SSD.
 2. At OS customisation, **Edit settings**:
    - a hostname: it becomes the box's name (for example `mybox`). Pick it here: cloud-init puts
      Imager's hostname back at every boot, so a rename on the Pi (`hostnamectl`) is undone, until
@@ -244,7 +246,7 @@ afterwards `gh auth logout` and delete the clone.)
    - your Wi-Fi, unless it's on Ethernet;
    - **Services**: enable SSH (password login is fine: step 3 adds your key).
 
-**A laptop or a PC:** write the [Ubuntu Server 26.04.x LTS](https://ubuntu.com/download/server)
+**A laptop or a PC:** write the [Ubuntu Server 24.04.x LTS](https://ubuntu.com/download/server/thank-you?version=24.04&architecture=amd64&lts=true)
 installer to a USB stick (for example with Raspberry Pi Imager's **Use custom**), and start the machine from
 it. In the installer:
 - **Storage:** the internal SSD, and untick **Set up this disk as an LVM group**, so the system gets
@@ -257,21 +259,15 @@ it. In the installer:
 
 - **A Pi:** plug the SSD into a blue USB 3 port and power on (about two minutes). If it doesn't
   boot, the bootloader is too old: write **Misc utility images → Bootloader → USB Boot** to an SD
-  card, boot from it until the green light blinks steadily, then remove the card. Three things
-  found on a Pi 4 with Ubuntu 26.04:
-  - **No address on your network after the first boot** (your router doesn't list it): Ubuntu
-    26.04's initrd starts a network of its own beside netplan's (a known clash, on any machine),
-    so a start may come up with no IPv4 address. Turn the power off and on once. The box's setup
-    takes the initrd's network out (setup 20, [below](#how-every-box-stays-running)), so the
-    starts after it don't.
+  card, boot from it until the green light blinks steadily, then remove the card. Two things
+  found on a Pi 4:
   - **A USB-SATA case that fails with UAS** (the Pi stops at boot, or `dmesg` shows
     `uas_eh_abort_handler` and I/O errors): turn UAS off for that case. Find its ID with `lsusb`
     on any Linux machine (`ID 174c:55aa` is a genuine ASMedia bridge: its vendor ID is `174c`).
-    Then, on the SSD's boot partition, open `current/cmdline.txt` and put
+    Then, on the SSD's boot partition, open `cmdline.txt` and put
     `usb-storage.quirks=<VID>:<PID>:u ` at the start of its one line (for example
-    `usb-storage.quirks=174c:55aa:u `). Edit `current/cmdline.txt`, not the `cmdline.txt` beside
-    it: from Ubuntu 25.10 on, the Pi starts from `current/`, and Imager's top-level file is
-    ignored. `current/` keeps the change through kernel updates.
+    `usb-storage.quirks=174c:55aa:u `). It stays through kernel updates. (On Ubuntu 26.04 the Pi
+    starts from `current/`: edit `current/cmdline.txt` there, not the file beside it.)
   - **A hostname that comes back:** step 1 above.
 - **A laptop or a PC:** let the installer finish, remove the stick, and restart. Nothing else on
   the machine needs setting: the setup keeps every box awake, swaps the installer's swap file
@@ -314,8 +310,8 @@ its phone app with the same login.
   0.11.0 (the one Shipify's CI checks with, from its own release and checked against its
   checksum, so a PR this box checked passes CI too: setup 15), fd and sqlite3 (fd comes from
   Ubuntu's universe, on by default: without it the setup goes on and says how to add it), what
-  each stack needs; automatic updates, Ubuntu's security and normal ones (restarting at 04:30
-  when one needs it, and never restarting a slot mid-task); no sleep (the lid
+  each stack needs; automatic updates, Ubuntu's security and normal ones (restarting from 04:30
+  when one needs it, once no slot runs a task: setup 21); no sleep (the lid
   does nothing, and sleep is off: on a Pi or a VPS this changes nothing); the hardware watchdog,
   logs kept to 200 MB, and cloud-init off once the setup passes (setup 17); an initrd with no
   network of its own (setup 20); SSH by key only; the
@@ -361,10 +357,10 @@ its phone app with the same login.
 
 ## A VPS
 
-Any VPS with Ubuntu Server 26.04 or 24.04 LTS, x64 or arm64, is set up the same way. It costs
-money every month.
+Any VPS with Ubuntu Server 24.04 LTS, x64 or arm64, is set up the same way (a newer LTS works
+too). It costs money every month.
 
-1. **Create it** with Ubuntu 26.04 LTS, your SSH key and a user who can use sudo; a core and 2 GB
+1. **Create it** with Ubuntu 24.04 LTS, your SSH key and a user who can use sudo; a core and 2 GB
    of memory per slot, plus 1 GB (4 GB for 1 slot, 8 GB and 3 cores for 3).
 2. **Firewall:** in the provider's firewall, allow only SSH in. The box only connects out. With
    `--manage`, the box's own firewall then takes SSH through Tailscale only: from then on, connect
@@ -616,8 +612,11 @@ needrestart rule for `shipify-box-*`): a slot takes a new library at its next st
 
 It looks after itself too (setup 17), with nothing for you to do:
 - **Updates:** Ubuntu's security and normal updates install every day (normal ones carry bug fixes,
-  such as Podman's), and gh's, Tailscale's and Cockpit's. A kernel update restarts the box at
-  04:30, only when one asks for it.
+  such as Podman's), and gh's, Tailscale's and Cockpit's. An update that needs a restart (a new
+  kernel) gets it from 04:30, once no slot runs a task (setup 21): a timer,
+  `shipify-box-restart.timer`, tries every 10 minutes until 06:50, and a task that outlasts that
+  waits for the next night. Before setup 21, Ubuntu's own restart came at 04:30 whatever ran, and
+  cut a task off. `box health` says when a restart is waiting.
 - **A hang:** systemd's watchdog (`/etc/systemd/system.conf.d/50-shipify-box.conf`) keeps the
   hardware's own timer going; when the kernel or systemd stops for 30 seconds, the timer restarts
   the machine, and a restart that hangs is forced after 2 minutes. A Pi has such a timer; most VPSs
@@ -726,7 +725,7 @@ the box when the run ends.
 
 - **Usually, nothing:**
   - the box restarts itself, also when it hangs (the watchdog), and Ubuntu installs security and
-    normal updates (restarting at 04:30 if needed);
+    normal updates (restarting from 04:30 if needed, once no slot runs a task);
   - it applies main's newer setup by itself, and tells you ([Its own updates](#its-own-updates));
   - **the weekly clean-up:** the due run starts it on each box once its last is a week old. It
     removes closed and deleted tasks' folders, the agents' run folders older than 8 hours (as each
@@ -792,20 +791,20 @@ across. Keep the old disk as it is: you can read it later.
 
 1. **Before:** wait until no task runs (`/ping`). In Tailscale's admin page, delete the old
    machine, so the new one gets the same name and Cockpit keeps its address.
-2. **Write Ubuntu Server 26.04 LTS (64-bit) on the new disk** (a box on 24.04 moves to 26.04
+2. **Write Ubuntu Server 24.04 LTS (64-bit) on the new disk** (a box on 26.04 moves to 24.04
    this way: [About the OS](#about-the-os)):
    - **From a PC:** Raspberry Pi Imager, as in [step 1](#1-write-the-os-on-the-pc), with the same
      hostname as before.
    - **On a Pi, with no PC:** plug the new disk into its other blue USB port, and, over SSH:
      ```sh
      lsblk -d -o NAME,SIZE,MODEL   # the new disk, by its size and model: for example sdb
-     curl -fLO https://cdimage.ubuntu.com/releases/26.04/release/ubuntu-26.04.1-preinstalled-server-arm64+raspi.img.xz
-     curl -fsSL https://cdimage.ubuntu.com/releases/26.04/release/SHA256SUMS | sha256sum -c --ignore-missing   # says OK
-     xzcat ubuntu-26.04.1-preinstalled-server-arm64+raspi.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+     curl -fLO https://cdimage.ubuntu.com/releases/24.04/release/ubuntu-24.04.5-preinstalled-server-arm64+raspi.img.xz
+     curl -fsSL https://cdimage.ubuntu.com/releases/24.04/release/SHA256SUMS | sha256sum -c --ignore-missing   # says OK
+     xzcat ubuntu-24.04.5-preinstalled-server-arm64+raspi.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
      sudo poweroff
      ```
      `sdX` is the new disk's name: `dd` erases the disk you name, so check it twice (never the one
-     the Pi runs from). A newer 26.04.x image works the same.
+     the Pi runs from). A newer 24.04.x image works the same.
 3. **Start from it:** the old disk out, the new one in a blue USB 3 port, power on. Plug the old
    disk in again only once the Pi has started: both carry the same labels, and a Pi can start from
    either. (A Pi that started from an SD card before: [step 2](#2-start-it).)
@@ -856,7 +855,8 @@ OS does the same; nothing is lost either way, since a box holds nothing that isn
    sudo apt purge -y podman podman-docker podman-compose uidmap slirp4netns catatonit netavark aardvark-dns && sudo apt autoremove -y
    sudo rm -f /etc/containers/shipify-agents.conf /etc/containers/registries.conf.d/50-shipify.conf /etc/containers/nodocker
    ```
-4. **What stays, as the machine's own:** automatic updates (with the restart at 04:30), Ubuntu's
+4. **What stays, as the machine's own:** automatic updates (with the restart from 04:30, the
+   timer `shipify-box-restart`), Ubuntu's
    normal updates where setup added them (`/etc/apt/sources.list.d/shipify-updates.sources`), SSH
    by key only, zram, the watchdog, the journal's limit, cloud-init off, and with `--manage`
    Tailscale, Cockpit, the firewall and avahi off. A laptop you take
@@ -931,13 +931,24 @@ CPU and disk.
 
 - **Ubuntu Server LTS only,** on every box: one OS, one setup, tested the same way.
   `box add` checks it first (24.04 or a newer LTS) and refuses any other.
-- **26.04 or 24.04:** both work the same (setup 12). 26.04's own changes, checked in an Ubuntu
-  26.04.1 container: its core tools are uutils (Rust), its sudo is sudo-rs, and its Podman 5
-  would take pasta for a container's network. Setup takes each: the folders keep their setgid bits,
-  sudo-rs takes the rule and the runner's commands, and the agents' Podman uses slirp4netns, as
-  on 24.04. The GitHub runner's own check installs its libraries there too. A new box gets 26.04
-  (updates to 2031). A box on 24.04 needs nothing now (updates to 2029, 2034 with
-  [Ubuntu Pro](https://ubuntu.com/pro), free for five personal machines).
+- **24.04 for every new box,** a Pi above all: its standard updates run to May 2029, and to 2034
+  with [Ubuntu Pro](https://ubuntu.com/pro), free for five personal machines. It's the Ubuntu the
+  box's Docker image is built on and checked with at every release (x64 and arm64), and the one a
+  Pi box ran longest: homepi, a Pi 4 on 24.04.5, came back by itself from every restart and every
+  power cut. A Pi on 24.04 starts the way Ubuntu's Pi images long have, straight from
+  `/boot/firmware`.
+- **26.04 works, but not for a new Pi yet:** the setup takes its changes (setup 12 to 20: uutils
+  core tools, sudo-rs, Podman 5's network, its kill, its initrd's own network), but on a Pi 4
+  (workpi, November 2026) its new start, which tries each new kernel from `/boot/firmware/new`
+  before keeping it in `current/`, didn't come back reliably: a start with no address, and starts
+  that needed a power cycle. GitHub's own 26.04 machines are new too
+  ([actions/runner-images](https://github.com/actions/runner-images/issues?q=is%3Aissue+is%3Aopen+26.04)).
+  A box on 26.04 needs nothing now; to move it, write 24.04 fresh.
+- **The same checks as CI:** CI runs on GitHub's `ubuntu-latest` (26.04), a box on 24.04: what a
+  check runs is the same on both, pinned rather than taken from the OS: Node 26 (nodejs.org's,
+  as `actions/setup-node` gives CI), pnpm and each project's packages from its lockfile,
+  shellcheck 0.11.0 (setup 15), and Playwright's browsers, which it downloads for each version.
+  So a PR a box checked passes CI too.
 - **Not Raspberry Pi OS:** `make verify` starts Cloudflare's local runtime, which needs a
   kernel with 48-bit addresses; Raspberry Pi OS's has 39
   ([workerd #5013](https://github.com/cloudflare/workerd/issues/5013)), and Docker can't change
@@ -946,7 +957,8 @@ CPU and disk.
   (a box holds nothing that isn't on GitHub), not `do-release-upgrade` in place: that takes hours
   on a Pi, can stop half done, and keeps what the old release left. A fresh disk leaves the old
   one as it was, to go back to. If you upgrade in place anyway, run the box's setup again after
-  it (`ship doctor` says so too): Podman's network changed with 26.04.
+  it (`ship doctor` says so too): Podman's network changed with 26.04. Going back to 24.04 is the
+  same: write it fresh.
 
 ## When something's off
 
@@ -959,22 +971,24 @@ PC, `pnpm ship box add <user@host> --manage --yes`. Either works, while no task 
 | tasks wait with a box online | no online slot has the `sandbox` label (`box list` says "no sandbox"): run its setup again, while no task runs |
 | the setup says none of its slots is online | `sudo systemctl status shipify-box-<name>` on it says why; then run it again |
 | the setup waits at "Waiting for cache lock" | Ubuntu's own updates, after a first boot: it waits up to 20 minutes, then goes on. Stopped anyway (Ctrl-C, a lost session)? Run it again: it finishes the cut-off install first |
+| `here.sh` stops at "Could not get lock … (unattended-upgr)" and "couldn't install libatomic1" | a `here.sh` from before 0.1.28, on a first boot: Ubuntu's own updates hold apt's lock. The newest one waits for them. With the older one: `sudo apt-get -o DPkg::Lock::Timeout=1200 install -y libatomic1`, then the same command again |
 | the sandbox check says the agents can reach your network | their rules didn't load: `sudo systemctl status shipify-agents-net` says why; then run it again |
 | `ship doctor` (or the clean-up) says the sandbox isn't right | it names the wall that's open. Run `box add` again: it sets the sandbox up and checks it |
 | the sandbox check says an agent's commands can read its memory, or its login isn't on a pipe | both are Ubuntu's own settings, which `box add` leaves as they are: put `kernel.yama.ptrace_scope = 1` in `/etc/sysctl.d/10-ptrace.conf` and run `sudo sysctl --system`; `/bin/sh` must be dash (`ls -l /bin/sh`). Then `box add` again |
 | `box add` stops at "Checking the sandbox" | the line above names the wall. The box stays online, but no task's agent starts on it until a setup passes (setup 14). Run it again; if it fails the same way, look at `/etc/sudoers.d/shipify-agents` and `ls -ld /home/shipify /srv/shipify-agent-*`. On WSL, "the agents can reach Windows": make the fix it prints in `/etc/wsl.conf` first ([This PC](#this-pc)) |
-| `box add` says the machine runs another OS | write Ubuntu Server 26.04 LTS (64-bit) on it, then run it again |
+| `box add` says the machine runs another OS | write Ubuntu Server 24.04 LTS (64-bit) on it, then run it again |
 | `box add` can't connect | it says why and prints the fix: `ssh-keygen -R <address>` after a reinstall, `ssh-copy-id` for a missing key; for a key with a passphrase, `eval "$(ssh-agent)" && ssh-add` first. A `--manage` box answers only over Tailscale (setup 13): the PC on your tailnet, and its alias's `HostName` the box's Tailscale name |
 | doctor (or the clean-up) says the box's Tailscale key expires | Tailscale's admin page → Machines → the box → **Disable key expiry**, or [tag your boxes](#managing-it-from-a-browser). Already expired: a keyboard on it, then `sudo tailscale up` |
 | `box add` on Ubuntu 26.04 stops at "Checking the sandbox": "a process outlived the box's kill" | a setup before 17: 26.04's `kill` read `kill -KILL -1` as no process (`failed to parse argument`), so it killed nothing. Setup 17 gives it `--`: the newest release's `here.sh`, then it passes. The line now ends with kill's own exit and words |
 | doctor says "Pi bootloader is current" ✗: an update is out | when no task runs, in the box's terminal: `sudo rpi-eeprom-update -a`, then `sudo reboot` ([Looking after it](#looking-after-it)) |
-| a Pi on Ubuntu 26.04 has no address after its first boot | turn the power off and on once ([step 2](#2-start-it)) |
+| a Pi on Ubuntu 26.04 has no address after a start, or doesn't come back from a restart | power off and on once; for good, write Ubuntu Server 24.04 LTS fresh ([About the OS](#about-the-os)) |
+| a Pi's USB SSD sometimes isn't found (at boot, or plugged into another computer) | the USB-SATA adapter or its cable, not the OS: try it on a PC a few times. When the adapter itself doesn't show up (`lsusb` on Linux, System Information → USB on a Mac), or comes up at USB 2 speed (480 Mbps), replace it; one that shows up every time but whose disk fails to read points at the SSD |
 | a Pi's hostname comes back after a restart | cloud-init puts Imager's back until the setup turns it off (setup 17): rename in Imager, or run the setup ([step 1](#1-write-the-os-on-the-pc)) |
-| a Pi stops at boot from a USB-SATA SSD, or `dmesg` shows `uas_eh_abort_handler` | the case fails with UAS: `usb-storage.quirks=<VID>:<PID>:u` at the start of `current/cmdline.txt` on the boot partition ([step 2](#2-start-it)) |
+| a Pi stops at boot from a USB-SATA SSD, or `dmesg` shows `uas_eh_abort_handler` | the case fails with UAS: `usb-storage.quirks=<VID>:<PID>:u` at the start of `cmdline.txt` on the boot partition (`current/cmdline.txt` on 26.04) ([step 2](#2-start-it)) |
 | `box health` says "under-voltage now" | the Pi's power supply gives too little: the official one, and no USB disk that draws more than the Pi can give (a powered hub, or a case with its own supply) |
 | can't reach a `--manage` box at all (Tailscale down, or signed out) | a keyboard and screen on it (a VPS: its web console), then `sudo tailscale up`, or `sudo ufw disable` until it's back |
 | this PC's box goes offline when you close WSL | the `.wslconfig` idle timeouts ([This PC](#this-pc)) |
-| `ship doctor` says the kernel is 39-bit | write Ubuntu Server 26.04 LTS instead |
+| `ship doctor` says the kernel is 39-bit | write Ubuntu Server 24.04 LTS instead |
 | offline after a power cut | wait a minute; then Cockpit, or `ssh` in and `sudo systemctl status shipify-box-<name>` |
 | a box's clean-up waits in the queue | its slots lack the `box-<name>` label: run `box add` again |
 | a box vanished from `box list` | GitHub removes a runner that's been off 14 days: run its setup again, which registers its slots again |

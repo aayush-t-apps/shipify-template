@@ -7,6 +7,48 @@ Projects pick up their stack's changes, their pipeline's included, through `pnpm
 
 ## [Unreleased]
 
+## [0.1.28] - 2026-11-22
+
+### Changed
+
+- **Ubuntu Server 24.04 LTS is the OS for every new box, a Pi above all.** On a Pi 4, 26.04's new
+  start (each new kernel tried from `/boot/firmware/new` before it's kept in `current/`) didn't come
+  back reliably: workpi had starts with no address and starts that needed a power cycle, while
+  homepi, a Pi 4 on 24.04.5, came back by itself from every restart and power cut. 24.04 gets
+  standard updates to May 2029 (2034 with free Ubuntu Pro), and it's what the box's Docker image is
+  built and checked on at every release. A box on 26.04 keeps working (setup 12 to 20 stay); to
+  move one, write 24.04 fresh. The guide's Imager step, the Pi image to write by hand
+  (24.04.5), the VPS and laptop steps, and the messages of `here.sh`, `box add` and `doctor` all
+  say 24.04 now. Checks match CI on GitHub's 26.04 machines, as what they run is pinned, not the
+  OS's: Node 26, pnpm, each project's lockfile, shellcheck 0.11.0 and Playwright's browsers.
+  [box-setup.md](docs/box-setup.md#about-the-os).
+
+### Fixed
+
+- **The restart an update asks for waits until no slot runs a task (box setup 21).** Ubuntu's own
+  restart came at 04:30 whatever ran, and cut a task's run off (#741, found in #744). A box now
+  restarts from 04:30 only once no slot's runner has a job: a timer, `shipify-box-restart`, tries
+  every 10 minutes until 06:50, and a task that outlasts that waits for the next night. unattended-
+  upgrades no longer restarts by itself, and `box health` says a waiting restart comes "from 04:30,
+  once no slot runs a task". Checked on Ubuntu 24.04: held off while a task ran, then restarted
+  into a new kernel with every slot, timer and wall back by itself. A box applies setup 21 by
+  itself.
+  [box-setup.md](docs/box-setup.md#how-every-box-stays-running).
+- **`here.sh` waits out a first boot's own updates, and asks for sudo once.** On a Pi's first
+  boot, unattended-upgrades held apt's lock, and `here.sh` stopped at "couldn't install
+  libatomic1". Its install now waits for the lock (20 minutes at most), as `box/setup.sh` does,
+  and says so; `apt-get update` is tried again while another apt holds it. sudo is kept fresh
+  while it runs, so a long wait or your approval on the phone never asks for it twice, and it
+  stops with the script. Reproduced on a fresh Ubuntu 24.04 with its updates running, where the
+  old `here.sh` stopped and the new one waited.
+- **A release no longer fails on a busy machine's timing.** The template's CI for 0.1.27 failed on
+  one test, a run that stays (`tests/kernel-flow.test.ts`), whose wait for the stay's reply gave up
+  after 30 s on a busy GitHub machine; the same code passed everywhere else. It now waits up to 2
+  minutes, returning as soon as the reply is there, so a passing run is no slower.
+- **A Pi's USB SSD that's sometimes not found** has its own line in the guide: the adapter or its
+  cable, told apart from the SSD by trying it on another computer (an adapter that doesn't show up,
+  or comes up at USB 2 speed, goes).
+
 ## [0.1.27] - 2026-11-21
 
 ### Fixed

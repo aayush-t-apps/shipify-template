@@ -35,6 +35,7 @@ set -euo pipefail
 WORK=""
 APPROVED=""
 WAITING=""
+SUDO_KEPT=""
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
@@ -73,10 +74,11 @@ ask_secret() {
 
 cleanup() {
   local code=$?
-  if [ -n "$WAITING" ]; then
-    kill "$WAITING" 2>/dev/null || true
-    wait "$WAITING" 2>/dev/null || true
-  fi
+  local p
+  for p in $WAITING $SUDO_KEPT; do
+    kill "$p" 2>/dev/null || true
+    wait "$p" 2>/dev/null || true
+  done
   if [ -n "$WORK" ] && [ -d "$WORK" ]; then
     # Forget the login here first, then everything this script put down.
     GH_CONFIG_DIR="$WORK/gh" "$WORK/bin/gh" auth logout --hostname github.com >/dev/null 2>&1 || true
@@ -109,7 +111,7 @@ preflight() {
   if [ "$id" != ubuntu ] || [ -z "$major" ] || [ "$major" -lt 24 ] || [ $((major % 2)) -ne 0 ] ||
     [ "${version#*.}" != 04 ]; then
     die "this is ${pretty:-an unknown OS}: a box needs Ubuntu Server 24.04 LTS or a newer LTS." \
-      "Make the machine again with Ubuntu 26.04 LTS (64-bit), then run this again."
+      "Make the machine again with Ubuntu Server 24.04 LTS (64-bit), then run this again."
   fi
   case "$(uname -m)" in
     x86_64) ARCH=x64 ;;
@@ -144,6 +146,11 @@ preflight() {
   if [ "$(id -u)" -ne 0 ]; then
     say "sudo, once (a box is set up with it)"
     sudo -v || die "sudo refused: run it as a user who can sudo."
+    # Kept fresh until the end, so it's asked once: sudo forgets after 15 minutes, and a first
+    # boot's own updates and your approval on the phone can take longer than that. It stops with
+    # this script, even one killed before its cleanup.
+    (while sleep 60 && kill -0 $$ 2>/dev/null; do sudo -n -v 2>/dev/null || exit 0; done) &
+    SUDO_KEPT=$!
   fi
 }
 
@@ -183,9 +190,19 @@ tools() {
   command -v git >/dev/null || missing=git
   node --version >/dev/null 2>&1 || missing="$missing libatomic1"
   if [ -n "$missing" ]; then
+    # Right after a first boot, Ubuntu's own updates hold apt's lock for minutes: wait for them, as
+    # box/setup.sh does, never fail on them. The install waits for the lock itself (20 minutes at
+    # most); apt-get update doesn't, so it's tried again while another apt holds it.
+    note "installing${missing}: after a first boot, this waits for Ubuntu's own updates to finish"
+    local apt=(sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=1200) i
+    for i in $(seq 1 40); do
+      "${apt[@]}" update -qq 2>"$WORK/apt.err" && break
+      [ "$i" = 40 ] && { note "apt's lists didn't update: $(tail -n 1 "$WORK/apt.err")"; break; }
+      note "apt is busy ($(tail -n 1 "$WORK/apt.err" | cut -c1-90)): again in 30 seconds"
+      sleep 30
+    done
     # shellcheck disable=SC2086 # one or two package names
-    { sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $missing >/dev/null; } ||
-      die "couldn't install ${missing# }."
+    "${apt[@]}" install -y -qq $missing >/dev/null || die "couldn't install ${missing# }."
   fi
   note "gh $ghv, $(node --version)"
 }

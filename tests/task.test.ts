@@ -1475,6 +1475,22 @@ describe("boxes: what a box says about itself", () => {
     expect(facts.restart).toBe(
       "needed since Thu 1 Oct, 11:12 (linux-base, libc6); it restarts by itself at 04:30",
     );
+    // From setup 21: the box's own timer, which waits until no slot runs a task.
+    const timer = boxFacts({
+      read: (f) =>
+        ({
+          "/run/reboot-required.pkgs": "linux-image-raspi\n",
+          "/etc/apt/apt.conf.d/52shipify-updates":
+            'Unattended-Upgrade::Automatic-Reboot "false";\n',
+          "/etc/systemd/system/shipify-box-restart.timer":
+            "[Timer]\nOnCalendar=*-*-* 04:30/10:00\nOnCalendar=*-*-* 05,06:00/10:00\n",
+        })[f],
+      exec: () => "",
+      changed: (f) => (f === "/run/reboot-required" ? new Date(2026, 9, 1, 11, 12) : undefined),
+    });
+    expect(timer.find((f) => f.name === "restart")?.value).toBe(
+      "needed since Thu 1 Oct, 11:12 (linux-image-raspi); it restarts by itself from 04:30, once no slot runs a task",
+    );
     expect(facts.updates).toBe("2 waiting (1 security): curl, gh");
     expect(facts.services).toBe(
       "shipify-box-homepi active, tailscaled failed, failed: tailscaled.service",
